@@ -502,11 +502,54 @@ def _shutil_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     return modules, funcs
 
 
+def _resolve_path(*parts: str) -> str | None:
+    """Склеивает части и схлопывает `.` и `..`. Неоднозначно или выше корня — None."""
+    segments: list[str] = []
+    absolute = False
+    for part in parts:
+        text = part.replace("\\", "/")
+        if text.startswith("/"):
+            absolute = True
+            segments = []
+        for seg in text.split("/"):
+            if seg in ("", "."):
+                continue
+            if seg == "..":
+                if not segments or segments[-1] in {_DYN, ".."}:
+                    return None
+                segments.pop()
+                continue
+            if _DYN in seg:
+                segments.append(_DYN)
+            else:
+                segments.append(seg)
+    if any(seg == ".." for seg in segments):
+        return None
+    body = "/".join(segments)
+    return f"/{body}" if absolute else body
+
+
+def _is_path_join(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "join":
+        return True
+    if not isinstance(func, ast.Attribute) or func.attr != "join":
+        return False
+    value = func.value
+    if isinstance(value, ast.Name) and value.id in {"os", "path"}:
+        return True
+    return (
+        isinstance(value, ast.Attribute)
+        and value.attr == "path"
+        and isinstance(value.value, ast.Name)
+    )
+
+
 def _sketch(node: ast.AST | None, env: dict[str, str]) -> str | None:
     if node is None:
         return None
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+        return _resolve_path(node.value)
     if isinstance(node, ast.Name):
         return env.get(node.id)
     if isinstance(node, ast.Attribute):
@@ -516,17 +559,21 @@ def _sketch(node: ast.AST | None, env: dict[str, str]) -> str | None:
             and node.attr == "data_dir"
         ):
             return "{settings.data_dir}"
+        if node.attr != "parent":
+            return None
         base = _sketch(node.value, env)
         if base is None:
             return None
-        return f"{base}.{node.attr}"
+        return _resolve_path(base, "..")
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
         left = _sketch(node.left, env)
         right = _sketch(node.right, env)
         if left is None and right is None:
             return None
         sep = "/" if isinstance(node.op, ast.Div) else ""
-        return f"{left if left is not None else _DYN}{sep}{right if right is not None else _DYN}"
+        return _resolve_path(
+            f"{left if left is not None else _DYN}{sep}{right if right is not None else _DYN}"
+        )
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for part in node.values:
@@ -539,17 +586,60 @@ def _sketch(node: ast.AST | None, env: dict[str, str]) -> str | None:
                 parts.append(inner)
             else:
                 return None
-        return "".join(parts)
+        return _resolve_path("".join(parts))
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         if node.func.id == "_data_root":
             return "{settings.data_dir}"
-        if node.func.id == "Path" and node.args:
-            return _sketch(node.args[0], env)
+        if node.func.id == "Path":
+            if not node.args:
+                return None
+            pieces: list[str] = []
+            for arg in node.args:
+                piece = _sketch(arg, env)
+                if piece is None:
+                    return None
+                pieces.append(piece)
+            return _resolve_path(*pieces)
+    if isinstance(node, ast.Call) and _is_path_join(node):
+        if not node.args:
+            return None
+        pieces = []
+        for arg in node.args:
+            piece = _sketch(arg, env)
+            if piece is None:
+                return None
+            pieces.append(piece)
+        return _resolve_path(*pieces)
     return None
 
 
+def _target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in target.elts:
+            names.extend(_target_names(elt))
+        return names
+    return []
+
+
+def _param_names(fn_node: ast.AST) -> list[str]:
+    args = getattr(fn_node, "args", None)
+    if args is None:
+        return []
+    names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return names
+
+
 def _bind_env(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
-    """Имя с несколькими разными присваиваниями становится неизвестным (denied)."""
+    """Неоднозначное имя (параметр, ветка, распаковка, переприсваивание) — denied."""
     bound = dict(env)
     seen: dict[str, str | None] = {}
 
@@ -563,28 +653,64 @@ def _bind_env(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
         else:
             bound[name] = seen[name]
 
-    def walk(node: ast.AST) -> None:
+    for name in _param_names(fn_node):
+        note(name, None)
+
+    def walk(node: ast.AST, *, conditional: bool) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not fn_node:
             return
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                note(name, None)
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            for name in _target_names(node.target):
+                note(name, None)
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    for name in _target_names(item.optional_vars):
+                        note(name, None)
+        if isinstance(node, ast.ExceptHandler) and isinstance(node.name, str):
+            note(node.name, None)
         if isinstance(node, ast.Assign):
-            sketch = _sketch(node.value, bound)
+            sketch = None if conditional else _sketch(node.value, bound)
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    note(target.id, sketch)
+                unpacked = not isinstance(target, ast.Name)
+                for name in _target_names(target):
+                    note(name, None if unpacked else sketch)
         elif (
             isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
             and node.value is not None
         ):
-            note(node.target.id, _sketch(node.value, bound))
-        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-            note(node.target.id, _sketch(node.value, bound))
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            note(node.target.id, None)
+            sketch = None if conditional else _sketch(node.value, bound)
+            unpacked = not isinstance(node.target, ast.Name)
+            for name in _target_names(node.target):
+                note(name, None if unpacked else sketch)
+        elif isinstance(node, ast.NamedExpr):
+            sketch = None if conditional else _sketch(node.value, bound)
+            for name in _target_names(node.target):
+                note(name, sketch)
+        elif isinstance(node, ast.AugAssign):
+            for name in _target_names(node.target):
+                note(name, None)
+        nested = conditional or isinstance(
+            node,
+            (
+                ast.If,
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.Try,
+                ast.ExceptHandler,
+                ast.With,
+                ast.AsyncWith,
+                ast.IfExp,
+            ),
+        )
         for child in ast.iter_child_nodes(node):
-            walk(child)
+            walk(child, conditional=nested)
 
-    walk(fn_node)
+    walk(fn_node, conditional=False)
     return bound
 
 
@@ -666,15 +792,16 @@ def _under_snapshot(sketch: str) -> bool:
 
 
 def _path_permitted(sketch: str, action_id: str) -> bool:
-    if _has_dotdot(sketch):
+    resolved = _resolve_path(sketch)
+    if not resolved:
         return False
-    if _under_snapshot(sketch):
+    if _under_snapshot(resolved):
         return action_id in _SNAPSHOT_ALLOW
-    if _DYN in sketch:
+    if _DYN in resolved:
         return False
-    if _is_allow_path(sketch):
+    if _is_allow_path(resolved):
         return True
-    return action_id == _RAG_ID and _is_rag_path(sketch)
+    return action_id == _RAG_ID and _is_rag_path(resolved)
 
 
 def _is_allow_path(sketch: str) -> bool:
@@ -1576,7 +1703,66 @@ def test_dotdot_segment_is_rejected() -> None:
         "    open('data/node_overrides/../reports/c.txt', 'w')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    assert [hit.allowed for hit in hits] == [False, False, False, True, False]
+    # После resolve внутрь allowlist путь разрешён, выход наружу — нет.
+    assert [hit.allowed for hit in hits] == [False, True, False, True, True]
+
+
+def test_path_constructor_resolves_every_argument() -> None:
+    source = (
+        "def save(a):\n"
+        "    Path('data/reports', '../../app/x.py').write_text('z')\n"
+        "    Path(a, '../..').write_text('z')\n"
+        "    Path('data/reports', 'ok.txt').write_text('z')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in hits] == [False, False, True]
+
+
+def test_parent_is_resolved_before_allowlist() -> None:
+    source = (
+        "def save():\n"
+        "    inside = (settings.data_dir / 'reports' / 'x').parent / 'ok.txt'\n"
+        "    outside = (settings.data_dir / 'reports' / 'x').parent.parent / 'orch.db'\n"
+        "    inside.write_text('a')\n"
+        "    outside.write_text('b')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in hits] == [True, False]
+
+
+def test_os_path_join_is_resolved_before_allowlist() -> None:
+    source = (
+        "import os\n"
+        "ALLOWED = 'data/reports'\n"
+        "def save():\n"
+        "    open(os.path.join(ALLOWED, '..', 'x'), 'w')\n"
+        "    open(os.path.join(ALLOWED, 'ok.txt'), 'w')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in hits] == [False, True]
+
+
+def test_allowed_root_constant_is_shadowed() -> None:
+    source = (
+        "ALLOWED = 'data/reports'\n"
+        "TARGET = 'data/reports/a.txt'\n"
+        "def save():\n"
+        "    ALLOWED = 'templates/secret'\n"
+        "    open(os.path.join(ALLOWED, 'x'), 'w')\n"
+        "def save_param(TARGET):\n"
+        "    open(TARGET, 'w')\n"
+        "def save_branch(p, ok):\n"
+        "    if ok:\n"
+        "        p = 'data/reports/a.txt'\n"
+        "    open(p, 'w')\n"
+        "def save_rebind():\n"
+        "    ALLOWED = 'data/reports/a.txt'\n"
+        "    ALLOWED = 'templates/x'\n"
+        "    open(ALLOWED, 'w')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert hits
+    assert all(hit.allowed is False for hit in hits)
 
 
 def test_snapshot_dir_only_for_three_actions_and_they_do_not_delete() -> None:
