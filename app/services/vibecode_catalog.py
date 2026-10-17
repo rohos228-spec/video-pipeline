@@ -561,6 +561,8 @@ _UI_EFFORT_TO_API = {"low": "low", "med": "medium", "medium": "medium", "high": 
 def read_node_reasoning_effort(node: dict[str, Any] | None) -> str | None:
     data = _node_data_dict(node)
     raw = str(data.get("reasoningEffort") or data.get("reasoning_effort") or "").strip().lower()
+    if not raw:
+        return "high"
     return _UI_EFFORT_TO_API.get(raw)
 
 

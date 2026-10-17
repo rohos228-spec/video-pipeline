@@ -115,18 +115,20 @@ function buildMediaPatch(
 export type ReasoningEffortUi = "low" | "med" | "high" | "ultra";
 const EFFORTS: { id: ReasoningEffortUi; label: string; note: string }[] = [
   { id: "low", label: "low", note: "быстро, дёшево" },
-  { id: "med", label: "med", note: "по умолчанию" },
-  { id: "high", label: "high", note: "глубже думает" },
+  { id: "med", label: "med", note: "середина" },
+  { id: "high", label: "high", note: "по умолчанию" },
   { id: "ultra", label: "ultra", note: "максимум (xhigh)" },
 ];
 const ACC = "#2fd5b5";
 
 export function normalizeEffort(v?: string | null): ReasoningEffortUi {
   const x = (v || "").trim().toLowerCase();
+  if (!x) return "high";
   if (x === "low") return "low";
   if (x === "high") return "high";
   if (x === "ultra" || x === "xhigh") return "ultra";
-  return "med";
+  if (x === "med" || x === "medium") return "med";
+  return "high";
 }
 
 function vendorNote(m: CatalogModel): string {
