@@ -97,9 +97,15 @@ export function readOrchProjectId(): number | null {
   }
 }
 
+/** Управляющие символы и обратный слэш меняют разбор URL. Такие строки не адрес API. */
+function hasUnsafeUrlChars(value: string): boolean {
+  return /[\u0000-\u001F\u007F\\]/.test(value);
+}
+
 function isLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  // URL.hostname для IPv6 уже со скобками (`[::1]`). Голый `::1` парсер не отдаёт.
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
 /**
@@ -108,6 +114,7 @@ function isLoopbackHost(hostname: string): boolean {
  * Userinfo, протокол-относительный адрес и прочие схемы — null.
  */
 export function normalizedOrchEnvApi(value: string): string | null {
+  if (hasUnsafeUrlChars(value)) return null;
   const raw = value.trim();
   if (!raw || raw.startsWith("//")) return null;
   let url: URL;
@@ -148,9 +155,14 @@ function warnDiscardedOrchApi(raw: string): void {
 
 /** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim();
-  if (!raw) return "";
-  const normalized = normalizedOrchEnvApi(raw);
+  const raw = process.env.NEXT_PUBLIC_ORCH_API || "";
+  if (hasUnsafeUrlChars(raw)) {
+    warnDiscardedOrchApi(raw);
+    return "";
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const normalized = normalizedOrchEnvApi(trimmed);
   if (!normalized) {
     warnDiscardedOrchApi(raw);
     return "";
@@ -170,6 +182,7 @@ function normalizeBase(value: string): string {
 
 /** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
 export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
+  if (hasUnsafeUrlChars(value) || hasUnsafeUrlChars(pageOrigin)) return false;
   const raw = normalizeBase(value);
   if (!raw || !pageOrigin) return false;
   if (raw.startsWith("//")) return false;

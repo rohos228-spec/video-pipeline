@@ -6,6 +6,7 @@ import {
   bearerTargetAllowed,
   envOrchApiBase,
   isSameOriginApiBase,
+  normalizedOrchEnvApi,
   orchAuthHeaders,
   orchTestModeEnabled,
   postOrchKill,
@@ -255,6 +256,52 @@ test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => 
       expect(bearerTargetAllowed(value, pageOrigin), value).toBe(false);
     }
   } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
+test("data, localhost., 127.0.0.2, управляющие и обратный слэш не становятся базой API", () => {
+  expect(new URL("http://[::1]:8799/api").hostname).toBe("[::1]");
+  expect(normalizedOrchEnvApi("http://[::1]:8799")).toBe("http://[::1]:8799");
+  expect(isSameOriginApiBase("http://[::1]:8799/api", "http://[::1]:8799")).toBe(true);
+
+  const pageOrigin = "https://host";
+  const sameOriginRejected = [
+    "data:",
+    "data:text/html,/api",
+    "http://localhost./api",
+    "http://127.0.0.2/api",
+    "https://host/api\n",
+    "https://host/api\u0001",
+    "https://host\\@evil.com/api",
+    "http://127.0.0.1\\@evil.com/api",
+    "https://host/api\\@evil",
+  ];
+  for (const value of sameOriginRejected) {
+    expect(isSameOriginApiBase(value, pageOrigin), value).toBe(false);
+    expect(isSameOriginApiBase(value, "http://127.0.0.1:8799"), value).toBe(false);
+  }
+
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const envRejected = [
+    "data:",
+    "http://localhost.:8799",
+    "http://127.0.0.2:8799",
+    "http://127.0.0.1:8799\n",
+    "https://api.example.com/api\u0001",
+    "http://127.0.0.1\\@evil.com/api",
+    "https://user\\@host/api",
+  ];
+  try {
+    for (const value of envRejected) {
+      process.env.NEXT_PUBLIC_ORCH_API = value;
+      expect(normalizedOrchEnvApi(value), value).toBeNull();
+      expect(envOrchApiBase(), value).toBe("");
+    }
+  } finally {
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    envOrchApiBase();
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
     else process.env.NEXT_PUBLIC_ORCH_API = previous;
   }
