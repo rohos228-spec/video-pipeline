@@ -73,15 +73,20 @@ DOM отчёта на месте не правится.
 
 ### `ApprovalRequired`
 
+Запрос на одобрение, не карточка. Поля `change_id` здесь нет:
+id и карточка приходят из ядра WS3. Лишнее поле, включая `change_id`,
+схема отвергает.
+
 Первый ответ, если `metadata.paid` или `metadata.destructive`
 (в том числе имя вне реестра).
 
 | Поле | Смысл |
 |---|---|
-| `change_id` | серверный id этого подтверждения |
-| `metadata` | `ActionMetadata` действия |
-| `summary` | что произойдёт после подтверждения |
-| `estimate` | оценка расхода, число ≥ 0 |
+| `action` | id действия |
+| `metadata` | `ActionMetadata` этого действия |
+| `reason` | почему нужно подтверждение |
+| `preview.change` | что изменится |
+| `preview.estimate` | `null` — оценки нет, `0` — бесплатно |
 
 Риск `medium` сам по себе этот статус не включает.
 `create_node` и `create_report` не платные и не деструктивные: конверт сразу `ok`.
@@ -309,7 +314,7 @@ DOM отчёта на месте не правится.
 {
   "status": "approval_required",
   "result": {
-    "change_id": "orch-appr-13-6",
+    "action": "prompt.delete_master",
     "metadata": {
       "name": "prompt.delete_master",
       "risk": "high",
@@ -317,8 +322,11 @@ DOM отчёта на месте не правится.
       "destructive": true,
       "paid": false
     },
-    "summary": "Пометить вариант промта удалённым, файл не стирать",
-    "estimate": 0
+    "reason": "Удаление общего промта необратимо без снимка",
+    "preview": {
+      "change": "Пометить вариант промта удалённым, файл не стирать",
+      "estimate": 0
+    }
   },
   "error": null
 }
@@ -348,7 +356,7 @@ DOM отчёта на месте не правится.
 {
   "status": "approval_required",
   "result": {
-    "change_id": "orch-appr-13-7",
+    "action": "montage.suggest_scene_variants",
     "metadata": {
       "name": "montage.suggest_scene_variants",
       "risk": "high",
@@ -356,8 +364,11 @@ DOM отчёта на месте не правится.
       "destructive": false,
       "paid": true
     },
-    "summary": "Один вызов LLM за вариантами сцены",
-    "estimate": 0
+    "reason": "Платный вызов LLM",
+    "preview": {
+      "change": "Один вызов LLM за вариантами сцены",
+      "estimate": 0
+    }
   },
   "error": null
 }
@@ -369,7 +380,7 @@ DOM отчёта на месте не правится.
 {
   "status": "approval_required",
   "result": {
-    "change_id": "orch-appr-13-8",
+    "action": "prompt.create_master",
     "metadata": {
       "name": "prompt.create_master",
       "risk": "medium",
@@ -377,8 +388,11 @@ DOM отчёта на месте не правится.
       "destructive": true,
       "paid": false
     },
-    "summary": "Новая версия общего промта в БД, файл git не создавать",
-    "estimate": 0
+    "reason": "Общий промт пишется для всех проектов",
+    "preview": {
+      "change": "Новая версия общего промта в БД, файл git не создавать",
+      "estimate": 0
+    }
   },
   "error": null
 }

@@ -182,20 +182,30 @@ class ReportResult(BaseModel):
         return value
 
 
-class ApprovalRequired(BaseModel):
-    """Первый ответ на платное или деструктивное действие."""
+class ApprovalPreview(BaseModel):
+    """Что изменится и сколько это стоит.
+
+    ``estimate is None`` — оценки нет. ``0`` — бесплатно.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    change_id: str
-    metadata: ActionMetadata
-    summary: str = Field(min_length=1)
-    estimate: float = Field(ge=0)
+    change: str = Field(min_length=1)
+    estimate: float | None = None
 
-    @field_validator("change_id")
-    @classmethod
-    def _change_id(cls, value: str) -> str:
-        return _check_change_id(value)
+
+class ApprovalRequired(BaseModel):
+    """Запрос на одобрение, не карточка.
+
+    ``change_id`` и карточка живут в ядре WS3. Лишнее поле здесь запрещено.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1)
+    metadata: ActionMetadata
+    reason: str = Field(min_length=1)
+    preview: ApprovalPreview
 
 
 class SoftDeleteResult(BaseModel):
@@ -397,6 +407,7 @@ _WIRE_MODELS: dict[str, type[BaseModel]] = {
     "Diff": Diff,
     "EditResult": EditResult,
     "ReportResult": ReportResult,
+    "ApprovalPreview": ApprovalPreview,
     "ApprovalRequired": ApprovalRequired,
     "SoftDeleteResult": SoftDeleteResult,
     "ActionResult": ActionResult,

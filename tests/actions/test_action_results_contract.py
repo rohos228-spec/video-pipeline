@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.orchestrator.actions.contracts import (
     CONTRACT_VERSION,
     ActionResult,
+    ApprovalRequired,
     EditResult,
     ReportResult,
     SoftDeleteResult,
@@ -26,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "2bded3e1eb0447d8a05840209273dd2d1476265438270d3bc7cc2e59b639a3ab",
+    "ws2-r2.0": "069f1ad3ebe52ec1de842adb31e34168aa9e4b2f7cbdba1857c8e2b8fe9e520c",
 }
 
 
@@ -171,6 +172,22 @@ def _edit_payload(**extra: object) -> dict:
     }
     payload.update(extra)
     return payload
+
+
+def test_approval_required_has_no_change_id() -> None:
+    assert "change_id" not in ApprovalRequired.model_fields
+    payload = {
+        "action": "prompt.delete_master",
+        "metadata": metadata_of("prompt.delete_master").model_dump(),
+        "reason": "пометка вместо удаления",
+        "preview": {"change": "файл остаётся", "estimate": 0},
+        "change_id": "orch-appr-1-1",
+    }
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(payload)
+    clean = dict(payload)
+    clean.pop("change_id")
+    ApprovalRequired.model_validate(clean)
 
 
 def test_action_result_has_warnings_list() -> None:
