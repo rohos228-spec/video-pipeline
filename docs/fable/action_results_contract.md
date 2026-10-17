@@ -1,10 +1,11 @@
 # Контракт результатов действий R2 (моки WS4)
 
-Версия: `ws2-r2.0` (`CONTRACT_VERSION` в `app/orchestrator/actions/contracts.py`).
+Версия: `ws2-r2.1` (`CONTRACT_VERSION` в `app/orchestrator/actions/contracts.py`).
 
 Это только схемы. Исполнителей, записи в node_store и HTTP здесь нет.
 Имена взяты из плана `fable-context` §6 и из `docs/fable/actions_audit.md`.
-Новых id сверх этих списков нет.
+К ним добавлены только восстановление мягкого удаления: `frame.restore`,
+`group.restore`, `prompt.restore_master`.
 
 Живой реестр аудита — 102 действия. Пакет `app.orchestrator.actions` их не
 регистрирует как исполнителей. `metadata_of` знает эти 102 и имена R2 из
@@ -31,8 +32,8 @@
 Особые строки, не как сырая ячейка таблицы #344:
 
 - `revert_node_to_git` — риск `medium`, ярус `destructive` (раздел аудита «Новые действия R2»). Деактивирует версию в БД, историю не стирает, git-файл не пишет. Подтверждение нужно.
-- `prompt.create_master` — в таблице ярус `local_safe`, в контракте `destructive=true`: действие пишет общий файл промта.
-- `montage.suggest_scene_variants` — в коде ярус `paid`. В таблице #344 опечатка `paid+paid`. Контракт хранит `paid=true`, `destructive=false` и документ аудита не переписывает.
+- `prompt.create_master` — ярус таблицы `destructive`. Контракт держит `destructive=true` и не ослабляет его, даже если ячейка снова станет `local_safe`.
+- `montage.suggest_scene_variants` — ярус `paid`. Если в таблице снова окажется `paid+paid`, контракт хранит `paid=true`, `destructive=false`.
 
 ### `EditResult`
 
@@ -73,9 +74,12 @@ DOM отчёта на месте не правится.
 
 ### `ApprovalRequired`
 
-Запрос на одобрение, не карточка. Поля `change_id` здесь нет:
-id и карточка приходят из ядра WS3. Лишнее поле, включая `change_id`,
-схема отвергает.
+Запрос на одобрение, не карточка. Поля `change_id` здесь нет.
+Лишнее поле, включая `change_id`, схема отвергает.
+
+Карточку в UI даёт ядро WS3 событиями `approval_required` и `approval_decided`
+(ws3-r3.4). `ActionResult` со `status=approval_required` только сообщает ядру,
+что одобрение нужно. Из этого конверта карточку не собирают.
 
 Первый ответ, если `metadata.paid` или `metadata.destructive`
 (в том числе имя вне реестра).
@@ -139,7 +143,8 @@ id и карточка приходят из ядра WS3. Лишнее поле
 исполняется второй раз.
 
 Платное или деструктивное действие сначала отдаёт `approval_required`.
-После подтверждения тот же серверный `change_id` приходит уже в `ok`.
+Карточку рисует ядро. `change_id` в последующем `ok` (правка или пометка)
+по-прежнему выдаёт только сервер.
 
 ## Имена R2 в метаданных
 

@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONTRACT_VERSION = "ws2-r2.0"
+CONTRACT_VERSION = "ws2-r2.1"
 
 # Форма id как у WS3 #358: выдаёт только сервер, ``n`` растёт внутри задачи.
 _CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")

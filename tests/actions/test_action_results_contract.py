@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "541bbf57a029a40246ad99cc64f973b046b928cf802bc280d4baf9d45d98f84f",
+    "ws2-r2.1": "e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d",
 }
 
 
@@ -424,6 +424,14 @@ def _contract_flag_rows(text: str) -> list[tuple[str, str, bool, bool, bool]]:
             )
         )
     return rows
+
+
+def test_md_approval_card_comes_from_core_events() -> None:
+    text = _MD.read_text(encoding="utf-8")
+    assert "ws3-r3.4" in text
+    assert "approval_decided" in text
+    assert "только сообщает ядру" in text
+    assert "change_id" not in ApprovalRequired.model_fields
 
 
 def test_doc_flags_match_contract_metadata() -> None:
