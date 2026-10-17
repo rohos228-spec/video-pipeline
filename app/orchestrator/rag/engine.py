@@ -14,6 +14,7 @@ from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
+from app.orchestrator.rag.family_boost import boost_scores
 from app.orchestrator.rag.lexical import LEXICAL_ANALYZER, fts_or_query
 from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
 from app.orchestrator.rag.node_store import NodeStore
@@ -154,6 +155,7 @@ class RagEngine:
         rerank_fusion: str = "replace",
         rerank_fusion_weights: tuple[float, float] = (1.0, 1.0),
         bm25_protect: float = 0.0,
+        family_boost: float = 1.0,
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
@@ -165,6 +167,8 @@ class RagEngine:
         ``rerank_fusion=rrf`` не отдаёт порядок реранкеру: RRF с BM25.
         ``bm25_protect`` — во сколько раз топ-1 BM25 должен обгонять топ-2,
         чтобы остаться первым. 0 выключает защиту.
+        ``family_boost`` умножает оценку чанков семейства, которое запрос
+        назвал. 1 оставляет порядок как есть.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -187,6 +191,8 @@ class RagEngine:
             raise ValueError("bm25_protect должен быть >= 0")
         if rerank_fusion_weights[0] <= 0 or rerank_fusion_weights[1] <= 0:
             raise ValueError("веса слияния BM25 и реранкера должны быть > 0")
+        if family_boost < 1:
+            raise ValueError("family_boost должен быть >= 1")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -265,6 +271,15 @@ class RagEngine:
             else:
                 ordered = rerank_ids
         rank_scores = rerank_scores if rerank_scores else fused
+        if family_boost != 1:
+            rank_scores = boost_scores(rank_scores, by_id, query, family_boost)
+            ordered = [
+                chunk_id
+                for chunk_id, _score in sorted(
+                    ((chunk_id, rank_scores.get(chunk_id, fused.get(chunk_id, 0.0))) for chunk_id in ordered),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ]
         ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
         result: list[Chunk] = []
         for rank, chunk_id in enumerate(ordered[:top_k], start=1):
