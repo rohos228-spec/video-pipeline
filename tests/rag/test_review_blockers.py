@@ -260,26 +260,37 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
         ndcgs = [item[name]["ndcg_at_8"] for item in payload["passes"]]
         assert hits[0] == hits[1] == hits[2]
         assert ndcgs[0] == ndcgs[1] == ndcgs[2]
-    assert CONTOUR_B_EXPERIMENTAL is True
+    assert CONTOUR_B_EXPERIMENTAL is False
     assert CONTOUR_B_R5_NOTE == ""
     assert NDCG_AT_8_MIN == 0.65
 
 
-def test_fusion_weights_stay_experimental_until_dev_selection() -> None:
-    """rrf 0.5/1.5 не выбран choose_default: на dev hit@5 был 0.88."""
+def test_dev70_choice_clears_the_experimental_flag() -> None:
+    """choose_default на dev-70 выбрал none + rrf 0.5/1.5, флаг снят."""
     from app.orchestrator.rag.profile import (
+        CONTOUR_B_AGGREGATE,
         CONTOUR_B_EXPERIMENTAL,
         CONTOUR_B_FUSION_BM25,
         CONTOUR_B_FUSION_RERANK,
         CONTOUR_B_RERANK_FUSION,
+        CONTOUR_B_RERANK_POOL,
     )
+    from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
 
     assert CONTOUR_B_RERANK_FUSION == "rrf"
     assert CONTOUR_B_FUSION_BM25 == 0.5
     assert CONTOUR_B_FUSION_RERANK == 1.5
-    assert CONTOUR_B_EXPERIMENTAL is True
+    assert CONTOUR_B_AGGREGATE == "none"
+    assert CONTOUR_B_RERANK_POOL == 12
+    assert CONTOUR_B_EXPERIMENTAL is False
     missed = choose_default([("rrf", "rrf 0.5/1.5", {"ndcg_at_8": 0.7, "hit_at_5": 0.88, "p95_s": 0.4})])
     assert missed[0] == ""
+    document = json.loads(GRID_PATH.read_text(encoding="utf-8"))
+    samples = [float(sample) for sample in document["prod_p95_s"]]
+    assert len(samples) == 3
+    assert max(samples) <= 1.2
+    chosen, _why = choose_default(grid_runs_for_choice(document["configs"], prod_p95_s=max(samples)))
+    assert chosen == "none-rrf-0.5-1.5"
 
 
 def test_r5_below_0_65_is_experimental_and_threshold_stays() -> None:
