@@ -1,20 +1,22 @@
-"""Чат оркестратора: приём сообщения и SSE-поток.
+"""Чат оркестратора: приём сообщения, SSE-поток и решение по approval.
 
 POST ``/api/orchestrator/chat/{session}/message``
 GET  ``/api/orchestrator/chat/{session}/stream``  (Last-Event-ID)
+POST ``/api/orchestrator/chat/{session_id}/approve``
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.orchestrator.agents.runtime import get_runtime
+from app.orchestrator.agents.supervisor import ApprovalGrantError, Supervisor
 from app.orchestrator.auth import require_orch_token
 from app.orchestrator.contracts import MessageMode, OrchEvent
 
@@ -42,6 +44,16 @@ class MessageIn(BaseModel):
             data = dict(data)
             data.pop("change_id", None)
         return data
+
+
+class ApproveIn(BaseModel):
+    """Тело ``POST .../approve``. Лишние поля запрещены. ``decision=null`` — старый grant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    change_id: str | None = None
+    decision: Literal["approve", "retry_step", "deny"] | None = None
+    retry_grant: bool = False
 
 
 def _check_session(session: str) -> str:
@@ -72,6 +84,58 @@ async def post_message(session: str, body: MessageIn) -> dict[str, object]:
     runtime = get_runtime()
     ack_seq = await runtime.queue.accept(session, body.text, body.mode, project_id=body.project_id)
     return {"ok": True, "session": session, "ack_seq": ack_seq}
+
+
+def _approval_result(
+    supervisor: Supervisor,
+    session_id: str,
+    body: ApproveIn,
+    result: dict[str, Any] | None,
+) -> dict[str, object]:
+    """Поля, которые WS4 читает из 200. Пустой grant не выдумывает executed."""
+    payload = result if isinstance(result, dict) else {}
+    task_id = supervisor._session_task.get(session_id)
+    key = int(task_id) if task_id is not None else None
+    if "retry_armed" in payload:
+        armed = bool(payload["retry_armed"])
+    else:
+        armed = key is not None and key in supervisor._retry_armed
+    change_id = body.change_id or payload.get("change_id")
+    if not change_id and key is not None:
+        change_id = supervisor._appr_open.get(key)
+        if not change_id:
+            for candidate, owner in supervisor._appr_owner.items():
+                if owner == (key, session_id) and candidate in supervisor._appr_decided:
+                    change_id = candidate
+    decision = payload.get("decision", body.decision)
+    forecast = payload.get("forecast_usd")
+    return {
+        "executed": bool(payload.get("executed", False)),
+        "reason": payload.get("reason"),
+        "forecast_usd": forecast,
+        "retry_armed": armed,
+        "change_id": change_id,
+        "decision": decision,
+    }
+
+
+@router.post("/{session_id}/approve")
+async def post_approve(session_id: str, body: ApproveIn) -> dict[str, object]:
+    """Решение человека. ``decision=null`` идёт прежним ``grant_approval``."""
+    _check_session(session_id)
+    runtime = get_runtime()
+    try:
+        result = await runtime.supervisor.grant_approval(
+            session_id,
+            body.decision,
+            retry_grant=body.retry_grant,
+            change_id=body.change_id,
+        )
+    except ApprovalGrantError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except LookupError:
+        raise HTTPException(status_code=404, detail="not found") from None
+    return _approval_result(runtime.supervisor, session_id, body, result)
 
 
 @router.get("/{session}/stream")

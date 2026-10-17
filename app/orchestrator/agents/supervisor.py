@@ -270,6 +270,8 @@ class Supervisor:
             retry_grant=retry_grant,
             decision=decision,
         )
+        if retry_grant and self._retry_grant_is_spent(task_id):
+            return {"executed": False, "reason": "retry_grant_spent", "forecast_usd": None}
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
@@ -775,6 +777,13 @@ class Supervisor:
             "decision": ApprovalDecision.retry_step.value,
             "forecast_usd": forecast,
         }
+
+    def _retry_grant_is_spent(self, task_id: int) -> bool:
+        """Ключ уже сожжён, и нового вооружения нет. Повтор не зависит от статуса."""
+        key = int(task_id)
+        if self._retry_armed.get(key) is not None:
+            return False
+        return any(stored == key for stored, _key in self._retry_spent)
 
     async def _consume_paid_retry_grant(self, task_id: int, session_id: str) -> dict[str, Any]:
         """Одноразовый retry grant. Без прогноза и повторно execute не зовётся.

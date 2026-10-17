@@ -54,6 +54,36 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 - `grant_approval` без `decision` остаётся прежним: для `paid_outcome_unknown`
   он не вызывает `execute` и не пишет шаг в `_paid_done`.
 
+## `POST /api/orchestrator/chat/{session_id}/approve`
+
+Тот же Bearer `ORCH_API_TOKEN`, что и у остальных `/api/orchestrator/**`.
+Версия контракта не меняется (`ws3-r3.3`): роут добавлен к проводу, старые поля
+и `export_contract_schemas()` не трогаются. Тело в экспорт не входит.
+
+Тело — pydantic `extra=forbid`:
+
+- `change_id`: строка или `null`, по умолчанию `null`. Это id из `approval_required`
+  (`orch-appr-<task_id>-<n>`). Его по-прежнему назначает только сервер.
+- `decision`: `approve`, `retry_step`, `deny` или `null`, по умолчанию `null`.
+  `null` — прежний `grant_approval` без кнопки.
+- `retry_grant`: bool, по умолчанию `false`.
+
+Роут вызывает `grant_approval(session_id, decision, retry_grant=..., change_id=...)`.
+`ApprovalGrantError` отдаётся тем же HTTP-кодом (404 или 409). `detail` — короткая
+причина без токена и без секретов. Нет задачи у сессии — 404 `not found`.
+
+200 возвращает объект с полями `executed`, `reason`, `forecast_usd`, `retry_armed`,
+`change_id`, `decision`. `executed: true` бывает у удавшегося `retry_grant`.
+Пустой `decision` на старом риске запускает шаг, как раньше, и не ставит `executed`.
+
+Последовательность `retry_step`:
+
+1. `POST {change_id, decision: "retry_step"}` — в ответе `forecast_usd` и
+   `retry_armed: true`. `execute` не вызывается.
+2. `POST {change_id, retry_grant: true}` — шаг выполняется ровно один раз.
+3. Следующий такой POST возвращает `reason: "retry_grant_spent"` и шаг не повторяет,
+   даже если задача уже ушла из `waiting_approval`.
+
 ## Доступ
 
 - Все пути `/api/orchestrator/**` закрыты middleware `app/orchestrator/auth.py`.
