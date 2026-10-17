@@ -716,6 +716,71 @@ def test_promote_shots_makes_one_cell_per_kadr() -> None:
     ) == " ".join(full.split())
 
 
+def test_promote_child_without_shot_keeps_old_kadry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Пустой шот ребёнка не затирает уже лежащие кадры[]."""
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    pu = "aa" * 12
+    cu = "bb" * 12
+    full = "Первая фраза целиком. Вторая тоже на месте."
+    old = [{"id": "old-child", "закадр": "нельзя потерять", "активен": True}]
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text=full,
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=4.0,
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "сцена": 1,
+                    "закадр": "Первая фраза целиком.",
+                    "действие": "шаг",
+                    "место": "двор",
+                },
+                {"сцена": 1, "закадр": "", "действие": ""},
+            ],
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        uuid=cu,
+        voiceover_text="",
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=2.0,
+        attrs={
+            "кадры": [dict(old[0])],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            },
+        },
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        promote_shots_to_vo_cells([parent, child])
+    finally:
+        logger.remove(sink)
+    assert [s.get("id") for s in child.attrs["кадры"]] == ["old-child"]
+    assert child.attrs["кадры"][0]["закадр"] == "нельзя потерять"
+    assert "нет шота" in caplog.text
+    assert "кадры[] оставлены" in caplog.text
+
+
 def test_promote_parent_id_keeps_shot_children() -> None:
     """Без ``сцена``, но с parent_id: K2 остаётся shot той же ячейки."""
     from types import SimpleNamespace

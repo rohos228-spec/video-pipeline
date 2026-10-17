@@ -2274,7 +2274,20 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 else:
                     # Дочерний шот сцены: свой кадр, свой кусок закадра.
                     # shot2-промт не трогаем — картинка из PNG родителя.
-                    attrs["кадры"] = [shot] if shot else []
+                    # Пустой шот не затирает уже лежащие кадры[].
+                    shot_id = ""
+                    if isinstance(shot, dict):
+                        shot_id = str(
+                            shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
+                        ).strip()
+                    if shot and shot_id:
+                        attrs["кадры"] = [shot]
+                    else:
+                        logger.warning(
+                            "WARN promote_shots_to_vo_cells: у кадра {} нет шота, "
+                            "кадры[] оставлены",
+                            uid[:8] or "?",
+                        )
                     attrs["vo_cell_full"] = piece
                     attrs.pop("биты", None)
                     attrs.pop("bits", None)
