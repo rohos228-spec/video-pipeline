@@ -26,6 +26,21 @@ class UnknownCorpus(ValueError):
         super().__init__(f"неизвестный корпус: {', '.join(self.names)}; допустимо: {allowed}")
 
 
+def require_stored_corpus(name: str) -> str:
+    """Имя, которое можно записать в ``chunks.corpus``.
+
+    Алиас принимается только на входе поиска. В индексе остаётся канон.
+    """
+    if name in CANONICAL_CORPORA:
+        return name
+    if name in CORPUS_ALIASES:
+        canonical = CORPUS_ALIASES[name]
+        raise ValueError(
+            f"корпус {name} — алиас {canonical}, в индекс пишется только каноническое имя"
+        )
+    raise UnknownCorpus([name])
+
+
 def resolve_corpora(names: list[str] | tuple[str, ...] | None) -> list[str]:
     """Канонические имена индекса. ``None`` — все четыре корпуса.
 

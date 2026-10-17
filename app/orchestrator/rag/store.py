@@ -15,8 +15,9 @@ import struct
 from pathlib import Path
 
 from app.orchestrator.rag.canon import sha256_payload
+from app.orchestrator.rag.corpora import require_stored_corpus
 from app.orchestrator.rag.lexical import lexical_index_text
-from app.orchestrator.rag.types import CORPORA, Chunk, SourceDoc, normalize_metadata
+from app.orchestrator.rag.types import Chunk, SourceDoc, normalize_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +169,7 @@ class RagStore:
 
         Возвращает (written_chunks, unchanged_chunks, deleted_chunks).
         """
-        if corpus not in CORPORA:
-            raise ValueError(corpus)
+        corpus = require_stored_corpus(corpus)
         conn = connect(self.db_path)
         try:
             ensure_schema(conn)

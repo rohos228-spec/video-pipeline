@@ -19,7 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from app.orchestrator.rag.corpora import CANONICAL_CORPORA as CORPORA
+from app.orchestrator.rag.corpora import CANONICAL_CORPORA, require_stored_corpus
+
+CORPORA = CANONICAL_CORPORA
 
 CorpusName = Literal["rules", "history", "nodes", "prompts"]
 
@@ -169,6 +171,5 @@ class SourceDoc:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.corpus not in CORPORA:
-            raise ValueError(f"неизвестный корпус: {self.corpus}")
+        self.corpus = require_stored_corpus(self.corpus)
         self.metadata = normalize_metadata(self.metadata)
