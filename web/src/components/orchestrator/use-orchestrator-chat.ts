@@ -283,8 +283,8 @@ export function useOrchestratorChat() {
         { session_id: boot.session, reason: "kill switch из чата" },
         ac.signal,
       );
-      const body = result.body ?? {};
-      if (body.stop_key_set === true && body.ok !== false) {
+      const body = result.body;
+      if (body?.stop_key_set === true && body.ok !== false) {
         dispatch({
           type: "kill-notice",
           detail: body.detail || "",
@@ -295,8 +295,8 @@ export function useOrchestratorChat() {
         setSendError("");
         return;
       }
-      const missing = body.stop_key_set !== true && body.stop_key_set !== false;
-      fail(body.detail || (missing ? "В ответе нет stop_key_set" : "Стоп-ключ не установлен"));
+      const missing = !body || (body.stop_key_set !== true && body.stop_key_set !== false);
+      fail(body?.detail || (missing ? "В ответе нет stop_key_set" : "Стоп-ключ не установлен"));
     } catch (error) {
       const message = error instanceof Error ? error.message : "kill switch не прошёл";
       if (isAbortError(error)) {
