@@ -103,6 +103,35 @@ def test_incoming_inactive_shot_does_not_revive_by_itself() -> None:
     assert allowed == []
 
 
+def test_restore_with_explicit_op_passes() -> None:
+    """Явный restore/activate или флаг активен возвращает шот. Без op — отказ."""
+
+    before = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "dead", "активен": False, "закадр": ""},
+        ],
+        "Первая фраза.",
+    )
+    revived = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "dead", "активен": True, "закадр": ""},
+        ],
+        "Первая фраза.",
+    )
+    bare = check_active_shots(before, revived)
+    assert ("inactive_shot_revived", "error", "dead") in _codes(bare)
+
+    for ops in (
+        [{"op": "restore", "shot_id": "dead"}],
+        [{"op": "activate", "shot_id": "dead"}],
+        [{"op": "update", "id": "dead", "активен": True}],
+    ):
+        assert check_active_shots(before, revived, ops=ops) == []
+        assert run_preservation_validators(before, revived, ops, mode="reject") == []
+
+
 def test_op_cannot_drop_the_last_active_shot_while_vo_remains() -> None:
     before = _project([{"id": "a", "закадр": "Первая фраза."}], "Первая фраза.")
     after = _project([{"id": "a", "активен": False, "закадр": ""}], "Первая фраза.")

@@ -22,7 +22,7 @@ from app.orchestrator.validators.grammar import is_kadry_invalid, shot_counts_as
 from app.orchestrator.validators.violations import Violation, sorted_violations
 
 _QC_VERBS = {"qc", "render", "рендер", "qc_shot", "render_shot"}
-_ACTIVATE_VERBS = {"activate", "set_active"}
+_ACTIVATE_VERBS = {"activate", "set_active", "restore", "восстановить"}
 _DEACTIVATE_VERBS = {"deactivate", "set_inactive"}
 
 
@@ -50,7 +50,12 @@ def check_kadry_invalid(before: Any, after: Any, ops: Any = None) -> list[Violat
 
 
 def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violation]:
-    """Проверки живых шотов на снимке ``after`` и на ops."""
+    """Проверки живых шотов на снимке ``after`` и на ops.
+
+    Неактивный шот сам не становится живым. Явный op ``restore`` /
+    ``activate`` или флаг ``активен: True`` (в ``fields`` или на op)
+    разрешает возврат. Без такого op код ``inactive_shot_revived``.
+    """
 
     operations = [op for op in list(ops or []) if isinstance(op, dict)]
     violations: list[Violation] = []
@@ -177,12 +182,12 @@ def _op_id(op: dict[str, Any]) -> str:
 
 
 def _flag(op: dict[str, Any]) -> bool | None:
-    fields = op.get("fields")
-    if isinstance(fields, dict) and "активен" in fields:
-        if fields["активен"] is False:
-            return False
-        if fields["активен"] is True:
-            return True
+    for source in (op.get("fields"), op):
+        if isinstance(source, dict) and "активен" in source:
+            if source["активен"] is False:
+                return False
+            if source["активен"] is True:
+                return True
     verb = _verb(op)
     if verb in _ACTIVATE_VERBS:
         return True
