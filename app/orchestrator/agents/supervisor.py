@@ -687,7 +687,8 @@ class Supervisor:
             ctx = {
                 "task_id": task_id,
                 "session_id": session_id,
-                **self._llm_kwargs(task_id, AgentRole.executor.value),
+                "run_id": orch_run_id(task_id=task_id),
+                "budget_scope": BudgetScope.pipeline.value,
             }
             started: list[tuple[PlanStep, int]] = []
             db_pos = self._next_step_position(task_id)
