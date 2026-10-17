@@ -6,11 +6,17 @@ import asyncio
 import contextlib
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
 from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
-from app.orchestrator.contracts import ActionResult, PlanStep, TaskStatus
+from app.orchestrator.auth import OrchestratorAuthMiddleware
+from app.orchestrator.checkpoints import CheckpointStore
+from app.orchestrator.contracts import ActionResult, CheckpointData, PlanStep, TaskStatus
 from app.services.step_cancel import clear_stop, is_stop_requested
+from app.web.routers.orchestrator_chat import router as chat_router
+from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
 
@@ -169,4 +175,81 @@ async def test_cancelled_llm_step_records_spent_tokens(token: str) -> None:
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
         assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.37)
     finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_rerun_after_cancelled_mutating_step_is_idempotent(token: str) -> None:
+    del token
+    actions = MockActions()
+    step = PlanStep(
+        action="write",
+        params={"idempotency_key": "k1"},
+        mutating=True,
+        paid=False,
+    )
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+    )
+    set_runtime(runtime)
+    session = "kill-4b"
+    try:
+        task_id = runtime.tasks.insert(session, "повтор", TaskStatus.paused.value, project_id=13)
+        runtime.tasks.save_plan(task_id, [step], position=0)
+        step_id = runtime.tasks.insert_step(task_id, 0, step)
+        runtime.tasks.finish_step(step_id, "partial", "chg-once", 0.0)
+        CheckpointStore().save(task_id, session, CheckpointData(plan=[step], position=0))
+        await runtime.supervisor.resume(task_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        rows = runtime.tasks.list_steps(task_id)
+        assert [row["change_id"] for row in rows] == ["chg-once"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_partial_write_marker_lists_change_ids(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-2"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "частично", project_id=13)
+        await actions.started.wait()
+        row = runtime.tasks.list_steps(task_id)[0]
+        runtime.tasks.note_running_outcome(int(row["id"]), "chg-list", 0.0)
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-list"]
+        app = FastAPI()
+        app.add_middleware(OrchestratorAuthMiddleware)
+        app.include_router(chat_router, prefix="/api")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get(
+                f"/api/orchestrator/chat/{session}/partial-changes",
+                params={"task_id": task_id},
+                headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+            )
+        assert listed.status_code == 200
+        assert listed.json()["change_ids"] == ["chg-list"]
+        assert TEST_TOKEN not in listed.text
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["change_ids"] == ["chg-list"]
+    finally:
+        actions.release.set()
         set_runtime(None)

@@ -1788,6 +1788,17 @@ class Supervisor:
         self._step_recorded.add(step_id)
         return True
 
+    def list_partial_change_ids(self, task_id: int) -> list[str]:
+        """change_id шагов со статусом ``partial``. Отката в этом раунде нет."""
+        found: list[str] = []
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "partial":
+                continue
+            raw = row.get("change_id")
+            if raw:
+                found.append(str(raw))
+        return found
+
     def _stored_change_id(self, task_id: int, step_id: int) -> str | None:
         for row in self.tasks.list_steps(task_id):
             if int(row["id"]) != int(step_id):
@@ -2109,8 +2120,8 @@ class Supervisor:
     ) -> bool:
         """Повтор шага, у которого в ``orch_steps.change_id`` уже есть сдача.
 
-        Параметр ``_change_id`` плана не источник. Считаются только done-строки
-        с непустым change_id и теми же публичными params.
+        Параметр ``_change_id`` плана не источник. Считаются done, cancelled
+        и partial строки с непустым change_id и теми же публичными params.
         """
         ident = _public_params(step.params)
         prior = sum(
@@ -2118,7 +2129,7 @@ class Supervisor:
         )
         done = 0
         for row in self.tasks.list_steps(task_id):
-            if str(row.get("status")) != "done" or not row.get("change_id"):
+            if str(row.get("status")) not in {"done", "cancelled", "partial"} or not row.get("change_id"):
                 continue
             if str(row.get("action_name") or "") != step.action:
                 continue
