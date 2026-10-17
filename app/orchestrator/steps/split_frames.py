@@ -16,7 +16,21 @@ def active_split_frames(frames: list[Frame]) -> list[Frame]:
     """Помеченные кадры не считаются и не уходят в экспорт разбивки."""
     from app.services.frame_tombstones import frame_is_active
 
-    return [fr for fr in frames if frame_is_active(fr)]
+    live: list[Frame] = []
+    skipped: list[Frame] = []
+    for fr in frames:
+        if frame_is_active(fr):
+            live.append(fr)
+        else:
+            skipped.append(fr)
+    if skipped:
+        labels = ", ".join(f"#{getattr(fr, 'number', '?')}" for fr in skipped)
+        logger.warning(
+            "WARN split_frames: {} помеченных кадров пропущены ({}), строки сохранены",
+            len(skipped),
+            labels,
+        )
+    return live
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:

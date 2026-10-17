@@ -753,6 +753,33 @@ async def test_split_frames_ignores_marked_rows(session: AsyncSession, monkeypat
     assert project.status is ProjectStatus.frames_ready
 
 
+def test_active_split_frames_warns_about_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Пропуск помеченного кадра в разбивке пишет WARN и не меняет строку."""
+    from types import SimpleNamespace
+
+    from app.orchestrator.steps.split_frames import active_split_frames
+
+    live = SimpleNamespace(number=1, uuid="live", attrs={})
+    marked = SimpleNamespace(
+        number=2,
+        uuid="dead",
+        attrs={"удалён": True, "активен": False, "пометка": "держать"},
+    )
+    before = dict(marked.attrs)
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        chosen = active_split_frames([live, marked])
+    finally:
+        logger.remove(sink)
+    assert [fr.uuid for fr in chosen] == ["live"]
+    assert marked.attrs == before
+    assert marked.number == 2
+    assert "пропущены" in caplog.text
+    assert "#2" in caplog.text
+
+
 def test_mark_frame_deleted_keeps_existing_flags(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
