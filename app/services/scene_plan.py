@@ -551,8 +551,8 @@ _PUNCT_END = (",", ".", ";", ":", "—", "!", "?", "…")
 def _split_vo(text: str) -> tuple[str, str] | None:
     """Кусок закадра надвое: по знаку препинания ближе к середине, иначе по слову.
 
-    Разрез берётся, только если обе половины не короче ``SHOT_VO_MIN``.
-    Иначе кадр порога не вставляется.
+    Предпочтителен разрез, где обе половины не короче ``SHOT_VO_MIN``.
+    Если такого нет, режем у первого слова: иначе кадр порога не вставляется.
     """
     words = str(text or "").split()
     if len(words) < 2:
@@ -568,9 +568,7 @@ def _split_vo(text: str) -> tuple[str, str] | None:
         score = abs(visible_len(a) - total // 2)
         if best is None or (rank, score) < best[:2]:
             best = (rank, score, cut)
-    if best is None:
-        return None
-    cut = best[2]
+    cut = best[2] if best is not None else 1
     return " ".join(words[:cut]), " ".join(words[cut:])
 
 

@@ -2551,6 +2551,8 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     last: dict[str, Any] = {}
     envelope_err: GptApiError | None = None
     saw_done = False
+    saw_delta_text = False
+    saw_message_only = False
     for raw in lines:
         line = (raw or "").strip()
         if line in {"data: [DONE]", "data:[DONE]"}:
@@ -2572,14 +2574,22 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
         fr = first.get("finish_reason")
         if isinstance(fr, str) and fr:
             finish = fr
+        delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+        delta_piece = delta.get("content") if isinstance(delta.get("content"), str) else ""
         piece = _choice_text_piece(first)
         if piece:
             chunks.append(piece)
+            if delta_piece:
+                saw_delta_text = True
+            else:
+                saw_message_only = True
     text = "".join(chunks)
     if envelope_err and not text.strip():
         raise envelope_err
     if not finish:
-        finish = "stop"
+        # Дельта с текстом без finish_reason — завершённый кусок (дефолт stop).
+        # Текст только из message и без [DONE] — обрыв, не stop.
+        finish = "stream_partial" if saw_message_only and not saw_delta_text and not saw_done else "stop"
     out = dict(last) if last else {}
     out["_sse_done"] = saw_done
     return text, finish, out
