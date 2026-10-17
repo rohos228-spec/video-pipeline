@@ -98,7 +98,19 @@ def _backup_artifact_file_before_wipe(
     dest_dir = project.data_dir / "old" / _backup_subdir(path, kind)
     dest_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest = dest_dir / f"{ts}_{path.name}"
+    first = dest_dir / f"{ts}_{path.name}"
+    dest = first
+    suffix = 2
+    while dest.exists():
+        dest = dest_dir / f"{ts}_{suffix}_{path.name}"
+        suffix += 1
+    if dest != first:
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} уже есть, копия записана в {}",
+            project.id,
+            first.name,
+            dest.name,
+        )
     try:
         if not _verified_file_copy(path, dest):
             return None
@@ -944,11 +956,29 @@ async def _wipe_sfx_plan(session: AsyncSession, project: Project) -> dict[str, A
 
 
 def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
-    """Перенос каталога в old/<sub>/<ts> после проверки размера каждого файла."""
+    """Перенос каталога в old/<sub>/<ts> после проверки размера каждого файла.
+
+    Если каталог с этой секундой уже есть, пишем в соседнее имя. Чужой
+    архив при ошибке не удаляется.
+    """
     if not src.is_dir():
         return None
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest = project.data_dir / "old" / sub / ts
+    parent = project.data_dir / "old" / sub
+    first = parent / ts
+    dest = first
+    suffix = 2
+    while dest.exists():
+        dest = parent / f"{ts}_{suffix}"
+        suffix += 1
+    if dest != first:
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} уже есть, каталог записан в {}",
+            project.id,
+            first.name,
+            dest.name,
+        )
+    existed_before = dest.exists()
     try:
         shutil.copytree(src, dest)
         for path in src.rglob("*"):
@@ -965,7 +995,7 @@ def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
             src,
             e,
         )
-        if dest.exists():
+        if dest.exists() and not existed_before:
             shutil.rmtree(dest, ignore_errors=True)
         return None
     logger.info("[#{}] reset_step: {} → {}", project.id, src, dest)
