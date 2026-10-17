@@ -295,6 +295,8 @@ export function OrchestratorWorkspace() {
                   onClose={() => chat.dismissBlock(approval.id)}
                   onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, decision)}
                   onPaidGrant={() => chat.confirmPaidRestart(approval.id)}
+                  projectBind={chat.contractR34}
+                  onBindProject={(raw) => chat.bindProject(approval.id, approval.taskId, raw)}
                 />
               ))}
             </div>
@@ -639,6 +641,8 @@ function ApprovalCard({
   onClose,
   onPaidDecision,
   onPaidGrant,
+  projectBind,
+  onBindProject,
 }: {
   approval: ApprovalView;
   pending: boolean;
@@ -648,6 +652,8 @@ function ApprovalCard({
   onClose: () => void;
   onPaidDecision: (decision: PaidOutcomeDecision) => Promise<PaidOutcomeDecisionResult>;
   onPaidGrant: () => Promise<PaidOutcomeDecisionResult | null>;
+  projectBind: boolean;
+  onBindProject: (raw: string) => void;
 }) {
   const [retryReady, setRetryReady] = useState(false);
   const [retryForecast, setRetryForecast] = useState<number | null>(null);
@@ -688,6 +694,9 @@ function ApprovalCard({
         {title}
       </div>
       {body ? <p className="mt-1 text-[11px] leading-relaxed text-white/70">{body}</p> : null}
+      {projectBind && approval.reason === MISSING_PROJECT ? (
+        <ProjectBindForm pending={pending} onSubmit={onBindProject} />
+      ) : null}
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}
         {approval.risk ? ` · ${approval.risk}` : ""}
@@ -782,6 +791,33 @@ function ApprovalCard({
         </p>
       ) : null}
     </div>
+  );
+}
+
+function ProjectBindForm({ pending, onSubmit }: { pending: boolean; onSubmit: (raw: string) => void }) {
+  const [value, setValue] = useState("");
+  return (
+    <form
+      className="mt-2 flex flex-wrap items-center gap-2"
+      data-testid="orch-project-bind"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit(value);
+      }}
+    >
+      <Input
+        data-testid="orch-project-id"
+        inputMode="numeric"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder="project_id"
+        aria-label="project_id"
+        className="h-8 w-28 text-xs"
+      />
+      <Button type="submit" size="sm" data-testid="orch-project-submit" disabled={pending}>
+        Привязать проект
+      </Button>
+    </form>
   );
 }
 

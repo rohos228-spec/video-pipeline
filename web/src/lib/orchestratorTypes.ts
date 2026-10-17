@@ -597,6 +597,24 @@ export interface OrchOutboundMessage {
   kill_switch?: boolean;
 }
 
+/**
+ * POST /api/orchestrator/chat/{session}/project (ws3-r3.4).
+ * `project_id` — целое ≥ 1. `task_id` необязателен: нет поля — активная задача.
+ */
+export interface OrchProjectBindRequest {
+  project_id: number;
+  task_id?: number;
+}
+
+/** 200 bind project. Задачу выполненной по одному HTTP не считаем. */
+export interface OrchProjectBindResult {
+  ok: true;
+  session: string;
+  task_id: number;
+  project_id: number;
+  status: string;
+}
+
 /** Ответ post_message: ack уходит в шину, HTTP его не ждёт. */
 export interface OrchMessageAckHttp {
   ok: boolean;

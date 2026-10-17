@@ -9,6 +9,10 @@ import {
   orchAuthHeaders,
   orchKillMessageBody,
   orchKillUsesMessageField,
+  parseOrchProjectId,
+  PROJECT_BIND_CONFLICT,
+  PROJECT_BIND_INVALID,
+  PROJECT_BIND_VALIDATION,
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
@@ -189,6 +193,16 @@ test("kill_switch уходит полем только на контракте w
   }
   expect(orchKillMessageBody()).toEqual({ text: "останови генерацию", kill_switch: true });
   expect(Object.keys(orchKillMessageBody())).toEqual(["text", "kill_switch"]);
+});
+
+test("project_id клиента — целое от 1", () => {
+  expect(parseOrchProjectId("13")).toBe(13);
+  expect(parseOrchProjectId("1")).toBe(1);
+  expect(parseOrchProjectId("0")).toBeNull();
+  expect(parseOrchProjectId("-1")).toBeNull();
+  expect(parseOrchProjectId("1.5")).toBeNull();
+  expect(parseOrchProjectId("")).toBeNull();
+  expect(parseOrchProjectId("01")).toBeNull();
 });
 
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
@@ -1016,7 +1030,64 @@ test.describe("orchestrator chat", () => {
     );
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-project-bind")).toHaveCount(0);
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("missing_project_id: project_id ≥ 1 закрывает карточку, 0 не уходит", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/project(?:\?|$)/.test(req.url())) {
+        posts.push({ url: req.url(), body: req.postDataJSON() });
+      }
+    });
+    await openWithContract(page, "missingproject", "project-bind-1");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-project-bind")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    const field = page.getByTestId("orch-project-id");
+    await field.fill("0");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_INVALID);
+    await field.fill("-3");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_INVALID);
+    expect(posts).toEqual([]);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await field.fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-missing-project")).toHaveCount(0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.url).toContain("/api/orchestrator/chat/project-bind-1/project");
+    expect(posts[0]?.body).toEqual({ project_id: 13, task_id: 1 });
+  });
+
+  test("missing_project_id: 422 и 409 остаются на карточке, 401 — авторизация", async ({ page }) => {
+    await openWithContract(page, "project422", "project-422");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_VALIDATION);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+
+    await openWithContract(page, "project409", "project-409");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toHaveText(PROJECT_BIND_CONFLICT);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+
+    await openWithContract(page, "project401", "project-401");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-token-gate")).toBeVisible();
+    await expect(page.getByTestId("orch-token-error")).toContainText("401");
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
   });
 
   test("deletion_blocked: нет кнопки одобрить и grant не уходит", async ({ page }) => {

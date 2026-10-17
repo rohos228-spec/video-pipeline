@@ -7,6 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget | boundary | boundaryreplay
  *   | killfield | killfieldfalse | killfieldlate | killfieldhang | killfield401
+ *   | project422 | project409 | project401
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
@@ -869,7 +870,12 @@ function startScenario(session, scenario, text, mode) {
     emit(session, "ack", id, ackPayload(session));
     return;
   }
-  if (scenario === "missingproject") {
+  if (
+    scenario === "missingproject" ||
+    scenario === "project422" ||
+    scenario === "project409" ||
+    scenario === "project401"
+  ) {
     void runMissingProject(session, id);
     return;
   }
@@ -1602,6 +1608,47 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "approve") {
     await handleChatApprove(req, res, url, decodeURIComponent(parts[3]));
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "project") {
+    const body = await readBody(req);
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const scenario = scenarioOf(req, url);
+    if (scenario === "project401") {
+      sendJson(res, 401, { detail: "unauthorized" });
+      return;
+    }
+    const extra = Object.keys(body).filter((key) => key !== "project_id" && key !== "task_id");
+    const projectId = body.project_id;
+    const taskRaw = body.task_id;
+    const projectOk = typeof projectId === "number" && Number.isInteger(projectId) && projectId >= 1;
+    const taskOk = taskRaw == null || (typeof taskRaw === "number" && Number.isInteger(taskRaw) && taskRaw >= 1);
+    if (extra.length > 0 || !projectOk || !taskOk || scenario === "project422") {
+      sendJson(res, 422, { detail: "project unprocessable" });
+      return;
+    }
+    if (scenario === "project409") {
+      sendJson(res, 409, { detail: "not missing_project_id" });
+      return;
+    }
+    const taskId = taskRaw == null ? session.currentTaskId : taskRaw;
+    sendJson(res, 200, {
+      ok: true,
+      session: session.id,
+      task_id: taskId,
+      project_id: projectId,
+      status: "executing",
+    });
+    if (taskId != null) {
+      emit(session, "agent_status", taskId, {
+        agent: "supervisor",
+        status: "running",
+        task_status: "executing",
+        title: "Платный шаг",
+        detail: "project bound",
+      });
+    }
     return;
   }
 

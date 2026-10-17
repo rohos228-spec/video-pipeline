@@ -30,6 +30,8 @@ import type {
   OrchKillResult,
   OrchMessageAckHttp,
   OrchOutboundMessage,
+  OrchProjectBindRequest,
+  OrchProjectBindResult,
   OrchReportsRow,
   OrchReportVersionsRow,
 } from "./orchestratorTypes";
@@ -96,6 +98,68 @@ export function orchKillUsesMessageField(search?: string): boolean {
 /** Тело кнопки kill на r3.4. Фразу «kill switch» не подмешиваем: стоп делает поле. */
 export function orchKillMessageBody(): OrchOutboundMessage {
   return { text: "останови генерацию", kill_switch: true };
+}
+
+/** Тот же признак контракта, что и у поля kill: форма project_id только на ws3-r3.4. */
+export function orchContractIsR34(search?: string): boolean {
+  return orchKillUsesMessageField(search);
+}
+
+/** Целое ≥ 1. Ноль, минус, дробь и пустая строка не уходят на сервер. */
+export function parseOrchProjectId(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^[1-9]\d*$/.test(text)) return null;
+  const id = Number(text);
+  if (!Number.isSafeInteger(id) || id < 1) return null;
+  return id;
+}
+
+export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
+export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
+export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";
+
+function readProjectBind(value: unknown): OrchProjectBindResult {
+  if (!value || typeof value !== "object") {
+    throw new OrchApiError(200, "пустой ответ project");
+  }
+  const row = value as Record<string, unknown>;
+  const projectId = row.project_id;
+  const taskId = row.task_id;
+  if (
+    row.ok !== true ||
+    typeof row.session !== "string" ||
+    !row.session ||
+    typeof taskId !== "number" ||
+    !Number.isInteger(taskId) ||
+    typeof projectId !== "number" ||
+    !Number.isInteger(projectId) ||
+    projectId < 1 ||
+    typeof row.status !== "string" ||
+    !row.status
+  ) {
+    throw new OrchApiError(200, "ответ project неполный");
+  }
+  return {
+    ok: true,
+    session: row.session,
+    task_id: taskId,
+    project_id: projectId,
+    status: row.status,
+  };
+}
+
+export async function postOrchProject(
+  cfg: OrchClientConfig,
+  body: OrchProjectBindRequest,
+  signal?: AbortSignal,
+): Promise<OrchProjectBindResult> {
+  const raw = await postJson<unknown>(
+    cfg,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+    body,
+    signal,
+  );
+  return readProjectBind(raw);
 }
 
 /**
