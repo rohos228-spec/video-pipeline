@@ -37,8 +37,8 @@ import {
   type OrchReportVersionsRow,
 } from "./orchestratorTypes";
 
-/** #358: ws3-r3.3.1 добавляет approval_decided и не ломает провод r3.3. */
-const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1"] as const;
+/** #358/#367: r3.3, r3.3.1 и флаг r3.4. Чужая версия предупреждает один раз. */
+const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1", "ws3-r3.4"] as const;
 
 export function acceptsOrchContractVersion(version: string): boolean {
   return (ACCEPTED_ORCH_CONTRACT_VERSIONS as readonly string[]).includes(version);
@@ -51,7 +51,7 @@ export function noteOrchContractVersion(version: string): void {
   if (!version || acceptsOrchContractVersion(version)) return;
   if (contractVersionWarned) return;
   contractVersionWarned = true;
-  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1: ${version}`);
+  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1 / ws3-r3.4: ${version}`);
 }
 
 noteOrchContractVersion(ORCH_CONTRACT_VERSION);

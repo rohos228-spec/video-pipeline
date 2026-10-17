@@ -11,6 +11,7 @@ import {
   orchAuthHeaders,
   orchKillMessageBody,
   orchKillUsesMessageField,
+  orchContractIsR34,
   parseOrchProjectId,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_INVALID,
@@ -42,7 +43,7 @@ test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупрежд�
   expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
   expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);
   expect(acceptsOrchContractVersion(ORCH_CONTRACT_VERSION)).toBe(true);
-  expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(false);
+  expect(acceptsOrchContractVersion("ws3-r3.4.1")).toBe(false);
   expect(ORCH_EVENT_TYPES).toContain("approval_decided");
   const warnings: string[] = [];
   const original = console.warn;
@@ -310,6 +311,30 @@ test("kill_switch уходит полем только на контракте w
   }
   expect(orchKillMessageBody()).toEqual({ text: "останови генерацию", kill_switch: true });
   expect(Object.keys(orchKillMessageBody())).toEqual(["text", "kill_switch"]);
+});
+
+test("флаг r3.4 принимает ws3-r3.4 и не предупреждает", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    expect(orchContractIsR34("?orchContract=ws3-r3.4")).toBe(true);
+    expect(orchContractIsR34("?orchContract=ws3-r3.4.1")).toBe(false);
+    expect(orchContractIsR34("?orchContract=ws3-r3.3.1")).toBe(false);
+    process.env.NEXT_PUBLIC_ORCH_CONTRACT = "ws3-r3.4";
+    expect(orchContractIsR34("")).toBe(true);
+    expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(true);
+    noteOrchContractVersion("ws3-r3.4");
+    expect(warnings).toEqual([]);
+  } finally {
+    console.warn = original;
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+  }
 });
 
 test("project_id клиента — целое от 1", () => {
