@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | streamhold | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -261,6 +261,40 @@ async function runStream(session, taskId) {
   });
   emit(session, "agent_status", taskId, { agent: "executor", status: "idle", detail: "" });
   emit(session, "task_done", taskId, { summary: "Готово: раскадровка собрана." });
+}
+
+async function runStreamHold(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  if (session.killed || session.interrupted) return;
+  emit(session, "classification", taskId, {
+    mode: "append",
+    deterministic: true,
+    detail: "поток держится",
+  });
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: "Долгий поток",
+    detail: "стрим",
+  });
+  for (let i = 0; i < 24; i += 1) {
+    if (session.killed || session.interrupted) return;
+    emit(session, "token", taskId, { text: "ДЕРЖУ-ПОТОК " });
+    await sleep(50);
+  }
+  if (session.killed || session.interrupted) return;
+  emit(session, "token", taskId, { text: "КОНЕЦ-ПОТОКА" });
+}
+
+function runStreamHoldFollowup(session, taskId, text) {
+  emit(session, "ack", taskId, { text, accepted: true });
+  emit(session, "classification", taskId, {
+    mode: "append",
+    deterministic: true,
+    detail: "добавка, поток не трогается",
+  });
 }
 
 async function runInterruptStart(session, taskId) {
@@ -706,6 +740,10 @@ function startScenario(session, scenario, text, mode) {
     runInterruptFollowup(session, session.currentTaskId, text);
     return;
   }
+  if (scenario === "streamhold" && session.messageCount > 1) {
+    runStreamHoldFollowup(session, session.currentTaskId, text);
+    return;
+  }
   session.taskSeq = (session.taskSeq || 0) + 1;
   session.currentTaskId = session.taskSeq;
   const id = session.currentTaskId;
@@ -713,6 +751,10 @@ function startScenario(session, scenario, text, mode) {
   session.interrupted = false;
   if (scenario === "interrupt") {
     void runInterruptStart(session, id);
+    return;
+  }
+  if (scenario === "streamhold") {
+    void runStreamHold(session, id);
     return;
   }
   if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409") {

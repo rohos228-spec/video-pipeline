@@ -1,0 +1,81 @@
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+const TOKEN = "orch-dev-token";
+const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
+
+function orchUrl(scenario: string, session: string): string {
+  const q = new URLSearchParams({ scenario, session });
+  return `/orchestrator?${q.toString()}`;
+}
+
+async function openWithToken(page: Page, scenario: string, session: string) {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  await page.goto(orchUrl(scenario, session));
+  await expect(page.getByTestId("orch-composer")).toBeVisible();
+}
+
+function trackPosts(page: Page, needle: string) {
+  const bodies: { text?: string }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes(needle)) return;
+    try {
+      bodies.push(req.postDataJSON() as { text?: string });
+    } catch {
+      bodies.push({});
+    }
+  });
+  return bodies;
+}
+
+async function tabUntil(page: Page, target: Locator, steps = 20) {
+  for (let i = 0; i < steps; i += 1) {
+    if (await target.evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
+}
+
+async function tabTo(page: Page, target: Locator) {
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await tabUntil(page, target, 80);
+}
+
+async function expectFocusVisible(target: Locator) {
+  await expect(target).toBeFocused();
+  const shadow = await target.evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(shadow).not.toBe("none");
+  expect(shadow.replace(/\s/g, "")).not.toBe("");
+}
+
+test("клавиатура: Enter во время стрима шлёт одно сообщение", async ({ page }) => {
+  const posts = trackPosts(page, "/message");
+  await openWithToken(page, "streamhold", "kbd-stream");
+  const composer = page.getByTestId("orch-composer");
+  await composer.focus();
+  await page.keyboard.type("старт потока");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]?.text).toBe("старт потока");
+  await expect(composer).toHaveValue("");
+  const assistant = page.getByTestId("orch-assistant");
+  await expect(assistant).toContainText("ДЕРЖУ-ПОТОК");
+  const mid = (await assistant.innerText()).length;
+
+  await composer.focus();
+  await page.keyboard.type("добавка посреди");
+  await page.keyboard.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1]?.text).toBe("добавка посреди");
+  await expect(assistant).toContainText("КОНЕЦ-ПОТОКА");
+  expect((await assistant.innerText()).length).toBeGreaterThan(mid);
+  expect(posts).toHaveLength(2);
+});
