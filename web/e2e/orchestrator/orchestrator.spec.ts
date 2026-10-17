@@ -286,6 +286,63 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
   });
 
+  test("kill: таймаут запроса показывает ошибку и повтор", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-timeout");
+    let release = () => {};
+    const hang = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await hang;
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => undefined);
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error", { timeout: 20_000 });
+    await expect(banner).toContainText("Нет подтверждения остановки");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+    release();
+  });
+
+  test("kill: 401 показывает ошибку и повтор", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-401");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "unauthorized" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("401");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+  });
+
+  test("kill: ответ без stop_key_set показывает ошибку и повтор", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-nokey");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, status: "cancelled" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("В ответе нет stop_key_set");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+  });
+
   test("план: риск, стоимость и параллельные read-only", async ({ page }) => {
     await openWithToken(page, "plan", "plan-1");
     await page.getByTestId("orch-composer").fill("составь план");
