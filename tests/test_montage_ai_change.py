@@ -627,3 +627,29 @@ async def test_run_op_image_ai_change_passes_instruction(
     assert rewrite.await_args.kwargs["action"] == "рука выводит строки"
     assert rewrite.await_args.kwargs.get("camera") == {}
     assert rewrite.await_args.kwargs.get("coverage_role") == ""
+
+
+def test_ai_change_prompt_skips_inactive_shot() -> None:
+    """В карточку ИИ уходит живой шот. Хранилище кадры[] не переписывается."""
+    from types import SimpleNamespace
+
+    from app.services.montage_ai_change import _pin_ai_change_shot_action
+
+    stored = [
+        {"id": "dead", "действие": "МЁРТВЫЙ ШАГ", "активен": False},
+        {"id": "live", "действие": "живой шаг"},
+    ]
+    frame = SimpleNamespace(
+        number=1,
+        attrs={
+            "camera_subdivide": {"shot_id": "live"},
+            "кадры": stored,
+        },
+    )
+    ctx = {"frames": [{"кадры": [dict(item) for item in stored]}]}
+    _pin_ai_change_shot_action(ctx, frame)
+    sent = ctx["frames"][0]["кадры"]
+    assert [item["id"] for item in sent] == ["live"]
+    assert "МЁРТВЫЙ" not in str(sent)
+    assert len(stored) == 2
+    assert stored[0]["активен"] is False
