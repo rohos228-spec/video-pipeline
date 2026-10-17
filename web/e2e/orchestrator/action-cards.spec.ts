@@ -1,5 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import { EXAMPLE_NODE_CREATE, EXAMPLE_NODE_EDIT, EXAMPLE_PARAMS_EDIT, EXAMPLE_PROMPT_EDIT, lineDiff } from "../../src/lib/orchestratorActionCards";
+import {
+  EXAMPLE_NODE_CREATE,
+  EXAMPLE_NODE_EDIT,
+  EXAMPLE_PARAMS_EDIT,
+  EXAMPLE_PROMPT_EDIT,
+  EXAMPLE_REPORT,
+  lineDiff,
+} from "../../src/lib/orchestratorActionCards";
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
@@ -68,4 +75,37 @@ test("карточка правки: дифф текстом, создание �
   const temperature = params.getByTestId("orch-field-row").filter({ hasText: "temperature" });
   await expect(temperature).toContainText("было 0.2");
   await expect(temperature).toContainText("стало 0.4");
+});
+
+test("html-отчёт: sandbox без скриптов, правка шлёт один запрос", async ({ page }) => {
+  await openWithToken(page, "act-report");
+  await emit(page, "act-report", "step_finished", EXAMPLE_REPORT);
+  const card = page.getByTestId("orch-action-card");
+  const frame = card.getByTestId("orch-action-report");
+  await expect(frame).toBeVisible();
+  const access = await frame.evaluate((el) => {
+    const iframe = el as HTMLIFrameElement;
+    return {
+      sandbox: iframe.getAttribute("sandbox"),
+      readable: iframe.contentDocument !== null,
+    };
+  });
+  expect(access.sandbox ?? "").not.toContain("allow-scripts");
+  expect(access.sandbox ?? "").not.toContain("allow-same-origin");
+  expect(access.readable).toBe(false);
+  const posts: { text?: string; action?: { name?: string; report_id?: string; change_id?: string } }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes("/message")) return;
+    posts.push(req.postDataJSON());
+  });
+  await page.getByTestId("orch-report-edit").click();
+  expect(posts).toHaveLength(0);
+  await page.getByTestId("orch-report-instruction").fill("убери скрипт");
+  await page.getByTestId("orch-report-send").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toEqual({
+    text: "убери скрипт",
+    action: { name: "report.edit", report_id: "rpt-1", change_id: "chg-report-1" },
+  });
+  await expect(page.getByTestId("orch-report-send")).toBeDisabled();
 });

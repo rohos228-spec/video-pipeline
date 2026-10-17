@@ -1,7 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { fieldDiff, lineDiff, openStudioNode, type ActionResultView } from "@/lib/orchestratorActionCards";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  fieldDiff,
+  lineDiff,
+  openStudioNode,
+  type ActionResultView,
+} from "@/lib/orchestratorActionCards";
 
 const CARD = "mb-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2";
 
@@ -84,9 +91,30 @@ function Fields({
   );
 }
 
-export function ActionResultCard({ result }: { result: ActionResultView }) {
+export function ActionResultCard({
+  result,
+  onReportEdit,
+}: {
+  result: ActionResultView;
+  onReportEdit: (reportId: string, instruction: string, changeId: string | null) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
   const hideBefore = result.kind === "create";
   const fields = result.beforeFields || result.afterFields;
+
+  const sendEdit = async () => {
+    if (!result.reportId || busy || sent || !instruction.trim()) return;
+    setBusy(true);
+    try {
+      const ok = await onReportEdit(result.reportId, instruction, result.changeId);
+      if (ok) setSent(true);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className={CARD} data-testid="orch-action-card" data-action={result.action} data-kind={result.kind}>
@@ -97,8 +125,57 @@ export function ActionResultCard({ result }: { result: ActionResultView }) {
         {result.metadata.destructive ? " · деструктивно" : ""}
         {result.metadata.risk ? ` · риск ${result.metadata.risk}` : ""}
       </div>
-      {fields ? <Fields before={result.beforeFields} after={result.afterFields} hideBefore={hideBefore} /> : <TextDiff before={result.beforeText} after={result.afterText} hideBefore={hideBefore} />}
+      {result.kind === "report" && result.html != null ? (
+        <iframe
+          title="Превью отчёта"
+          data-testid="orch-action-report"
+          sandbox=""
+          srcDoc={result.html}
+          className="mt-2 h-40 w-full rounded-md border border-white/[0.08] bg-white"
+        />
+      ) : fields ? (
+        <Fields before={result.beforeFields} after={result.afterFields} hideBefore={hideBefore} />
+      ) : (
+        <TextDiff before={result.beforeText} after={result.afterText} hideBefore={hideBefore} />
+      )}
       <NodeLink result={result} />
+      {result.kind === "report" && result.reportId ? (
+        <div className="mt-2">
+          {editing ? (
+            <div className="space-y-2">
+              <Textarea
+                data-testid="orch-report-instruction"
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="Что поправить в отчёте"
+                className="min-h-[64px] text-xs"
+                rows={2}
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 text-[11px]"
+                data-testid="orch-report-send"
+                disabled={busy || sent || !instruction.trim()}
+                onClick={() => void sendEdit()}
+              >
+                {sent ? "Отправлено" : "Отправить правку"}
+              </Button>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              data-testid="orch-report-edit"
+              onClick={() => setEditing(true)}
+            >
+              Править
+            </Button>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -221,6 +221,15 @@ export function postOrchMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
+/** Предварительное тело правки отчёта: text + action.report_id. Схема WS2 ещё не зафиксирована. */
+export function postOrchActionMessage(
+  cfg: OrchClientConfig,
+  body: { text: string; action: { name: string; report_id: string; change_id?: string } },
+  signal?: AbortSignal,
+): Promise<OrchMessageAckHttp> {
+  return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
+}
+
 export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
   return postJson(
     cfg,

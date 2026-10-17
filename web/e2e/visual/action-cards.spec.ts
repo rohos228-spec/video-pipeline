@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { EXAMPLE_PROMPT_EDIT } from "../../src/lib/orchestratorActionCards";
+import { EXAMPLE_PROMPT_EDIT, EXAMPLE_REPORT } from "../../src/lib/orchestratorActionCards";
 import { installFrozenClock, settleVisual } from "./studio-mock";
 
 const TOKEN = "orch-dev-token";
@@ -31,4 +31,9 @@ async function show(page: import("@playwright/test").Page, session: string, payl
 test("снимок карточки промта", async ({ page }) => {
   await show(page, "visual-prompt", EXAMPLE_PROMPT_EDIT);
   await expect(page.getByTestId("orch-action-card")).toHaveScreenshot("action-prompt.png");
+});
+
+test("снимок карточки отчёта", async ({ page }) => {
+  await show(page, "visual-report", EXAMPLE_REPORT);
+  await expect(page.getByTestId("orch-action-card")).toHaveScreenshot("action-report.png");
 });

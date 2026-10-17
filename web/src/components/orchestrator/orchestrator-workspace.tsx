@@ -268,7 +268,7 @@ export function OrchestratorWorkspace() {
                   .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
               )}
               {chat.state.actionResults.map((result) => (
-                <ActionResultCard key={result.id} result={result} />
+                <ActionResultCard key={result.id} result={result} onReportEdit={chat.sendReportEdit} />
               ))}
               {openApprovals.map((approval) => (
                 <ApprovalCard

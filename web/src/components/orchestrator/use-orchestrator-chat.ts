@@ -8,6 +8,7 @@ import {
   OrchApiError,
   postOrchApprove,
   postOrchKill,
+  postOrchActionMessage,
   postOrchMessage,
   readOrchProjectId,
   postOrchReject,
@@ -18,6 +19,7 @@ import {
   writeOrchToken,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
+import { reportEditBody } from "@/lib/orchestratorActionCards";
 import {
   initialOrchScreen,
   reduceOrchScreen,
@@ -202,6 +204,30 @@ export function useOrchestratorChat() {
     [blocked, cfg, noteAuth, state.messages.length, token],
   );
 
+  const sendReportEdit = useCallback(
+    async (reportId: string, instruction: string, changeId: string | null) => {
+      const body = reportEditBody(reportId, instruction, changeId);
+      if (!body.text || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-report-${reportId}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "правка отчёта не ушла");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
@@ -320,6 +346,7 @@ export function useOrchestratorChat() {
     state: state as OrchScreenState,
     submitToken,
     sendMessage,
+    sendReportEdit,
     decide,
     dismissBlock,
     kill,
