@@ -19,6 +19,7 @@ import {
   type TaskStatus,
   type ValidatorResultPayload,
 } from "./orchestratorTypes";
+import { resolveKillHonesty, type ActionRegistryState } from "./orchestratorActionMetadata";
 
 const NODE_RESULT_ACTIONS = new Set([
   "get_node",
@@ -204,6 +205,8 @@ export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
   paidBoundary: boolean;
+  /** Имени нет в реестре: шаг считаем и платным, и разрушающим. */
+  destructive: boolean;
   /** stopping — запрос ушёл; stopped — stop_key_set; error — отказ; unconfirmed — задача отменена без ключа. */
   phase: KillPhase;
   /** Задача, которую останавливали. Чужой task_id баннер не двигает. */
@@ -219,6 +222,8 @@ export interface OrchScreenState {
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
+  /** Реестр действий. loading — ещё не спрашивали. missing — список недоступен. */
+  actionRegistry: ActionRegistryState;
 }
 
 export type OrchScreenAction =
@@ -228,10 +233,12 @@ export type OrchScreenAction =
       type: "kill-notice";
       detail: string;
       paidBoundary: boolean;
+      destructive?: boolean;
       phase: KillPhase;
       taskId?: string | null;
       sessionId?: string | null;
     }
+  | { type: "registry"; registry: ActionRegistryState }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
 
@@ -250,6 +257,7 @@ export function initialOrchScreen(): OrchScreenState {
     ack: null,
     classification: null,
     killNotice: null,
+    actionRegistry: { status: "loading" },
   };
 }
 
@@ -356,6 +364,7 @@ function markKill(
   text: string,
   paidBoundary: boolean,
   target?: { taskId: string | null; sessionId: string | null },
+  destructive?: boolean,
 ): void {
   const current = next.killNotice;
   if (current?.phase === "stopped" && phase !== "stopped") return;
@@ -364,6 +373,7 @@ function markKill(
     phase,
     text,
     paidBoundary,
+    destructive: destructive ?? current?.destructive ?? false,
     taskId: target?.taskId ?? current?.taskId ?? null,
     sessionId: target?.sessionId ?? current?.sessionId ?? null,
   };
@@ -400,6 +410,7 @@ function noteTaskCancelled(next: OrchScreenState, event: OrchEvent): void {
     phase: "unconfirmed",
     text: "Задача отменена, стоп-ключ не подтверждён.",
     paidBoundary: false,
+    destructive: notice.destructive,
     taskId: notice.taskId,
     sessionId: notice.sessionId,
   };
@@ -478,8 +489,13 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
   });
 }
 
+function killHonestyOf(state: OrchScreenState) {
+  const steps = state.tasks.flatMap((task) => task.steps);
+  return resolveKillHonesty(steps, state.actionRegistry);
+}
+
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
-  if (action.type === "reset") return initialOrchScreen();
+  if (action.type === "reset") return { ...initialOrchScreen(), actionRegistry: state.actionRegistry };
   if (action.type === "user-message") {
     return {
       ...state,
@@ -497,11 +513,15 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       killNotice: {
         text: action.detail,
         paidBoundary: action.paidBoundary,
+        destructive: action.destructive ?? state.killNotice?.destructive ?? false,
         phase: action.phase,
         taskId: action.taskId ?? state.killNotice?.taskId ?? null,
         sessionId: action.sessionId ?? state.killNotice?.sessionId ?? null,
       },
     };
+  }
+  if (action.type === "registry") {
+    return { ...state, actionRegistry: action.registry };
   }
   if (action.type === "approval-resolved") {
     return {
@@ -563,6 +583,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       };
       if (killSwitch) {
         noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
+        const honesty = killHonestyOf(next);
+        if (next.killNotice && next.killNotice.phase === "stopping") {
+          next.killNotice = {
+            ...next.killNotice,
+            paidBoundary: honesty.paidBoundary,
+            destructive: honesty.destructive,
+          };
+        }
       }
     }
     absorbLlmSignal(next, taskId, payload, event.seq);

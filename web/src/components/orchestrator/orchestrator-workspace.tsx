@@ -213,9 +213,17 @@ export function OrchestratorWorkspace() {
         <div
           data-testid="orch-kill-status"
           data-kill-phase={chat.state.killNotice.phase}
+          data-paid-boundary={chat.state.killNotice.paidBoundary ? "true" : "false"}
+          data-destructive={chat.state.killNotice.destructive ? "true" : "false"}
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
+          {chat.state.killNotice.destructive ? (
+            <span data-testid="orch-kill-destructive">
+              {" "}
+              Реестр не знает действие: считаем его платным и разрушающим.
+            </span>
+          ) : null}
           {chat.state.killNotice.phase === "error" ? (
             <Button
               type="button"

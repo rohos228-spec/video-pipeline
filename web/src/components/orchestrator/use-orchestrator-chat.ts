@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { loadActionRegistry, resolveKillHonesty } from "@/lib/orchestratorActionMetadata";
 import {
   consumeOrchStream,
   isAbortError,
@@ -121,7 +122,29 @@ export function useOrchestratorChat() {
       }
     };
 
-    void loop();
+    const boot = async () => {
+      let actions: Awaited<ReturnType<typeof loadActionRegistry>> = null;
+      try {
+        actions = await loadActionRegistry(cfg);
+      } catch (error) {
+        if (stopped || ac.signal.aborted) return;
+        if (error instanceof OrchApiError && error.status === 401) {
+          setAuthError(error.message);
+          setBlocked(true);
+          setConn("idle");
+          return;
+        }
+        actions = null;
+      }
+      if (stopped) return;
+      dispatch({
+        type: "registry",
+        registry: actions ? { status: "ready", actions } : { status: "missing" },
+      });
+      await loop();
+    };
+
+    void boot();
     return () => {
       stopped = true;
       ac.abort();
@@ -266,24 +289,50 @@ export function useOrchestratorChat() {
     const taskId = state.tasks.at(-1)?.id ?? null;
     const sessionId = boot.session;
     const notice = { taskId, sessionId };
-    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, phase: "stopping", ...notice });
+    dispatch({
+      type: "kill-notice",
+      detail: "",
+      paidBoundary: true,
+      destructive: false,
+      phase: "stopping",
+      ...notice,
+    });
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), KILL_CONFIRM_MS);
     const fail = (detail: string) => {
-      dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
+      dispatch({
+        type: "kill-notice",
+        detail,
+        paidBoundary: false,
+        destructive: false,
+        phase: "error",
+        ...notice,
+      });
     };
     try {
-      const result = (await postOrchKill(
-        cfg,
-        { session_id: boot.session, reason: "kill switch из чата" },
-        ac.signal,
-      )) as { ok?: boolean; detail?: string; stop_key_set?: boolean } | undefined;
-      const body = result ?? {};
+      const [result, actions] = await Promise.all([
+        postOrchKill(
+          cfg,
+          { session_id: boot.session, reason: "kill switch из чата" },
+          ac.signal,
+        ),
+        loadActionRegistry(cfg).catch((error: unknown) => {
+          if (error instanceof OrchApiError && error.status === 401) throw error;
+          return null;
+        }),
+      ]);
+      const body = (result ?? {}) as { ok?: boolean; detail?: string; stop_key_set?: boolean };
+      const steps = state.tasks.flatMap((task) => task.steps);
+      const honesty = resolveKillHonesty(
+        steps,
+        actions ? { status: "ready", actions } : { status: "missing" },
+      );
       if (body.stop_key_set === true && body.ok !== false) {
         dispatch({
           type: "kill-notice",
           detail: body.detail || "",
-          paidBoundary: true,
+          paidBoundary: honesty.paidBoundary,
+          destructive: honesty.destructive,
           phase: "stopped",
           ...notice,
         });

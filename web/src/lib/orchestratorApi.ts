@@ -12,6 +12,7 @@
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
+import type { ActionMetadataList } from "./orchestratorActionMetadata";
 import type {
   OrchApprovalDecision,
   OrchEvent,
@@ -241,6 +242,11 @@ export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
+}
+
+/** Черновик WS2. 404 списка — реестра ещё нет, клиент падает на step_started.paid. */
+export function getOrchActionMetadata(cfg: OrchClientConfig, signal?: AbortSignal): Promise<ActionMetadataList> {
+  return getJson(cfg, "/api/orchestrator/actions/metadata", signal);
 }
 
 /** Проверка Bearer до записи в localStorage. Тело стрима закрывается сразу после статуса. */
