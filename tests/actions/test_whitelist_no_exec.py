@@ -1527,6 +1527,30 @@ def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
     assert not paths_share_root("/allowed_evil", "/allowed")
 
 
+def _symlinks_available() -> bool:
+    """Windows без права на symlink даёт WinError 1314. Это не падение теста."""
+    if os.name == "nt":
+        return False
+    probe = Path(os.environ.get("TMPDIR", "/tmp")) / f"vp-symlink-probe-{os.getpid()}"
+    try:
+        probe.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(probe / "target"), str(probe / "link"))
+        return True
+    except OSError:
+        return False
+    finally:
+        import shutil
+
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+def test_plain_file_under_reports_stays_allowed(tmp_path: Path) -> None:
+    reports = tmp_path / "data" / "reports"
+    reports.mkdir(parents=True)
+    assert paths_share_root(str(reports / "ok.txt"), str(reports))
+
+
+@pytest.mark.skipif(not _symlinks_available(), reason="symlink недоступен")
 def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> None:
     reports = tmp_path / "data" / "reports"
     outside = tmp_path / "outside"
@@ -1536,7 +1560,6 @@ def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> No
     link.symlink_to(outside, target_is_directory=True)
     escaped = link / "secret.txt"
     assert not paths_share_root(str(escaped), str(reports))
-    assert paths_share_root(str(reports / "ok.txt"), str(reports))
     source = f"def save():\n    open({str(escaped)!r}, 'w')\n"
     hits = analyze_module_source(source, "prompt.save_master")
     assert len(hits) == 1
