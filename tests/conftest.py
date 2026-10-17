@@ -59,6 +59,10 @@ def pytest_configure(config):
     ok, message = _pytest_guard.acquire_run_lock(wait_s=float(os.environ.get("VP_PYTEST_LOCK_WAIT") or 0))
     if not ok:
         raise pytest.UsageError(message)
+    # «прогон без замка»: файл не создан (каталог корня недоступен). Не
+    # объявляем pid держателем, иначе тест замка ищет несуществующий файл.
+    if _pytest_guard.read_holder(_pytest_guard.DEFAULT_LOCK) is None:
+        return
     os.environ[_pytest_guard.HELD_ENV] = str(os.getpid())
     config._vp_run_lock = True
 
