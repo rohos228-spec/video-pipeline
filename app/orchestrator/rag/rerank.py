@@ -76,11 +76,14 @@ class OnnxPairReranker:
         from tokenizers import Tokenizer
 
         from app.orchestrator.rag.embedder import weight_cache_dir
-        from app.orchestrator.rag.onnx_session import make_session_options
+        from app.orchestrator.rag.onnx_session import make_session_options, session_identity
 
         if max_length < 32:
             raise ValueError("max_length слишком мал")
-        self.reranker_id = reranker_id
+        graph = "fp32" if filename == BGE_M3_EVAL_FILE else "q8"
+        self.reranker_id, self.intra_op_threads = session_identity(
+            reranker_id, graph=graph, eval_mode=eval_mode
+        )
         self.max_length = max_length
         self.eval_mode = eval_mode
         cache = weight_cache_dir()

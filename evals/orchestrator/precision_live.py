@@ -23,7 +23,10 @@ import argparse
 import gc
 import json
 import math
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -1196,6 +1199,7 @@ def aggregate_pass_slices(passes: list[dict[str, dict[str, float]]]) -> dict[str
     names = list(passes[0])
     identical = True
     median: dict[str, dict[str, float]] = {}
+    spread: dict[str, dict[str, dict[str, float]]] = {}
     for name in names:
         hits = [item[name]["hit_at_5"] for item in passes]
         ndcgs = [item[name]["ndcg_at_8"] for item in passes]
@@ -1210,11 +1214,17 @@ def aggregate_pass_slices(passes: list[dict[str, dict[str, float]]]) -> dict[str
             "p95_s": _median(latencies),
             "n": passes[0][name]["n"],
         }
+        spread[name] = {
+            "hit_at_5": {"min": min(hits), "max": max(hits), "median": _median(hits)},
+            "ndcg_at_8": {"min": min(ndcgs), "max": max(ndcgs), "median": _median(ndcgs)},
+            "p95_s": {"min": min(latencies), "max": max(latencies), "median": _median(latencies)},
+        }
     return {
         "pass_count": PASS_COUNT,
         "identical": identical,
         "passes": passes,
         "median": median,
+        "spread": spread,
     }
 
 
@@ -1402,8 +1412,7 @@ def render_locked_report(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict[str, Any]:
-    """Три прохода зафиксированного конфига C. Сетки нет."""
+def _remeasure_config() -> dict[str, Any]:
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
         CONTOUR_B_BM25_SCOPE,
@@ -1413,18 +1422,9 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
         CONTOUR_B_RRF_LEXICAL,
         CONTOUR_B_RRF_VECTOR,
     )
-    from evals.orchestrator.label_expand import EXPANDED_PATH
-    from evals.orchestrator.query_split import SPLIT_PATH
 
-    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
-    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
-    dev_ids = list(split["dev"])
-    test_ids = list(split["test"])
-    report_path = out or REPORT_PATH
-    artifact_path = artifact or PASSES_PATH
-    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-det-"))
-    config = {
-        "embedder": "e5-large",
+    return {
+        "embedder": os.environ.get("ORCH_RAG_REMEASURE_EMBEDDER", "e5-large"),
         "reranker": "bge-m3",
         "max_length": CONTOUR_B_RERANK_MAX_LENGTH,
         "rrf_k": CONTOUR_B_RRF_K,
@@ -1437,46 +1437,103 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
         "eval_inter_op": 1,
         "eval_seed": 0,
     }
+
+
+def execute_one_pass(work_dir: Path, *, embedder_kind: str | None = None) -> dict[str, Any]:
+    """Один проход в своём каталоге: новый ``orch_rag.db`` и свой reindex.
+
+    Кэш запроса и корпуса предыдущего прохода сюда не переносится: это другой процесс.
+    """
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.query_split import SPLIT_PATH
+
+    config = _remeasure_config()
+    kind = embedder_kind or str(config["embedder"])
+    work_dir.mkdir(parents=True, exist_ok=True)
+    db_path = work_dir / "orch_rag.db"
+    if db_path.exists():
+        db_path.unlink()
+    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
+    eval_mode = kind != "hashing"
+    embedder = build_embedder(kind, eval_mode=eval_mode)
+    reranker = (
+        build_reranker("bge-m3", max_length=int(config["max_length"]), eval_mode=True)
+        if eval_mode
+        else None
+    )
+    engine = _engine(db_path, embedder, reranker)
     try:
-        embedder = build_embedder("e5-large", eval_mode=True)
-        reranker = build_reranker("bge-m3", max_length=CONTOUR_B_RERANK_MAX_LENGTH, eval_mode=True)
-        engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
-        try:
-            print("reindex start", flush=True)
-            engine.reindex(["rules", "nodes", "prompts"], timeout=900)
-            print("index chunks", len(_index_catalog(engine)), flush=True)
-            passes: list[dict[str, dict[str, float]]] = []
-            for index in range(PASS_COUNT):
-                engine._query_vectors.clear()
-                rows = measure_chunk_rows(
-                    engine,
-                    expanded,
-                    rerank=True,
-                    rrf_k=CONTOUR_B_RRF_K,
-                    rrf_weights=(CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR),
-                    bm25_scope=CONTOUR_B_BM25_SCOPE,
-                    rerank_pool=CONTOUR_B_RERANK_POOL,
-                    aggregate=CONTOUR_B_AGGREGATE,
-                )
-                slices = group_slices(rows, dev_ids, test_ids)
-                passes.append(slices)
-                print(
-                    "PASS",
-                    index,
-                    {
-                        name: {
-                            key: round(slices[name][key], 4)
-                            for key in ("hit_at_5", "ndcg_at_8", "ndcg_doc", "p95_s")
-                        }
-                        for name in ("dev", "test", "all")
-                    },
-                    flush=True,
-                )
-        finally:
-            engine.close()
+        print("reindex start", work_dir, flush=True)
+        engine.reindex(["rules", "nodes", "prompts"], timeout=900)
+        print("index chunks", len(_index_catalog(engine)), "pid", os.getpid(), flush=True)
+        rows = measure_chunk_rows(
+            engine,
+            expanded,
+            rerank=eval_mode,
+            rrf_k=int(config["rrf_k"]),
+            rrf_weights=(float(config["lexical"]), float(config["vector"])),
+            bm25_scope=str(config["bm25_scope"]),
+            rerank_pool=int(config["rerank_pool"]),
+            aggregate=str(config["aggregate"]),
+        )
+        slices = group_slices(rows, list(split["dev"]), list(split["test"]))
+    finally:
+        engine.close()
+    return {
+        "slices": slices,
+        "embedder_id": embedder.embedder_id,
+        "reranker_id": None if reranker is None else reranker.reranker_id,
+        "intra_op": getattr(embedder.inner, "intra_op_threads", None),
+        "inter_op": 1 if eval_mode else None,
+        "db_path": str(db_path.resolve()),
+        "pid": os.getpid(),
+        "fresh_db": True,
+    }
+
+
+def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict[str, Any]:
+    """Три прохода зафиксированного конфига C, каждый в своём процессе. Сетки нет."""
+    report_path = out or REPORT_PATH
+    artifact_path = artifact or PASSES_PATH
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-det-"))
+    config = _remeasure_config()
+    passes: list[dict[str, dict[str, float]]] = []
+    pass_meta: list[dict[str, Any]] = []
+    try:
+        for index in range(PASS_COUNT):
+            work = temp_dir / f"pass-{index}"
+            out_path = work / "pass.json"
+            work.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "evals.orchestrator.precision_live",
+                    "--remeasure-pass",
+                    "--pass-dir",
+                    str(work),
+                    "--pass-out",
+                    str(out_path),
+                ],
+                check=True,
+            )
+            one = json.loads(out_path.read_text(encoding="utf-8"))
+            passes.append(one["slices"])
+            pass_meta.append(
+                {
+                    "embedder_id": one["embedder_id"],
+                    "reranker_id": one["reranker_id"],
+                    "intra_op": one["intra_op"],
+                    "inter_op": one["inter_op"],
+                    "db_path": one["db_path"],
+                    "pid": one["pid"],
+                }
+            )
+            print("PASS", index, "pid", one["pid"], one["embedder_id"], flush=True)
         packed = aggregate_pass_slices(passes)
         acceptance = contour_c_acceptance(packed["median"]["test"]["ndcg_at_8"])
-        payload = {**packed, "config": config, "acceptance": acceptance}
+        payload = {**packed, "pass_meta": pass_meta, "config": config, "acceptance": acceptance}
         write_pass_artifact(artifact_path, payload)
         text = render_locked_report(payload)
         report_path.write_text(text, encoding="utf-8")
@@ -1498,7 +1555,17 @@ def main() -> None:
         action="store_true",
         help="три детерминированных прохода зафиксированного конфига C",
     )
+    parser.add_argument("--remeasure-pass", action="store_true", help="один проход в отдельном процессе")
+    parser.add_argument("--pass-dir", type=Path)
+    parser.add_argument("--pass-out", type=Path)
     args = parser.parse_args()
+    if args.remeasure_pass:
+        if args.pass_dir is None or args.pass_out is None:
+            raise SystemExit("--remeasure-pass требует --pass-dir и --pass-out")
+        payload = execute_one_pass(args.pass_dir)
+        args.pass_out.parent.mkdir(parents=True, exist_ok=True)
+        args.pass_out.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        return
     if args.remeasure:
         run_remeasure(args.out)
         return

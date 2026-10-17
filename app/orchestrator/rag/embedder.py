@@ -123,10 +123,12 @@ class OnnxMultilingualE5:
         from huggingface_hub import hf_hub_download
         from tokenizers import Tokenizer
 
-        from app.orchestrator.rag.onnx_session import make_session_options
+        from app.orchestrator.rag.onnx_session import make_session_options, session_identity
 
-        self.embedder_id = embedder_id
         self.eval_mode = eval_mode
+        self.embedder_id, self.intra_op_threads = session_identity(
+            embedder_id, graph="fp32", eval_mode=eval_mode
+        )
         cache = weight_cache_dir()
         model_path = hf_hub_download(repo, "onnx/model.onnx", cache_dir=str(cache))
         tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
