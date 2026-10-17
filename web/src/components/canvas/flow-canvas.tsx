@@ -1133,7 +1133,7 @@ export function FlowCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView={!canvasGraph?.saved_at}
+        fitView={!savedViewport && !canvasGraph?.saved_at}
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
         minZoom={0.15}
         maxZoom={1.5}
