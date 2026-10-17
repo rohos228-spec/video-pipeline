@@ -95,4 +95,5 @@ class ChatStreamFinish(unittest.IsolatedAsyncioTestCase):
 
     async def test_parse_helper_keeps_its_default_for_other_callers(self):
         text, finish, _ = gpt_api.parse_chat_completions_sse_lines(sse(delta("x")))
-        self.assertEqual((text, finish), ("x", "stop"))
+        # R0a: нет finish и нет [DONE] — это обрыв потока, не stop.
+        self.assertEqual((text, finish), ("x", "stream_partial"))
