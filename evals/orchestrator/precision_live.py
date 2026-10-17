@@ -397,24 +397,31 @@ def _is_rerank_key(key: str) -> bool:
 
 
 class SelectionLeakError(ValueError):
-    """Чётный query_id попал в подбор конфига."""
+    """В подбор попал id вне dev-плюс (live-01..live-50) или holdout."""
 
 
 def require_dev_only(query_ids: list[str]) -> list[str]:
-    """Подбор принимает только нечётные id. Чётный id — ошибка, не тихий фильтр."""
-    from evals.orchestrator.query_split import half_of
+    """Подбор принимает все 50 старых id. Holdout и прочие id — ошибка, не фильтр.
 
-    leaked = [str(query_id) for query_id in query_ids if half_of(str(query_id)) != "dev"]
-    if leaked:
-        raise SelectionLeakError("подбор видит test: " + ", ".join(leaked))
-    return [str(query_id) for query_id in query_ids]
+    Бывший чётный test входит в dev-плюс. Отложенный набор ``hold-*`` не входит.
+    """
+    from evals.orchestrator.holdout import HoldoutLeakError, require_dev_plus
+
+    try:
+        return require_dev_plus(query_ids)
+    except HoldoutLeakError as exc:
+        raise SelectionLeakError(str(exc)) from exc
 
 
 def dev_only_queries(queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Срез для подбора. Test в этот список не входит."""
-    from evals.orchestrator.query_split import half_of
+    """Срез для подбора: 50 старых запросов. Holdout в списке — ошибка, не отбрасывание."""
+    from evals.orchestrator.holdout import HoldoutLeakError, dev_plus_ids, is_holdout_id
 
-    dev = [query for query in queries if half_of(str(query["id"])) == "dev"]
+    leaked = [str(query["id"]) for query in queries if is_holdout_id(str(query["id"]))]
+    if leaked:
+        raise HoldoutLeakError("подбор видит holdout: " + ", ".join(leaked))
+    allowed = set(dev_plus_ids())
+    dev = [query for query in queries if str(query["id"]) in allowed]
     require_dev_only([str(query["id"]) for query in dev])
     return dev
 
@@ -672,7 +679,9 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
 
     Запросы не переписывает. Рейтинги пишет во временный файл, не в репозиторий.
     """
-    queries = dev_only_queries(json.loads(QUERY_PATH.read_text(encoding="utf-8")))
+    from evals.orchestrator.holdout import read_for_tuning
+
+    queries = dev_only_queries(json.loads(read_for_tuning(QUERY_PATH)))
     from evals.orchestrator.label_transfer import TRANSFERRED_PATH
 
     transferred = json.loads(TRANSFERRED_PATH.read_text(encoding="utf-8"))["queries"]
@@ -951,11 +960,13 @@ def render_abc(
 
 def run_abc(out: Path | None = None) -> dict[str, Any]:
     """A и C на нарезке из 8 частей. B подставляется из прогона 4b447232."""
-    queries = dev_only_queries(json.loads(QUERY_PATH.read_text(encoding="utf-8")))
+    from evals.orchestrator.holdout import read_for_tuning
+
+    queries = dev_only_queries(json.loads(read_for_tuning(QUERY_PATH)))
     from evals.orchestrator.label_expand import EXPANDED_PATH
     from evals.orchestrator.label_transfer import AMBIGUOUS_PATH
 
-    expanded_all = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    expanded_all = json.loads(read_for_tuning(EXPANDED_PATH))["queries"]
     dev_ids = [str(query["id"]) for query in queries]
     expanded = [query for query in expanded_all if str(query["id"]) in set(dev_ids)]
     if dev_ids != [str(query["id"]) for query in expanded]:
@@ -1070,16 +1081,12 @@ def _median(values: list[float]) -> float:
 
 
 def run_tune() -> dict[str, Any]:
-    """Подбор только на dev. Test считается после выбора конфига."""
+    """Подбор только на dev-плюс (все 50 старых). Holdout не открывается."""
+    from evals.orchestrator.holdout import read_for_tuning
     from evals.orchestrator.label_expand import EXPANDED_PATH
-    from evals.orchestrator.query_split import SPLIT_PATH
 
-    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
-    by_id = {query["id"]: query for query in expanded}
-    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
-    dev_ids = require_dev_only([str(query_id) for query_id in split["dev"]])
-    dev = [by_id[query_id] for query_id in dev_ids]
-    test = [by_id[query_id] for query_id in split["test"]]
+    expanded = json.loads(read_for_tuning(EXPANDED_PATH))["queries"]
+    dev = dev_only_queries(expanded)
     configs: list[dict[str, Any]] = [
         {"aggregate": "none", "rerank_pool": 20, "lexical": 0.5, "vector": 1.5},
     ]
@@ -1125,7 +1132,7 @@ def run_tune() -> dict[str, Any]:
             chosen = _pick_dev(dev_rows)
             print("CHOSEN_BEFORE_TEST", json.dumps(chosen, ensure_ascii=False), flush=True)
             held_out: dict[str, dict[str, float]] = {}
-            for name, subset in (("dev", dev), ("test", test), ("all", expanded)):
+            for name, subset in (("dev", dev),):
                 engine._query_vectors.clear()
                 held_out[name] = measure_labelings(
                     engine,
@@ -1146,21 +1153,16 @@ def run_tune() -> dict[str, Any]:
                 "rerank_pool": chosen["rerank_pool"],
                 "aggregate": chosen["aggregate"],
             }
-            dev_ids = set(split["dev"])
-            run_p95: dict[str, list[float]] = {"dev": [], "test": [], "all": []}
+            run_p95: dict[str, list[float]] = {"dev": []}
             for _run in range(3):
                 engine._query_vectors.clear()
-                engine.retrieve(expanded[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
-                buckets: dict[str, list[float]] = {"dev": [], "test": [], "all": []}
-                for query in expanded:
+                engine.retrieve(dev[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+                samples: list[float] = []
+                for query in dev:
                     started = time.perf_counter()
                     engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
-                    elapsed = time.perf_counter() - started
-                    half = "dev" if query["id"] in dev_ids else "test"
-                    buckets[half].append(elapsed)
-                    buckets["all"].append(elapsed)
-                for name, samples in buckets.items():
-                    run_p95[name].append(_percentile(samples, 95))
+                    samples.append(time.perf_counter() - started)
+                run_p95["dev"].append(_percentile(samples, 95))
             latency = {name: _median(values) for name, values in run_p95.items()}
             print("P95_MEDIAN", {key: round(value, 4) for key, value in latency.items()}, flush=True)
             summary = {"chosen": chosen, "dev_grid": dev_rows, "scores": held_out, "p95_median": latency}
@@ -1745,6 +1747,10 @@ def main() -> None:
 
 
 def _main_grid(temp_dir: Path, queries: list[dict[str, Any]], prefixes_ok: bool, out: Path) -> None:
+    from evals.orchestrator.holdout import read_for_tuning
+
+    if queries and isinstance(queries, list):
+        read_for_tuning(QUERY_PATH)
     queries = dev_only_queries(queries)
     selection_ids = [str(query["id"]) for query in queries]
     runs: list[tuple[str, str, dict[str, float]]] = []
