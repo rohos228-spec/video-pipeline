@@ -146,7 +146,12 @@ def test_contour_b_profile_records_the_measured_default() -> None:
             ("e5-large+jina+p10+t256", "jina", {"ndcg_at_8": 0.59, "hit_at_5": 0.9, "p95_s": 0.4}),
         ]
     )
-    assert kept[0] == "e5-large+k20+w0.5/1.5+full"
+    assert kept[0] == "e5-small+k20+w0.5/1.5+full"
+    none = choose_default(
+        [("e5-large+bge-m3+p20+t384", "slow", {"ndcg_at_8": 0.8, "hit_at_5": 0.95, "p95_s": 2.2})]
+    )
+    assert none[0] == ""
+    assert "нет дефолта" in none[1].lower() or "Нет дефолта" in none[1]
     led = choose_default(
         [
             ("e5-large+k20+w0.5/1.5+full", "large", {"ndcg_at_8": 0.60, "hit_at_5": 0.88, "p95_s": 0.06}),
@@ -155,6 +160,22 @@ def test_contour_b_profile_records_the_measured_default() -> None:
         ]
     )
     assert led[0] == "e5-large+bge-m3+p20+t256"
+    # Прогон после переноса меток: hit@5 новой разметки 0.82 у обоих, дефолта нет.
+    transferred_pair = choose_default(
+        [
+            (
+                "e5-large+k20+w0.5/1.5+full",
+                "hybrid",
+                {"ndcg_at_8": 0.45738356018163073, "hit_at_5": 0.82, "p95_s": 0.057675631799338586},
+            ),
+            (
+                "e5-large+bge-m3+p20+t256",
+                "m3",
+                {"ndcg_at_8": 0.45740439515157605, "hit_at_5": 0.82, "p95_s": 1.4471942315503838},
+            ),
+        ]
+    )
+    assert transferred_pair[0] == ""
 
 
 def test_rerank_flag_is_optional_and_reorders_hybrid(tmp_path: Path) -> None:

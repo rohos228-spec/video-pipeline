@@ -169,12 +169,58 @@ def build_queries() -> list[dict[str, Any]]:
 
 
 def _is_relevant(chunk: Any, query: dict[str, Any]) -> bool:
+    """Прошлый скоринг семейств: любой чанк source_id, не part_key.
+
+    Так посчитан nDCG 0.544 после max_parts=3. Буквальные метки файла — отдельно,
+    ``_is_relevant_literal``.
+    """
     if query.get("family") == "rules":
         return chunk.corpus == "rules" and any(
             item["part_key"] == chunk.metadata.get("part_key") for item in query["relevant"]
         )
     family_ids = {item["source_id"] for item in query["relevant"] if item.get("source_id")}
     return chunk.source_id in family_ids
+
+
+def _is_relevant_literal(chunk: Any, query: dict[str, Any]) -> bool:
+    """Старая разметка как в файле: corpus + source_id + part_key. Правило — по part_key."""
+    part_key = chunk.metadata.get("part_key")
+    for item in query.get("relevant") or []:
+        if query.get("family") == "rules" or item.get("corpus") == "rules":
+            if chunk.corpus == "rules" and item.get("part_key") == part_key:
+                return True
+            continue
+        if (
+            item.get("corpus") == chunk.corpus
+            and item.get("source_id") == chunk.source_id
+            and item.get("part_key") == part_key
+        ):
+            return True
+    return False
+
+
+def _is_relevant_transferred(chunk: Any, query: dict[str, Any]) -> bool:
+    """Новая разметка: chunk_id с grade > 0."""
+    return any(
+        item.get("chunk_id") == chunk.chunk_id and int(item.get("grade") or 0) > 0
+        for item in query.get("relevant") or []
+    )
+
+
+def _relevant_source_ids(query: dict[str, Any], *, literal: bool) -> set[str]:
+    if literal and query.get("family") == "rules":
+        return set()
+    return {str(item["source_id"]) for item in query.get("relevant") or [] if item.get("source_id")}
+
+
+def _doc_ndcg(found: list[Any], relevant_ids: set[str], indexed_ids: set[str]) -> float:
+    """nDCG@8 по документам: выдача схлопнута по source_id, остаётся лучший чанк."""
+    seen: list[str] = []
+    for chunk in found:
+        if chunk.source_id not in seen:
+            seen.append(chunk.source_id)
+    flags = [source_id in relevant_ids for source_id in seen]
+    return _ndcg_at_8(flags, len(relevant_ids & indexed_ids))
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -214,12 +260,27 @@ def measure(
     rrf_weights: tuple[float, float] | None = None,
     bm25_scope: str = "full",
     rerank_pool: int = 20,
+    transferred: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
     """Метрики, задержка и top-8 по запросам. Холодная загрузка весов не входит."""
     indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
     for chunk in indexed:
         chunk.metadata.pop("_embedding", None)
+    transferred_by_id = {query["id"]: query for query in (transferred or [])}
+    if transferred is not None:
+        missing = [query["id"] for query in queries if query["id"] not in transferred_by_id]
+        if missing:
+            raise RuntimeError(f"в перенесённой разметке нет запросов: {missing}")
     labeled_by_query = [sum(1 for chunk in indexed if _is_relevant(chunk, query)) for query in queries]
+    literal_counts = [sum(1 for chunk in indexed if _is_relevant_literal(chunk, query)) for query in queries]
+    new_counts = [
+        sum(1 for chunk in indexed if _is_relevant_transferred(chunk, transferred_by_id[query["id"]]))
+        if transferred is not None
+        else 0
+        for query in queries
+    ]
+    indexed_source_ids = {chunk.source_id for chunk in indexed}
+    rule_source_ids = {chunk.source_id for chunk in indexed if chunk.corpus == "rules"}
     kwargs = {
         "rerank": rerank,
         "rrf_k": rrf_k,
@@ -229,33 +290,60 @@ def measure(
     if rrf_weights is not None:
         kwargs["rrf_weights"] = rrf_weights
     engine.retrieve(queries[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+    source_ndcgs: list[float] = []
+    literal_ndcgs: list[float] = []
+    new_ndcgs: list[float] = []
+    doc_source_ndcgs: list[float] = []
+    doc_literal_ndcgs: list[float] = []
+    doc_new_ndcgs: list[float] = []
     precisions: list[float] = []
-    recalls: list[float] = []
-    ndcgs: list[float] = []
-    ceilings: list[float] = []
-    hit5 = 0
-    hit8 = 0
+    hit5_source = 0
+    hit5_literal = 0
+    hit5_new = 0
     latencies: list[float] = []
     details: list[dict[str, Any]] = []
-    for query, labeled in zip(queries, labeled_by_query, strict=True):
+    for query, source_n, literal_n, new_n in zip(
+        queries, labeled_by_query, literal_counts, new_counts, strict=True
+    ):
         started = time.perf_counter()
         found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
         latencies.append(time.perf_counter() - started)
-        flags = [_is_relevant(chunk, query) for chunk in found]
-        matched = sum(1 for flag in flags if flag)
+        source_flags = [_is_relevant(chunk, query) for chunk in found]
+        literal_flags = [_is_relevant_literal(chunk, query) for chunk in found]
+        new_query = transferred_by_id.get(query["id"])
+        new_flags = (
+            [_is_relevant_transferred(chunk, new_query) for chunk in found] if new_query is not None else []
+        )
+        source_ndcgs.append(_ndcg_at_8(source_flags, source_n))
+        literal_ndcgs.append(_ndcg_at_8(literal_flags, literal_n))
+        if new_query is not None:
+            new_ndcgs.append(_ndcg_at_8(new_flags, new_n))
+        if any(source_flags[:5]):
+            hit5_source += 1
+        if any(literal_flags[:5]):
+            hit5_literal += 1
+        if new_flags and any(new_flags[:5]):
+            hit5_new += 1
+        literal_sources = _relevant_source_ids(query, literal=True)
+        if query.get("family") == "rules":
+            literal_sources = set(rule_source_ids)
+            source_sources = set(rule_source_ids)
+        else:
+            source_sources = _relevant_source_ids(query, literal=False)
+        doc_source_ndcgs.append(_doc_ndcg(found, source_sources, indexed_source_ids))
+        doc_literal_ndcgs.append(_doc_ndcg(found, literal_sources, indexed_source_ids))
+        if new_query is not None:
+            new_sources = _relevant_source_ids(new_query, literal=True)
+            if new_query.get("family") == "rules":
+                new_sources = set(rule_source_ids)
+            doc_new_ndcgs.append(_doc_ndcg(found, new_sources, indexed_source_ids))
+        primary_flags = new_flags if new_query is not None else source_flags
+        matched = sum(1 for flag in primary_flags if flag)
         precisions.append(matched / 8)
-        recalls.append(matched / labeled if labeled else 0.0)
-        ndcgs.append(_ndcg_at_8(flags, labeled))
-        ceilings.append(min(8, labeled) / 8)
-        hit_at_5 = any(flags[:5])
-        if hit_at_5:
-            hit5 += 1
-        if matched:
-            hit8 += 1
         details.append(
             {
                 "id": query["id"],
-                "hit5": hit_at_5,
+                "hit5": any(primary_flags[:5]),
                 "top": [
                     {
                         "corpus": chunk.corpus,
@@ -270,16 +358,24 @@ def measure(
             }
         )
     count = len(queries)
+    use_new = transferred is not None
     metrics = {
-        "hit_at_5": hit5 / count,
-        "ndcg_at_8": sum(ndcgs) / count,
+        "hit_at_5": (hit5_new if use_new else hit5_source) / count,
+        "ndcg_at_8": sum(new_ndcgs if use_new else source_ndcgs) / count,
+        "ndcg_at_8_source": sum(source_ndcgs) / count,
+        "hit_at_5_source": hit5_source / count,
+        "ndcg_at_8_old": sum(literal_ndcgs) / count,
+        "hit_at_5_old": hit5_literal / count,
+        "ndcg_doc_old": sum(doc_literal_ndcgs) / count,
+        "ndcg_doc_source": sum(doc_source_ndcgs) / count,
         "precision_at_8": sum(precisions) / count,
-        "recall_at_8": sum(recalls) / count,
-        "hit_at_8": hit8 / count,
         "p50_s": _percentile(latencies, 50),
         "p95_s": _percentile(latencies, 95),
-        "ceiling": sum(ceilings) / count,
     }
+    if use_new:
+        metrics["ndcg_at_8_new"] = sum(new_ndcgs) / count
+        metrics["hit_at_5_new"] = hit5_new / count
+        metrics["ndcg_doc_new"] = sum(doc_new_ndcgs) / count
     return metrics, details
 
 
@@ -296,43 +392,27 @@ def _is_rerank_key(key: str) -> bool:
 
 
 def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, str]:
-    """Лучший по nDCG@8 среди p95 ≤ 1.5 с.
+    """По новой разметке: hit@5 ≥ 0.9, p95 ≤ 1.5 с, максимальный чанковый nDCG@8.
 
-    Если реранкер не поднимает nDCG выше гибрида e5-large, дефолт — этот гибрид
-    без реранкера, даже когда гибрид e5-small набрал больше.
-    Если ни один вариант не уложился в p95, ключ пустой и текст говорит «нет дефолта».
+    Порог nDCG@8 0.65 здесь не отбор, а приёмка: его не снижаем.
+    Если никто не уложился в hit@5 и p95, ключ пустой и текст говорит «нет дефолта».
     """
-    eligible = [row for row in runs if row[2]["p95_s"] <= P95_MAX_S]
+    eligible = [
+        row
+        for row in runs
+        if row[2]["p95_s"] <= P95_MAX_S and row[2]["hit_at_5"] >= HIT_AT_5_MIN
+    ]
     if not eligible:
-        return "", f"Нет дефолта: ни один вариант не уложился в p95 ≤ {P95_MAX_S:.1f} с."
-    pool = eligible
-    best = max(pool, key=_rank_key)
-    large = [row for row in pool if row[0].startswith("e5-large+k")]
-    best_large = max(large, key=_rank_key) if large else None
-    rerank_helps = (
-        best_large is not None
-        and _is_rerank_key(best[0])
-        and best[2]["ndcg_at_8"] > best_large[2]["ndcg_at_8"]
+        return "", (
+            "Нет дефолта: ни один вариант не уложился в "
+            f"hit@5 ≥ {HIT_AT_5_MIN} и p95 ≤ {P95_MAX_S:.1f} с."
+        )
+    chosen = max(eligible, key=_rank_key)
+    why = (
+        f"По новой разметке среди hit@5 ≥ {HIT_AT_5_MIN} и p95 ≤ {P95_MAX_S:.1f} с "
+        f"лучший nDCG@8 у «{chosen[1]}»: {chosen[2]['ndcg_at_8']:.4f}, "
+        f"hit@5={chosen[2]['hit_at_5']:.4f}, p95={chosen[2]['p95_s']:.3f} с."
     )
-    if rerank_helps or best_large is None:
-        chosen = best
-        why = (
-            f"Среди вариантов с p95 ≤ {P95_MAX_S:.1f} с лучший nDCG@8 у «{chosen[1]}»: "
-            f"{chosen[2]['ndcg_at_8']:.4f}, hit@5={chosen[2]['hit_at_5']:.4f}, "
-            f"p95={chosen[2]['p95_s']:.3f} с."
-        )
-    else:
-        chosen = best_large
-        why = (
-            f"Реранкер не поднимает nDCG@8 выше гибрида e5-large. Дефолт — «{chosen[1]}»: "
-            f"nDCG@8={chosen[2]['ndcg_at_8']:.4f}, hit@5={chosen[2]['hit_at_5']:.4f}, "
-            f"p95={chosen[2]['p95_s']:.3f} с."
-        )
-        if best[0] != chosen[0]:
-            why += (
-                f" Глобальный максимум nDCG среди p95 ≤ {P95_MAX_S:.1f} с — «{best[1]}» "
-                f"({best[2]['ndcg_at_8']:.4f}); он не выбран, потому что реранкер не помогает."
-            )
     return chosen[0], why
 
 
@@ -348,7 +428,7 @@ def render_report(
         "",
         "Порог precision@8 ≥ 0.8 снят. Приёмка на этих 50 перефразах: "
         f"**hit@5 ≥ {HIT_AT_5_MIN}** и **nDCG@8 ≥ {NDCG_AT_8_MIN}**. "
-        "precision@8, recall@8 и hit@8 посчитаны для сведения.",
+        "Порог nDCG@8 не снижался.",
         "",
         "Модели локальные, CPU. e5 — официальный ONNX intfloat, префиксы `query: ` и `passage: `. "
         "Реранкеры — квантованный ONNX `jinaai/jina-reranker-v2-base-multilingual` "
@@ -374,22 +454,31 @@ def render_report(
         "Задержка — `retrieve` на запрос после одного прогрева; холодная загрузка весов не входит. "
         "p50/p95 — линейная интерполяция по 50 замерам.",
         "",
-        "| Вариант | hit@5 | nDCG@8 | precision@8 | recall@8 | hit@8 | p50, с | p95, с | приёмка |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|:---:|",
+        "| Вариант | hit@5 новая | nDCG@8 новая | hit@5 старая | nDCG@8 старая | "
+        "nDCG@8 док новая | nDCG@8 док старая | hit@5 source_id | nDCG@8 source_id | p50, с | p95, с | приёмка |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|",
     ]
     for _key, label, metrics in rows:
         mark = "да" if _passes(metrics) else "нет"
         lines.append(
             f"| {label} | {metrics['hit_at_5']:.4f} | {metrics['ndcg_at_8']:.4f} | "
-            f"{metrics['precision_at_8']:.4f} | {metrics['recall_at_8']:.4f} | "
-            f"{metrics['hit_at_8']:.4f} | {metrics['p50_s']:.3f} | {metrics['p95_s']:.3f} | {mark} |"
+            f"{metrics.get('hit_at_5_old', 0.0):.4f} | "
+            f"{metrics.get('ndcg_at_8_old', metrics['ndcg_at_8']):.4f} | "
+            f"{metrics.get('ndcg_doc_new', 0.0):.4f} | {metrics.get('ndcg_doc_old', 0.0):.4f} | "
+            f"{metrics.get('hit_at_5_source', 0.0):.4f} | "
+            f"{metrics.get('ndcg_at_8_source', metrics['ndcg_at_8']):.4f} | "
+            f"{metrics['p50_s']:.3f} | {metrics['p95_s']:.3f} | {mark} |"
         )
     matched = next(((key, label, metrics) for key, label, metrics in rows if key == chosen_key), None)
-    ceiling = rows[0][2]["ceiling"] if rows else 0.0
+    ceiling = rows[0][2].get("ceiling") if rows else None
+    ceiling_lines = (
+        ["", f"Потолок precision@8 по разметке: **{ceiling:.4f}**."]
+        if isinstance(ceiling, (int, float))
+        else []
+    )
     if matched is None:
         default_lines = [
-            "",
-            f"Потолок precision@8 по разметке: **{ceiling:.4f}**.",
+            *ceiling_lines,
             "",
             f"Дефолт: **нет дефолта**. {why}",
             "",
@@ -397,8 +486,7 @@ def render_report(
     else:
         key, chosen_label, chosen = matched
         default_lines = [
-            "",
-            f"Потолок precision@8 по разметке: **{ceiling:.4f}**.",
+            *ceiling_lines,
             "",
             f"Дефолт контура B: **{chosen_label}** (ключ `{key}`). {why}",
             "",
@@ -548,6 +636,9 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
     Запросы не переписывает. Рейтинги пишет во временный файл, не в репозиторий.
     """
     queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
+    from evals.orchestrator.label_transfer import TRANSFERRED_PATH
+
+    transferred = json.loads(TRANSFERRED_PATH.read_text(encoding="utf-8"))["queries"]
     report_path = out or REPORT_PATH
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-pair-"))
     runs: list[tuple[str, str, dict[str, float]]] = []
@@ -565,6 +656,7 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
                 rrf_k=20,
                 rrf_weights=(0.5, 1.5),
                 bm25_scope="full",
+                transferred=transferred,
             )
         finally:
             plain.close()
@@ -583,6 +675,7 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
                 rrf_weights=(0.5, 1.5),
                 bm25_scope="full",
                 rerank_pool=20,
+                transferred=transferred,
             )
         finally:
             ranked.close()
@@ -598,10 +691,36 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
         chosen_key, why = choose_default(runs)
         misses = _miss_lines(queries, saved)
         text = render_report(runs, chosen_key=chosen_key, why=why, misses=misses)
+        ambiguous_path = TRANSFERRED_PATH.with_name("precision_live_label_ambiguous.json")
+        ambiguous = json.loads(ambiguous_path.read_text(encoding="utf-8"))
+        ambiguous_lines = [
+            "",
+            f"Неоднозначные метки, вручную не назначенные: **{ambiguous['count']}**.",
+            "",
+            "| query_id | старый chunk_id | причина |",
+            "|---|---|---|",
+        ]
+        for item in ambiguous["items"]:
+            ambiguous_lines.append(
+                f"| `{item['query_id']}` | `{item['old_chunk_id']}` | {item['reason']} |"
+            )
         text += (
-            "\nЧанкование промптов: `split_prompt(max_parts=3)` по PLAN §5.2. "
-            "Таблица из 32 вариантов снята при `max_parts=8` и этот индекс не описывает. "
-            "Разметка и live-29 не менялись.\n"
+            "\nЧанкование промптов: `split_prompt(max_parts=3)`. "
+            "Гипотеза подтвердилась для текста промптов: ни один из 252 фрагментов "
+            "с part_key s0–s2 не сохранил тот же body, что при `max_parts=8`. "
+            "Опубликованный nDCG 0.544 считался по source_id (колонка source_id), не по part_key. "
+            "Правило переноса зафиксировано коммитом `1396ea43` "
+            "(`precision_live_label_transfer.md` и `label_transfer.py`) до этого прогона "
+            "и после него не менялось. Метрики до фиксации правила не считались. "
+            "Порог nDCG@8 0.65 не снижался. "
+            "hit@5 и `nDCG@8 новая` — перенесённые chunk_id. "
+            "hit@5 и `nDCG@8 старая` — буквальные part_key исходного файла на новой нарезке. "
+            "Колонки source_id — прошлый скоринг семейств (любой чанк source_id). "
+            "nDCG по документам — выдача без повторов source_id, порога нет. "
+            "Приёмка смотрит hit@5 и nDCG@8 новой разметки. "
+            "live-29 вручную не правился.\n"
+            + "\n".join(ambiguous_lines)
+            + "\n"
         )
         report_path.write_text(text, encoding="utf-8")
         detail_path = temp_dir / "precision_live_rankings.json"
