@@ -89,6 +89,7 @@ from app.orchestrator.contracts import (
     server_forecast_limit,
     step_is_deletion,
     step_is_readonly,
+    step_with_registry_paid,
     usable_project_id,
     validator_budget_exhausted,
     validator_missing_run_id,
@@ -1031,8 +1032,9 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = list(
-            await self._cancellable(
+        plan = [
+            step_with_registry_paid(step, self.actions)
+            for step in await self._cancellable(
                 session_id,
                 self.planner.make_plan(
                     goal,
@@ -1040,7 +1042,7 @@ class Supervisor:
                     **self._llm_kwargs(task_id, AgentRole.planner.value),
                 ),
             )
-        )
+        ]
         self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None

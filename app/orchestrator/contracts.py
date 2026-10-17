@@ -1080,19 +1080,66 @@ def _protects_media(action: str) -> bool:
 _MISSING = object()
 
 
+def lookup_action_metadata(action: str, registry: Any | None) -> tuple[str, Any]:
+    """``('absent', None)`` | ``('miss', None)`` | ``('value', meta)``.
+
+    ``miss`` — ``metadata_of`` бросил ``KeyError`` (имени нет в реестре WS2 R2).
+    ``absent`` — метода нет: открытый мок и старые реестры без ``metadata_of``.
+    ``value`` с ``None`` — прежний «неизвестно», это не ``KeyError``.
+    """
+    if registry is None:
+        return "absent", None
+    metadata_of = getattr(registry, "metadata_of", None)
+    if not callable(metadata_of):
+        return "absent", None
+    try:
+        return "value", metadata_of(action)
+    except KeyError:
+        return "miss", None
+
+
+def _meta_field(meta: Any, key: str, default: Any = None) -> Any:
+    if isinstance(meta, dict):
+        return meta.get(key, default)
+    return getattr(meta, key, default)
+
+
+def registry_marks_paid(action: str, registry: Any | None) -> bool:
+    """Имени нет в реестре или ``metadata_of`` недоступна через ``KeyError``.
+
+    Поле ``paid`` читается из dict будущего реестра. В ``ActionMetadata`` его нет,
+    и сюда оно не добавляется: известная запись без ``paid`` не становится платной.
+    """
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind == "miss":
+        return True
+    if kind != "value" or meta is None:
+        return False
+    return bool(_meta_field(meta, "paid", False))
+
+
+def step_with_registry_paid(step: PlanStep, registry: Any | None) -> PlanStep:
+    """Пометить шаг платным по реестру. План, где ``paid`` уже true, не понижается."""
+    if step.paid or not registry_marks_paid(step.action, registry):
+        return step
+    return step.model_copy(update={"paid": True})
+
+
 def action_unknown(action: str, registry: Any | None) -> bool:
     """Имени нет в реестре.
 
-    ``metadata_of`` — источник, когда метод есть: ``None`` значит неизвестно.
-    Пока его нет (R2): закрытый словарь ``risks`` без ключа, реестр без
-    ``risk_of``, или реестра нет вовсе. Открытый мок (``risks is None``)
-    считает любое имя известным как ``Risk.none`` — тестовые планы живут.
+    ``metadata_of`` — источник, когда метод есть: ``None`` значит неизвестно,
+    ``KeyError`` — имени нет в реестре WS2 R2. Пока его нет (R2): закрытый
+    словарь ``risks`` без ключа, реестр без ``risk_of``, или реестра нет вовсе.
+    Открытый мок (``risks is None``) считает любое имя известным как ``Risk.none``.
     """
     if registry is None:
         return True
-    metadata_of = getattr(registry, "metadata_of", None)
-    if metadata_of is not None:
-        return metadata_of(action) is None
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind == "miss":
+        return True
+    if kind == "value":
+        return meta is None
     risks = getattr(registry, "risks", _MISSING)
     if risks is None:
         return False
@@ -1104,19 +1151,20 @@ def action_unknown(action: str, registry: Any | None) -> bool:
 def explicitly_safe(action: str, registry: Any | None) -> bool:
     """В реестре есть явные ``read_only=True`` и ``destructive=False``.
 
-    Иначе запрет по умолчанию. Открытый мок (``risks is None``, нет
-    ``metadata_of``) не закрытый реестр: имя без маркера удаления живёт.
-    Закрытый словарь без ключа безопасным не считается.
+    Иначе запрет по умолчанию. ``KeyError`` безопасным не считается.
+    Открытый мок (``risks is None``, нет ``metadata_of``) не закрытый реестр:
+    имя без маркера удаления живёт. Закрытый словарь без ключа безопасным не считается.
     """
     if registry is None:
         return False
-    metadata_of = getattr(registry, "metadata_of", None)
-    if metadata_of is not None:
-        meta = metadata_of(action)
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind == "miss":
+        return False
+    if kind == "value":
         return (
             meta is not None
-            and getattr(meta, "read_only", None) is True
-            and not bool(getattr(meta, "destructive", False))
+            and _meta_field(meta, "read_only", None) is True
+            and not bool(_meta_field(meta, "destructive", False))
         )
     risks = getattr(registry, "risks", _MISSING)
     if risks is None:
@@ -1130,18 +1178,30 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     """``name`` — ``deletion_blocked``. ``None`` — действие можно планировать.
 
     Запрет по умолчанию: нет явных ``read_only`` и не-destructive, либо в имени
-    маркер удаления. Флаги плана это не ослабляют. Сцены, кадры, персонажи и
-    VO с глаголом удаления не оправдываются метаданными.
+    маркер удаления. ``KeyError`` реестра — не удаление: шаг платный и ждёт approval.
+    Флаги плана это не ослабляют. Сцены, кадры, персонажи и VO с глаголом удаления
+    не оправдываются метаданными.
     """
-    if is_deletion_action(action) or _protects_media(action) or not explicitly_safe(action, registry):
+    if is_deletion_action(action) or _protects_media(action):
+        return "name"
+    kind, _meta = lookup_action_metadata(action, registry)
+    if kind == "miss":
+        return None
+    if not explicitly_safe(action, registry):
         return "name"
     return None
 
 
 def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
-    """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен."""
+    """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен.
+
+    ``KeyError`` из ``metadata_of`` — имя неизвестно реестру, это не удаление кадра.
+    """
     if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params):
         return True
+    kind, _meta = lookup_action_metadata(step.action, registry)
+    if kind == "miss":
+        return False
     return not explicitly_safe(step.action, registry)
 
 

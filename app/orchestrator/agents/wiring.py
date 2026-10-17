@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
+import re
 import sys
 from typing import Any
 
 from app.orchestrator.agents.planner import NullRetriever
-from app.orchestrator.agents.stubs import FallbackRouter
-from app.orchestrator.contracts import ClassifyResult, MessageMode
+from app.orchestrator.agents.stubs import FallbackRouter, UnlinkedActions, UnlinkedValidators
+from app.orchestrator.contracts import ActionResult, ClassifyResult, MessageMode, Risk, coerce_risk
 
 _ROUTING = "app.orchestrator.routing"
 _RAG = "app.orchestrator.rag"
+_VALIDATORS = "app.orchestrator.validators"
+_ACTIONS = "app.orchestrator.actions"
+_APPROVAL_CHANGE_ID = re.compile(r"^orch-appr-\d+-\d+$")
 
 
 def load_module(name: str) -> Any | None:
@@ -166,3 +171,80 @@ class RoutingAdapter:
             confidence=float(getattr(raw, "confidence", 1.0) or 0.0),
             kill_switch=bool(getattr(raw, "kill_switch", False)),
         )
+
+
+def load_validators() -> tuple[Any, str | None]:
+    """``run(name, project_id, context=None)`` из WS1 #351 ``b0c5e0c3``."""
+    module = load_module(_VALIDATORS)
+    fn = getattr(module, "run", None) if module is not None else None
+    if not callable(fn):
+        return UnlinkedValidators(), "validators"
+    return FunctionValidators(fn), None
+
+
+class FunctionValidators:
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+
+    def run(self, name: str, project_id: int, context: dict[str, Any] | None = None) -> Any:
+        return self._fn(name, project_id, context)
+
+
+def load_actions() -> tuple[Any, str | None]:
+    """Мост к ``actions.execute``. Модуля ещё нет — заглушка и ``actions`` в degraded."""
+    module = load_module(_ACTIONS)
+    execute = getattr(module, "execute", None) if module is not None else None
+    if not callable(execute):
+        return ActionsBridge(UnlinkedActions()), "actions"
+    return ActionsBridge(ModuleActions(module)), None
+
+
+class ModuleActions:
+    def __init__(self, module: Any) -> None:
+        self._module = module
+
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> Any:
+        result = self._module.execute(name, params, task_ctx)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    def metadata_of(self, name: str) -> Any:
+        fn = getattr(self._module, "metadata_of", None)
+        if not callable(fn):
+            raise KeyError(name)
+        return fn(name)
+
+
+class ActionsBridge:
+    """Будущий ``metadata_of``: dict или ``KeyError``. Approval-id действиям не отдаём."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    def metadata_of(self, name: str) -> Any:
+        fn = getattr(self.inner, "metadata_of", None)
+        if not callable(fn):
+            raise KeyError(name)
+        return fn(name)
+
+    def risk_of(self, name: str) -> Risk:
+        try:
+            meta = self.metadata_of(name)
+        except KeyError:
+            return Risk.high
+        if meta is None:
+            return Risk.high
+        raw = meta.get("risk") if isinstance(meta, dict) else getattr(meta, "risk", Risk.high)
+        return coerce_risk(raw)
+
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
+        result = self.inner.execute(name, params, task_ctx)
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, ActionResult):
+            result = ActionResult.model_validate(result)
+        change_id = result.change_id
+        if isinstance(change_id, str) and _APPROVAL_CHANGE_ID.match(change_id):
+            return result.model_copy(update={"change_id": None})
+        return result

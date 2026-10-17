@@ -18,7 +18,13 @@ def effective_risk(actions: Any, step: PlanStep) -> Risk:
     Нет ``risk_of`` — действие неизвестно, риск ``high``. План не понижает реестр.
     """
     risk_of = getattr(actions, "risk_of", None)
-    registry = Risk.high if risk_of is None else risk_of(step.action)
+    if risk_of is None:
+        registry = Risk.high
+    else:
+        try:
+            registry = risk_of(step.action)
+        except KeyError:
+            registry = Risk.high
     return max_risk(step.risk, registry)
 
 

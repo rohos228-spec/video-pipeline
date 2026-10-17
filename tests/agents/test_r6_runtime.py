@@ -25,6 +25,7 @@ from app.orchestrator.agents.testkit import (
     build_r6_runtime,
     enforce_r6_gate,
 )
+from app.orchestrator.agents.wiring import ActionsBridge
 from app.web.api import _lifespan
 from tests.agents.conftest import TEST_TOKEN
 
@@ -134,7 +135,8 @@ def test_production_runtime_ignores_missing_flag(monkeypatch: pytest.MonkeyPatch
         assert isinstance(runtime.router, FallbackRouter)
         assert isinstance(runtime.supervisor.planner, RouterPlanner)
         assert "routing" in runtime.runtime_degraded
-        assert isinstance(runtime.supervisor.actions, UnlinkedActions)
+        assert isinstance(runtime.supervisor.actions, ActionsBridge)
+        assert isinstance(runtime.supervisor.actions.inner, UnlinkedActions)
     finally:
         set_runtime(None)
 
@@ -424,7 +426,8 @@ async def test_prod_ignores_x_orch_scenario(monkeypatch: pytest.MonkeyPatch) -> 
         runtime = get_runtime()
         assert isinstance(runtime.router, FallbackRouter)
         assert not isinstance(runtime.router, R6Router)
-        assert isinstance(runtime.supervisor.actions, UnlinkedActions)
+        assert isinstance(runtime.supervisor.actions, ActionsBridge)
+        assert isinstance(runtime.supervisor.actions.inner, UnlinkedActions)
         transport = httpx.ASGITransport(app=build_r6_app())
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             plain = await client.post(

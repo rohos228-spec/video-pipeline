@@ -87,9 +87,8 @@ class ActionBackedExecutor:
 class UnlinkedActions:
     """Мок-заглушка, пока WS2 не отдал ``actions.execute``.
 
-    ``risk_of`` здесь ``none``: реестра ещё нет, и stub-план ``noop`` не
-    должен вставать на approval. Боевой WS2 для неизвестного имени
-    возвращает ``Risk.high`` (``registry_risk``).
+    ``noop`` остаётся ``Risk.none`` и read-only. Любое другое имя — ``KeyError``
+    из ``metadata_of`` и ``Risk.high``: реестра WS2 ещё нет, мутация платная.
     """
 
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
@@ -102,13 +101,14 @@ class UnlinkedActions:
         )
 
     def risk_of(self, action_name: str) -> Risk:
-        del action_name
-        return Risk.none
+        if action_name == "noop":
+            return Risk.none
+        return Risk.high
 
-    def metadata_of(self, action_name: str) -> ActionMetadata | None:
+    def metadata_of(self, action_name: str) -> ActionMetadata:
         if action_name == "noop":
             return ActionMetadata(risk=Risk.none.value, read_only=True, destructive=False)
-        return None
+        raise KeyError(action_name)
 
 
 class UnlinkedValidators:
