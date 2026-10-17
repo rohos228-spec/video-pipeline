@@ -15,6 +15,18 @@ from app.orchestrator.routing.model_router import LiveRouter
 from tests.routing.fakes import FakeTransport, ok
 
 
+def test_getters_strip_run_id_like_charge():
+    ledger = SpendLedger(internal_budget_usd=10)
+    ledger.charge("run-1", 4, scope="internal")
+    ledger.charge("run-1", 9, scope="pipeline")
+    view = ledger.totals(" run-1 ")
+    assert view["internal_spent_usd"] == 4
+    assert view["pipeline_spent_usd"] == 9
+    assert ledger.spent(" run-1 ") == 4
+    assert ledger.pipeline_spent(" run-1 ") == 9
+    assert ledger.read_pipeline_spent(project_id=1, run_id=" run-1 ") == 9
+
+
 def test_unknown_run_is_zero_and_pipeline_skips_internal_cap():
     ledger = SpendLedger(internal_budget_usd=10)
     assert ledger.totals(None) == {

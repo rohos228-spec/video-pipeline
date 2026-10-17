@@ -83,9 +83,9 @@ class SpendLedger:
         return self._pipeline_of(run_id)
 
     def _pipeline_of(self, run_id: str | None) -> float:
-        if run_id is None or str(run_id).strip() == "":
+        key = self._named_run(run_id)
+        if key is None:
             return 0.0
-        key = run_id if isinstance(run_id, str) else str(run_id)
         with self._lock:
             return float(self._pipeline.get(key, 0.0))
 
@@ -123,9 +123,9 @@ class SpendLedger:
         остаётся, ``budget_exhausted`` ложь). Pipeline в лимит $10 не входит.
         """
         limit = float(self.internal_budget_usd)
-        if run_id is None or str(run_id).strip() == "":
+        key = self._named_run(run_id)
+        if key is None:
             return _zero_totals(limit)
-        key = run_id if isinstance(run_id, str) else str(run_id)
         with self._lock:
             internal = float(self._internal.get(key, 0.0))
             pipeline = float(self._pipeline.get(key, 0.0))

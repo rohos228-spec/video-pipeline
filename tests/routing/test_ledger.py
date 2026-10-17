@@ -59,6 +59,8 @@ async def test_cost_charges_ledger_and_escalates(config, sink):
     third = await router.call("strong", messages, run_id="run-a", task_id="not-an-int")
     assert third.task_status == "waiting_approval"
     assert third.text == ""
+    assert third.model == ""
+    assert third.provider == ""
     assert third.finish_reason == ""
     assert third.approval is not None
     assert third.approval.reason == "budget_exhausted"

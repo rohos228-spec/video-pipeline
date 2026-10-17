@@ -1,7 +1,8 @@
 """Роутер в тестах не ходит в сеть.
 
-TCP ``create_connection`` закрыт. ``socket.socket`` не трогаем: его берёт
-self-pipe event loop, и подмена роняет asyncio.
+Класс ``socket.socket`` не подменяем: его берёт self-pipe event loop.
+Закрыты ``create_connection`` и методы ``connect`` / ``connect_ex``:
+async httpx идёт через ``sock.connect``, не через ``create_connection``.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ def _routing_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("routing tests must not open TCP connections")
 
     monkeypatch.setattr(socket, "create_connection", boom)
+    monkeypatch.setattr(socket.socket, "connect", boom)
+    monkeypatch.setattr(socket.socket, "connect_ex", boom)
 
 
 @pytest.fixture

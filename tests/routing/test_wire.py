@@ -172,6 +172,29 @@ def test_resolve_pay52_calls_existing_resolve_text(monkeypatch):
     assert route.url == "https://billing.example/v1/chat/completions"
 
 
+def test_resolve_text_attribute_error_is_not_swallowed(monkeypatch):
+    module = types.ModuleType("app.services.pay52_routes")
+
+    def resolve_text(model: str):
+        raise AttributeError(f"bug in resolve_text for {model}")
+
+    module.resolve_text = resolve_text
+    monkeypatch.setitem(sys.modules, "app.services.pay52_routes", module)
+    with pytest.raises(AttributeError, match="bug in resolve_text"):
+        resolve_pay52("gpt-5.6-sol")
+
+
+def test_resolve_text_importerror_skips_the_hop(monkeypatch):
+    module = types.ModuleType("app.services.pay52_routes")
+
+    def resolve_text(model: str):
+        raise ImportError(model)
+
+    module.resolve_text = resolve_text
+    monkeypatch.setitem(sys.modules, "app.services.pay52_routes", module)
+    assert resolve_pay52("gpt-5.6-sol") is None
+
+
 def test_resolve_pay52_missing_module_is_explicit():
     route = resolve_pay52("gpt-5.6-sol")
     if route is PAY52_MODULE_MISSING:
