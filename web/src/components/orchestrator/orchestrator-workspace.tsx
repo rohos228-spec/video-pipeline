@@ -194,6 +194,21 @@ export function OrchestratorWorkspace() {
               ))}
             </div>
 
+            <label className="flex shrink-0 items-start gap-2 px-4 pb-2 pt-1 text-[11px] text-white/60">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                data-testid="orch-mode-task"
+                checked={taskMode}
+                onChange={(event) => setTaskMode(event.target.checked)}
+              />
+              <span>
+                Новая задача
+                <span className="block text-[10px] text-white/35" data-testid="orch-mode-task-hint">
+                  Встаёт в очередь за текущей и не прерывает её.
+                </span>
+              </span>
+            </label>
             <div className="shrink-0 space-y-2 border-t border-white/[0.06] px-4 py-3">
               {chat.state.ack ? (
                 <div data-testid="orch-ack" className="text-[11px] text-info">
@@ -224,21 +239,6 @@ export function OrchestratorWorkspace() {
                 </div>
               ) : null}
               {chat.sendError ? <p className="text-[11px] text-destructive">{chat.sendError}</p> : null}
-              <label className="flex items-start gap-2 text-[11px] text-white/60">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  data-testid="orch-mode-task"
-                  checked={taskMode}
-                  onChange={(event) => setTaskMode(event.target.checked)}
-                />
-                <span>
-                  Новая задача
-                  <span className="block text-[10px] text-white/35" data-testid="orch-mode-task-hint">
-                    Встаёт в очередь за текущей и не прерывает её.
-                  </span>
-                </span>
-              </label>
               <div className="flex items-end gap-2">
                 <Textarea
                   data-testid="orch-composer"
