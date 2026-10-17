@@ -996,7 +996,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const draftId = typeof arg === "object" ? arg?.draftId : undefined;
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
       let text = (promptOverride ?? prompt).trim();
-      if (!text) throw new Error("Введите промпт");
+      if (forceSingle && !text) throw new Error("Введите промпт");
       if (text.toLowerCase().includes("not example objects from the style guide")) {
         throw new Error("Промпт не собран агентом — генерация не запущена");
       }
