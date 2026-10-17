@@ -31,6 +31,8 @@ def normalize_messages(messages: list[Any] | None) -> list[dict[str, str]]:
         if isinstance(raw, str):
             out.append({"role": "user", "content": raw})
             continue
+        if not isinstance(raw, dict):
+            raise ValueError("message must be a string or a dict")
         out.append(
             {
                 "role": str(raw.get("role") or "user"),
