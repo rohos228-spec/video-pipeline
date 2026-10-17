@@ -100,8 +100,13 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    - `approval` — `ApprovalEvent` с `reason == "budget_exhausted"`
      (`ApprovalReason.budget_exhausted` в ws3-r3).
    В `orch_llm_calls` у этой попытки `status=ok`.
-3. Следующий internal-вызов того же `run_id` транспорт не трогает:
+3. Следующий internal-вызов того же `run_id` транспорт не трогает,
+   и со `stream=True` тоже: проверка стоит до `_provider_complete`.
    `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
+   Стриминговый chat-запрос 52pay несёт `stream_options.include_usage=true`.
+   Если usage пустой, а текст есть, стоимость не ноль: completion-токены
+   ≈ `len(text)/4` (минимум 1) по прайсу strong. То же у нестримингового
+   ответа без usage. Списание идёт в `SpendLedger`.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие

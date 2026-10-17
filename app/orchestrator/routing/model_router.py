@@ -141,6 +141,24 @@ def _latency_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
 
 
+def estimate_usage(text: str) -> LLMUsage:
+    """Консервативная оценка, если провайдер не прислал usage.
+
+    4 символа ответа ≈ 1 completion-токен, минимум 1. Цена берётся
+    по strong, чтобы пустой SSE не обнулял суб-бюджет.
+    """
+    tokens = max(1, (len(text) + 3) // 4)
+    return LLMUsage(prompt_tokens=0, completion_tokens=tokens, reasoning_tokens=0)
+
+
+def _usage_missing(usage: LLMUsage) -> bool:
+    return (
+        usage.prompt_tokens == 0
+        and usage.completion_tokens == 0
+        and usage.reasoning_tokens == 0
+    )
+
+
 class ModelRouter:
     """Общая политика: классификация, бюджет, ретраи, лог попыток."""
 
@@ -361,6 +379,12 @@ class ModelRouter:
     async def _dispatch(self, ctx: CallContext) -> LLMResponse:
         return await self._run_chain(ctx)
 
+    def _strong_price_model(self) -> str:
+        for hop in (*self.config.strong_unconfirmed, *self.config.strong_confirmed):
+            if hop.model:
+                return hop.model
+        return "gpt-5.6-sol"
+
     def _hops(self, ctx: CallContext) -> list[Hop]:
         hops = expand_hops(self.config, ctx.effective_tier)
         if not hops:
@@ -490,10 +514,14 @@ class ModelRouter:
             reasoning_tokens=int(result.reasoning_tokens),
         )
         model = result.model or hop.model
+        price_model = model
+        if cost_override is None and _usage_missing(usage) and (result.text or "").strip():
+            usage = estimate_usage(result.text)
+            price_model = self._strong_price_model()
         cost = (
             float(cost_override)
             if cost_override is not None
-            else compute_cost(model, usage, self.config.prices)
+            else compute_cost(price_model, usage, self.config.prices)
         )
         approval = self._charge(ctx, cost)
         latency = _latency_ms(started) if latency_override is None else int(latency_override)
