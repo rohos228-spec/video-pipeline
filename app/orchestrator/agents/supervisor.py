@@ -252,12 +252,14 @@ class Supervisor:
         if inflight is not None and not inflight.done():
             inflight.cancel()
 
-    def request_kill(self, session_id: str) -> None:
+    def request_kill(self, session_id: str) -> asyncio.Task[Any] | None:
         """Kill switch: неплатное — сразу, новые действия запрещены.
 
         Платный шаг этим вызовом не обрывается: пауза на его границе.
         Стоп-ключ узла здесь не ставится. Событие несёт ``stop_key_set=false``
-        и ``stop_key=pending``.
+        и ``stop_key=pending``. Возвращает задачу публикации, если цикл уже
+        есть: очередь её дожидается, иначе запись sqlite могла бы отстать
+        от ``drain``. Без цикла событие остаётся в очереди до resume/grant.
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
@@ -267,8 +269,8 @@ class Supervisor:
         except RuntimeError:
             logger.warning("kill_switch for {} queued: no running loop", session_id)
             self._pending_kill_publish.append((session_id, task_id))
-            return
-        self._spawn(self._publish_kill(session_id, task_id))
+            return None
+        return self._spawn(self._publish_kill(session_id, task_id))
 
     def request_pause(self, session_id: str) -> None:
         self._pause.add(session_id)

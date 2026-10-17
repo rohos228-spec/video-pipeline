@@ -232,7 +232,9 @@ class MessageQueue:
         project_id: int | None = None,
     ) -> None:
         if decided.kill_switch:
-            self.supervisor.request_kill(session_id)
+            job = self.supervisor.request_kill(session_id)
+            if job is not None:
+                await job
             return
         if decided.mode is MessageMode.interrupt:
             self.supervisor.request_cancel(session_id)
