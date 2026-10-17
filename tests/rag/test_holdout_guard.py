@@ -234,22 +234,83 @@ def test_tuning_entry_points_read_through_the_guard() -> None:
         assert "HOLDOUT_PATH" not in body
 
 
+_PLACES = (
+    "павильоне",
+    "коридоре",
+    "мастерской",
+    "подвале",
+    "чердаке",
+    "сарае",
+    "кухне",
+    "спальне",
+    "кабинете",
+    "библиотеке",
+    "ангаре",
+    "цехе",
+    "студии",
+    "дворе",
+    "саду",
+    "парке",
+    "лесу",
+    "поле",
+    "берегу",
+    "мосту",
+    "площади",
+    "рынке",
+    "вокзале",
+    "театре",
+    "классе",
+    "архиве",
+    "лаборатории",
+    "оранжерее",
+    "галерее",
+    "мастерской",
+)
+
+
+def _clean_record(index: int) -> dict[str, str | int]:
+    place = _PLACES[index]
+    return {
+        "dataset": "65-clean",
+        "record_type": "fragment",
+        "record_id": f"real-{index:02d}",
+        "scene_id": "sc-real",
+        "kind": "vo_cell",
+        "text": f"оператор ставит камеру в {place} номер {index}",
+        "slug": "tkach-finalochka",
+        "project_id": 65,
+    }
+
+
 def test_holdout3_sampler_reads_project65_and_keeps_the_seed() -> None:
-    from evals.orchestrator.holdout3 import QUOTA, SEED, draw, project65_records, query_text
+    from evals.orchestrator.holdout3 import QUOTA, SEED, HoldoutPoolError, draw, filter_pool, project65_records, query_text
 
     records = project65_records()
     assert records
     assert {row["project_id"] for row in records} == {65}
     assert {row["dataset"] for row in records} == {"65-clean", "65-seeded"}
-    drawn = draw(SEED, records, ["rule-1", "rule-9"])
+    kept, report = filter_pool(records)
+    assert kept == []
+    assert report["pool"] == 32
+    assert report["rejected"] == {
+        "vo_bracket": 24,
+        "dataset_frame_id": 8,
+        "single_letter": 24,
+        "few_content_words": 32,
+    }
+    with pytest.raises(HoldoutPoolError) as raised:
+        draw(SEED, records, ["rule-1", "rule-9"])
+    assert raised.value.report["kept"] == 0
+    clean = [_clean_record(index) for index in range(30)]
+    drawn = draw(SEED, clean, ["rule-1", "rule-9"])
     assert [item["id"] for item in drawn] == [f"h3-{number:02d}" for number in range(1, 25)]
     families = [item["family"] for item in drawn]
     for family, count in QUOTA:
         assert families.count(family) == count
-    assert draw(SEED, records, ["rule-1", "rule-9"]) == drawn
-    other = draw(SEED + 1, records, ["rule-1", "rule-9"])
+    assert draw(SEED, clean, ["rule-1", "rule-9"]) == drawn
+    other = draw(SEED + 1, clean, ["rule-1", "rule-9"])
     assert [item["source"]["record_id"] for item in other] != [item["source"]["record_id"] for item in drawn]
-    pool = {(row["dataset"], row["record_type"], row["record_id"]): row for row in records}
+    pool = {(row["dataset"], row["record_type"], row["record_id"]): row for row in clean}
     for item in drawn:
         source = item["source"]
         record = pool[(source["dataset"], source["record_type"], source["record_id"])]
@@ -260,31 +321,58 @@ def test_holdout3_sampler_reads_project65_and_keeps_the_seed() -> None:
     assert rules[0]["part_key"] in {"rule-1", "rule-9"}
 
 
+def test_short_clean_pool_shrinks_quotas_from_the_tail() -> None:
+    from evals.orchestrator.holdout3 import SEED, HoldoutPoolError, draw, family_shortfall
+
+    drawn = draw(SEED, [_clean_record(index) for index in range(20)], ["rule-2"])
+    assert len(drawn) == 20
+    families = [item["family"] for item in drawn]
+    assert families.count("assemble") == 5
+    assert families.count("world") == 5
+    assert families.count("camera") == 3
+    assert families.count("action") == 3
+    assert families.count("script") == 3
+    assert families.count("characters") == 1
+    assert families.count("shots") == 0
+    assert families.count("rules") == 0
+    assert family_shortfall(20) == {"characters": 1, "shots": 2, "rules": 1}
+    assert family_shortfall(18) == {"script": 1, "characters": 2, "shots": 2, "rules": 1}
+    with pytest.raises(HoldoutPoolError):
+        draw(SEED, [_clean_record(index) for index in range(17)], ["rule-2"])
+    assert family_shortfall(0) == {
+        "assemble": 5,
+        "world": 5,
+        "camera": 3,
+        "action": 3,
+        "script": 3,
+        "characters": 2,
+        "shots": 2,
+        "rules": 1,
+    }
+
+
+def test_filtered_project65_pool_is_not_rewritten() -> None:
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, HoldoutPoolError, build_holdout3_document, load_holdout3_queries
+
+    before = file_sha256(HOLDOUT3_PATH)
+    assert before == FROZEN_SHA256["precision_live_holdout3.json"]["sha256"]
+    with pytest.raises(HoldoutPoolError) as built:
+        build_holdout3_document()
+    assert built.value.report["kept"] == 0
+    assert built.value.report["rejected"]["vo_bracket"] == 24
+    assert built.value.report["rejected"]["dataset_frame_id"] == 8
+    assert built.value.report["rejected"]["single_letter"] == 24
+    assert built.value.report["rejected"]["few_content_words"] == 32
+    with pytest.raises(HoldoutPoolError):
+        load_holdout3_queries()
+    assert file_sha256(HOLDOUT3_PATH) == before
+
+
 def test_holdout3_file_is_frozen_normalized_and_tuning_does_not_load_it() -> None:
-    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, SEED, build_holdout3_document, load_holdout3_queries, write_holdout3_file
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, write_holdout3_file
 
     assert FROZEN_SHA256["precision_live_holdout3.json"]["sha256"] == file_sha256(HOLDOUT3_PATH)
     assert_frozen(HOLDOUT3_PATH)
-    document = json.loads(HOLDOUT3_PATH.read_text(encoding="utf-8"))
-    assert document["seed"] == SEED
-    assert build_holdout3_document()["queries"] == document["queries"]
-    queries = load_holdout3_queries()
-    assert len(queries) == 24
-    families = [query["family"] for query in queries]
-    assert families.count("assemble") >= 5
-    assert families.count("world") >= 5
-    assert families.count("camera") >= 3
-    assert families.count("action") >= 3
-    assert families.count("script") >= 3
-    for query in queries:
-        assert query["id"].startswith("h3-")
-        for item in query["relevant"]:
-            assert item["grade"] == 1
-            assert item["chunk_id"] == chunk_id_for(item["corpus"], item["source_id"], item["part_key"])
-        if query["family"] == "rules":
-            assert len({item["part_key"] for item in query["relevant"]}) == 1
-        else:
-            assert {item["source_id"] for item in query["relevant"]} == set(FAMILY_NODES[query["family"]])
     before = HOLDOUT3_PATH.read_bytes()
     write_holdout3_file()
     assert HOLDOUT3_PATH.read_bytes() == before

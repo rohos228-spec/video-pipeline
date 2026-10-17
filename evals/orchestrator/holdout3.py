@@ -1,8 +1,9 @@
-"""Holdout-3: 24 запроса из данных проекта 65.
+"""Holdout-3: до 24 запросов из данных проекта 65.
 
-Отбор делает ``random.Random(SEED)`` (CPython). Тексты не пишутся вручную:
-у фрагмента это сохранённое поле ``text``, у кадра — имя набора и id.
-Семейство назначает квота после перемешивания, без retrieve и без метрик.
+Отбор делает ``random.Random(SEED)`` (CPython) по записям, прошедшим фильтр.
+Тексты не пишутся вручную. Семейство назначает квота после перемешивания,
+без retrieve и без метрик. Если после фильтра меньше 18 записей, файл не
+пересобирается.
 Разметка та же, что у прежних наборов: семейство — все реальные чанки двух нод,
 правило — один ``part_key``.
 """
@@ -21,6 +22,7 @@ from evals.orchestrator.project65 import load_dataset
 # Зафиксирован до сборки файла. Перебора сидов не было.
 SEED = 65
 QUERY_COUNT = 24
+MIN_QUERY_COUNT = 18
 DATASETS = ("65-clean", "65-seeded")
 # Минимум: assemble 5, world 5, camera 3, action 3, script 3.
 # Остаток 5 — незакрытые семейства FAMILY_NODES (characters, shots) по 2 и одно правило.
@@ -39,11 +41,13 @@ HOLDOUT3_PATH = Path(__file__).resolve().parent / "datasets" / HOLDOUT3_NAME
 
 SOURCE = (
     "Пул — load_dataset('65-clean') и load_dataset('65-seeded'): каждый fragment "
-    "и каждый id из frames_before. 65-canary не входит: канарейка не смешивается "
-    "с эталоном. Каталога datasets/ws1 нет, загрузчик отдаёт закоммиченные заглушки. "
-    "Текст запроса — поле text фрагмента или «dataset record_id» кадра. "
+    "и каждый id из frames_before. 65-canary не входит. "
+    "До shuffle работает filter_pool: тексты с [vo-…], тексты вида dataset + id кадра, "
+    "ряды из одной буквы и тексты меньше чем из 3 содержательных слов "
+    "(стоп-слова, id и односимвольные токены не считаются). "
     "Формулировки не дописываются. Семейство назначает квота после "
-    "random.Random(seed).shuffle записей и слотов квоты. "
+    "random.Random(seed).shuffle сохранившихся записей и слотов квоты. "
+    "Если после фильтра меньше 24, квота снимается с хвоста, но не ниже 18. "
     "Ранжировщик, retrieve и метрики в отборе не участвуют."
 )
 LABEL_RULE = (
@@ -209,12 +213,41 @@ def filter_pool(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     return kept, report
 
 
-def quota_slots() -> list[str]:
+class HoldoutPoolError(RuntimeError):
+    """После фильтра в пуле меньше 18 записей, набор не пересобирается."""
+
+    def __init__(self, report: dict[str, Any]) -> None:
+        self.report = report
+        super().__init__(
+            f"после фильтра {report.get('kept')} из {report.get('pool')}, нужно не меньше {MIN_QUERY_COUNT}"
+        )
+
+
+def family_shortfall(kept: int) -> dict[str, int]:
+    """Недобор относительно QUOTA. Ниже 18 квоты не заполняются."""
+    if kept < MIN_QUERY_COUNT:
+        return {family: count for family, count in QUOTA}
+    remaining = min(kept, QUERY_COUNT)
+    short: dict[str, int] = {}
+    for family, count in QUOTA:
+        take = min(count, remaining)
+        if take < count:
+            short[family] = count - take
+        remaining -= take
+    return short
+
+
+def quota_slots(n: int = QUERY_COUNT) -> list[str]:
+    if n < MIN_QUERY_COUNT or n > QUERY_COUNT:
+        raise HoldoutPoolError({"pool": n, "kept": n, "rejected": {}})
+    remaining = n
     slots: list[str] = []
     for family, count in QUOTA:
-        slots.extend([family] * count)
-    if len(slots) != QUERY_COUNT:
-        raise RuntimeError(f"квота {len(slots)} != {QUERY_COUNT}")
+        take = min(count, remaining)
+        slots.extend([family] * take)
+        remaining -= take
+    if len(slots) != n:
+        raise RuntimeError(f"квота {len(slots)} != {n}")
     return slots
 
 
@@ -231,16 +264,17 @@ def _rule_part_keys(docs: list[Any]) -> list[str]:
 
 
 def draw(seed: int, records: list[dict[str, Any]], rule_part_keys: list[str]) -> list[dict[str, Any]]:
-    """Перемешать пул и слоты одним Random(seed). Вернуть 24 назначения без текстов вопросов."""
-    if len(records) < QUERY_COUNT:
-        raise RuntimeError(f"в пуле проекта 65 {len(records)} записей, нужно {QUERY_COUNT}")
+    """Перемешать отфильтрованный пул и слоты одним Random(seed)."""
+    kept, report = filter_pool(records)
+    if len(kept) < MIN_QUERY_COUNT:
+        raise HoldoutPoolError(report)
     if not rule_part_keys:
         raise RuntimeError("нет part_key правил")
     rng = random.Random(seed)
-    ordered = list(records)
+    ordered = list(kept)
     rng.shuffle(ordered)
-    chosen = ordered[:QUERY_COUNT]
-    slots = quota_slots()
+    slots = quota_slots(min(QUERY_COUNT, len(kept)))
+    chosen = ordered[: len(slots)]
     rng.shuffle(slots)
     part_key = rule_part_keys[rng.randrange(len(rule_part_keys))]
     drawn: list[dict[str, Any]] = []
@@ -268,10 +302,14 @@ def draw(seed: int, records: list[dict[str, Any]], rule_part_keys: list[str]) ->
 def build_holdout3_document(docs: list[Any] | None = None, *, seed: int = SEED) -> dict[str, Any]:
     from evals.orchestrator.holdout import _index_docs
 
+    records = project65_records()
+    _kept, report = filter_pool(records)
+    if report["kept"] < MIN_QUERY_COUNT:
+        raise HoldoutPoolError(report)
     catalog = list(docs) if docs is not None else _index_docs()
-    drawn = draw(seed, project65_records(), _rule_part_keys(catalog))
-    if len(drawn) != QUERY_COUNT:
-        raise RuntimeError(f"ожидалось {QUERY_COUNT} запросов, получилось {len(drawn)}")
+    drawn = draw(seed, records, _rule_part_keys(catalog))
+    if not MIN_QUERY_COUNT <= len(drawn) <= QUERY_COUNT:
+        raise RuntimeError(f"ожидалось {MIN_QUERY_COUNT}..{QUERY_COUNT} запросов, получилось {len(drawn)}")
     queries = []
     for item in drawn:
         question = {"id": item["id"], "family": item["family"], "part_key": item["part_key"]}
@@ -292,6 +330,8 @@ def build_holdout3_document(docs: list[Any] | None = None, *, seed: int = SEED) 
         "source": SOURCE,
         "label_rule": LABEL_RULE,
         "quota": {family: count for family, count in QUOTA},
+        "quota_shortfall": family_shortfall(len(drawn)),
+        "filter": report,
         "queries": queries,
     }
 
@@ -303,8 +343,19 @@ def load_holdout3_queries() -> list[dict[str, Any]]:
     assert_frozen(HOLDOUT3_PATH)
     document = json.loads(HOLDOUT3_PATH.read_text(encoding="utf-8"))
     queries = list(document["queries"])
-    if len(queries) != QUERY_COUNT:
-        raise RuntimeError(f"в holdout-3 {len(queries)} запросов, ожидалось {QUERY_COUNT}")
+    rejected = {rule: 0 for rule in FILTER_RULES}
+    bad = 0
+    for query in queries:
+        reasons = rejection_rules(str(query.get("text") or ""))
+        if not reasons:
+            continue
+        bad += 1
+        for reason in reasons:
+            rejected[reason] += 1
+    if bad:
+        raise HoldoutPoolError({"pool": len(queries), "kept": len(queries) - bad, "rejected": rejected})
+    if not MIN_QUERY_COUNT <= len(queries) <= QUERY_COUNT:
+        raise RuntimeError(f"в holdout-3 {len(queries)} запросов, ожидалось {MIN_QUERY_COUNT}..{QUERY_COUNT}")
     if int(document["seed"]) != SEED:
         raise RuntimeError(f"seed файла {document['seed']} != {SEED}")
     return queries
