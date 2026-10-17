@@ -269,6 +269,18 @@ def build_holdout_document(docs: list[Any] | None = None) -> dict[str, Any]:
     }
 
 
+def load_holdout_queries() -> list[dict[str, Any]]:
+    """Финальный замер. Тюнинг сюда не ходит: ``read_for_tuning`` этот путь отвергает."""
+    from evals.orchestrator.frozen_datasets import assert_frozen
+
+    assert_frozen(HOLDOUT_PATH)
+    document = json.loads(HOLDOUT_PATH.read_text(encoding="utf-8"))
+    queries = list(document["queries"])
+    if len(queries) != 20:
+        raise RuntimeError(f"в holdout {len(queries)} запросов, ожидалось 20")
+    return queries
+
+
 def write_holdout_file(*, rewrite: bool = False) -> dict[str, Any]:
     """Существующий файл только сверяется. Перезапись запрещена."""
     if HOLDOUT_PATH.exists():

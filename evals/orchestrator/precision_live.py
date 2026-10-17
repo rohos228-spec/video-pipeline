@@ -1682,6 +1682,230 @@ def measure_prod_path(artifact: Path | None = None, report: Path | None = None) 
     return payload
 
 
+def family_slices(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Срез all и по семействам. Dev/test сюда не подмешиваются."""
+    slices: dict[str, dict[str, float]] = {"all": summarize_rows(rows)}
+    families: list[str] = []
+    for row in rows:
+        family = str(row["family"])
+        if family not in families:
+            families.append(family)
+    for family in families:
+        slices[family] = summarize_rows([row for row in rows if row["family"] == family])
+    return slices
+
+
+def prod_p95_each_gate(samples: list[float]) -> dict[str, Any]:
+    """Порог 1.2 с на каждом холодном прогоне, не на медиане."""
+    if len(samples) != PASS_COUNT:
+        raise ValueError(f"нужны {PASS_COUNT} прогона p95, получено {len(samples)}")
+    ordered = [float(item) for item in samples]
+    return {
+        "samples_s": ordered,
+        "limit_s": P95_MAX_S,
+        "each_within_limit": all(item <= P95_MAX_S for item in ordered),
+        "above": [item for item in ordered if item > P95_MAX_S],
+    }
+
+
+def execute_holdout_pass(work_dir: Path) -> dict[str, Any]:
+    """Один проход holdout: свой ``orch_rag.db`` и свой reindex. Dev-плюс не подмешивается."""
+    from evals.orchestrator.holdout import load_holdout_queries
+
+    config = _remeasure_config()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    db_path = work_dir / "orch_rag.db"
+    if db_path.exists():
+        db_path.unlink()
+    queries = load_holdout_queries()
+    embedder = build_embedder("e5-large", eval_mode=True)
+    reranker = build_reranker("bge-m3", max_length=int(config["max_length"]), eval_mode=True)
+    engine = _engine(db_path, embedder, reranker)
+    try:
+        print("holdout reindex", work_dir, flush=True)
+        engine.reindex(["rules", "nodes", "prompts"], timeout=900)
+        print("holdout chunks", len(_index_catalog(engine)), "pid", os.getpid(), flush=True)
+        rows = measure_chunk_rows(
+            engine,
+            queries,
+            rerank=True,
+            rrf_k=int(config["rrf_k"]),
+            rrf_weights=(float(config["lexical"]), float(config["vector"])),
+            bm25_scope=str(config["bm25_scope"]),
+            rerank_pool=int(config["rerank_pool"]),
+            aggregate=str(config["aggregate"]),
+            rerank_fusion=str(config["rerank_fusion"]),
+            rerank_fusion_weights=(float(config["fusion_bm25"]), float(config["fusion_rerank"])),
+            bm25_protect=float(config["bm25_protect"]),
+            family_boost=float(config["family_boost"]),
+        )
+        slices = family_slices(rows)
+    finally:
+        engine.close()
+    return {
+        "slices": slices,
+        "embedder_id": embedder.embedder_id,
+        "reranker_id": reranker.reranker_id,
+        "intra_op": getattr(embedder.inner, "intra_op_threads", None),
+        "inter_op": 1,
+        "db_path": str(db_path.resolve()),
+        "pid": os.getpid(),
+        "fresh_db": True,
+        "query_ids": [query["id"] for query in queries],
+    }
+
+
+def run_holdout_measure(out: Path | None = None, artifact: Path | None = None) -> dict[str, Any]:
+    """Три процесса fp32 на holdout. Повторный прогон отсюда не запускается."""
+    report_path = out or REPORT_PATH
+    artifact_path = artifact or PASSES_PATH
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-holdout-"))
+    passes: list[dict[str, dict[str, float]]] = []
+    pass_meta: list[dict[str, Any]] = []
+    try:
+        for index in range(PASS_COUNT):
+            work = temp_dir / f"pass-{index}"
+            out_path = work / "pass.json"
+            work.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "evals.orchestrator.precision_live",
+                    "--holdout-pass",
+                    "--pass-dir",
+                    str(work),
+                    "--pass-out",
+                    str(out_path),
+                ],
+                check=True,
+            )
+            one = json.loads(out_path.read_text(encoding="utf-8"))
+            passes.append(one["slices"])
+            pass_meta.append(
+                {
+                    "embedder_id": one["embedder_id"],
+                    "reranker_id": one["reranker_id"],
+                    "intra_op": one["intra_op"],
+                    "inter_op": one["inter_op"],
+                    "db_path": one["db_path"],
+                    "pid": one["pid"],
+                    "query_ids": one["query_ids"],
+                }
+            )
+            print("HOLDOUT_PASS", index, "pid", one["pid"], one["slices"]["all"], flush=True)
+        packed = aggregate_pass_slices(passes)
+        acceptance = contour_c_acceptance(packed["median"]["all"]["ndcg_at_8"])
+        hit_ok = packed["median"]["all"]["hit_at_5"] >= HIT_AT_5_MIN
+        payload = {
+            **packed,
+            "pass_meta": pass_meta,
+            "config": _remeasure_config(),
+            "acceptance": acceptance,
+            "hit_at_5_met": hit_ok,
+            "set": "holdout",
+        }
+        write_pass_artifact(artifact_path, payload)
+        report_path.write_text(_render_holdout_report(payload), encoding="utf-8")
+        print(json.dumps({"identical": packed["identical"], "acceptance": acceptance, "hit_at_5_met": hit_ok}, ensure_ascii=False), flush=True)
+        return payload
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _render_holdout_report(payload: dict[str, Any]) -> str:
+    median = payload["median"]
+    lines = [
+        "# Holdout контура B",
+        "",
+        "Один замер: три процесса, fp32, один поток, сид 0, у каждого свой reindex.",
+        "Dev-плюс в этот прогон не входил. Пороги не сдвигались.",
+        "",
+        "| срез | hit@5 | nDCG@8 | nDCG док | p95, с |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for name, row in median.items():
+        lines.append(
+            f"| {name} | {row['hit_at_5']:.4f} | {row['ndcg_at_8']:.4f} | "
+            f"{row['ndcg_doc']:.4f} | {row['p95_s']:.3f} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"nDCG@8 ≥ {NDCG_AT_8_MIN}: {payload['acceptance']['mark'] or 'взят'}.",
+            f"hit@5 ≥ {HIT_AT_5_MIN}: {'взят' if payload['hit_at_5_met'] else 'не взят'}.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def measure_holdout_prod_p95(artifact: Path | None = None) -> dict[str, Any]:
+    """Три холодных p95 ``get_engine(profile='contour-b')`` на holdout.
+
+    Число выше 1.2 с остаётся в артефакте. Повторного прогона нет.
+    """
+    import platform
+
+    from app.orchestrator.rag import get_engine, reset_engine
+    from evals.orchestrator.holdout import load_holdout_queries
+
+    queries = load_holdout_queries()
+    import app.orchestrator.rag as rag_mod
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-prod-holdout-"))
+    rag_mod.default_db_path = lambda: temp_dir / "orch_rag.db"
+    reset_engine()
+    engine = get_engine(profile="contour-b")
+    prod_corpora = ["rules", "history", "nodes", "prompts"]
+    defaults = {key: value for key, value in engine.retrieve_defaults.items() if value is not None}
+    samples: list[float] = []
+    try:
+        print("prod holdout reindex", engine.db_path, flush=True)
+        engine.reindex(prod_corpora, timeout=900)
+        for index in range(PASS_COUNT):
+            engine._clear_retrieval_cache()
+            rows = measure_chunk_rows(
+                engine,
+                queries,
+                rerank=defaults.get("rerank", True) is not False,
+                rrf_k=int(defaults["rrf_k"]),
+                rrf_weights=tuple(defaults["rrf_weights"]),
+                bm25_scope=str(defaults["bm25_scope"]),
+                rerank_pool=int(defaults["rerank_pool"]),
+                aggregate=str(defaults["aggregate"]),
+                rerank_fusion=str(defaults["rerank_fusion"]),
+                rerank_fusion_weights=tuple(defaults["rerank_fusion_weights"]),
+                bm25_protect=float(defaults["bm25_protect"]),
+                family_boost=float(defaults["family_boost"]),
+                corpora=prod_corpora,
+            )
+            samples.append(summarize_rows(rows)["p95_s"])
+            print("PROD_HOLDOUT_PASS", index, round(samples[-1], 4), flush=True)
+    finally:
+        reset_engine()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    gate = prod_p95_each_gate(samples)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    recorded = record_prod_p95(
+        samples,
+        config=_remeasure_config(),
+        commit=commit,
+        hardware={"cpu_count": os.cpu_count(), "platform": platform.platform()},
+    )
+    recorded["each_within_limit"] = gate["each_within_limit"]
+    recorded["above"] = gate["above"]
+    payload: dict[str, Any] = {}
+    if artifact is not None and artifact.is_file():
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["prod_p95"] = recorded
+    payload["prod_p95_gate"] = gate
+    if artifact is not None:
+        write_pass_artifact(artifact, payload)
+    print(json.dumps({"prod_p95": recorded, "gate": gate}, ensure_ascii=False), flush=True)
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
@@ -1701,9 +1925,25 @@ def main() -> None:
     parser.add_argument("--prod-p95", action="store_true", help="p95 и качество прод-пути get_engine")
     parser.add_argument("--artifact", type=Path, default=PASSES_PATH)
     parser.add_argument("--remeasure-pass", action="store_true", help="один проход в отдельном процессе")
+    parser.add_argument("--holdout-pass", action="store_true", help="один проход holdout в отдельном процессе")
+    parser.add_argument("--holdout-measure", action="store_true", help="три процесса fp32 на замороженном holdout")
+    parser.add_argument("--holdout-prod-p95", action="store_true", help="три холодных p95 прод-пути на holdout")
     parser.add_argument("--pass-dir", type=Path)
     parser.add_argument("--pass-out", type=Path)
     args = parser.parse_args()
+    if args.holdout_pass:
+        if args.pass_dir is None or args.pass_out is None:
+            raise SystemExit("--holdout-pass требует --pass-dir и --pass-out")
+        payload = execute_holdout_pass(args.pass_dir)
+        args.pass_out.parent.mkdir(parents=True, exist_ok=True)
+        args.pass_out.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        return
+    if args.holdout_measure:
+        run_holdout_measure(args.out, args.artifact)
+        return
+    if args.holdout_prod_p95:
+        measure_holdout_prod_p95(args.artifact)
+        return
     if args.remeasure_pass:
         if args.pass_dir is None or args.pass_out is None:
             raise SystemExit("--remeasure-pass требует --pass-dir и --pass-out")

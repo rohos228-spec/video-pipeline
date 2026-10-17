@@ -188,6 +188,33 @@ def test_tuning_reader_rejects_holdout_and_accepts_dev_plus() -> None:
     assert key == "fit"
 
 
+def test_prod_p95_gate_is_each_run_not_the_median() -> None:
+    from evals.orchestrator.precision_live import prod_p95_each_gate
+
+    under = prod_p95_each_gate([1.1, 0.9, 1.2])
+    assert under["each_within_limit"] is True
+    over = prod_p95_each_gate([0.4, 1.21, 0.5])
+    assert over["each_within_limit"] is False
+    assert over["above"] == [1.21]
+
+
+def test_holdout_loader_is_frozen_and_tuning_does_not_call_it() -> None:
+    from evals.orchestrator.holdout import load_holdout_queries
+
+    queries = load_holdout_queries()
+    assert len(queries) == 20
+    source = Path("evals/orchestrator/precision_live.py").read_text(encoding="utf-8")
+    tune = source[source.index("def run_tune"): source.index("def contour_c_acceptance")]
+    assert "load_holdout_queries" not in tune
+    measure = source[source.index("def run_holdout_measure"): source.index("def _render_holdout_report")]
+    assert "load_holdout_queries" not in measure
+    assert measure.count("subprocess.run") == 1
+    assert "--holdout-pass" in measure
+    one = source[source.index("def execute_holdout_pass"): source.index("def run_holdout_measure")]
+    assert "load_holdout_queries" in one
+    assert "eval_mode=True" in one
+
+
 def test_tuning_entry_points_read_through_the_guard() -> None:
     source = Path("evals/orchestrator/precision_live.py").read_text(encoding="utf-8")
     for name in ("def _main_grid", "def run_profile_pair", "def run_abc", "def run_tune"):
