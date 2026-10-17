@@ -100,8 +100,15 @@ PROMPT_GROUPS = ("script_frames_qc",)
 PROMPT_GROUP_ANCHOR = "n_excel_gpt_1"
 SECOND_GENERIC_NODE = "n_excel_gpt_2"
 GROUP_NODE_KEYS: dict[str, tuple[str, ...]] = {
-    "script_frames_qc": ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action", "n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc",
-                         "n_excel_gpt_fw_report"),
+    "script_frames_qc": (
+        "n_excel_gpt_fw_boundaries",
+        "n_excel_gpt_fw_script",
+        "n_excel_gpt_fw_action",
+        "n_excel_gpt_fw_shots",
+        "n_excel_gpt_fw_qc",
+        "n_excel_gpt_fw_style",
+        "n_excel_gpt_fw_report",
+    ),
 }
 GROUP_LLM_KINDS: dict[str, tuple[str, ...]] = {
     "script_frames_qc": ("group_skeleton", "group_action", "group_shots", "group_qc"),
@@ -785,7 +792,7 @@ class TextOracle:
         self.frame_texts = GROUP_SCENE_VOS if prompt_group else FRAME_TEXTS
 
     GROUP_MARKERS = (
-        ("# Агент: каркас сцены", "group_skeleton"),
+        ("# Агент: каркас сцен", "group_skeleton"),
         ("# РАЗБОР СЦЕН / АГЕНТ ПЛОЩАДКИ", "group_action"),
         ("# Агент: сцены → кадры RU", "group_shots"),
         ("# Агент: QC полей кадров RU", "group_qc"),
@@ -1738,7 +1745,7 @@ FINDINGS: list[dict] = [
               "{{VAR:EXCEL_GPT_SHEET}}, {{VAR:EXCEL_GPT_TASK}}, {{BLOCK:enrich_*}}; воркер после них сам не идёт дальше "
               "(нужен ▶ оператора на следующей ноде).",
      "where": ["prompts/05_excel_gpt/default.md:5,12 (метки в мастер-промте)",
-               "app/orchestrator/steps/enrich_xlsx.py:1116-1126 (_hold_pipeline_after_excel_gpt: пауза по замыслу)"],
+               "app/orchestrator/steps/enrich_xlsx.py:1193-1203 (_hold_pipeline_after_excel_gpt: пауза по замыслу)"],
      "repro": "work/llm_requests/0006.json: в тексте запроса литералы {{VAR:...}} и {{BLOCK:...}}.",
      "masked_by": "оператор нажимает ▶ через ручку UI", "stops_at": None},
     {"id": "F10-D8", "level": "A", "node": "plan (опрос GET /api/projects/{id} во время завершения шага)",
@@ -1748,7 +1755,7 @@ FINDINGS: list[dict] = [
               "каждые 0,5 с (прогон x12, два запроса plan в llm_requests); интерфейс опрашивает реже, воспроизводится "
               "не по заказу.",
      "where": ["app/web/routers/projects.py:222-234 (_heal_get_runtime_from_master + commit в GET)",
-               "app/project_db.py:730-737 (pull_master_runtime: «берём master»)"],
+               "app/project_db.py:772-778 (pull_master_runtime: «берём master»)"],
      "repro": "work/llm_requests: два запроса «Тема ролика» подряд; server.log: «pull_master_runtime: #2 project.db=plan_ready "
               "master=planning — берём master». Стенд поэтому читает статус из project.db без GET во время прогона.",
      "masked_by": "стенд опрашивает project.db только на чтение", "stops_at": None},
