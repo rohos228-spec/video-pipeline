@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.orchestrator.validators.grammar import merge_notes, shots_of
+from app.orchestrator.validators.grammar import active_shots, merge_notes, shots_of
 from app.orchestrator.validators.result import make_result
 
 _NAME = "shot_merge"
@@ -12,7 +12,7 @@ _NAME = "shot_merge"
 
 def check(project_id: int, context: dict[str, Any]) -> Any:
     del project_id
-    shots = shots_of(context)
+    shots = active_shots(shots_of(context))
     if not shots:
         return make_result(
             name=_NAME,

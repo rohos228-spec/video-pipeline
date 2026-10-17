@@ -135,8 +135,8 @@ def _set_cam_text(s: dict[str, Any], plan: str, ang_sentence: str) -> None:
         s[k] = t
 
 
-def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
-    """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить."""
+def _merge_active_neighbors(shots: list[Any]) -> list[str]:
+    """Склейка списка, в котором неактивных уже нет."""
 
     if not isinstance(shots, list) or len(shots) < 2:
         return []
@@ -172,6 +172,29 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
             if pid in merged_into:
                 s["parent_id"] = merged_into[pid]
     shots[:] = out
+    return notes
+
+
+def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
+    """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить.
+
+    Неактивный шот не склеивается и не меняет ``порядок`` живых. Из списка
+    он не выкидывается и его поля не пишутся заново.
+    """
+
+    if not isinstance(shots, list) or len(shots) < 2:
+        return []
+    if all(shot_counts_as_active(shot) for shot in shots):
+        return _merge_active_neighbors(shots)
+    original = list(shots)
+    live = [shot for shot in original if shot_counts_as_active(shot)]
+    notes = _merge_active_neighbors(live)
+    survived = {id(shot) for shot in live}
+    shots[:] = [
+        shot
+        for shot in original
+        if (not shot_counts_as_active(shot)) or id(shot) in survived
+    ]
     return notes
 
 
