@@ -83,6 +83,30 @@ _OS_DELETE = frozenset({"remove", "unlink", "rmdir", "removedirs"})
 _PATH_DELETE = frozenset({"unlink", "rmdir"})
 _PATH_CREATE = frozenset({"touch", "mkdir"})
 _PATH_MOVE = frozenset({"rename", "replace"})
+_DANGEROUS_OS = _OS_DELETE | _OS_RENAME | frozenset({"truncate"})
+_DANGEROUS_PATH = _PATH_DELETE | _PATH_MOVE | frozenset({"truncate"})
+_OS_WRITE_FLAGS = frozenset({"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"})
+_OS_READ_FLAGS = frozenset({"O_RDONLY"})
+_OS_NEUTRAL_FLAGS = frozenset(
+    {
+        "O_BINARY",
+        "O_CLOEXEC",
+        "O_NOFOLLOW",
+        "O_NONBLOCK",
+        "O_SYNC",
+        "O_DSYNC",
+        "O_RSYNC",
+        "O_NOCTTY",
+        "O_EXCL",
+        "O_DIRECTORY",
+        "O_LARGEFILE",
+        "O_NOATIME",
+        "O_PATH",
+        "O_TMPFILE",
+        "O_TEXT",
+    }
+)
+_EXEC_GETATTR_MODULES = frozenset({"subprocess", "os", "shutil", "pty"})
 _DELETE_KINDS = frozenset(
     {
         "shutil.rmtree",
@@ -324,7 +348,7 @@ def _import_bindings(tree: ast.AST) -> tuple[dict[str, tuple[str, str | None]], 
     """
     bound: dict[str, tuple[str, str | None]] = {}
     stars: set[str] = set()
-    interesting = {"subprocess", "os", "asyncio", "pty"}
+    interesting = {"subprocess", "os", "asyncio", "pty", "shutil"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -398,6 +422,59 @@ def _is_exec_call(
     return False
 
 
+def _bound_module(
+    node: ast.AST,
+    bindings: dict[str, tuple[str, str | None]],
+) -> str | None:
+    if not isinstance(node, ast.Name):
+        return None
+    info = bindings.get(node.id)
+    if info is not None and info[1] is None:
+        return info[0]
+    if node.id in _EXEC_GETATTR_MODULES and node.id not in bindings:
+        return node.id
+    return None
+
+
+def _getattr_is_exec(
+    node: ast.Call,
+    bindings: dict[str, tuple[str, str | None]],
+) -> bool:
+    """Любой getattr на subprocess/os/shutil/pty — как вызов опасной функции."""
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else None
+    if name != "getattr" or not node.args:
+        return False
+    return _bound_module(node.args[0], bindings) in _EXEC_GETATTR_MODULES
+
+
+def _exec_value_label(
+    node: ast.AST,
+    bindings: dict[str, tuple[str, str | None]],
+    stars: set[str],
+) -> str | None:
+    """Имя исполняющей функции в аргументе, присваивании или return."""
+    if isinstance(node, ast.Name):
+        if node.id in _EXEC_BARE:
+            return node.id
+        info = bindings.get(node.id)
+        if info is not None and info[1] is not None and _imported_name_is_exec(info[0], info[1]):
+            return node.id
+        if any(_imported_name_is_exec(module, node.id) for module in stars):
+            return node.id
+        return None
+    if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+        return None
+    module = _bound_module(node.value, bindings)
+    if module is None or module == "shutil":
+        return None
+    if module == "subprocess" and node.attr not in _SUBPROCESS_FUNCS:
+        return None
+    if not _attr_is_exec(module, node.attr):
+        return None
+    return f"{node.value.id}.{node.attr}"
+
+
 def _call_label(func: ast.AST) -> str:
     if isinstance(func, ast.Name):
         return func.id
@@ -411,9 +488,28 @@ def exec_calls_in_source(source: str) -> list[str]:
     tree = ast.parse(textwrap.dedent(source))
     bindings, stars = _import_bindings(tree)
     found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _is_exec_call(node, bindings, stars):
-            found.append(_call_label(node.func))
+
+    def walk(node: ast.AST, *, call_func: bool) -> None:
+        if isinstance(node, ast.Call) and not call_func:
+            if _is_exec_call(node, bindings, stars):
+                found.append(_call_label(node.func))
+            elif _getattr_is_exec(node, bindings):
+                found.append("getattr")
+            walk(node.func, call_func=True)
+            for arg in node.args:
+                walk(arg, call_func=False)
+            for kw in node.keywords:
+                if kw.value is not None:
+                    walk(kw.value, call_func=False)
+            return
+        if not call_func:
+            label = _exec_value_label(node, bindings, stars)
+            if label:
+                found.append(label)
+        for child in ast.iter_child_nodes(node):
+            walk(child, call_func=False)
+
+    walk(tree, call_func=False)
     return found
 
 
@@ -946,6 +1042,79 @@ def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     return modules, funcs
 
 
+def _os_flag_bindings(tree: ast.AST) -> dict[str, str]:
+    found: dict[str, str] = {}
+    known = _OS_WRITE_FLAGS | _OS_READ_FLAGS | _OS_NEUTRAL_FLAGS
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if (node.module or "").split(".", 1)[0] != "os":
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                for fname in known:
+                    found[fname] = fname
+            elif alias.name in known:
+                found[alias.asname or alias.name] = alias.name
+    return found
+
+
+def _os_open_names(tree: ast.AST) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if (node.module or "").split(".", 1)[0] != "os":
+            continue
+        for alias in node.names:
+            if alias.name == "open":
+                found.add(alias.asname or alias.name)
+    return found
+
+
+def _merge_flag_class(left: str, right: str) -> str:
+    if left == "write" or right == "write":
+        return "write"
+    if left == "unknown" or right == "unknown":
+        return "unknown"
+    if left == "read" or right == "read":
+        return "read"
+    return "neutral"
+
+
+def _classify_os_flags(
+    node: ast.AST | None,
+    os_modules: set[str],
+    os_flags: dict[str, str],
+) -> str:
+    """read — только O_RDONLY и нейтральные флаги. Иначе write или unknown."""
+    if node is None:
+        return "unknown"
+
+    def one(expr: ast.AST) -> str:
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+            return _merge_flag_class(one(expr.left), one(expr.right))
+        name = None
+        if (
+            isinstance(expr, ast.Attribute)
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id in os_modules
+        ):
+            name = expr.attr
+        elif isinstance(expr, ast.Name):
+            name = os_flags.get(expr.id)
+        if name in _OS_WRITE_FLAGS:
+            return "write"
+        if name in _OS_READ_FLAGS:
+            return "read"
+        if name in _OS_NEUTRAL_FLAGS:
+            return "neutral"
+        return "unknown"
+
+    klass = one(node)
+    return "unknown" if klass == "neutral" else klass
+
+
 def _fs_surface(tree: ast.AST) -> tuple[set[str], set[str], dict[str, str]]:
     """Имена модулей os/shutil/pathlib и алиасы их функций. Алиас сам по себе опасен."""
     modules: set[str] = set()
@@ -1102,10 +1271,14 @@ def _write_hit(
     os_funcs: dict[str, str],
     tainted: dict[str, str] | None = None,
     path_names: set[str] | None = None,
+    os_flags: dict[str, str] | None = None,
+    os_open_names: set[str] | None = None,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
     path_names = path_names or {"Path"}
+    os_flags = os_flags or {}
+    os_open_names = os_open_names or set()
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
@@ -1119,10 +1292,14 @@ def _write_hit(
         kind = "sql"
     elif _is_http_delete(call, env):
         kind = "http.delete"
-    elif isinstance(func, ast.Name) and func.id == "open":
+    elif isinstance(func, ast.Name) and func.id == "open" and func.id not in os_open_names:
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
             dest = _call_arg(call, 0, "file")
+    elif isinstance(func, ast.Name) and func.id in os_open_names:
+        if _classify_os_flags(_call_arg(call, 1, "flags"), os_modules, os_flags) != "read":
+            kind = "os.open"
+            dest = _call_arg(call, 0, "path", "file")
     elif isinstance(func, ast.Name) and func.id in shutil_funcs:
         attr = shutil_funcs[func.id]
         kind = f"shutil.{attr}"
@@ -1146,7 +1323,15 @@ def _write_hit(
         dest = _call_arg(call, 0, "path")
     elif isinstance(func, ast.Attribute):
         attr = func.attr
-        if attr == "open":
+        if (
+            attr == "open"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in os_modules
+        ):
+            if _classify_os_flags(_call_arg(call, 1, "flags"), os_modules, os_flags) != "read":
+                kind = "os.open"
+                dest = _call_arg(call, 0, "path", "file")
+        elif attr == "open":
             if _mode_is_write(_mode_from_call(call, 0, "r" if not call.args else None)):
                 kind = "open"
                 dest = func.value
@@ -1229,24 +1414,91 @@ def _write_hit(
     )
 
 
-def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
-    """Записи ФС во всех функциях фрагмента. Путь вне allowlist — не allowed."""
-    tree = ast.parse(textwrap.dedent(source))
-    consts = _module_string_constants(tree)
-    shutil_modules, shutil_funcs = _shutil_bindings(tree)
-    os_modules, os_funcs = _os_move_bindings(tree)
-    fs_modules, path_names, imported = _fs_surface(tree)
+def _dangerous_value_kind(
+    node: ast.AST,
+    os_modules: set[str],
+    os_funcs: dict[str, str],
+    shutil_modules: set[str],
+    shutil_funcs: dict[str, str],
+    path_names: set[str],
+) -> str | None:
+    """Ссылка на опасную функцию не в позиции вызова равна вызову."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        recv = node.value.id
+        if recv in os_modules and node.attr in _DANGEROUS_OS:
+            return f"os.{node.attr}"
+        if recv in os_modules and node.attr == "open":
+            return "os.open"
+        if recv in shutil_modules and node.attr == "rmtree":
+            return "shutil.rmtree"
+        if recv in path_names and node.attr in _DANGEROUS_PATH:
+            return f"Path.{node.attr}"
+        return None
+    if isinstance(node, ast.Name):
+        if node.id in os_funcs and os_funcs[node.id] in _DANGEROUS_OS:
+            return f"os.{os_funcs[node.id]}"
+        if node.id in shutil_funcs and shutil_funcs[node.id] == "rmtree":
+            return "shutil.rmtree"
+    return None
+
+
+def _ref_hit(kind: str, function: str) -> WriteHit:
+    delete = kind in _DELETE_KINDS or kind.startswith("alias:")
+    return WriteHit(
+        kind,
+        None,
+        function,
+        source=None,
+        allowed=False,
+        snapshot_delete=delete,
+    )
+
+
+def _scan_writes(
+    fn_node: ast.AST,
+    env: dict[str, str],
+    action_id: str,
+    shutil_modules: set[str],
+    shutil_funcs: dict[str, str],
+    os_modules: set[str],
+    os_funcs: dict[str, str],
+    tainted: dict[str, str],
+    path_names: set[str],
+    os_flags: dict[str, str],
+    os_open_names: set[str],
+    *,
+    file_kind: str | None,
+    file_kinds: frozenset[str] | None,
+) -> tuple[list[WriteHit], list[ast.Call]]:
+    """Живые вызовы и ссылки на опасные функции в том же порядке, что исходник."""
     hits: list[WriteHit] = []
-    for fn_node in tree.body:
-        if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        env = _bind_env(fn_node, consts)
-        tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
-        for call in _live_calls(fn_node, file_kind=None, file_kinds=frozenset()):
+    calls: list[ast.Call] = []
+    function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
+
+    def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
+            and not root
+        ):
+            return
+        if isinstance(node, ast.If):
+            if _if_proved_false(node.test, file_kind, file_kinds):
+                for stmt in node.orelse:
+                    walk(stmt, root=False, call_func=False)
+                return
+            if _if_proved_true(node.test, file_kind, file_kinds):
+                for stmt in node.body:
+                    walk(stmt, root=False, call_func=False)
+                return
+            for stmt in (*node.body, *node.orelse):
+                walk(stmt, root=False, call_func=False)
+            return
+        if isinstance(node, ast.Call):
+            calls.append(node)
             hit = _write_hit(
-                call,
+                node,
                 env,
-                fn_node.name,
+                function,
                 action_id,
                 shutil_modules,
                 shutil_funcs,
@@ -1254,9 +1506,62 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
                 os_funcs,
                 tainted,
                 path_names,
+                os_flags,
+                os_open_names,
             )
             if hit is not None:
                 hits.append(hit)
+            walk(node.func, root=False, call_func=True)
+            for arg in node.args:
+                walk(arg, root=False, call_func=False)
+            for kw in node.keywords:
+                if kw.value is not None:
+                    walk(kw.value, root=False, call_func=False)
+            return
+        if not call_func:
+            kind = _dangerous_value_kind(
+                node, os_modules, os_funcs, shutil_modules, shutil_funcs, path_names
+            )
+            if kind is not None:
+                hits.append(_ref_hit(kind, function))
+        for child in ast.iter_child_nodes(node):
+            walk(child, root=False, call_func=False)
+
+    walk(fn_node, root=True, call_func=False)
+    return hits, calls
+
+
+def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
+    """Записи ФС во всех функциях фрагмента. Путь вне allowlist — не allowed."""
+    tree = ast.parse(textwrap.dedent(source))
+    consts = _module_string_constants(tree)
+    shutil_modules, shutil_funcs = _shutil_bindings(tree)
+    os_modules, os_funcs = _os_move_bindings(tree)
+    fs_modules, path_names, imported = _fs_surface(tree)
+    os_flags = _os_flag_bindings(tree)
+    os_open_names = _os_open_names(tree)
+    hits: list[WriteHit] = []
+    for fn_node in tree.body:
+        if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        env = _bind_env(fn_node, consts)
+        tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
+        found, _calls = _scan_writes(
+            fn_node,
+            env,
+            action_id,
+            shutil_modules,
+            shutil_funcs,
+            os_modules,
+            os_funcs,
+            tainted,
+            path_names,
+            os_flags,
+            os_open_names,
+            file_kind=None,
+            file_kinds=frozenset(),
+        )
+        hits.extend(found)
     return hits
 
 
@@ -1391,22 +1696,26 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
         shutil_modules, shutil_funcs = _shutil_bindings(module)
         os_modules, os_funcs = _os_move_bindings(module)
         fs_modules, path_names, imported = _fs_surface(module)
+        os_flags = _os_flag_bindings(module)
+        os_open_names = _os_open_names(module)
         tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
-        for call in _live_calls(fn_node, file_kind=file_kind, file_kinds=file_kinds):
-            hit = _write_hit(
-                call,
-                env,
-                fn_node.name,
-                action_id,
-                shutil_modules,
-                shutil_funcs,
-                os_modules,
-                os_funcs,
-                tainted,
-                path_names,
-            )
-            if hit is not None:
-                hits.append(hit)
+        found, calls = _scan_writes(
+            fn_node,
+            env,
+            action_id,
+            shutil_modules,
+            shutil_funcs,
+            os_modules,
+            os_funcs,
+            tainted,
+            path_names,
+            os_flags,
+            os_open_names,
+            file_kind=file_kind,
+            file_kinds=file_kinds,
+        )
+        hits.extend(found)
+        for call in calls:
             target = _callee(call_fn, call)
             if target is not None and target is not call_fn:
                 visit(target, prune=False)
@@ -2160,8 +2469,10 @@ def test_os_shutil_pathlib_aliases_are_denied() -> None:
     hits = analyze_module_source(source, "prompt.save_master")
     assert [hit.kind for hit in hits] == [
         "os.remove",
+        "os.remove",
         "alias:os.remove",
         "shutil.rmtree",
+        "Path.unlink",
         "alias:Path.unlink",
     ]
     assert all(hit.allowed is False for hit in hits)
@@ -2224,6 +2535,101 @@ def test_http_delete_is_denied() -> None:
     hits = analyze_module_source(source, "group.delete")
     assert [hit.kind for hit in hits] == ["http.delete", "http.delete", "http.delete"]
     assert all(hit.allowed is False for hit in hits)
+
+
+def test_dangerous_function_value_is_denied() -> None:
+    source = (
+        "import os, shutil, asyncio, functools\n"
+        "def save(loop, cb, items):\n"
+        "    map(os.remove, items)\n"
+        "    asyncio.to_thread(os.remove, items[0])\n"
+        "    loop.run_in_executor(None, shutil.rmtree, items[0])\n"
+        "    functools.partial(os.unlink, items[0])\n"
+        "    cb(shutil.rmtree)\n"
+        "    assigned = os.rmdir\n"
+        "    return os.removedirs\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.kind for hit in hits] == [
+        "os.remove",
+        "os.remove",
+        "shutil.rmtree",
+        "os.unlink",
+        "shutil.rmtree",
+        "os.rmdir",
+        "os.removedirs",
+    ]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_exec_getattr_and_value_are_denied() -> None:
+    source = (
+        "import subprocess, os, shutil, pty\n"
+        "from os import system as sys_fn\n"
+        "def sample(name, upload, cb):\n"
+        "    getattr(subprocess, 'run')\n"
+        "    getattr(subprocess, name)\n"
+        "    getattr(os, 'system')\n"
+        "    getattr(os, 'popen')\n"
+        "    getattr(os, 'execv')\n"
+        "    getattr(os, 'spawnv')\n"
+        "    getattr(shutil, 'rmtree')\n"
+        "    getattr(pty, 'spawn')\n"
+        "    getattr(os, 'listdir')\n"
+        "    getattr(upload, 'filename')\n"
+        "    map(os.system, ['echo'])\n"
+        "    cb(subprocess.run)\n"
+        "    assigned = sys_fn\n"
+        "    return pty.spawn\n"
+    )
+    found = exec_calls_in_source(source)
+    assert found == [
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "getattr",
+        "os.system",
+        "subprocess.run",
+        "sys_fn",
+        "pty.spawn",
+    ]
+
+
+def test_os_open_flags_outside_allowlist_are_denied() -> None:
+    source = (
+        "import os\n"
+        "from os import O_APPEND as APPEND\n"
+        "def save(flags, path):\n"
+        "    os.open('data/reports/a.txt', os.O_RDONLY)\n"
+        "    os.open('data/reports/a.txt', os.O_RDONLY | os.O_CLOEXEC)\n"
+        "    os.open('data/reports/a.txt', os.O_WRONLY | os.O_CREAT)\n"
+        "    os.open('templates/x', os.O_WRONLY)\n"
+        "    os.open('templates/x', os.O_RDWR)\n"
+        "    os.open('templates/x', os.O_CREAT)\n"
+        "    os.open('templates/x', os.O_TRUNC)\n"
+        "    os.open('templates/x', APPEND)\n"
+        "    os.open('templates/x', flags)\n"
+        "    os.open('data/reports/a.txt', flags)\n"
+        "    os.open(path, os.O_WRONLY)\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.kind for hit in hits] == ["os.open"] * 9
+    assert [hit.allowed for hit in hits] == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+    ]
 
 
 def test_whitelist_has_no_code_exec_tools() -> None:
