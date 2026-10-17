@@ -393,6 +393,38 @@ def _is_rerank_key(key: str) -> bool:
     return "+jina+" in key or "+bge-m3+" in key
 
 
+class SelectionLeakError(ValueError):
+    """Чётный query_id попал в подбор конфига."""
+
+
+def require_dev_only(query_ids: list[str]) -> list[str]:
+    """Подбор принимает только нечётные id. Чётный id — ошибка, не тихий фильтр."""
+    from evals.orchestrator.query_split import half_of
+
+    leaked = [str(query_id) for query_id in query_ids if half_of(str(query_id)) != "dev"]
+    if leaked:
+        raise SelectionLeakError("подбор видит test: " + ", ".join(leaked))
+    return [str(query_id) for query_id in query_ids]
+
+
+def dev_only_queries(queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Срез для подбора. Test в этот список не входит."""
+    from evals.orchestrator.query_split import half_of
+
+    dev = [query for query in queries if half_of(str(query["id"])) == "dev"]
+    require_dev_only([str(query["id"]) for query in dev])
+    return dev
+
+
+def select_on_dev(
+    runs: list[tuple[str, str, dict[str, float]]],
+    query_ids: list[str],
+) -> tuple[str, str]:
+    """``choose_default`` только после проверки, что id — dev."""
+    require_dev_only(query_ids)
+    return choose_default(runs)
+
+
 def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, str]:
     """По новой разметке: hit@5 ≥ 0.9, p95 ≤ 1.2 с, максимальный чанковый nDCG@8.
 
@@ -637,10 +669,12 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
 
     Запросы не переписывает. Рейтинги пишет во временный файл, не в репозиторий.
     """
-    queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
+    queries = dev_only_queries(json.loads(QUERY_PATH.read_text(encoding="utf-8")))
     from evals.orchestrator.label_transfer import TRANSFERRED_PATH
 
     transferred = json.loads(TRANSFERRED_PATH.read_text(encoding="utf-8"))["queries"]
+    dev_ids = {str(query["id"]) for query in queries}
+    transferred = [query for query in transferred if str(query["id"]) in dev_ids]
     report_path = out or REPORT_PATH
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-pair-"))
     runs: list[tuple[str, str, dict[str, float]]] = []
@@ -690,7 +724,7 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
         )
         saved[runs[-1][0]] = details
         print(runs[-1][1], {k: round(v, 4) for k, v in metrics.items()}, flush=True)
-        chosen_key, why = choose_default(runs)
+        chosen_key, why = select_on_dev(runs, [str(query["id"]) for query in queries])
         misses = _miss_lines(queries, saved)
         text = render_report(runs, chosen_key=chosen_key, why=why, misses=misses)
         ambiguous_path = TRANSFERRED_PATH.with_name("precision_live_label_ambiguous.json")
@@ -914,13 +948,15 @@ def render_abc(
 
 def run_abc(out: Path | None = None) -> dict[str, Any]:
     """A и C на нарезке из 8 частей. B подставляется из прогона 4b447232."""
-    queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
+    queries = dev_only_queries(json.loads(QUERY_PATH.read_text(encoding="utf-8")))
     from evals.orchestrator.label_expand import EXPANDED_PATH
     from evals.orchestrator.label_transfer import AMBIGUOUS_PATH
 
-    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
-    if [query["id"] for query in queries] != [query["id"] for query in expanded]:
-        raise RuntimeError("порядок запросов в разметке s0–s7 разошёлся с исходным файлом")
+    expanded_all = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    dev_ids = [str(query["id"]) for query in queries]
+    expanded = [query for query in expanded_all if str(query["id"]) in set(dev_ids)]
+    if dev_ids != [str(query["id"]) for query in expanded]:
+        raise RuntimeError("порядок dev-запросов в разметке s0–s7 разошёлся с исходным файлом")
     ambiguous = json.loads(AMBIGUOUS_PATH.read_text(encoding="utf-8"))
     report_path = out or REPORT_PATH
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-abc-"))
@@ -974,7 +1010,7 @@ def run_abc(out: Path | None = None) -> dict[str, Any]:
             ("e5-large+k20+w0.5/1.5+full", "C гибрид без реранкера", hybrid["C"]),
             ("e5-large+bge-m3+p20+t256", "C bge-m3 топ-20 / 256", reranked["C"]),
         ]
-        chosen_key, why = choose_default(c_runs)
+        chosen_key, why = select_on_dev(c_runs, dev_ids)
         text = render_abc(
             rows,
             chosen_key=chosen_key,
@@ -1013,7 +1049,8 @@ def run_tune() -> dict[str, Any]:
     expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
     by_id = {query["id"]: query for query in expanded}
     split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
-    dev = [by_id[query_id] for query_id in split["dev"]]
+    dev_ids = require_dev_only([str(query_id) for query_id in split["dev"]])
+    dev = [by_id[query_id] for query_id in dev_ids]
     test = [by_id[query_id] for query_id in split["test"]]
     configs: list[dict[str, Any]] = [
         {"aggregate": "none", "rerank_pool": 20, "lexical": 0.5, "vector": 1.5},
@@ -1252,6 +1289,10 @@ def render_locked_report(payload: dict[str, Any]) -> str:
         "Реранкер эвалов — fp32 `onnx/model.onnx` той же bge-m3: "
         "квантованный граф при тех же опциях не бит-стабилен.",
         "Сплит прежний: нечётный `query_id` — dev, чётный — test.",
+        "e5-large, bge-m3, RRF k=20, BM25 full и 256 токенов выбраны прогонами "
+        "на всех 50 запросах, до того как подбор стал смотреть только dev. "
+        "Текущий test — срез после этих гиперпараметров, не новый held-out. "
+        "Веса, размер пула и aggregate после сплита считались только на dev.",
         "Текст правила 1 в индексе — новый. Метки `rule-1` не менялись.",
         "",
         f"Три прохода дали одинаковые hit@5 и nDCG@8: **{'да' if identical else 'нет'}**.",
@@ -1348,9 +1389,13 @@ def render_locked_report(payload: dict[str, Any]) -> str:
             "реранкер поднимает сборку и action.",
             "",
             "Окно 256 токенов оставляет заголовок `##` внутри окна (общий префикс роли "
-            "около 100 токенов), хвост секции обрезается. Вынос заголовка в начало и "
-            "окно 384 на dev снизили hit@5 или nDCG. Смесь с BM25 подняла shots и live-03, "
-            "но уронила общий hit@5 ниже 0.9. В профиль не вошло.",
+            "около 100 токенов), хвост секции обрезается. Отклонённые варианты ниже — "
+            "только dev (нечётные id), квантованный прогон.",
+            "Заголовок секции первым, окно 256: hit@5 0.80, nDCG@8 0.5991 "
+            "(база того прогона 0.96 / 0.6958). Окно 384: hit@5 0.92, nDCG@8 0.6542.",
+            "Смесь с BM25 на dev: mix 0 — hit@5 0.92, nDCG@8 0.6583; "
+            "mix 0.5 — 0.92 / 0.6155; mix 1.0 — 0.80 / 0.6375; mix 2.0 — 0.80 / 0.6234. "
+            "В профиль не вошло.",
             "",
         ]
     )
@@ -1481,6 +1526,8 @@ def main() -> None:
 
 
 def _main_grid(temp_dir: Path, queries: list[dict[str, Any]], prefixes_ok: bool, out: Path) -> None:
+    queries = dev_only_queries(queries)
+    selection_ids = [str(query["id"]) for query in queries]
     runs: list[tuple[str, str, dict[str, float]]] = []
     saved: dict[str, list[dict[str, Any]]] = {}
     catalog: list[dict[str, str]] = []
@@ -1532,7 +1579,7 @@ def _main_grid(temp_dir: Path, queries: list[dict[str, Any]], prefixes_ok: bool,
             loaded.clear()
             del embedder
             gc.collect()
-    chosen_key, why = choose_default(runs)
+    chosen_key, why = select_on_dev(runs, selection_ids)
     misses = _miss_lines(queries, saved)
     text = render_report(runs, chosen_key=chosen_key, why=why, misses=misses)
     if not prefixes_ok:
