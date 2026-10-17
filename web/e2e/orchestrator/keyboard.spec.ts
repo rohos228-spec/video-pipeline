@@ -79,3 +79,46 @@ test("клавиатура: Enter во время стрима шлёт одно
   expect((await assistant.innerText()).length).toBeGreaterThan(mid);
   expect(posts).toHaveLength(2);
 });
+
+test("клавиатура: Shift+Enter переносит строку, Enter отправляет", async ({ page }) => {
+  const posts = trackPosts(page, "/message");
+  await openWithToken(page, "idle", "kbd-newline");
+  const composer = page.getByTestId("orch-composer");
+  await composer.focus();
+  await page.keyboard.type("первая");
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("вторая");
+  await expect(composer).toHaveValue("первая\nвторая");
+  expect(posts).toHaveLength(0);
+  await page.keyboard.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]?.text).toBe("первая\nвторая");
+});
+
+test("клавиатура: Enter во время IME не отправляет", async ({ page }) => {
+  const posts = trackPosts(page, "/message");
+  await openWithToken(page, "idle", "kbd-ime");
+  const composer = page.getByTestId("orch-composer");
+  await composer.focus();
+  await page.keyboard.type("черновик");
+  await composer.evaluate((el) => {
+    el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+        isComposing: true,
+      }),
+    );
+  });
+  await expect(composer).toHaveValue("черновик");
+  expect(posts).toHaveLength(0);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]?.text).toBe("черновик");
+  await expect(composer).toHaveValue("");
+});
+

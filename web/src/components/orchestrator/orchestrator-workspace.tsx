@@ -337,10 +337,9 @@ export function OrchestratorWorkspace() {
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      send();
-                    }
+                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    send();
                   }}
                   placeholder="Пиши и во время задачи — interrupt, steer или append"
                   className="min-h-[44px] flex-1 resize-none py-2 text-xs"
