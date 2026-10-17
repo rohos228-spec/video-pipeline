@@ -12,7 +12,7 @@ import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.orchestrator.agents.runtime import get_runtime
@@ -53,26 +53,12 @@ class MessageIn(BaseModel):
 
 
 class ProjectIn(BaseModel):
-    """Поздний project_id. ``0``, отрицательные и bool — 422."""
+    """Поздний project_id. Строка, float, bool, ``0`` и отрицательные — 422."""
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: int
-    task_id: int | None = None
-
-    @field_validator("project_id", "task_id", mode="before")
-    @classmethod
-    def _reject_bool(cls, value: Any) -> Any:
-        if isinstance(value, bool):
-            raise ValueError("bool is not an id")
-        return value
-
-    @field_validator("project_id")
-    @classmethod
-    def _at_least_one(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("project_id must be >= 1")
-        return value
+    project_id: StrictInt = Field(ge=1)
+    task_id: StrictInt | None = Field(default=None, ge=1)
 
 
 class ApproveIn(BaseModel):

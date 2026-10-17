@@ -239,7 +239,17 @@ async def test_project_route_rejects_bad_id_and_other_states(token: str) -> None
         before = _row(missing, task_id)
         transport = ASGITransport(app=_app())
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            for payload in ({"project_id": 0}, {"project_id": -1}, {"project_id": False}):
+            for payload in (
+                {"project_id": 0},
+                {"project_id": -1},
+                {"project_id": False},
+                {"project_id": "13"},
+                {"project_id": 13.0},
+                {"project_id": True},
+                {"project_id": 13, "task_id": "13"},
+                {"project_id": 13, "task_id": 13.0},
+                {"project_id": 13, "task_id": True},
+            ):
                 response = await client.post(
                     f"/api/orchestrator/chat/{session}/project",
                     json=payload,
