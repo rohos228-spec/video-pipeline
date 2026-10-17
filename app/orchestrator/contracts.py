@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CONTRACT_VERSION = "ws3-r3.3"
 
@@ -521,7 +521,12 @@ class PlanStep(BaseModel):
     mutating: bool = False
     risk: str = "none"
     parallel_group: str | None = None
-    estimated_cost: float = 0.0
+    estimated_cost: float = Field(default=0.0, ge=0)
+
+    @field_validator("estimated_cost", mode="before")
+    @classmethod
+    def _clamp_estimated_cost(cls, value: Any) -> float:
+        return nonneg_cost(value)
 
 
 class SpendSnapshot(BaseModel):
@@ -1023,14 +1028,39 @@ def plan_missing_verify(plan: list[PlanStep]) -> bool:
     return False
 
 
+def nonneg_cost(value: Any) -> float:
+    """Нечисловое и пустое → 0. Отрицательное зажимается в 0."""
+    if isinstance(value, bool) or value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            number = float(text)
+        except ValueError:
+            return 0.0
+    else:
+        return 0.0
+    if number != number or number < 0:
+        return 0.0
+    return number
+
+
 def forecast_cost(plan: list[PlanStep]) -> float:
-    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды."""
+    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды.
+
+    Отрицательные оценки зажимаются в 0, нечисловые отбрасываются: ими нельзя
+    увести сумму ниже порога.
+    """
     total = 0.0
     for step in plan:
         if step.estimated_cost:
-            total += float(step.estimated_cost)
+            total += nonneg_cost(step.estimated_cost)
         else:
-            total += float(step.params.get("estimated_cost") or 0)
+            total += nonneg_cost(step.params.get("estimated_cost"))
     return total
 
 
