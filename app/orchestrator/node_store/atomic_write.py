@@ -3,6 +3,7 @@
 Прямой open('w') по назначению запрещён. Запись сверяет expected_version
 с версией уже лежащего файла. Несовпадение — 409, файл не меняется.
 Перед replace прежние байты копируются в old/.
+Файл без обёртки {"version","text"} — старый формат, версия 0.
 """
 
 from __future__ import annotations
@@ -17,17 +18,44 @@ from pathlib import Path
 from app.orchestrator.node_store.errors import VersionConflict
 
 
+def _versioned_payload(payload: object) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    version = payload.get("version")
+    text = payload.get("text")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    if not isinstance(text, str):
+        return None
+    return payload
+
+
 def _stored_version(target: Path) -> int:
+    """Версия обёртки. Нет файла или старое тело без version — 0."""
     if not target.is_file():
         return 0
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise VersionConflict("прежний файл без читаемой версии") from exc
-    version = payload.get("version") if isinstance(payload, dict) else None
-    if isinstance(version, bool) or not isinstance(version, int):
-        raise VersionConflict("прежний файл без версии")
-    return version
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return 0
+    wrapped = _versioned_payload(payload)
+    if wrapped is None:
+        return 0
+    return int(wrapped["version"])
+
+
+def read_override(dest: Path) -> str:
+    """Читает override: text из обёртки или сырое тело старого файла."""
+    target = _assert_allowlisted(Path(dest))
+    raw = target.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    wrapped = _versioned_payload(payload)
+    if wrapped is None:
+        return raw
+    return str(wrapped["text"])
 
 
 def _assert_allowlisted(dest: Path) -> Path:
