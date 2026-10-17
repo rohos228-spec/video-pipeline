@@ -7,7 +7,7 @@ actions: 102
 keep: 89
 modify: 13
 remove: 0
-fs_breach: group.delete,montage.delete_frame,node.clear_check_agent,prompt.delete_master,storage.clear_files
+fs_breach: group.delete:http.delete,montage.delete_frame:http.delete,node.clear_check_agent:http.delete,prompt.delete_master:http.delete,storage.clear_files:http.delete
 snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 -->
 
@@ -81,7 +81,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 12. `node.clear_check_agent`
 13. `storage.clear_files`
 
-`fs_breach`: `group.delete`, `montage.delete_frame`, `node.clear_check_agent`, `prompt.delete_master`, `storage.clear_files`. После детектора HTTP DELETE три keep стали modify: `montage.delete_frame`, `node.clear_check_agent`, `storage.clear_files`. `group.delete` и `prompt.delete_master` уже были modify. `montage.delete_child_frame` переведён в modify отдельно: вызов `POST …/coverage` с `type=coverage_delete`, детектор HTTP DELETE его не видит, физическое удаление шота всё равно не остаётся keep. Счёт: keep 89, modify 13, remove 0. Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
+`fs_breach` сверяется парами `id:kind`: `group.delete:http.delete`, `montage.delete_frame:http.delete`, `node.clear_check_agent:http.delete`, `prompt.delete_master:http.delete`, `storage.clear_files:http.delete`. Новый kind у уже записанного id — отказ. После детектора HTTP DELETE три keep стали modify: `montage.delete_frame`, `node.clear_check_agent`, `storage.clear_files`. `group.delete` и `prompt.delete_master` уже были modify. `montage.delete_child_frame` переведён в modify отдельно: вызов `POST …/coverage` с `type=coverage_delete`, детектор HTTP DELETE его не видит, физическое удаление шота всё равно не остаётся keep. Счёт: keep 89, modify 13, remove 0. Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
 
 ## Таблица действий
 

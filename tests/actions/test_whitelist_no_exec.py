@@ -245,6 +245,21 @@ def load_audit_header(text: str | None = None) -> dict:
     def _id_list(raw: str) -> tuple[str, ...]:
         return tuple(part.strip() for part in raw.split(",") if part.strip())
 
+    def _breach_pairs(raw: str) -> tuple[tuple[str, str], ...]:
+        pairs: list[tuple[str, str]] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" not in part:
+                pytest.fail(f"fs_breach ждёт пару id:kind, получено {part!r}")
+            action_id, kind = part.split(":", 1)
+            action_id, kind = action_id.strip(), kind.strip()
+            if not action_id or not kind:
+                pytest.fail(f"fs_breach ждёт пару id:kind, получено {part!r}")
+            pairs.append((action_id, kind))
+        return tuple(pairs)
+
     return {
         "source": fields["source"],
         "sha": fields["sha"],
@@ -253,9 +268,25 @@ def load_audit_header(text: str | None = None) -> dict:
         "keep": counts["keep"],
         "modify": counts["modify"],
         "remove": counts["remove"],
-        "fs_breach": _id_list(fields["fs_breach"]),
+        "fs_breach": _breach_pairs(fields["fs_breach"]),
         "snapshot_allow": _id_list(fields["snapshot_allow"]),
     }
+
+
+def _breach_mismatch(
+    declared: set[tuple[str, str]],
+    found: set[tuple[str, str]],
+) -> list[str]:
+    """Расхождение пар id:kind в обе стороны. Новый kind у уже известного id — отказ."""
+    lines = [
+        f"{action_id}:{kind} есть у детектора, нет в fs_breach"
+        for action_id, kind in sorted(found - declared)
+    ]
+    lines.extend(
+        f"{action_id}:{kind} есть в fs_breach, детектор не нашёл"
+        for action_id, kind in sorted(declared - found)
+    )
+    return lines
 
 
 def is_forbidden_action_id(action_id: str) -> bool:
@@ -1793,11 +1824,11 @@ def test_audit_header_counters() -> None:
     ]
     assert len(modify_ids) == header["modify"]
     assert header["fs_breach"] == (
-        "group.delete",
-        "montage.delete_frame",
-        "node.clear_check_agent",
-        "prompt.delete_master",
-        "storage.clear_files",
+        ("group.delete", "http.delete"),
+        ("montage.delete_frame", "http.delete"),
+        ("node.clear_check_agent", "http.delete"),
+        ("prompt.delete_master", "http.delete"),
+        ("storage.clear_files", "http.delete"),
     )
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
 
@@ -2716,6 +2747,18 @@ def test_os_open_flags_outside_allowlist_are_denied() -> None:
     ]
 
 
+def test_fs_breach_new_kind_on_known_id_fails() -> None:
+    declared = {("montage.delete_frame", "http.delete")}
+    found = {
+        ("montage.delete_frame", "http.delete"),
+        ("montage.delete_frame", "shutil.rmtree"),
+    }
+    assert _breach_mismatch(declared, found) == [
+        "montage.delete_frame:shutil.rmtree есть у детектора, нет в fs_breach"
+    ]
+    assert _breach_mismatch(declared, declared) == []
+
+
 def test_whitelist_has_no_code_exec_tools() -> None:
     assert sys.version_info >= _MIN_PY, (
         "zip(strict=True) требует Python 3.10+; CI этого репозитория — 3.12"
@@ -2724,13 +2767,13 @@ def test_whitelist_has_no_code_exec_tools() -> None:
     modify_ids = modify_ids_from_audit()
     assert len(modify_ids) == header["modify"]
     assert header["fs_breach"] == (
-        "group.delete",
-        "montage.delete_frame",
-        "node.clear_check_agent",
-        "prompt.delete_master",
-        "storage.clear_files",
+        ("group.delete", "http.delete"),
+        ("montage.delete_frame", "http.delete"),
+        ("node.clear_check_agent", "http.delete"),
+        ("prompt.delete_master", "http.delete"),
+        ("storage.clear_files", "http.delete"),
     )
-    assert set(header["fs_breach"]) <= set(modify_ids)
+    assert {action_id for action_id, _kind in header["fs_breach"]} <= set(modify_ids)
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
     assert set(header["snapshot_allow"]) <= set(modify_ids)
 
@@ -2754,8 +2797,8 @@ def test_whitelist_has_no_code_exec_tools() -> None:
 
     offenders: list[str] = []
     unexpected: list[str] = []
-    breach_ids = set(header["fs_breach"])
-    found_breach: set[str] = set()
+    declared_breach = set(header["fs_breach"])
+    found_breach: set[tuple[str, str]] = set()
     for action_id, spec in zip(ids, specs, strict=True):
         fn = _executor(spec)
         if fn is None:
@@ -2764,23 +2807,15 @@ def test_whitelist_has_no_code_exec_tools() -> None:
             offenders.append(action_id)
         hits = reachable_write_hits(fn, action_id)
         bad = [hit for hit in hits if not hit.allowed]
-        if bad:
-            found_breach.add(action_id)
-            if action_id not in breach_ids:
-                unexpected.append(action_id + ": " + "; ".join(str(hit) for hit in bad))
-        elif action_id in breach_ids:
-            unexpected.append(action_id + " в fs_breach, но детектор ничего не запретил")
+        for hit in bad:
+            found_breach.add((action_id, hit.kind))
         if action_id in header["snapshot_allow"]:
             deletes = [hit for hit in hits if hit.snapshot_delete]
             if deletes:
                 unexpected.append(
                     action_id + " удаляет снимок: " + "; ".join(str(hit) for hit in deletes)
                 )
-    if found_breach != breach_ids:
-        unexpected.append(
-            "fs_breach не совпал с детектором: "
-            + ", ".join(sorted(found_breach ^ breach_ids))
-        )
+    unexpected.extend(_breach_mismatch(declared_breach, found_breach))
     assert not offenders, (
         "исполнители выглядят как обёртки subprocess/eval/exec/compile: "
         + ", ".join(sorted(offenders))
