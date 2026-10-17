@@ -83,7 +83,7 @@ EVENT_RETENTION_DAYS = 14
 SESSION_EVENT_CAP = 20_000
 
 EPHEMERAL_EVENT_TYPES = frozenset({"token"})
-RETAINED_EVENT_TYPES = frozenset({"checkpoint", "approval_required"})
+RETAINED_EVENT_TYPES = frozenset({"checkpoint", "approval_required", "approval_decided"})
 
 EVENT_TYPES = (
     "ack",
@@ -101,6 +101,7 @@ EVENT_TYPES = (
     "kill_switch",
     "paid_retry_blocked",
     "step_skipped",
+    "approval_decided",
 )
 
 

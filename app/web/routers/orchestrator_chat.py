@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.orchestrator.agents.runtime import get_runtime
@@ -32,6 +33,15 @@ class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=16000)
     mode: MessageMode | None = None
     project_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_client_change_id(cls, data: Any) -> Any:
+        """change_id одобрения назначает только сервер. Поле клиента отбрасывается."""
+        if isinstance(data, dict) and "change_id" in data:
+            data = dict(data)
+            data.pop("change_id", None)
+        return data
 
 
 def _check_session(session: str) -> str:

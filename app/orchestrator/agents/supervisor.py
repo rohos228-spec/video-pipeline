@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from loguru import logger
@@ -97,6 +98,8 @@ from app.orchestrator.events import EventBus
 _DRY_RUN = ("plan_sanity", "no_deletions", "spend_guard")
 _RESUME_STATUSES = frozenset({TaskStatus.planning, TaskStatus.critic_review, TaskStatus.executing})
 _HOLD_STATUSES = frozenset({TaskStatus.paused, TaskStatus.waiting_approval})
+_APPR_MARK = "\n\x1eorappr:"
+_APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
 class InvalidTransition(RuntimeError):
@@ -158,6 +161,11 @@ class Supervisor:
         self._pending_kill_publish: list[tuple[str, int | None]] = []
         self._pending_queue_cancel: list[tuple[str, int]] = []
         self._approved: dict[int, str] = {}
+        self._appr_seq: dict[int, int] = {}
+        self._appr_open: dict[int, str | None] = {}
+        self._appr_owner: dict[str, tuple[int, str]] = {}
+        self._appr_decided: dict[str, str | None] = {}
+        self._appr_loaded: set[int] = set()
 
     async def start_task(
         self,
@@ -222,6 +230,7 @@ class Supervisor:
         decision: ApprovalDecision | str | None = None,
         *,
         retry_grant: bool = False,
+        change_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Продолжить с чекпоинта после waiting_approval.
 
@@ -238,10 +247,20 @@ class Supervisor:
         ``approve`` помечает шаг сделанным и идёт дальше, ``retry_step``
         только отдаёт прогноз, ``deny`` проваливает шаг и задачу.
         ``retry_grant`` — отдельный одноразовый перезапуск после прогноза.
+        ``change_id`` клиент может прислать, но идентификатор одобрения
+        выбирает только сервер (``orch-appr-<task>-<n>``).
         """
         task_id = self._session_task.get(session_id)
         if task_id is None:
             raise LookupError(session_id)
+        await self._load_appr_state(session_id, task_id)
+        self._guard_change_id(
+            task_id,
+            session_id,
+            change_id,
+            retry_grant=retry_grant,
+            decision=decision,
+        )
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
@@ -254,16 +273,20 @@ class Supervisor:
             return {"executed": False}
         if reason == "paid_outcome_unknown" and decided is not None:
             if decided is ApprovalDecision.approve:
+                await self._emit_decision(task_id, session_id, decided)
                 await self._approve_paid_unknown(task_id, session_id)
                 return {"executed": False, "decision": ApprovalDecision.approve.value}
             if decided is ApprovalDecision.deny:
+                await self._emit_decision(task_id, session_id, decided)
                 await self._deny_paid_unknown(task_id, session_id)
                 return {"executed": False, "decision": ApprovalDecision.deny.value}
             if decided is ApprovalDecision.retry_step:
+                await self._emit_decision(task_id, session_id, decided)
                 return await self._arm_paid_retry_forecast(task_id, session_id)
             raise InvalidTransition(f"неизвестное decision {decided.value}")
         if decided in {ApprovalDecision.retry_step, ApprovalDecision.deny}:
             raise InvalidTransition("retry_step и deny только для paid_outcome_unknown")
+        await self._emit_decision(task_id, session_id, decided)
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         self._budget_stop.discard(task_id)
         if data is None:
@@ -315,7 +338,10 @@ class Supervisor:
         self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = list(data.change_ids)
-        self._context[task_id] = data.context
+        visible, packed = _split_appr_context(data.context)
+        self._context[task_id] = visible
+        if task_id not in self._appr_loaded:
+            self._merge_appr_pack(task_id, session_id, packed)
         self._remember_paid(task_id)
 
     def request_cancel(self, session_id: str) -> None:
@@ -459,8 +485,10 @@ class Supervisor:
             self._session_task[session_id] = task_id
             return []
         if held:
-            self._session_task[session_id] = int(held[0]["id"])
+            held_id = int(held[0]["id"])
+            self._session_task[session_id] = held_id
             self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            await self._load_appr_state(session_id, held_id)
             return []
         if not queued:
             return []
@@ -520,7 +548,10 @@ class Supervisor:
     ) -> None:
         """Черновик после рестарта не исполняется, пока dry-run и критик не approve."""
         plan = list(data.plan)
-        context = data.context or self._context.get(task_id, "")
+        context, packed = _split_appr_context(data.context or self._context.get(task_id, ""))
+        if task_id not in self._appr_loaded:
+            self._merge_appr_pack(task_id, session_id, packed)
+        self._context[task_id] = context
         revises = 0
         while True:
             if await self._screen_plan(task_id, session_id, plan):
@@ -660,7 +691,7 @@ class Supervisor:
         if cost:
             self.tasks.add_spend(task_id, actions=cost)
         note = f"estimate {step.action} {cost}"
-        prev = self._context.get(task_id, "")
+        prev, _packed = _split_appr_context(self._context.get(task_id, ""))
         if note not in prev:
             self._context[task_id] = (prev + "\n" + note).strip()
         return cost
@@ -671,10 +702,11 @@ class Supervisor:
         session_id: str,
         data: CheckpointData,
     ) -> CheckpointData:
+        raw_context = self._context.get(task_id, "") or data.context
         stamped = data.model_copy(
             update={
                 "spend": self._spend(task_id),
-                "context": self._context.get(task_id, data.context),
+                "context": self._context_with_appr(task_id, raw_context),
             }
         )
         self.tasks.mirror_progress(task_id, list(stamped.plan), int(stamped.position), stamped.spend)
@@ -715,9 +747,8 @@ class Supervisor:
         if (task_id, key) not in self._retry_spent:
             self._retry_armed[task_id] = key
         forecast = forecast_cost([step])
-        await self.bus.publish(
+        await self.publish_approval_required(
             session_id,
-            "approval_required",
             {
                 "reason": "paid_outcome_unknown",
                 "task_id": task_id,
@@ -728,6 +759,7 @@ class Supervisor:
                 "retry_armed": self._retry_armed.get(task_id) == key,
             },
             task_id=task_id,
+            reuse=True,
         )
         return {
             "executed": False,
@@ -751,9 +783,8 @@ class Supervisor:
             reason = "retry_grant_spent" if (task_id, key) in self._retry_spent else "retry_grant_required"
             return {"executed": False, "reason": reason, "forecast_usd": forecast}
         if task_id in self._budget_stop:
-            await self.bus.publish(
+            await self.publish_approval_required(
                 session_id,
-                "approval_required",
                 {
                     "reason": ApprovalReason.budget_exhausted.value,
                     "task_id": task_id,
@@ -761,6 +792,7 @@ class Supervisor:
                     "forecast_usd": forecast,
                 },
                 task_id=task_id,
+                reuse=True,
             )
             return {
                 "executed": False,
@@ -1799,7 +1831,7 @@ class Supervisor:
             position=position,
             change_ids=list(self._change_ids.get(task_id, [])),
             spend=self._spend(task_id),
-            context=self._context.get(task_id, ""),
+            context=self._context_with_appr(task_id, self._context.get(task_id, "")),
         )
         self.tasks.mirror_progress(task_id, plan, position, data.spend)
         await asyncio.to_thread(self.checkpoints.save, task_id, session_id, data)
@@ -1824,6 +1856,226 @@ class Supervisor:
         await self._escalate(task_id, session_id, reason)
         return True
 
+    def _guard_change_id(
+        self,
+        task_id: int,
+        session_id: str,
+        change_id: str | None,
+        *,
+        retry_grant: bool,
+        decision: ApprovalDecision | str | None,
+    ) -> None:
+        """Клиентский change_id не становится id одобрения.
+
+        Отказ 409/404 для повторного и чужого id добавляется отдельно:
+        здесь значение не подменяет серверный ``orch-appr-<task>-<n>``.
+        """
+        del task_id, session_id, change_id, retry_grant, decision
+
+    async def publish_approval_required(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        task_id: int | None,
+        reuse: bool = False,
+    ) -> None:
+        """Событие ``approval_required`` с серверным ``change_id``.
+
+        Поле ``change_id`` из payload клиента снимается. ``reuse`` оставляет
+        уже открытый id того же ожидания (повтор прогноза, не новое одобрение).
+        """
+        body = await self._assign_change_id(session_id, task_id, payload, reuse=reuse)
+        await self.bus.publish(session_id, "approval_required", body, task_id=task_id)
+        await self._persist_appr_mark(task_id, session_id)
+
+    async def _assign_change_id(
+        self,
+        session_id: str,
+        task_id: int | None,
+        payload: dict[str, Any],
+        *,
+        reuse: bool,
+    ) -> dict[str, Any]:
+        body = dict(payload)
+        body.pop("change_id", None)
+        key = _appr_key(task_id)
+        if key not in self._appr_loaded:
+            await self._load_appr_state(session_id, task_id)
+        current = self._appr_open.get(key)
+        if reuse and current:
+            body["change_id"] = current
+            return body
+        body["change_id"] = self._mint_change_id(key, session_id)
+        return body
+
+    def _mint_change_id(self, key: int, session_id: str) -> str:
+        number = self._appr_seq.get(key, 0) + 1
+        self._appr_seq[key] = number
+        change_id = f"orch-appr-{key}-{number}"
+        self._appr_owner[change_id] = (key, session_id)
+        self._appr_open[key] = change_id
+        self._appr_loaded.add(key)
+        return change_id
+
+    async def _emit_decision(
+        self,
+        task_id: int,
+        session_id: str,
+        decision: ApprovalDecision | None,
+    ) -> None:
+        key = _appr_key(task_id)
+        if key not in self._appr_loaded:
+            await self._load_appr_state(session_id, task_id)
+        change_id = self._appr_open.get(key)
+        label = decision.value if decision is not None else None
+        if change_id:
+            self._appr_decided[change_id] = label
+            if label != ApprovalDecision.retry_step.value:
+                self._appr_open[key] = None
+        await self.bus.publish(
+            session_id,
+            "approval_decided",
+            {"change_id": change_id, "decision": label, "task_id": task_id},
+            task_id=task_id,
+        )
+        await self._persist_appr_mark(task_id, session_id)
+
+    async def _load_appr_state(self, session_id: str, task_id: int | None) -> None:
+        key = _appr_key(task_id)
+        if key in self._appr_loaded:
+            return
+        self._clear_appr_key(key)
+        events = await self.bus.replay_from(session_id, 0)
+        found = self._absorb_appr_events(key, session_id, events)
+        data = None
+        if task_id:
+            data = await asyncio.to_thread(self.checkpoints.load_latest, int(task_id))
+        if data is not None and task_id and not self._context.get(int(task_id), ""):
+            self._context[int(task_id)] = _split_appr_context(data.context)[0]
+        if not found and data is not None:
+            _visible, packed = _split_appr_context(data.context)
+            self._merge_appr_pack(key, session_id, packed)
+        self._appr_loaded.add(key)
+
+    def _absorb_appr_events(self, key: int, session_id: str, events: list[Any]) -> bool:
+        found = False
+        for event in events:
+            if event.type not in {"approval_required", "approval_decided"}:
+                continue
+            if key == 0:
+                if event.task_id is not None:
+                    continue
+            elif event.task_id != key:
+                continue
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            change_id = _server_change_id(key, payload.get("change_id"))
+            if event.type == "approval_required":
+                if change_id is None:
+                    continue
+                found = True
+                self._appr_owner[change_id] = (key, session_id)
+                self._appr_open[key] = change_id
+                self._note_appr_seq(key, change_id)
+                continue
+            if change_id is None:
+                continue
+            label = payload.get("decision")
+            self._appr_decided[change_id] = label if isinstance(label, str) else None
+            if (
+                self._appr_decided[change_id] != ApprovalDecision.retry_step.value
+                and self._appr_open.get(key) == change_id
+            ):
+                self._appr_open[key] = None
+        return found
+
+    def _note_appr_seq(self, key: int, change_id: str) -> None:
+        match = _APPR_ID.fullmatch(change_id)
+        if match is None:
+            return
+        number = int(match.group(2))
+        if number > self._appr_seq.get(key, 0):
+            self._appr_seq[key] = number
+
+    def _clear_appr_key(self, key: int) -> None:
+        self._appr_seq.pop(key, None)
+        self._appr_open.pop(key, None)
+        for change_id, owner in list(self._appr_owner.items()):
+            if owner[0] == key:
+                self._appr_owner.pop(change_id, None)
+                self._appr_decided.pop(change_id, None)
+
+    def _merge_appr_pack(self, key: int, session_id: str, packed: dict[str, Any] | None) -> None:
+        if not packed:
+            return
+        try:
+            seq = int(packed.get("seq") or 0)
+        except (TypeError, ValueError):
+            return
+        memory = self._appr_seq.get(key, 0)
+        if seq < memory:
+            return
+        sessions = packed.get("sessions") if isinstance(packed.get("sessions"), dict) else {}
+        issued = packed.get("issued") if isinstance(packed.get("issued"), list) else []
+        for raw in issued:
+            change_id = _server_change_id(key, raw)
+            if change_id is None:
+                continue
+            owner_session = sessions.get(change_id) if isinstance(sessions.get(change_id), str) else session_id
+            self._appr_owner.setdefault(change_id, (key, str(owner_session)))
+            self._note_appr_seq(key, change_id)
+        decided = packed.get("decided") if isinstance(packed.get("decided"), dict) else {}
+        for raw, value in decided.items():
+            change_id = _server_change_id(key, raw)
+            if change_id is None or change_id in self._appr_decided:
+                continue
+            self._appr_decided[change_id] = value if isinstance(value, str) or value is None else None
+        if seq > memory and "open" in packed:
+            opened = _server_change_id(key, packed.get("open"))
+            self._appr_open[key] = opened
+
+    def _appr_pack_dict(self, key: int) -> dict[str, Any] | None:
+        issued = [change_id for change_id, owner in self._appr_owner.items() if owner[0] == key]
+        if not issued and not self._appr_seq.get(key, 0):
+            return None
+        return {
+            "seq": self._appr_seq.get(key, 0),
+            "open": self._appr_open.get(key),
+            "issued": sorted(issued),
+            "decided": {
+                change_id: self._appr_decided[change_id]
+                for change_id in issued
+                if change_id in self._appr_decided
+            },
+            "sessions": {change_id: self._appr_owner[change_id][1] for change_id in issued},
+        }
+
+    def _context_with_appr(self, task_id: int, visible: str) -> str:
+        visible, _packed = _split_appr_context(visible)
+        state = self._appr_pack_dict(int(task_id))
+        if not state:
+            return visible
+        return visible + _APPR_MARK + json.dumps(state, ensure_ascii=False, sort_keys=True)
+
+    async def _persist_appr_mark(self, task_id: int | None, session_id: str) -> None:
+        if not task_id:
+            return
+        data = await asyncio.to_thread(self.checkpoints.load_latest, int(task_id))
+        if data is None:
+            return
+        stored, _packed = _split_appr_context(data.context)
+        memory, _memory_pack = _split_appr_context(self._context.get(int(task_id), ""))
+        base = memory or stored
+        packed_context = self._context_with_appr(int(task_id), base)
+        if packed_context == data.context:
+            return
+        await asyncio.to_thread(
+            self.checkpoints.save,
+            int(task_id),
+            session_id,
+            data.model_copy(update={"context": packed_context}),
+        )
+
     async def _escalate(
         self,
         task_id: int,
@@ -1835,7 +2087,7 @@ class Supervisor:
         payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
         if extra:
             payload.update(extra)
-        await self.bus.publish(session_id, "approval_required", payload, task_id=task_id)
+        await self.publish_approval_required(session_id, payload, task_id=task_id, reuse=False)
 
     async def _set_status(
         self,
@@ -1909,6 +2161,34 @@ class Supervisor:
             internal=float(row.get("spend_internal") or 0),
             actions=float(row.get("spend_actions") or 0),
         )
+
+
+def _appr_key(task_id: int | None) -> int:
+    if task_id is None:
+        return 0
+    return int(task_id)
+
+
+def _server_change_id(key: int, value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = _APPR_ID.fullmatch(value)
+    if match is None or int(match.group(1)) != key:
+        return None
+    return value
+
+
+def _split_appr_context(context: str) -> tuple[str, dict[str, Any] | None]:
+    if _APPR_MARK not in context:
+        return context, None
+    visible, _, raw = context.rpartition(_APPR_MARK)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return context, None
+    if not isinstance(data, dict):
+        return context, None
+    return visible, data
 
 
 def _plan_fingerprint(plan: list[PlanStep]) -> str:

@@ -285,10 +285,10 @@ class MessageQueue:
         if budget_exhausted_response(response) and task_id is not None:
             await self.supervisor.absorb_budget(task_id, session_id, response)
         elif budget_exhausted_response(response):
-            await self.bus.publish(
+            await self.supervisor.publish_approval_required(
                 session_id,
-                "approval_required",
                 {"reason": "budget_exhausted", "task_id": None},
+                task_id=None,
             )
         await self.bus.publish(
             session_id,
