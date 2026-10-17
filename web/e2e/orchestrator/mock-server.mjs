@@ -364,7 +364,7 @@ async function runApproval(session, taskId) {
     cost_estimate: 4,
   });
   const decision = await new Promise((resolve) => {
-    session.approvalWait = resolve;
+    session.approvalWait = { id: "appr-1", resolve };
   });
   session.approvalWait = null;
   if (decision === "approve") {
@@ -757,14 +757,17 @@ function handleKill(session) {
       task_status: "cancelled",
       detail: "новые действия запрещены",
     });
-    emit(session, "step_finished", taskId, {
-      step_id: "s-paid",
-      title: "run_node images",
-      action: "run_node",
-      paid: true,
-      ok: false,
-      note: "платный шаг остановится на границе",
-    });
+    const paidStarted = session.events.some((event) => event.payload && event.payload.step_id === "s-paid");
+    if (paidStarted) {
+      emit(session, "step_finished", taskId, {
+        step_id: "s-paid",
+        title: "run_node images",
+        action: "run_node",
+        paid: true,
+        ok: false,
+        note: "платный шаг остановится на границе",
+      });
+    }
   }
   return {
     ok: true,
@@ -996,7 +999,9 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === "/xss-beacon") {
     xssHits.push(url.search);
-    sendJson(res, 204, {});
+    cors(res);
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -1040,8 +1045,10 @@ const server = http.createServer(async (req, res) => {
     }
     let matched = false;
     for (const session of sessions.values()) {
-      if (session.approvalWait) {
-        session.approvalWait(decision);
+      const wait = session.approvalWait;
+      if (wait && wait.id === approvalId) {
+        wait.resolve(decision);
+        session.approvalWait = null;
         matched = true;
         break;
       }

@@ -8,12 +8,13 @@
 Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
 не копируется. ``--ref`` — только ``origin/*``, SHA (7–40 hex) или
 существующий тег. Голое имя ветки отклоняется. По умолчанию, если
-локального файла нет, берётся origin/cursor/ws3-agents-r3-3c7d.
+локального файла нет, берётся SHA ``19e803df575bd05e88fa4ca3b8475352428e8708``
+(#350, контракт ws3-r3.1), не имя ветки.
 Локальный ``contracts.py`` используется, только когда ``--ref`` не передан.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
-  python web/scripts/gen_orch_types.py --ref origin/cursor/ws3-agents-r3-3c7d
+  python web/scripts/gen_orch_types.py --ref 19e803df575bd05e88fa4ca3b8475352428e8708
   python web/scripts/gen_orch_types.py --stdout
   python web/scripts/gen_orch_types.py --self-test
 """
@@ -33,7 +34,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
-DEFAULT_CONTRACT_REF = "origin/cursor/ws3-agents-r3-3c7d"
+DEFAULT_CONTRACT_REF = "19e803df575bd05e88fa4ca3b8475352428e8708"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -496,7 +497,7 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         default=None,
-        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или origin/cursor/ws3-agents-r3-3c7d",
+        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или SHA 19e803df575bd05e88fa4ca3b8475352428e8708",
     )
     args = parser.parse_args()
     if args.self_test:

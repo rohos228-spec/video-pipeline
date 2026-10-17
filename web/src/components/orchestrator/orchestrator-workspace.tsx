@@ -36,6 +36,15 @@ const CRITIC_ESCALATION = "critic_escalation" satisfies ApprovalReason;
 const KILL_HONEST =
   "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.";
 
+/** Старое имя причины, пока WS3 дописывает замену на critic_escalation. */
+const REVISE_LIMIT = "revise_limit";
+
+function killBannerText(notice: { text: string; paidBoundary: boolean }): string {
+  if (!notice.paidBoundary) return notice.text;
+  const extra = notice.text.trim();
+  return extra ? `${KILL_HONEST} ${extra}` : KILL_HONEST;
+}
+
 function statusBadgeVariant(status: string): "default" | "success" | "warning" | "destructive" | "info" | "muted" {
   if (status === "done" || status === "idle") return "success";
   if (status === "failed" || status === "cancelled") return "destructive";
@@ -149,10 +158,7 @@ export function OrchestratorWorkspace() {
           data-testid="orch-kill-status"
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
-          Kill switch:{" "}
-          {chat.state.killNotice.paidBoundary
-            ? chat.state.killNotice.text
-            : `${chat.state.killNotice.text} ${KILL_HONEST}`}
+          Kill switch: {killBannerText(chat.state.killNotice)}
         </div>
       ) : null}
 
@@ -542,7 +548,7 @@ function ApprovalCard({
   onReject: () => void;
 }) {
   const budget = approval.reason === BUDGET_EXHAUSTED;
-  const critic = approval.reason === CRITIC_ESCALATION;
+  const critic = approval.reason === CRITIC_ESCALATION || approval.reason === REVISE_LIMIT;
   return (
     <div
       data-testid="orch-approval"

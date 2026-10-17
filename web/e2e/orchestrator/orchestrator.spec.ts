@@ -144,6 +144,32 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("отменено");
   });
 
+  test("kill switch: оговорка видна при произвольном detail", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-custom");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          status: "cancelled",
+          detail: "произвольный текст сервера",
+        }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toContainText(
+      "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
+    );
+    await expect(banner).toContainText("произвольный текст сервера");
+    const text = await banner.innerText();
+    expect(text.indexOf("Платный шаг остановится на границе.")).toBeLessThan(
+      text.indexOf("произвольный текст сервера"),
+    );
+  });
+
   test("план: риск, стоимость и параллельные read-only", async ({ page }) => {
     await openWithToken(page, "plan", "plan-1");
     await page.getByTestId("orch-composer").fill("составь план");

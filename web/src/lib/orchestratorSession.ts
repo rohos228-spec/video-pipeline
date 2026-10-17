@@ -14,6 +14,7 @@ import {
   type NodeDef,
   type OrchEvent,
   type StepPayload,
+  TASK_STATUSES,
   type TaskStatus,
   type ValidatorResultPayload,
 } from "./orchestratorTypes";
@@ -266,6 +267,10 @@ function str(value: unknown, fallback = ""): string {
 }
 
 /** WS3: task_id — integer. В стейте карточки ключ строковый. */
+function asTaskStatus(value: string): TaskStatus | null {
+  return (TASK_STATUSES as readonly string[]).includes(value) ? (value as TaskStatus) : null;
+}
+
 function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
@@ -273,9 +278,9 @@ function taskKey(value: unknown): string | null {
 }
 
 function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
-  const status = str(payload.task_status);
+  const status = asTaskStatus(str(payload.task_status));
   if (taskId && status) {
-    ensureTask(state.tasks, taskId).status = status as TaskStatus;
+    ensureTask(state.tasks, taskId).status = status;
   }
   const approval = payload.approval;
   if (!approval || typeof approval !== "object") return;
@@ -406,7 +411,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       };
       if (killSwitch) {
         next.killNotice = {
-          text: "Сработал из сообщения. Платный шаг остановится на границе",
+          text: "Сработал из сообщения.",
           paidBoundary: true,
         };
       }
@@ -427,16 +432,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     return next;
   }
 
-  if (event.type === "agent_status" && taskId) {
+  if (event.type === "agent_status") {
     const agent = str(payload.agent) as AgentStatusPayload["agent"];
     const found = next.agents.find((item) => item.role === agent);
     if (found) {
       found.status = str(payload.status, found.status);
       found.detail = str(payload.detail);
     }
+    if (!taskId) return next;
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
-    const taskStatus = str(payload.task_status);
-    if (taskStatus) task.status = taskStatus as TaskStatus;
+    const taskStatus = asTaskStatus(str(payload.task_status));
+    if (taskStatus) task.status = taskStatus;
     return next;
   }
 

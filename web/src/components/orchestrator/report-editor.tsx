@@ -248,7 +248,11 @@ export function ReportEditor() {
                   className={`mb-2 w-full rounded-lg border px-2.5 py-2 text-left ${
                     report.id === selectedId ? "border-primary/50 bg-white/[0.05]" : "border-white/[0.08]"
                   }`}
-                  onClick={() => void openReport(report.id)}
+                  onClick={() => {
+                    void openReport(report.id).catch((err: unknown) => {
+                      setError(err instanceof OrchApiError ? err.message : "не открылось");
+                    });
+                  }}
                 >
                   <div className="truncate text-xs font-medium text-white/90">{report.title}</div>
                   <div className="mt-1 text-[10px] text-white/40">

@@ -26,7 +26,6 @@ export default defineConfig({
     timezoneId: "Europe/Moscow",
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
-    animations: "disabled",
     screenshot: "only-on-failure",
   },
   projects: [
