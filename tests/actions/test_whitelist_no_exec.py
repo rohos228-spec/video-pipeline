@@ -318,11 +318,24 @@ def _registry_module_absent(exc: ModuleNotFoundError, module: str) -> bool:
     return bool(missing) and (missing == module or module.startswith(missing + "."))
 
 
+def _module_exposes_registry(module) -> bool:
+    """Реестр — это API исполнителей, не пакет одних схем."""
+
+    ensure = getattr(module, "ensure_builtin_actions", None)
+    registry = getattr(module, "registry", None)
+    if callable(ensure) and registry is not None and hasattr(registry, "list"):
+        return True
+    if callable(registry):
+        return True
+    names = getattr(module, "ACTION_IDS", None)
+    return isinstance(names, Iterable) and not isinstance(names, (str, bytes))
+
+
 def _load_registry_module():
     errors: list[str] = []
     for name in _REGISTRY_MODULES:
         try:
-            return importlib.import_module(name)
+            module = importlib.import_module(name)
         except ModuleNotFoundError as exc:
             if _registry_module_absent(exc, name):
                 errors.append(f"{name}: {exc}")
@@ -335,6 +348,18 @@ def _load_registry_module():
             pytest.fail(
                 f"ошибка импорта реестра {name}: {type(exc).__name__}: {exc}"
             )
+        if _module_exposes_registry(module):
+            return module
+        # Контракт WS2 (схемы результатов) живёт в этом пакете раньше реестра.
+        # Это не пустой реестр и не повод красить приёмку.
+        version = getattr(module, "CONTRACT_VERSION", None)
+        if isinstance(version, str) and version.startswith("ws2-r2"):
+            errors.append(f"{name}: схемы {version}, реестра исполнителей нет")
+            continue
+        pytest.fail(
+            f"{name} импортирован, но не отдаёт реестр "
+            "(ensure_builtin_actions+registry.list, registry() или ACTION_IDS)"
+        )
     pytest.skip(
         "Реестр Action Layer в этом дереве отсутствует "
         "(нет app.orchestrator.actions и app.services.action_layer.spec). "
