@@ -32,6 +32,7 @@ def make_session_options(*, eval_mode: bool, production_inter_op: int | None) ->
         options.intra_op_num_threads = EVAL_INTRA_OP_THREADS
         options.inter_op_num_threads = EVAL_INTER_OP_THREADS
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.use_deterministic_compute = True
         options.add_session_config_entry("session.intra_op.allow_spinning", "0")
         random.seed(EVAL_ONNX_SEED)
         np.random.seed(EVAL_ONNX_SEED)

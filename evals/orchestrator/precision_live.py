@@ -1246,7 +1246,9 @@ def render_locked_report(payload: dict[str, Any]) -> str:
         "Конфиг не подбирался заново: bge-m3 топ-12, `prompt_pool`, веса 0.5/1.5, "
         "RRF k=20, BM25 full, e5-large, 256 токенов.",
         "Сессии ONNX в режиме эвалов: `intra_op_num_threads=1`, `inter_op_num_threads=1`, "
-        "фиксированный сид.",
+        "фиксированный сид, `use_deterministic_compute`. "
+        "Реранкер эвалов — fp32 `onnx/model.onnx` той же bge-m3: "
+        "квантованный граф при тех же опциях не бит-стабилен.",
         "Сплит прежний: нечётный `query_id` — dev, чётный — test.",
         "Текст правила 1 в индексе — новый. Метки `rule-1` не менялись.",
         "",

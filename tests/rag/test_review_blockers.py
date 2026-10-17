@@ -56,13 +56,23 @@ class _FakeSession:
         return []
 
 
-def _patch_onnx(monkeypatch: pytest.MonkeyPatch, captured: list[object], seeds: list[int]) -> None:
+def _patch_onnx(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: list[object],
+    seeds: list[int],
+    downloads: list[str],
+) -> None:
     import huggingface_hub
     import tokenizers
 
     monkeypatch.setattr(ort, "InferenceSession", _FakeSession)
     monkeypatch.setattr(ort, "set_seed", lambda seed: seeds.append(seed))
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: "model.onnx")
+
+    def _download(_repo: str, filename: str, cache_dir: str | None = None) -> str:
+        downloads.append(filename)
+        return "model.onnx"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
     monkeypatch.setattr(tokenizers, "Tokenizer", _FakeTokenizer)
     monkeypatch.setattr(os, "cpu_count", lambda: 8)
 
@@ -100,7 +110,8 @@ def test_eval_reindex_can_raise_the_worker_timeout(tmp_path: Path, monkeypatch: 
 def test_eval_mode_sessions_use_one_thread_and_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[object] = []
     seeds: list[int] = []
-    _patch_onnx(monkeypatch, captured, seeds)
+    downloads: list[str] = []
+    _patch_onnx(monkeypatch, captured, seeds, downloads)
     OnnxMultilingualE5("intfloat/multilingual-e5-large", "e5", eval_mode=True)
     OnnxBgeM3Reranker(max_length=64, eval_mode=True)
     assert len(captured) == 2
@@ -108,19 +119,25 @@ def test_eval_mode_sessions_use_one_thread_and_fixed_seed(monkeypatch: pytest.Mo
         assert options.intra_op_num_threads == EVAL_INTRA_OP_THREADS == 1
         assert options.inter_op_num_threads == EVAL_INTER_OP_THREADS == 1
         assert options.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
+        assert options.use_deterministic_compute is True
     assert seeds == [EVAL_ONNX_SEED, EVAL_ONNX_SEED]
+    assert "onnx/model.onnx" in downloads
+    assert "onnx/model.onnx_data" in downloads
+    assert "onnx/model_quantized.onnx" not in downloads
 
 
 def test_production_sessions_keep_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[object] = []
     seeds: list[int] = []
-    _patch_onnx(monkeypatch, captured, seeds)
+    downloads: list[str] = []
+    _patch_onnx(monkeypatch, captured, seeds, downloads)
     OnnxMultilingualE5("intfloat/multilingual-e5-large", "e5", eval_mode=False)
     OnnxBgeM3Reranker(max_length=64, eval_mode=False)
     assert captured[0].intra_op_num_threads == 8
     assert captured[1].intra_op_num_threads == 8
     assert captured[1].inter_op_num_threads == 1
     assert seeds == []
+    assert "onnx/model_quantized.onnx" in downloads
 
 
 def _slice(hit: float, ndcg: float, doc: float = 0.5, p95: float = 0.2, n: int = 4) -> dict[str, float]:

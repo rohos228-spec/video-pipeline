@@ -21,6 +21,9 @@ JINA_REPO = "jinaai/jina-reranker-v2-base-multilingual"
 JINA_FILE = "onnx/model_quantized.onnx"
 BGE_M3_REPO = "onnx-community/bge-reranker-v2-m3-ONNX"
 BGE_M3_FILE = "onnx/model_quantized.onnx"
+# Квантованный граф не бит-стабилен даже при одном потоке. В эвалах — fp32.
+BGE_M3_EVAL_FILE = "onnx/model.onnx"
+BGE_M3_EVAL_DATA = "onnx/model.onnx_data"
 
 
 class Reranker(Protocol):
@@ -81,6 +84,8 @@ class OnnxPairReranker:
         self.max_length = max_length
         self.eval_mode = eval_mode
         cache = weight_cache_dir()
+        if filename == BGE_M3_EVAL_FILE:
+            hf_hub_download(repo, BGE_M3_EVAL_DATA, cache_dir=str(cache))
         model_path = hf_hub_download(repo, filename, cache_dir=str(cache))
         tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
         tokenizer = Tokenizer.from_file(tokenizer_path)
@@ -152,7 +157,7 @@ class OnnxBgeM3Reranker(OnnxPairReranker):
     def __init__(self, *, max_length: int = 384, eval_mode: bool = False) -> None:
         super().__init__(
             repo=BGE_M3_REPO,
-            filename=BGE_M3_FILE,
+            filename=BGE_M3_EVAL_FILE if eval_mode else BGE_M3_FILE,
             reranker_id="onnx-bge-reranker-v2-m3",
             max_length=max_length,
             eval_mode=eval_mode,
