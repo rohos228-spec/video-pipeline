@@ -24,7 +24,7 @@ NEW_IDS = {
     "project.reload_xlsx": ("destructive", False),
     "montage.set_send_to_main_pc": ("local_safe", False),
     "prompt.get_master": ("read", False), "prompt.save_master": ("destructive", False),
-    "prompt.create_master": ("local_safe", False), "prompt.delete_master": ("destructive", False),
+    "prompt.create_master": ("destructive", False), "prompt.delete_master": ("destructive", False),
     "node.get_run_cost_basis": ("read", False), "node.run_step": ("destructive", True),
 }
 
@@ -295,7 +295,7 @@ async def test_prompt_actions_preconditions(env, prompts_root) -> None:
 
 async def test_create_get_and_delete_master(env, prompts_root) -> None:
     created = await _run(env, [{"action_id": "prompt.create_master", "params": {
-        "step_code": "plan", "name": "fresh", "content": "новый вариант"}}], approve=False)
+        "step_code": "plan", "name": "fresh", "content": "новый вариант"}}])
     assert created["status"] == "succeeded", created
     assert (prompts_root / "01_plan" / "fresh.md").read_text(encoding="utf-8") == "новый вариант"
     got = await _run(env, [{"action_id": "prompt.get_master", "params": {

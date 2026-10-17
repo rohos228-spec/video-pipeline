@@ -649,12 +649,19 @@ def _specs() -> list[ActionSpec]:
                                       _pre_content_nonblank)),
           tags=("prompt", "global")),
         S(id="prompt.create_master", title_ru="Создать вариант мастер-промта",
-          description_ru="Новый файл варианта промта шага (общий для всех проектов). Существующее "
-                         "имя не перезаписывается.",
+          description_ru="Новый файл варианта промта шага, общий для всех проектов. Существующее "
+                         "имя не перезаписывается. Файл в репозитории общий, поэтому создание "
+                         "требует подтверждения.",
           params_schema=_obj({"step_code": _STEP_CODE, "name": _PROMPT_NAME,
                               "content": {"type": "string", "minLength": 1, "maxLength": 200000}},
                              ["step_code", "name", "content"], project=False),
-          executor=_create_master, risk=RISK_LOCAL_SAFE, idempotent=False, scope="global",
+          executor=_create_master, risk=RISK_DESTRUCTIVE, destructive=True, reversible=False,
+          idempotent=False, scope="global",
+          destructive_effects=lambda p: (
+              f"ГЛОБАЛЬНО: будет создан общий файл варианта промта {p['step_code']}/{p['name']} "
+              "для всех проектов"
+              + ("; это файл шаблона группы script_frames_qc в репозитории"
+                 if _group_query(p) else "")),
           preconditions=(Precondition("prompt_free", "Имя свободно", _pre_prompt_free),
                          Precondition("content_nonblank", "Текст не пустой",
                                       _pre_content_nonblank)),
