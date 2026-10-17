@@ -1190,15 +1190,30 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             warnings.append(f"короткий закадр {n} перенесён в предыдущий кусок (кадр оставлен)")
         i += 1
 
-    # 3) пустые оболочки (без шага, закадра и промтов) помечаем, не выкидываем
+    # 3) пустые оболочки помечаем, не выкидываем. Реплика и прочие
+    # содержательные поля — не пустота: карантин спрятал бы кадр.
+    _content_keys = (
+        "действие",
+        "реплика",
+        "говорит",
+        "кто",
+        "позы",
+        "где",
+        "эмоции",
+        "фон",
+        "старт",
+        "конец",
+    )
     empty_n = 0
     for s in shots:
         if not isinstance(s, dict):
             continue
         if (
             not _vo(s)
-            and not str(s.get("действие") or "").strip()
+            and not any(str(s.get(k) or "").strip() for k in _content_keys)
             and not any(str(s.get(k) or "").strip() for k in s if str(k).startswith("промт"))
+            and not s.get("предметы")
+            and not s.get("люди")
         ):
             if not s.get("карантин"):
                 _mark_shot_kept(
