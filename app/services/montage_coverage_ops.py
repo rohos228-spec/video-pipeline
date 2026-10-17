@@ -1266,8 +1266,10 @@ async def apply_coverage_scene_action(
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    from app.services.frame_tombstones import shot_is_active
+    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
 
+    old_kadry = (getattr(parent, "attrs", None) or {}).get("кадры")
+    kadry = merge_kadry_keep_missing(old_kadry, kadry)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
     layout = live_kadry
     if not layout:
