@@ -52,6 +52,33 @@ def test_missing_character_and_delete_op() -> None:
     assert all(item.code == "character_deleted" and item.severity == "error" for item in deleted)
 
 
+def test_no_deletions_characters() -> None:
+    before = _cast([{"id": "c01", "имя": "Анна"}, {"id": "c02", "имя": "Борис"}])
+    archived = _cast(
+        [
+            {"id": "c01", "имя": "Анна"},
+            {"id": "c02", "имя": "Борис", "archived": True},
+        ]
+    )
+    archived["сцены"][0]["кадры"] = [{"id": "k-off", "активен": False, "закадр": ""}]
+    assert check_characters(before, archived) == []
+
+    gone = check_characters(before, _cast([{"id": "c01", "имя": "Анна"}]))
+    assert [(item.code, item.severity, item.id) for item in gone] == [
+        ("character_deleted", "error", "c02"),
+    ]
+
+    kept = copy.deepcopy(before)
+    deleted = check_characters(
+        kept,
+        kept,
+        ops=[{"op": "delete", "entity": "character", "id": "c01"}],
+    )
+    assert [(item.code, item.id, item.path) for item in deleted] == [
+        ("character_deleted", "c01", "ops/0"),
+    ]
+
+
 def test_inactive_shot_does_not_drop_a_character() -> None:
     before = {
         "персонажи": [{"id": "c01", "имя": "Анна"}],
