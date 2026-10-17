@@ -44,19 +44,32 @@ async def test_single_item_batch_does_not_sleep(config, sleeper):
     assert sleeper.calls == []
 
 
-async def test_batch_missing_run_id_stops_before_gather(config):
+async def test_batch_missing_run_id_stops_before_gather(config, ledger):
     transport = FakeTransport([ok("should-not-run")])
-    router = LiveRouter(config, transport=transport)
+    router = LiveRouter(config, transport=transport, ledger=ledger)
     items = [
-        {"tier": "auto", "messages": [{"role": "user", "content": "что думаешь?"}]},
         {
             "tier": "auto",
             "messages": [{"role": "user", "content": "ещё раз"}],
-            "run_id": "a1",
+            "run_id": "a0",
         },
+        {"tier": "auto", "messages": [{"role": "user", "content": "ещё раз"}]},
     ]
     with pytest.raises(ValueError, match="internal budget requires run_id"):
         await router.call_batch(items)
+    assert transport.calls == []
+    assert ledger.spent("a0") == 0.0
+
+    bad_scope = [
+        {
+            "tier": "strong",
+            "messages": [{"role": "user", "content": "ещё раз"}],
+            "run_id": "a0",
+            "budget_scope": "external",
+        }
+    ]
+    with pytest.raises(ValueError, match=r"internal\|pipeline"):
+        await router.call_batch(bad_scope)
     assert transport.calls == []
 
 

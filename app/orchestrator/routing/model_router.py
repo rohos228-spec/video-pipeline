@@ -112,6 +112,14 @@ def primary_key_fields(
     }
 
 
+def _batch_scope(spec: dict) -> str:
+    raw = spec.get("budget_scope")
+    scope = "internal" if raw is None else raw
+    if scope not in _SCOPES:
+        raise ValueError("budget_scope must be internal|pipeline")
+    return scope
+
+
 def _require_run_id(run_id: str | None, *, scope: str) -> str:
     """Internal (и pipeline) без ``run_id`` не пишутся в общий бакет."""
     if run_id is None or str(run_id).strip() == "":
@@ -405,6 +413,8 @@ class ModelRouter:
         """
         if not items:
             return []
+        for spec in items:
+            _require_run_id(spec.get("run_id"), scope=_batch_scope(spec))
         delay = 0.0 if gap is None else float(gap)
         prepared = [await self._prepare_batch_item(spec) for spec in items]
 
