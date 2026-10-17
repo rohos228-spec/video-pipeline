@@ -731,6 +731,23 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("200 и прочие 2xx без тела не закрывают карточку", async ({ page }) => {
+    for (const status of [200, 202]) {
+      await openWithToken(page, "approval", `empty-${status}`);
+      await page.route("**/api/orchestrator/approvals/**/approve", async (route) => {
+        await route.fulfill({ status, body: "" });
+      });
+      await page.getByTestId("orch-composer").fill("запусти ноду");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await expect(page.getByTestId("orch-approval-error")).toContainText("сервер не подтвердил");
+      await expect(page.getByTestId("orch-approve")).toBeEnabled();
+      await page.unroute("**/api/orchestrator/approvals/**/approve");
+    }
+  });
+
   test("204 на approve, deny и повтор закрывает карточку без ошибки", async ({ page }) => {
     const fulfill204 = async (route: { fulfill: (opts: { status: number; body: string }) => Promise<void> }) => {
       await route.fulfill({ status: 204, body: "" });

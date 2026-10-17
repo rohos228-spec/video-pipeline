@@ -253,8 +253,53 @@ export function postOrchMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
-export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
+export type ApprovalHttpResult = {
+  status: number;
+  body: { ok?: boolean; matched?: boolean; approval_id?: string } | null;
+};
+
+/** Approve/reject. Пустое тело — успех только при status === 204. Остальные 2xx без тела — не успех. */
+async function postApproval(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const res = await fetch(apiUrl(cfg.apiBase, path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (res.status === 401) {
+    throw new OrchApiError(401, "401 — токен не принят");
+  }
+  if (!res.ok) {
+    throw new OrchApiError(res.status, await readError(res));
+  }
+  if (res.status === 204) return { status: 204, body: null };
+  const text = await res.text();
+  if (!text.trim()) return { status: res.status, body: null };
+  try {
+    const parsed = JSON.parse(text) as ApprovalHttpResult["body"];
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { status: res.status, body: null };
+    }
+    return { status: res.status, body: parsed };
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+export function postOrchApprove(
+  cfg: OrchClientConfig,
+  body: OrchApprovalDecision,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  return postApproval(
     cfg,
     `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
     body,
@@ -262,8 +307,12 @@ export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecisio
   );
 }
 
-export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
+export function postOrchReject(
+  cfg: OrchClientConfig,
+  body: OrchApprovalDecision,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  return postApproval(
     cfg,
     `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
     body,
