@@ -11,7 +11,7 @@ import asyncio
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -3168,16 +3168,60 @@ async def patch_entity(
     return {"ok": True}
 
 
+def _entity_marked(en: Entity) -> bool:
+    attrs = en.attrs if isinstance(en.attrs, dict) else {}
+    return bool(attrs.get("удалён") or attrs.get("archived"))
+
+
 @router.delete("/entities/{entity_id}")
 async def delete_entity(
-    entity_id: int, session: AsyncSession = Depends(get_entity_session)
+    entity_id: int,
+    confirm: bool = Query(False),
+    session: AsyncSession = Depends(get_entity_session),
+) -> dict:
+    """Пометить сущность. Было: ``await session.delete(en)``."""
+    en = await session.get(Entity, entity_id)
+    if en is None:
+        raise HTTPException(404, "сущность не найдена")
+    if not confirm:
+        raise HTTPException(400, "нужно подтверждение: confirm=true")
+    if not _entity_marked(en):
+        attrs = dict(en.attrs or {})
+        attrs["удалён"] = True
+        attrs["активен"] = False
+        attrs["archived"] = True
+        attrs["пометка"] = "delete_entity: строка сохранена"
+        en.attrs = attrs
+        logger.warning(
+            "WARN db_browser: Entity id={} помечена удалён/archived, строка сохранена",
+            en.id,
+        )
+    await commit_with_retry(session)
+    register_entity_project(en.id, en.project_id)
+    return {"ok": True, "id": en.id, "archived": True}
+
+
+@router.post("/entities/{entity_id}/restore")
+async def restore_entity(
+    entity_id: int,
+    session: AsyncSession = Depends(get_entity_session),
 ) -> dict:
     en = await session.get(Entity, entity_id)
     if en is None:
         raise HTTPException(404, "сущность не найдена")
-    await session.delete(en)
+    attrs = dict(en.attrs or {})
+    attrs.pop("удалён", None)
+    attrs.pop("активен", None)
+    attrs.pop("archived", None)
+    attrs.pop("пометка", None)
+    en.attrs = attrs
     await commit_with_retry(session)
-    return {"ok": True}
+    register_entity_project(en.id, en.project_id)
+    logger.warning(
+        "WARN db_browser: Entity id={} восстановлена, строка была на месте",
+        en.id,
+    )
+    return {"ok": True, "id": en.id, "archived": False}
 
 
 class EdgeBody(BaseModel):
@@ -3207,16 +3251,58 @@ async def add_edge(
     return {"id": e.id}
 
 
+_EDGE_ARCHIVED = "archived:"
+
+
+def _edge_is_archived(edge: FrameEdge) -> bool:
+    return (edge.type or "").startswith(_EDGE_ARCHIVED)
+
+
 @router.delete("/edges/{edge_id}")
 async def delete_edge(
-    edge_id: int, session: AsyncSession = Depends(get_edge_session)
+    edge_id: int,
+    confirm: bool = Query(False),
+    session: AsyncSession = Depends(get_edge_session),
+) -> dict:
+    """Пометить связь. Было: ``await session.delete(e)``."""
+    e = await session.get(FrameEdge, edge_id)
+    if e is None:
+        raise HTTPException(404, "связь не найдена")
+    if not confirm:
+        raise HTTPException(400, "нужно подтверждение: confirm=true")
+    if not _edge_is_archived(e):
+        previous = (e.type or "next").strip() or "next"
+        marked = (_EDGE_ARCHIVED + previous)[:24]
+        e.type = marked
+        logger.warning(
+            "WARN db_browser: FrameEdge id={} помечена {}, строка сохранена",
+            e.id,
+            marked,
+        )
+    await commit_with_retry(session)
+    register_edge_project(e.id, e.project_id)
+    return {"ok": True, "id": e.id, "type": e.type, "archived": True}
+
+
+@router.post("/edges/{edge_id}/restore")
+async def restore_edge(
+    edge_id: int,
+    session: AsyncSession = Depends(get_edge_session),
 ) -> dict:
     e = await session.get(FrameEdge, edge_id)
     if e is None:
         raise HTTPException(404, "связь не найдена")
-    await session.delete(e)
+    if _edge_is_archived(e):
+        restored = (e.type or "")[len(_EDGE_ARCHIVED):] or "next"
+        e.type = restored[:24]
     await commit_with_retry(session)
-    return {"ok": True}
+    register_edge_project(e.id, e.project_id)
+    logger.warning(
+        "WARN db_browser: FrameEdge id={} восстановлена type={}, строка была на месте",
+        e.id,
+        e.type,
+    )
+    return {"ok": True, "id": e.id, "type": e.type, "archived": False}
 
 
 class SceneBody(BaseModel):

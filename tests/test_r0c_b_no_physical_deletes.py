@@ -475,3 +475,70 @@ async def test_empty_voiceover_keeps_frame_text(session: AsyncSession, warn_log)
     assert frame.voiceover_text == ""
     assert any("vo_archived" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_db_browser_entity_and_edge_need_confirm_and_restore(
+    session: AsyncSession, warn_log
+) -> None:
+    """Было: session.delete(en) и session.delete(e) в db_browser."""
+    project = await _project(session, "db-browser-mark")
+    entity = Entity(
+        project_id=project.id,
+        type="character",
+        code="c01",
+        name="Анна",
+        attrs={"роль": "герой"},
+    )
+    left = _frame(project, 1, "e-left", "слева", sort_key=1.0)
+    right = _frame(project, 2, "e-right", "справа", sort_key=2.0)
+    session.add_all([entity, left, right])
+    await session.flush()
+    edge = FrameEdge(
+        project_id=project.id,
+        from_frame_id=left.id,
+        to_frame_id=right.id,
+        type="continues",
+    )
+    session.add(edge)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as denied:
+        await delete_entity(entity.id, confirm=False, session=session)
+    assert denied.value.status_code == 400
+    untouched = await session.get(Entity, entity.id)
+    assert untouched is not None
+    assert not (untouched.attrs or {}).get("удалён")
+
+    marked = await delete_entity(entity.id, confirm=True, session=session)
+    assert marked["archived"] is True
+    stored = await session.get(Entity, entity.id)
+    assert stored is not None
+    assert stored.attrs.get("удалён") is True
+    assert stored.attrs.get("активен") is False
+    assert stored.attrs.get("archived") is True
+    assert stored.name == "Анна"
+
+    restored = await restore_entity(entity.id, session=session)
+    assert restored["archived"] is False
+    back = await session.get(Entity, entity.id)
+    assert back is not None
+    assert "удалён" not in (back.attrs or {})
+    assert back.attrs.get("роль") == "герой"
+
+    with pytest.raises(HTTPException) as edge_denied:
+        await delete_edge(edge.id, confirm=False, session=session)
+    assert edge_denied.value.status_code == 400
+    same_edge = await session.get(FrameEdge, edge.id)
+    assert same_edge is not None and same_edge.type == "continues"
+
+    archived = await delete_edge(edge.id, confirm=True, session=session)
+    assert archived["archived"] is True
+    kept_edge = await session.get(FrameEdge, edge.id)
+    assert kept_edge is not None
+    assert kept_edge.type == "archived:continues"
+    revived = await restore_edge(edge.id, session=session)
+    assert revived["type"] == "continues"
+    assert await session.get(FrameEdge, edge.id) is not None
+    assert any("Entity id=" in line for line in warn_log)
+    assert any("FrameEdge id=" in line for line in warn_log)
+
