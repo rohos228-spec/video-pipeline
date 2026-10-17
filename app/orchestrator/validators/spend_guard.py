@@ -10,8 +10,10 @@
   ``budget_exhausted``. Списание (``charge``) не вызывается. Pipeline-scope
   в лимит $10 не входит и приватный ``_pipeline`` не читается. Если модуль
   ``app.orchestrator.routing.ledger`` импортируется, берём
-  ``get_spend_ledger()``; явный ledger в context его перекрывает. Пока модуля
-  нет, остаётся чтение переданного объекта (``spent`` / ``totals``).
+  ``get_spend_ledger()``. ``spend`` / ``spend_ledger`` / ``ledger`` /
+  ``spend_reader`` / ``read_pipeline_spent`` из context не читаются:
+  их подсовывает planner. Пока модуля нет, остаётся читатель,
+  переданный сервером через ``set_spend_reader``.
   С ``eefc08b4`` пустой ``run_id`` у ``spent`` / ``totals`` даёт 0 и не
   блокирует, а внутренний вызов без ``run_id`` бросает ``ValueError``.
   Без ``run_id`` ledger не зовётся и в ``dry_run`` тоже: результат
@@ -20,8 +22,8 @@
   ``ValueError`` про ``run_id``. ``TypeError`` при чтении не повторяет
   вызов без аргументов: результат ``blocking`` с ``reason=spend_unreadable``,
   вызова нет.
-- spend action layer (#342) через ``SpendReader.read_totals`` или снимок
-  ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
+- spend action layer (#342) через ``SpendReader.read_totals``, который
+  сервер кладёт в ``set_spend_reader``. WS2 принимает ключи ``*_spent_usd`` как есть.
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
 
 Потолки плана, если источник их не передал: $200 сутки / $100 проект /
@@ -143,7 +145,7 @@ class RouterLedgerReader(Protocol):
 
 
 def set_spend_reader(reader: SpendReader | None) -> None:
-    """Инъекция читателя action layer. Context перекрывает это значение."""
+    """Инъекция читателя action layer сервером. Context это значение не подменяет."""
 
     global _reader
     _reader = reader
@@ -174,6 +176,8 @@ def _checked(project_id: int, context: dict[str, Any]) -> Any:
     signal = _budget_signal(context)
     view = _load_view(project_id, context)
     view = _apply_pipeline_scope(project_id, context, view)
+    if view is None and signal is None and _context_claims_spend_source(context):
+        return _spend_source_missing()
     if view is None and signal is None:
         return make_result(
             name=_NAME,
@@ -392,15 +396,23 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
     return view
 
 
+_UNTRUSTED_SPEND_KEYS = (
+    "spend",
+    "spend_ledger",
+    "ledger",
+    "spend_reader",
+    "read_pipeline_spent",
+)
+
+
+def _context_claims_spend_source(context: dict[str, Any]) -> bool:
+    return any(key in context for key in _UNTRUSTED_SPEND_KEYS)
+
+
 def _action_totals(
     project_id: int,
     context: dict[str, Any],
 ) -> tuple[Mapping[str, Any], str] | None:
-    if "spend" in context:
-        raw = context.get("spend")
-        if isinstance(raw, Mapping):
-            return raw, "spend_snapshot"
-        return None
     raw = _call_reader(project_id, context)
     if isinstance(raw, Mapping):
         return raw, "action_layer"
@@ -408,9 +420,7 @@ def _action_totals(
 
 
 def _call_reader(project_id: int, context: dict[str, Any]) -> Mapping[str, Any] | None:
-    reader = context.get("spend_reader")
-    if reader is None:
-        reader = _reader
+    reader = _reader
     if reader is None:
         return None
     run_value = _run_id(context)
@@ -495,25 +505,14 @@ def _apply_pipeline_scope(
 
 def _pipeline_amount(project_id: int, context: dict[str, Any]) -> float | None:
     run_id = _run_id(context)
-    explicit = context.get("read_pipeline_spent")
-    if callable(explicit):
-        return _call_pipeline(explicit, project_id=project_id, run_id=run_id)
-    reader = context.get("spend_reader")
-    if reader is None:
-        reader = _reader
-    found = read_pipeline_spent(reader, project_id=project_id, run_id=run_id)
+    found = read_pipeline_spent(_reader, project_id=project_id, run_id=run_id)
     if found is not None:
         return found
-    ledger = context.get("spend_ledger")
-    if ledger is None and "ledger" in context:
-        ledger = context.get("ledger")
-    return read_pipeline_spent(ledger, project_id=project_id, run_id=run_id)
+    return read_pipeline_spent(_process_spend_ledger(), project_id=project_id, run_id=run_id)
 
 
 def _resolve_ledger(context: dict[str, Any]) -> Any:
-    for key in ("spend_ledger", "ledger"):
-        if key in context and context.get(key) is not None:
-            return context.get(key)
+    del context
     return _process_spend_ledger()
 
 
@@ -707,6 +706,15 @@ def _invalid_amount(exc: _InvalidAmount) -> Any:
         passed=False,
         blocking=True,
         details={"reason": "invalid_amount", "field": exc.field},
+    )
+
+
+def _spend_source_missing() -> Any:
+    return make_result(
+        name=_NAME,
+        passed=False,
+        blocking=True,
+        details={"reason": "spend_source_missing"},
     )
 
 
