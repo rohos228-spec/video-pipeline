@@ -77,6 +77,72 @@ export interface StepView {
   node: NodeDef | null;
 }
 
+/** Шаг из CheckpointData.plan. Поля как у PlanStep. */
+export interface PlanStepView {
+  action: string;
+  expected: string;
+  paid: boolean;
+  mutating: boolean;
+  risk: string;
+  parallelGroup: string | null;
+  estimatedCost: number;
+}
+
+export interface PlanGroup {
+  key: string;
+  parallel: boolean;
+  group: string;
+  steps: PlanStepView[];
+}
+
+const BLOCKING_PLAN_RISK = new Set(["medium", "high"]);
+
+export function readPlanSteps(value: unknown): PlanStepView[] {
+  if (!Array.isArray(value)) return [];
+  const steps: PlanStepView[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    const action = typeof raw.action === "string" ? raw.action : "";
+    if (!action) continue;
+    const group = raw.parallel_group;
+    const cost = raw.estimated_cost;
+    steps.push({
+      action,
+      expected: typeof raw.expected === "string" ? raw.expected : "",
+      paid: raw.paid === true,
+      mutating: raw.mutating === true,
+      risk: typeof raw.risk === "string" && raw.risk ? raw.risk : "none",
+      parallelGroup: typeof group === "string" && group ? group : null,
+      estimatedCost: typeof cost === "number" && Number.isFinite(cost) ? cost : 0,
+    });
+  }
+  return steps;
+}
+
+/** Read-only шаг можно класть в параллельную группу: не mutating, не paid, риск не medium/high. */
+export function isParallelReadonly(step: PlanStepView): boolean {
+  return Boolean(step.parallelGroup) && !step.mutating && !step.paid && !BLOCKING_PLAN_RISK.has(step.risk);
+}
+
+export function groupPlanSteps(steps: PlanStepView[]): PlanGroup[] {
+  const groups: PlanGroup[] = [];
+  for (const [index, step] of steps.entries()) {
+    const last = groups[groups.length - 1];
+    if (isParallelReadonly(step) && last?.parallel && last.group === step.parallelGroup) {
+      last.steps.push(step);
+      continue;
+    }
+    groups.push({
+      key: `${index}-${step.action}`,
+      parallel: isParallelReadonly(step),
+      group: step.parallelGroup ?? "",
+      steps: [step],
+    });
+  }
+  return groups.map((group) => ({ ...group, parallel: group.parallel && group.steps.length > 1 }));
+}
+
 export interface CheckpointView {
   id: string;
   stepId: string;
@@ -111,6 +177,7 @@ export interface TaskView {
   validators: ValidatorView[];
   summary: string;
   error: string;
+  plan: PlanStepView[];
 }
 
 export interface AckView {
@@ -124,6 +191,7 @@ export interface ClassificationView {
   deterministic: boolean;
   detail: string;
   seq: number;
+  killSwitch: boolean;
 }
 
 export interface OrchScreenState {
@@ -210,6 +278,7 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
       validators: [],
       summary: "",
       error: "",
+      plan: [],
     };
     tasks.push(task);
   } else if (title && task.title === "Задача") {
@@ -269,6 +338,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       })),
       checkpoints: task.checkpoints.map((checkpoint) => ({ ...checkpoint })),
       validators: [...task.validators],
+      plan: task.plan.map((step) => ({ ...step })),
     })),
     approvals: state.approvals.map((item) => ({ ...item })),
   };
@@ -289,12 +359,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   if (event.type === "classification") {
     const mode = str(payload.mode) as ClassificationPayload["mode"];
     if (mode === "interrupt" || mode === "steer" || mode === "append") {
+      const killSwitch = payload.kill_switch === true;
       next.classification = {
         mode,
         deterministic: payload.deterministic === true,
         detail: str(payload.detail),
         seq: event.seq,
+        killSwitch,
       };
+      if (killSwitch) {
+        next.killNotice = "сработал из сообщения. Платный шаг остановится на границе";
+      }
     }
     return next;
   }
@@ -350,12 +425,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   if (event.type === "checkpoint" && taskId) {
     const task = ensureTask(next.tasks, taskId);
     const id = str(payload.checkpoint_id, `cp-${event.seq}`);
+    const plan = readPlanSteps(payload.plan);
+    if (plan.length) task.plan = plan;
     if (!task.checkpoints.some((item) => item.id === id)) {
       const body = payload as CheckpointPayload & Record<string, unknown>;
       task.checkpoints.push({
         id,
         stepId: str(body.step_id),
-        summary: str(body.summary, "чекпоинт"),
+        summary: str(body.summary, plan.length ? "план" : "чекпоинт"),
         spend: typeof body.spend === "number" ? body.spend : null,
       });
     }

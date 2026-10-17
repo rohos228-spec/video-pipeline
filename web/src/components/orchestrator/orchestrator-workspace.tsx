@@ -17,15 +17,18 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
+  groupPlanSteps,
   isNodeResultAction,
   TASK_STATUS_LABEL,
   type ApprovalView,
+  type PlanStepView,
   type StepView,
 } from "@/lib/orchestratorSession";
 import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
 
-/** Значение ApprovalReason из contracts.py. Статус задачи при этом — waiting_approval. */
+/** Значения ApprovalReason из contracts.py. Статус задачи при этом — waiting_approval. */
 const BUDGET_EXHAUSTED = "budget_exhausted" satisfies ApprovalReason;
+const CRITIC_ESCALATION = "critic_escalation" satisfies ApprovalReason;
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
 
@@ -212,7 +215,9 @@ export function OrchestratorWorkspace() {
                     {chat.state.classification.mode}
                   </Badge>
                   <span className="text-white/55">
-                    {chat.state.classification.detail || "классификация"}
+                    {chat.state.classification.killSwitch
+                      ? "kill switch из сообщения"
+                      : chat.state.classification.detail || "классификация"}
                     {chat.state.classification.deterministic ? " · правило" : ""}
                   </span>
                 </div>
@@ -287,6 +292,7 @@ export function OrchestratorWorkspace() {
                       </p>
                     ) : null}
                     {item.error ? <p className="mt-2 text-[11px] text-destructive">{item.error}</p> : null}
+                    {item.plan.length > 0 ? <PlanList steps={item.plan} /> : null}
                     <ul className="mt-2 space-y-1.5">
                       {item.steps.map((step) => (
                         <li key={step.id} className="text-[11px] text-white/75">
@@ -422,6 +428,38 @@ function TokenGate({
   );
 }
 
+function formatCost(value: number): string {
+  return `~$${value}`;
+}
+
+function PlanList({ steps }: { steps: PlanStepView[] }) {
+  const groups = groupPlanSteps(steps);
+  return (
+    <div className="mt-2" data-testid="orch-plan">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">План</div>
+      {groups.map((group) => (
+        <div
+          key={group.key}
+          className="mt-1.5"
+          data-testid={group.parallel ? "orch-plan-parallel" : "orch-plan-serial"}
+          data-parallel-group={group.group || undefined}
+        >
+          {group.parallel ? (
+            <div className="text-[10px] text-info">параллельно · {group.group}</div>
+          ) : null}
+          {group.steps.map((step, index) => (
+            <div key={`${group.key}-${index}`} data-testid="orch-plan-step" className="text-[11px] text-white/75">
+              {step.action}
+              <span data-testid="orch-plan-risk"> · риск {step.risk}</span>
+              <span data-testid="orch-plan-cost"> · {formatCost(step.estimatedCost)}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function NodeDefMarks({ node }: { node: NodeDef }) {
   const fromDb = node.source === "db";
   if (!fromDb && !node.stale_base) return null;
@@ -468,18 +506,24 @@ function ApprovalCard({
   onReject: () => void;
 }) {
   const budget = approval.reason === BUDGET_EXHAUSTED;
+  const critic = approval.reason === CRITIC_ESCALATION;
   return (
     <div
       data-testid="orch-approval"
       className="mb-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-3"
     >
-      <div className="text-xs font-semibold text-white" data-testid={budget ? "orch-budget" : undefined}>
-        {budget ? "Бюджет исчерпан" : approval.title}
+      <div
+        className="text-xs font-semibold text-white"
+        data-testid={budget ? "orch-budget" : critic ? "orch-critic" : undefined}
+      >
+        {critic ? "Критик не одобрил план после 2 правок" : budget ? "Бюджет исчерпан" : approval.title}
       </div>
       <p className="mt-1 text-[11px] leading-relaxed text-white/70">
-        {budget
-          ? "Лимит прогона выбран. Задача ждёт подтверждения, новые платные шаги не стартуют."
-          : approval.reason}
+        {critic
+          ? "Две правки не помогли. Задача ждёт решения, план сам не продолжится."
+          : budget
+            ? "Лимит прогона выбран. Задача ждёт подтверждения, новые платные шаги не стартуют."
+            : approval.reason}
       </p>
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}

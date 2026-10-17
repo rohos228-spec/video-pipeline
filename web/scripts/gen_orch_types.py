@@ -4,12 +4,15 @@
 Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
 не копируется: если его нет в дереве, скрипт читает
 
-    git show origin/cursor/ws3-agents-core-r1-3c7d:app/orchestrator/contracts.py
+    git show <ref>:app/orchestrator/contracts.py
 
-во временный файл и импортирует оттуда.
+во временный файл и импортирует оттуда. ``--ref`` задаёт ветку или sha
+(по умолчанию ветка PR #350). Локальный ``contracts.py`` используется,
+только когда ``--ref`` не передан.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
+  python web/scripts/gen_orch_types.py --ref origin/cursor/ws3-agents-r3-3c7d
   python web/scripts/gen_orch_types.py --stdout
   python web/scripts/gen_orch_types.py --self-test
 """
@@ -29,7 +32,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
-CONTRACT_REF = "origin/cursor/ws3-agents-core-r1-3c7d"
+DEFAULT_CONTRACT_REF = "origin/cursor/ws3-agents-r3-3c7d"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
 
 # Имена констант, которые уже импортирует UI.
@@ -122,6 +125,8 @@ export interface ClassificationPayload {
   tier?: string;
   deterministic?: boolean;
   confidence?: number;
+  /** ClassifyResult.kill_switch: аварийный стоп из текста сообщения. */
+  kill_switch?: boolean;
   detail?: string;
 }
 
@@ -298,15 +303,9 @@ def _load_module(path: Path) -> Any:
     return module
 
 
-def load_schema() -> tuple[dict[str, Any], str]:
-    """Вернуть (schema, подпись источника). Файл в репозиторий не пишется."""
-    if LOCAL_CONTRACTS.is_file():
-        module = _load_module(LOCAL_CONTRACTS)
-        label = "app/orchestrator/contracts.py"
-        return module.export_contract_schemas(), label
-
+def _schema_from_git(ref: str) -> tuple[dict[str, Any], str]:
     raw = subprocess.check_output(
-        ["git", "show", f"{CONTRACT_REF}:{CONTRACT_GIT_PATH}"],
+        ["git", "show", f"{ref}:{CONTRACT_GIT_PATH}"],
         cwd=ROOT,
         text=True,
     )
@@ -318,8 +317,22 @@ def load_schema() -> tuple[dict[str, Any], str]:
         schema = module.export_contract_schemas()
     finally:
         tmp_path.unlink(missing_ok=True)
-    label = f"git show {CONTRACT_REF}:{CONTRACT_GIT_PATH}"
+    label = f"git show {ref}:{CONTRACT_GIT_PATH}"
     return schema, label
+
+
+def load_schema(ref: str | None = None) -> tuple[dict[str, Any], str]:
+    """Вернуть (schema, подпись источника). Файл в репозиторий не пишется.
+
+    ``ref`` — ветка или sha. Если задан, локальный contracts.py не читается.
+    """
+    if ref:
+        return _schema_from_git(ref)
+    if LOCAL_CONTRACTS.is_file():
+        module = _load_module(LOCAL_CONTRACTS)
+        label = "app/orchestrator/contracts.py"
+        return module.export_contract_schemas(), label
+    return _schema_from_git(DEFAULT_CONTRACT_REF)
 
 
 def _self_test() -> int:
@@ -398,8 +411,14 @@ def _self_test() -> int:
         "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
-        "export const ORCH_CONTRACT_VERSION = \"ws3-r1\"",
-        "git show origin/cursor/ws3-agents-core-r1-3c7d:app/orchestrator/contracts.py",
+        "export const ORCH_CONTRACT_VERSION = \"ws3-r3\"",
+        "kill_switch?: boolean;",
+        "parallel_group?: string | null;",
+        "estimated_cost?: number;",
+        "risk?: string;",
+        '"critic_escalation"',
+        '"kill_switch"',
+        f"git show {DEFAULT_CONTRACT_REF}:{CONTRACT_GIT_PATH}",
         "export const LLM_PROVIDER",
     ]
     if LOCAL_CONTRACTS.is_file():
@@ -422,10 +441,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Сгенерировать TS-типы оркестратора из contracts.py")
     parser.add_argument("--stdout", action="store_true", help="печатать TS, не записывая файл")
     parser.add_argument("--self-test", action="store_true", help="проверить рендер и живой contracts.py")
+    parser.add_argument(
+        "--ref",
+        default=None,
+        help="git ref с contracts.py (ветка или sha). Без флага — локальный файл или ветка PR #350",
+    )
     args = parser.parse_args()
     if args.self_test:
         return _self_test()
-    schema, label = load_schema()
+    schema, label = load_schema(args.ref)
     rendered = render_schema(schema, label)
     if args.stdout:
         sys.stdout.write(rendered)

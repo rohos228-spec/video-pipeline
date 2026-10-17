@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | budget | kill | reconnect | idle
+ *   stream | interrupt | approval | budget | kill | reconnect | idle | plan | critic | killmsg
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
  * {type, task_id:number|null, payload, seq, session_id}.
@@ -474,6 +474,85 @@ async function runBudget(session, taskId) {
   });
 }
 
+async function runPlan(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "план"));
+  emit(session, "agent_status", taskId, {
+    agent: "planner",
+    status: "done",
+    task_status: "planning",
+    title: "План сцен",
+    detail: "план готов",
+  });
+  emit(session, "checkpoint", taskId, {
+    checkpoint_id: "cp-plan",
+    summary: "план до критика",
+    plan: [
+      {
+        action: "read_pipeline_code",
+        expected: "код",
+        paid: false,
+        mutating: false,
+        risk: "none",
+        parallel_group: "reads",
+        estimated_cost: 0,
+      },
+      {
+        action: "get_node",
+        expected: "нода",
+        paid: false,
+        mutating: false,
+        risk: "low",
+        parallel_group: "reads",
+        estimated_cost: 0,
+      },
+      {
+        action: "run_node",
+        expected: "кадры",
+        paid: true,
+        mutating: true,
+        risk: "high",
+        parallel_group: null,
+        estimated_cost: 12.5,
+      },
+    ],
+  });
+}
+
+async function runCritic(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "критик"));
+  emit(session, "agent_status", taskId, {
+    agent: "critic",
+    status: "done",
+    task_status: "waiting_approval",
+    title: "Критик",
+    detail: "две правки",
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: "ap-critic",
+    title: "Нужно решение",
+    reason: "critic_escalation",
+    action: "revise_plan",
+    risk: "medium",
+  });
+}
+
+async function runKillMessage(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, {
+    mode: "interrupt",
+    tier: "fast",
+    deterministic: true,
+    confidence: 1,
+    kill_switch: true,
+    detail: "стоп",
+  });
+}
+
 function startScenario(session, scenario, text) {
   session.messageCount += 1;
   session.lastEcho = text;
@@ -504,6 +583,18 @@ function startScenario(session, scenario, text) {
   }
   if (scenario === "reconnect") {
     void runReconnect(session, id);
+    return;
+  }
+  if (scenario === "plan") {
+    void runPlan(session, id);
+    return;
+  }
+  if (scenario === "critic") {
+    void runCritic(session, id);
+    return;
+  }
+  if (scenario === "killmsg") {
+    void runKillMessage(session, id);
     return;
   }
   if (scenario === "idle") {
