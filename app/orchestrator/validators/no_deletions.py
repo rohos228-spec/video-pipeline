@@ -5,8 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.orchestrator.validators.entities import (
+    archived_frame_ids,
     collect_scenes,
+    frame_id,
+    frame_is_exempt,
     scene_id,
+    scene_kadry,
     scene_number,
 )
 from app.orchestrator.validators.result import make_result
@@ -115,6 +119,75 @@ def _diff(before: list[Any], after: list[Any]) -> dict[str, Any]:
     }
 
 
+def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
+    """``кадры[]`` сцены не теряет живой кадр.
+
+    ``активен: False`` и архив — не нарушение. Несписковое ``кадры``
+    (dict, строка, null) — ``frames_no_data`` со severity warn, это не
+    «все кадры удалены».
+    """
+
+    del ops
+    if before is None or after is None:
+        return []
+    after_by_id, after_by_number = _index_scenes(collect_scenes(after))
+    archive_ids = archived_frame_ids(after)
+    violations: list[Violation] = []
+    seen: set[tuple[str, str, str]] = set()
+    for scene in collect_scenes(before):
+        sid = scene_id(scene)
+        number = scene_number(scene)
+        entity = sid or number or ""
+        status, frames = scene_kadry(scene)
+        match = _match_scene(sid, number, after_by_id, after_by_number)
+        after_status, after_frames = scene_kadry(match) if match is not None else ("absent", None)
+        if status == "nodata" or after_status == "nodata":
+            _append(
+                violations,
+                seen,
+                Violation(
+                    code="frames_no_data",
+                    severity="warn",
+                    path=f"scenes/{entity}/кадры" if entity else "scenes/кадры",
+                    id=entity,
+                ),
+            )
+            continue
+        if status != "list":
+            continue
+        if not isinstance(after_frames, list):
+            after_frames = []
+        kept = {fid for item in after_frames if (fid := frame_id(item))}
+        for frame in frames:
+            if frame_is_exempt(frame):
+                continue
+            fid = frame_id(frame)
+            if not fid or fid in kept or fid in archive_ids:
+                continue
+            _append(
+                violations,
+                seen,
+                Violation(
+                    code="frame_deleted",
+                    severity="error",
+                    path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
+                    id=fid,
+                ),
+            )
+        if _anonymous_live(after_frames) < _anonymous_live(frames):
+            _append(
+                violations,
+                seen,
+                Violation(
+                    code="frame_deleted",
+                    severity="error",
+                    path=f"scenes/{entity}/кадры" if entity else "кадры",
+                    id="",
+                ),
+            )
+    return sorted_violations(violations)
+
+
 def check_scenes(before: Any, after: Any, ops: Any = None) -> list[Violation]:
     """Сцена на месте, если живы её id и номер. Архив и ``активен: False`` допустимы.
 
@@ -155,6 +228,46 @@ def check_scenes(before: Any, after: Any, ops: Any = None) -> list[Violation]:
             Violation(code="scene_deleted", severity="error", path=path, id=entity)
         )
     return sorted_violations(violations)
+
+
+def _index_scenes(
+    scenes: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_number: dict[str, dict[str, Any]] = {}
+    for scene in scenes:
+        sid = scene_id(scene)
+        number = scene_number(scene)
+        if sid and sid not in by_id:
+            by_id[sid] = scene
+        if number and number not in by_number:
+            by_number[number] = scene
+    return by_id, by_number
+
+
+def _match_scene(
+    sid: str | None,
+    number: str | None,
+    by_id: dict[str, dict[str, Any]],
+    by_number: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if sid and sid in by_id:
+        return by_id[sid]
+    if number and number in by_number:
+        return by_number[number]
+    return None
+
+
+def _anonymous_live(frames: list[Any]) -> int:
+    return sum(1 for frame in frames if frame_id(frame) is None and not frame_is_exempt(frame))
+
+
+def _append(violations: list[Violation], seen: set[tuple[str, str, str]], item: Violation) -> None:
+    key = (item.code, item.path, item.id)
+    if key in seen:
+        return
+    seen.add(key)
+    violations.append(item)
 
 
 def _ids(items: list[Any]) -> list[str]:
