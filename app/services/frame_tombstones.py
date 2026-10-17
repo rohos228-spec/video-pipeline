@@ -97,30 +97,22 @@ class PaidFrameSkipped(RuntimeError):
     """Помеченный кадр не отправляется в платную генерацию."""
 
 
-_PAID_SKIP_LOGGED: set[tuple[int, int, str]] = set()
-
-
 def paid_frame_skip_reason(frame: Any) -> str | None:
     """Почему кадр нельзя отправлять в платную генерацию картинки или видео."""
     if frame_is_active(frame):
         return None
     number = getattr(frame, "number", None)
-    return f"кадр #{number} помечен «удалён» — платная генерация пропущена"
+    if frame_marked_deleted(frame):
+        return f"кадр #{number} помечен «удалён» — платная генерация пропущена"
+    return f"кадр #{number} неактивен — платная генерация пропущена"
 
 
 def log_paid_frame_skip(frame: Any, *, where: str) -> str | None:
-    """WARN один раз на кадр и точку запуска. Кадр не меняется."""
+    """WARN на каждый пропуск. Кадр не меняется, кэш между вызовами не копится."""
     reason = paid_frame_skip_reason(frame)
     if not reason:
         return None
-    key = (
-        int(getattr(frame, "project_id", 0) or 0),
-        int(getattr(frame, "id", 0) or 0),
-        where,
-    )
-    if key not in _PAID_SKIP_LOGGED:
-        _PAID_SKIP_LOGGED.add(key)
-        logger.warning("WARN {}: {}", where, reason)
+    logger.warning("WARN {}: {}", where, reason)
     return reason
 
 

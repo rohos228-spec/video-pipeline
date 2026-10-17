@@ -168,14 +168,35 @@ async def _frame_by_number(
 
 
 async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str) -> bool:
-    """Помеченный кадр не уходит в API. Нет строки в БД — не блокируем чужой вызов."""
-    try:
-        from app.services.frame_tombstones import log_paid_frame_skip
-        from app.services.montage_board_apply import session_scope
+    """Помеченный кадр не уходит в API. Нет строки в БД — не блокируем чужой вызов.
 
+    Ошибка чтения БД останавливает платный вызов: иначе помеченный кадр
+    ушёл бы в API. Кадр при этом не меняется.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.services.frame_tombstones import log_paid_frame_skip
+    from app.services.montage_board_apply import session_scope
+
+    try:
         async with session_scope(project_id) as session:
-            fr = await _frame_by_number(session, project_id, frame_number)
-    except Exception:  # noqa: BLE001
+            try:
+                fr = await _frame_by_number(session, project_id, frame_number)
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "WARN {}: ошибка БД при проверке кадра #{} — платная генерация остановлена: {}",
+                    where,
+                    frame_number,
+                    exc,
+                )
+                return True
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "WARN {}: сессия кадра #{} не открылась, платный вызов не блокируем: {}",
+            where,
+            frame_number,
+            exc,
+        )
         return False
     if fr is None:
         return False

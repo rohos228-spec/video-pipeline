@@ -534,7 +534,9 @@ async def test_delete_does_not_resurrect_from_disk_png(
     marked = next(row for row in board["frames"] if row["number"] == 19)
     live = await session.get(Frame, fr.id)
     assert live is not None and (live.attrs or {}).get("удалён") is True
-    assert marked["number"] == 19
+    assert marked["удалён"] is True
+    assert marked["активен"] is False
+    assert marked["карантин"] is True
 
 
 @pytest.mark.asyncio

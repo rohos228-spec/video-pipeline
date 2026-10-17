@@ -432,7 +432,8 @@ async def test_coverage_delete_in_auto_apply_marks_frame(
     assert text.text == "кусок"
     assert art.frame_id == child_id
     assert 2 in (project.meta or {}).get("deleted_frame_numbers", [])
-    assert any("запрещён в авто-apply" in line for line in warn_log)
+    assert any("coverage_delete" in line and "помечен" in line for line in warn_log)
+    assert not any("запрещён в авто-apply" in line for line in warn_log)
 
 
 @pytest.mark.asyncio
@@ -844,3 +845,236 @@ async def test_marked_frame_skips_paid_video_generation(
             )
         )
     assert any("WARN generate_videos" in line and "платная генерация" in line for line in warn_log)
+
+
+def test_paid_skip_reason_does_not_call_inactive_frame_deleted() -> None:
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import paid_frame_skip_reason
+
+    inactive = SimpleNamespace(number=4, attrs={"активен": False})
+    reason = paid_frame_skip_reason(inactive)
+    assert reason is not None
+    assert "неактивен" in reason
+    assert "удалён" not in reason
+    marked = SimpleNamespace(number=4, attrs={"удалён": True, "активен": False})
+    marked_reason = paid_frame_skip_reason(marked)
+    assert marked_reason is not None and "удалён" in marked_reason
+
+
+@pytest.mark.asyncio
+async def test_regen_stops_paid_call_when_db_read_fails(
+    monkeypatch: pytest.MonkeyPatch, warn_log
+) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.services.montage_board_regen import _regen_paid_blocked
+
+    class _Session:
+        async def execute(self, *_a, **_k):
+            raise SQLAlchemyError("frames unreadable")
+
+    class _Scope:
+        async def __aenter__(self):
+            return _Session()
+
+        async def __aexit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.session_scope",
+        lambda *_a, **_k: _Scope(),
+    )
+    assert await _regen_paid_blocked(1, 2, where="execute_image_regen") is True
+    assert any("ошибка БД" in line and "остановлена" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_delete_coverage_child_marks_parent_shot_chain(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_coverage_ops import delete_coverage_child
+
+    session.add(project)
+    await session.flush()
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="ячейка целиком",
+        status=FrameStatus.planned,
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "план": "ОБЩИЙ", "закадр": "ячейка"},
+                {"id": "1-K2", "план": "ДЕТАЛЬ", "закадр": "кусок"},
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="кусок",
+        status=FrameStatus.planned,
+        attrs={
+            "кадры": [
+                {"id": "1-K2", "план": "ДЕТАЛЬ", "закадр": "кусок"},
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_kind": "child",
+            },
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    child_id = int(child.id)
+    await delete_coverage_child(session, project, child, [parent, child])
+    await session.refresh(parent)
+    await session.refresh(child)
+    ladder = list((parent.attrs or {}).get("кадры") or [])
+    assert [item["id"] for item in ladder] == ["1-K1", "1-K2"]
+    assert ladder[0].get("карантин") is not True
+    marked = ladder[1]
+    assert marked["карантин"] is True
+    assert marked["удалён"] is True
+    assert marked["активен"] is False
+    assert "помечен" in str(marked.get("пометка") or "")
+    assert int(child.id) == child_id
+    assert (child.attrs or {}).get("удалён") is True
+    own = (child.attrs or {})["кадры"][0]
+    assert own["id"] == "1-K2"
+    assert own["карантин"] is True
+    assert child.voiceover_text == "кусок"
+
+
+@pytest.mark.asyncio
+async def test_coverage_delete_stamps_parent_shot(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_coverage_ops import apply_coverage_op
+
+    session.add(project)
+    await session.flush()
+    parent_uid = "cc" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="ячейка",
+        status=FrameStatus.planned,
+        attrs={
+            "кадры": [
+                {"id": "1-S1-K1", "закадр": "ячейка"},
+                {"id": "1-S1-K2", "закадр": "хвост"},
+            ],
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="dd" * 12,
+        voiceover_text="хвост",
+        status=FrameStatus.planned,
+        attrs={
+            "кадры": [{"id": "1-S1-K2", "закадр": "хвост"}],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_kind": "child",
+                "shot_id": "1-S1-K2",
+            },
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    await apply_coverage_op(
+        session, project, {"type": "coverage_delete", "frame_number": 2}
+    )
+    await session.refresh(parent)
+    await session.refresh(child)
+    ladder = list((parent.attrs or {}).get("кадры") or [])
+    assert [item["id"] for item in ladder] == ["1-S1-K1", "1-S1-K2"]
+    assert ladder[1]["карантин"] is True
+    assert ladder[1]["удалён"] is True
+    assert ladder[0].get("карантин") is not True
+    assert (child.attrs or {}).get("удалён") is True
+    assert child.voiceover_text == "хвост"
+
+
+def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from openpyxl import Workbook, load_workbook
+
+    from app.services.db_apply import export_project_xlsx
+    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8
+
+    path = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_VOICEOVER_V8, column=4, value="старый-закадр")
+    wb.save(path)
+    wb.close()
+    marked = SimpleNamespace(
+        number=2,
+        image_prompt="картинка",
+        animation_prompt="видео",
+        voiceover_text="секретный закадр",
+        duration_seconds=3.0,
+        start_ts=0.0,
+        end_ts=3.0,
+        attrs={"удалён": True, "активен": False, "карантин": True},
+    )
+    live = SimpleNamespace(
+        number=1,
+        image_prompt="",
+        animation_prompt="",
+        voiceover_text="живой",
+        duration_seconds=1.0,
+        start_ts=None,
+        end_ts=None,
+        attrs={},
+    )
+    project = SimpleNamespace(data_dir=tmp_path, meta={})
+    export_project_xlsx(project, [live, marked])  # type: ignore[arg-type]
+    wb2 = load_workbook(path)
+    sheet = wb2["план"]
+    assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
+    assert sheet.cell(ROW_VOICEOVER_V8, 4).value is None
+    wb2.close()
+    assert marked.voiceover_text == "секретный закадр"
+    assert marked.attrs["удалён"] is True
+
+
+def test_assembly_clips_skip_marked_frame(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from app.services.shot2_timeline import build_assembly_clip_specs
+
+    live = SimpleNamespace(number=1, attrs={})
+    marked = SimpleNamespace(number=2, attrs={"удалён": True, "активен": False})
+    shot_live = tmp_path / "live.mp4"
+    shot_marked = tmp_path / "marked.mp4"
+    shot_live.write_bytes(b"live-clip")
+    shot_marked.write_bytes(b"marked-clip")
+    source = [live, marked]
+    clips = build_assembly_clip_specs(
+        source,
+        {1: shot_live, 2: shot_marked},
+        {1: None, 2: None},
+        {1: 2.0, 2: 2.0},
+    )
+    assert len(clips) == 1
+    assert clips[0].src == shot_live
+    assert len(source) == 2
+    assert source[1] is marked
+    assert shot_marked.is_file()
