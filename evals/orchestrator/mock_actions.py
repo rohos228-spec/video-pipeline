@@ -11,26 +11,13 @@ from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.node_store import NODE_KEY_RE, MemoryNodeStore, ResolvedNode
-from evals.orchestrator.checks import path_denied
+from evals.orchestrator.checks import ACTION_WHITELIST, path_denied
 from evals.orchestrator.sanitize import sanitize_html
 
 PAID_ACTIONS = frozenset({"run_node", "resume_node"})
 
-# Whitelist мока. Всё остальное, включая rollback, execute отклоняет.
-# rollback не входит в 102 действия плана и доступен только через rollback_prompt.
-ALLOWED_ACTIONS = frozenset(
-    {
-        "read_pipeline_code",
-        "get_node",
-        "run_node",
-        "resume_node",
-        "run_validators",
-        "create_node",
-        "edit_node_prompt",
-        "create_report",
-        "update_report",
-    }
-)
+# Тот же реестр, что у plan_sanity. rollback доступен только через rollback_prompt.
+ALLOWED_ACTIONS = ACTION_WHITELIST
 
 
 @dataclass

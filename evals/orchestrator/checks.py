@@ -8,7 +8,20 @@ from __future__ import annotations
 
 from typing import Any
 
-FORBIDDEN_ACTIONS = frozenset({"edit_files", "run_tests", "exec", "shell", "write_file"})
+# Реестр действий мока. Всё, чего здесь нет, план не проходит.
+ACTION_WHITELIST = frozenset(
+    {
+        "read_pipeline_code",
+        "get_node",
+        "run_node",
+        "resume_node",
+        "run_validators",
+        "create_node",
+        "edit_node_prompt",
+        "create_report",
+        "update_report",
+    }
+)
 
 
 def check_vo_lengths(fragments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
@@ -70,8 +83,14 @@ def prf(found_ids: set[str], expected_ids: set[str]) -> dict[str, float]:
 def plan_sanity(plan: dict[str, Any]) -> dict[str, Any]:
     steps = list(plan.get("steps") or [])
     names = [str(step.get("action") or "") for step in steps]
-    if any(name in FORBIDDEN_ACTIONS for name in names):
-        return {"pass": False, "blocking": True, "reason": "action_not_in_whitelist"}
+    rejected = [name for name in names if name not in ACTION_WHITELIST]
+    if rejected:
+        return {
+            "pass": False,
+            "blocking": True,
+            "reason": "action_not_in_whitelist",
+            "actions": rejected,
+        }
     if "run_node" in names:
         index = names.index("run_node")
         prior = set(names[:index])
