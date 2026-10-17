@@ -127,9 +127,19 @@ _DELETE_KINDS = frozenset(
         "importlib.import_module",
         "__import__",
         "sql",
+        "sql.unknown",
         "http.delete",
+        "http.unknown",
     }
 )
+_SQL_NAMES = frozenset({"execute", "executescript", "executemany", "text"})
+_SQL_READ = re.compile(r"^\s*(SELECT|WITH|EXPLAIN|PRAGMA|SHOW)\b", re.IGNORECASE)
+_SQL_WRITE = re.compile(
+    r"\b(DELETE|DROP|TRUNCATE|INSERT|UPDATE|ALTER|CREATE|REPLACE)\b",
+    re.IGNORECASE,
+)
+_HTTP_ALLOWED = frozenset({"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"})
+_UNPROVEN = object()
 _SQL_WORD = re.compile(r"\b(DELETE|DROP|TRUNCATE)\b", re.IGNORECASE)
 _FS_ROOTS = frozenset({"os", "shutil", "pathlib"})
 _DYN = "<dyn>"
@@ -1158,37 +1168,6 @@ def _local_aliases(
     return found
 
 
-def _const_text(node: ast.AST | None, env: dict[str, str]) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.Name):
-        return env.get(node.id)
-    return None
-
-
-def _sql_texts(node: ast.AST, env: dict[str, str]) -> list[str]:
-    found: list[str] = []
-    direct = _const_text(node, env)
-    if direct is not None:
-        found.append(direct)
-    if isinstance(node, ast.Call):
-        for arg in node.args:
-            found.extend(_sql_texts(arg, env))
-        for kw in node.keywords:
-            if kw.arg in {None, "sql", "statement", "sqltext"}:
-                found.extend(_sql_texts(kw.value, env))
-    if isinstance(node, ast.JoinedStr):
-        chunks: list[str] = []
-        for part in node.values:
-            if isinstance(part, ast.Constant):
-                chunks.append(str(part.value))
-            elif isinstance(part, ast.FormattedValue):
-                inner = _const_text(part.value, env)
-                chunks.append(inner if inner is not None else "")
-        found.append("".join(chunks))
-    return found
-
-
 def _call_name(func: ast.AST) -> str | None:
     if isinstance(func, ast.Name):
         return func.id
@@ -1197,37 +1176,97 @@ def _call_name(func: ast.AST) -> str | None:
     return None
 
 
-def _is_sql_delete(call: ast.Call, env: dict[str, str]) -> bool:
-    name = _call_name(call.func)
-    if name not in {"execute", "executescript", "text"}:
-        return False
-    blobs: list[str] = []
-    for arg in call.args:
-        blobs.extend(_sql_texts(arg, env))
+def _fold_string(node: ast.AST | None, env: dict[str, str]):
+    """Строка, если она целиком из констант. Переменная и подстановка — _UNPROVEN."""
+    if node is None:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id in env:
+            return env[node.id]
+        return _UNPROVEN
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                parts.append(str(part.value))
+                continue
+            if isinstance(part, ast.FormattedValue):
+                inner = _fold_string(part.value, env)
+                if inner is _UNPROVEN or not isinstance(inner, str):
+                    return _UNPROVEN
+                parts.append(inner)
+                continue
+            return _UNPROVEN
+        return "".join(parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_string(node.left, env)
+        right = _fold_string(node.right, env)
+        if left is _UNPROVEN or right is _UNPROVEN:
+            return _UNPROVEN
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+        return None
+    if isinstance(node, ast.Call) and _call_name(node.func) == "text":
+        return _fold_string(_sql_expr(node), env)
+    return None
+
+
+def _sql_expr(call: ast.Call) -> ast.AST | None:
     for kw in call.keywords:
-        if kw.arg in {None, "sql", "statement", "sqltext"}:
-            blobs.extend(_sql_texts(kw.value, env))
-    return any(_SQL_WORD.search(blob) for blob in blobs)
+        if kw.arg in {None, "sql", "statement", "sqltext", "text"}:
+            return kw.value
+    if call.args:
+        return call.args[0]
+    return None
 
 
-def _http_method(call: ast.Call, env: dict[str, str]) -> str | None:
-    node = None
+def _classify_sql_text(text: str) -> str:
+    if _SQL_WRITE.search(text):
+        return "write"
+    if _SQL_READ.search(text):
+        return "read"
+    return "unknown"
+
+
+def _sql_kind(call: ast.Call, env: dict[str, str]) -> str | None:
+    if _call_name(call.func) not in _SQL_NAMES:
+        return None
+    folded = _fold_string(_sql_expr(call), env)
+    if folded is None:
+        return None
+    if folded is _UNPROVEN:
+        return "sql.unknown"
+    status = _classify_sql_text(folded)
+    if status == "read":
+        return None
+    if status == "write":
+        return "sql"
+    return "sql.unknown"
+
+
+def _http_method_expr(call: ast.Call) -> ast.AST | None:
     for kw in call.keywords:
         if kw.arg in {"method", "http_method"}:
-            node = kw.value
-    if node is None and call.args:
-        node = call.args[0]
-    text = _const_text(node, env)
-    if text is None:
+            return kw.value
+    if call.args:
+        return call.args[0]
+    return None
+
+
+def _http_kind(call: ast.Call, env: dict[str, str]) -> str | None:
+    if _call_name(call.func) not in {"call", "request"}:
         return None
-    return text.upper()
-
-
-def _is_http_delete(call: ast.Call, env: dict[str, str]) -> bool:
-    name = _call_name(call.func)
-    if name not in {"call", "request"}:
-        return False
-    return _http_method(call, env) == "DELETE"
+    folded = _fold_string(_http_method_expr(call), env)
+    if not isinstance(folded, str):
+        return "http.unknown"
+    method = folded.strip().upper()
+    if method == "DELETE":
+        return "http.delete"
+    if method in _HTTP_ALLOWED:
+        return None
+    return "http.unknown"
 
 
 def _is_path_replace(call: ast.Call, func: ast.Attribute, path_names: set[str]) -> bool:
@@ -1288,10 +1327,10 @@ def _write_hit(
         kind = "__import__"
     elif _call_name(func) == "import_module":
         kind = "importlib.import_module"
-    elif _is_sql_delete(call, env):
-        kind = "sql"
-    elif _is_http_delete(call, env):
-        kind = "http.delete"
+    elif (sql_kind := _sql_kind(call, env)) is not None:
+        kind = sql_kind
+    elif (http_kind := _http_kind(call, env)) is not None:
+        kind = http_kind
     elif isinstance(func, ast.Name) and func.id == "open" and func.id not in os_open_names:
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
@@ -1733,8 +1772,8 @@ def test_audit_header_counters() -> None:
     assert header["sha"].startswith("3ec7c957")
     assert header["date"] == "2026-10-17"
     assert header["actions"] == 102
-    assert header["keep"] == 90
-    assert header["modify"] == 12
+    assert header["keep"] == 89
+    assert header["modify"] == 13
     assert header["remove"] == 0
     assert header["actions"] == header["keep"] + header["modify"] + header["remove"]
     assert modify_ids == [
@@ -1747,6 +1786,7 @@ def test_audit_header_counters() -> None:
         "montage.upload_voice",
         "montage.upload_music",
         "history.rollback",
+        "montage.delete_child_frame",
         "montage.delete_frame",
         "node.clear_check_agent",
         "storage.clear_files",
@@ -2534,6 +2574,50 @@ def test_http_delete_is_denied() -> None:
     )
     hits = analyze_module_source(source, "group.delete")
     assert [hit.kind for hit in hits] == ["http.delete", "http.delete", "http.delete"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_unproven_http_and_sql_are_denied() -> None:
+    source = (
+        "def save(ctx, conn, requests, method, sql, col):\n"
+        "    ctx.call(method, '/x')\n"
+        "    ctx.call('GET', '/x')\n"
+        "    ctx.call('POST', '/x')\n"
+        "    ctx.call('PUT', '/x')\n"
+        "    ctx.call('PATCH', '/x')\n"
+        "    ctx.call('HEAD', '/x')\n"
+        "    ctx.call('OPTIONS', '/x')\n"
+        "    ctx.call('DELETE', '/x')\n"
+        "    ctx.call('DE' + 'LETE', '/x')\n"
+        "    requests.request(method, '/y')\n"
+        "    conn.execute(sql)\n"
+        "    conn.execute('SELECT 1')\n"
+        "    conn.execute(f'SELECT {col}')\n"
+        "    conn.execute('SELECT ' + col)\n"
+        "    conn.execute('SEL' + 'ECT 1')\n"
+        "    conn.execute(f'SELECT 1')\n"
+        "    conn.executemany('DELETE FROM t', [])\n"
+        "    conn.executemany(sql, [])\n"
+        "    conn.executescript(sql)\n"
+        "    conn.execute('INSERT INTO t VALUES (1)')\n"
+        "    conn.execute(text('UPDATE t SET a = 1'))\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == [
+        "http.unknown",
+        "http.delete",
+        "http.delete",
+        "http.unknown",
+        "sql.unknown",
+        "sql.unknown",
+        "sql.unknown",
+        "sql",
+        "sql.unknown",
+        "sql.unknown",
+        "sql",
+        "sql",
+        "sql",
+    ]
     assert all(hit.allowed is False for hit in hits)
 
 

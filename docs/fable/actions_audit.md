@@ -4,8 +4,8 @@ source: #342
 sha: 3ec7c9579716a53ab119cabb340af562cba76b31
 date: 2026-10-17
 actions: 102
-keep: 90
-modify: 12
+keep: 89
+modify: 13
 remove: 0
 fs_breach: group.delete,montage.delete_frame,node.clear_check_agent,prompt.delete_master,storage.clear_files
 snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
@@ -53,8 +53,8 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 |---|---|
 | Живых действий | 102 |
 | Регистраций в исходнике | 103 (одна снята: ранний `node.run_step`) |
-| keep | 90 |
-| modify | 12 |
+| keep | 89 |
+| modify | 13 |
 | remove | 0 |
 | Риск none | 21 |
 | Риск low | 7 |
@@ -76,11 +76,12 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 7. `montage.upload_voice`
 8. `montage.upload_music`
 9. `history.rollback`
-10. `montage.delete_frame`
-11. `node.clear_check_agent`
-12. `storage.clear_files`
+10. `montage.delete_child_frame`
+11. `montage.delete_frame`
+12. `node.clear_check_agent`
+13. `storage.clear_files`
 
-`fs_breach`: `group.delete`, `montage.delete_frame`, `node.clear_check_agent`, `prompt.delete_master`, `storage.clear_files`. После детектора HTTP DELETE три keep стали modify: `montage.delete_frame`, `node.clear_check_agent`, `storage.clear_files`. `group.delete` и `prompt.delete_master` уже были modify. Счёт: keep 90, modify 12, remove 0. Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
+`fs_breach`: `group.delete`, `montage.delete_frame`, `node.clear_check_agent`, `prompt.delete_master`, `storage.clear_files`. После детектора HTTP DELETE три keep стали modify: `montage.delete_frame`, `node.clear_check_agent`, `storage.clear_files`. `group.delete` и `prompt.delete_master` уже были modify. `montage.delete_child_frame` переведён в modify отдельно: вызов `POST …/coverage` с `type=coverage_delete`, детектор HTTP DELETE его не видит, физическое удаление шота всё равно не остаётся keep. Счёт: keep 89, modify 13, remove 0. Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
 
 ## Таблица действий
 
@@ -102,7 +103,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 14 | `group.insert` | app/services/action_layer/builtin_group.py:_group_insert (спека L428) | Добавляет ноды группы, связи, промт-варианты и флаги в канвас проекта. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 15 | `group.save_from_selection` | app/services/action_layer/builtin_group.py:_group_from_selection (спека L439) | Записывает выбранные ноды канваса как новую пользовательскую группу (файл в node_groups/). | medium | local_safe | (а) косвенно: POST /node-groups/from-selection пишет node_groups/<id>.json в корень репозитория | modify | Пользовательская группа коммитится файлом в git. Оркестратор не должен писать этот каталог; хранение — вне git либо отдельным решением куратора. |
 | 16 | `group.update` | app/services/action_layer/builtin_group.py:_group_update (спека L455) | Название, описание или категория пользовательской группы. | medium | local_safe | (а) косвенно: PUT /node-groups/{id} переписывает JSON группы в репозитории | modify | Та же запись файла репо, что у group.save_from_selection. До решения по каталогу групп — не в whitelist как есть. |
-| 17 | `group.delete` | app/services/action_layer/builtin_group.py:_group_delete (спека L468) | Удаляет файл пользовательской группы. | high | destructive | (а) косвенно: DELETE /node-groups/{id} удаляет файл группы из репозитория | modify | Удаление файла репозитория. Встроенные группы и так защищены; пользовательский JSON оркестратор не стирает. |
+| 17 | `group.delete` | app/services/action_layer/builtin_group.py:_group_delete (спека L468) | Удаляет файл пользовательской группы. | high | destructive | (а) косвенно: DELETE /node-groups/{id} удаляет файл группы из репозитория | modify | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | 18 | `node.get_config` | app/services/action_layer/builtin_group.py:_node_get_config (спека L480) | Роль, режим выхода, виды выхода, режим проверки и признак принудительного Vibecode. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
 | 19 | `node.get_llm_route` | app/services/action_layer/builtin_group.py:_node_get_llm_route (спека L486) | Для нод script_frames_qc выбор модели игнорируется: всегда Vibecode «GPT 5.6 Sol». | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
 | 20 | `node.set_config` | app/services/action_layer/builtin_group.py:_node_set_config (спека L492) | Роль, режим и виды выхода, «брать со стрелок», снимок и режим проверки. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
@@ -130,12 +131,12 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 42 | `montage.set_scene_chain` | app/services/action_layer/builtin_montage_more.py:_set_scene_chain (спека L844); живой executor — обёртка builtin_wave5_history._wrap_executor | Режет цепочку «действие1 → действие2 → ...» на шоты ячейки без LLM. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 43 | `montage.set_anchors` | app/services/action_layer/builtin_montage_more.py:_set_anchors (спека L857); живой executor — обёртка builtin_wave5_history._wrap_executor | Якоря режут закадр ячейки по кадрам. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 44 | `montage.set_voiceover_span` | app/services/action_layer/builtin_montage_more.py:_set_vo_span (спека L871) | Закрепляет за сценой фрагмент закадра или снимает закрепление (clear). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
-| 45 | `montage.delete_child_frame` | app/services/action_layer/builtin_montage_more.py:_delete_child (спека L882) | Удаляет дочерний шот (не голову сцены). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 45 | `montage.delete_child_frame` | app/services/action_layer/builtin_montage_more.py:_delete_child (спека L882) | Удаляет дочерний шот (не голову сцены). | high | destructive | нет | modify | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | 46 | `montage.insert_frame` | app/services/action_layer/builtin_montage_more.py:_insert_frame (спека L893) | kind=parent: новая ячейка закадра после кадра (или в начало); kind=child: шот в ту же сцену. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 47 | `montage.merge_scenes` | app/services/action_layer/builtin_montage_more.py:_merge_scenes (спека L904) | Склеивает две соседние ячейки закадра в одну сцену. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 48 | `montage.split_scene` | app/services/action_layer/builtin_montage_more.py:_split_scene (спека L915) | Кадр и все правее становятся новой сценой (первый кадр сцены отделить нельзя). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 49 | `montage.explode_scene` | app/services/action_layer/builtin_montage_more.py:_explode_scene (спека L925) | Каждый видимый кадр ячейки становится отдельной ячейкой закадра. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
-| 50 | `montage.delete_frame` | app/services/action_layer/builtin_montage_more.py:_delete_frame (спека L935) | Удаляет кадр; у головы сцены первый дочерний кадр повышается. | high | destructive | (а) косвенно: `ctx.call("DELETE", …/frames/{id})` | modify | Детектор видит HTTP DELETE. Кадр и файлы уходят через API. В R2 удаление кадра не должно быть инструментом оркестратора без отдельного разрешения. |
+| 50 | `montage.delete_frame` | app/services/action_layer/builtin_montage_more.py:_delete_frame (спека L935) | Удаляет кадр; у головы сцены первый дочерний кадр повышается. | high | destructive | (а) косвенно: `ctx.call("DELETE", …/frames/{id})` | modify | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | 51 | `montage.swap_slots` | app/services/action_layer/builtin_montage_more.py:_swap_slots (спека L946) | Обмен слотов картинок или видео между любыми кадрами; слоты помечаются устаревшими. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 52 | `montage.move_image` | app/services/action_layer/builtin_montage_more.py:_move_image (спека L957) | Перенос в пустой слот или обмен, если цель занята; промты едут с файлами. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 53 | `montage.delete_image` | app/services/action_layer/builtin_montage_more.py:_delete_image (спека L966) | Файл уходит в old/scenes, запись картинки удаляется, видео кадра помечается устаревшим. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
@@ -167,7 +168,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 79 | `prompt.get_master` | app/services/action_layer/builtin_wave3.py:_get_master (спека L626) | Текст общего промта шага (первые 20000 символов), длина и sha256. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
 | 80 | `prompt.save_master` | app/services/action_layer/builtin_wave3.py:_save_master (спека L633); живой executor — обёртка builtin_wave5_history._wrap_executor | Пишет общий файл промта шага: правка действует на ВСЕ проекты. | high | destructive | (а) косвенно: PUT внутреннего API перезаписывает файл мастер-промта в репозитории (templates/node_groups или prompts/), сразу для всех проектов | modify | D3: git-шаблоны read-only. Запись промта ноды — в node_store (БД), не в файл репо. |
 | 81 | `prompt.create_master` | app/services/action_layer/builtin_wave3.py:_create_master (спека L651) | Новый файл варианта промта шага (общий для всех проектов). | medium | local_safe | (а) косвенно: создаёт новый файл варианта промта в репозитории, общий для всех проектов | modify | Новый вариант промта не должен появляться файлом в git. В R2 — версия в node_store. |
-| 82 | `prompt.delete_master` | app/services/action_layer/builtin_wave3.py:_delete_master (спека L662) | Удаляет файл варианта промта шага (общий для всех проектов, default удалять нельзя). | high | destructive | (а) косвенно: DELETE внутреннего API удаляет файл промта из репозитория для всех проектов | modify | Удаление git-шаблона оркестратору запрещено. Снятие версии — только в БД node_store. |
+| 82 | `prompt.delete_master` | app/services/action_layer/builtin_wave3.py:_delete_master (спека L662) | Удаляет файл варианта промта шага (общий для всех проектов, default удалять нельзя). | high | destructive | (а) косвенно: DELETE внутреннего API удаляет файл промта из репозитория для всех проектов | modify | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | 83 | `node.get_run_cost_basis` | app/services/action_layer/builtin_wave3.py:_get_run_cost_basis (спека L674) | Для нод Каркас, Площадка, Шоты, QC: пачки, худшее число запросов к модели и токены на запрос по реальным данным проекта и файлам промтов. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
 | 84 | `node.run_step` | app/services/action_layer/builtin_wave3.py:_run_node_step (спека L682) | Явный старт шага ноды (режим resume): убивает активную генерацию проекта и перезаписывает в БД выход ноды по всем ячейкам. | high | destructive+paid | нет в обработчике; LLM провайдера идёт внутренним API (исключение §2.2.2в) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
 | 85 | `step.get_run_cost_basis` | app/services/action_layer/builtin_wave5.py:_get_step_cost_basis (спека L355) | Для шагов картинок, видео, озвучки, музыки, сборки и LLM-промтов: сколько генераций по доске, какие значения заявить в step.run_step и верхняя оценка в кредитах. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
@@ -608,7 +609,7 @@ Rebase #342, перенос кода в main, патчи `app/services/`, smoke 
 | `change.list` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `change.propose` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `change.rollback` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
-| `group.delete` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `group.delete` | modify | http.delete путь не доказан (denied) | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | `group.get` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `group.insert` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `group.list` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
@@ -632,8 +633,8 @@ Rebase #342, перенос кода в main, патчи `app/services/`, smoke 
 | `montage.apply_queue` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `montage.apply_status` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `montage.cancel_queue_ops` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
-| `montage.delete_child_frame` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
-| `montage.delete_frame` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `montage.delete_child_frame` | modify | нет | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
+| `montage.delete_frame` | modify | http.delete путь не доказан (denied) | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | `montage.delete_image` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `montage.delete_manual_ref` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `montage.delete_video` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
@@ -693,7 +694,7 @@ Rebase #342, перенос кода в main, патчи `app/services/`, smoke 
 | `project.stop` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `project.upload_xlsx` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `prompt.create_master` | modify | нет | Вердикт прежний: новый файл варианта промта в git. Детектор DELETE этого PUT не видит. |
-| `prompt.delete_master` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `prompt.delete_master` | modify | http.delete путь не доказан (denied) | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | `prompt.get_master` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `prompt.save_master` | modify | нет | Вердикт прежний: PUT мастер-промта в git. Ветка снимка для master_prompt мёртвая, DELETE нет. |
 | `publish.send` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
