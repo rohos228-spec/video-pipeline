@@ -494,8 +494,11 @@ async def reload_xlsx(
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
-        raise HTTPException(status_code=404, detail="project.xlsx not found")
-    await sync_project_xlsx(session, p, xlsx)
+        raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
+    try:
+        await sync_project_xlsx(session, p, xlsx)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "reloaded"})
