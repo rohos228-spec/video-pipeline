@@ -1205,6 +1205,19 @@ test.describe("orchestrator chat", () => {
     expect(posts[0]?.body).toEqual({ project_id: 13, task_id: 1 });
   });
 
+  test("после project 200 новый approval_required показывает новую карточку", async ({ page }) => {
+    await openWithContract(page, "projectnext", "project-next");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-missing-project")).toHaveCount(0);
+    await expect(page.getByTestId("orch-risk")).toBeVisible();
+    await expect(page.getByTestId("orch-approval")).toContainText("Шаг с риском");
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+  });
+
   test("missing_project_id: 422 и 409 остаются на карточке, 401 — авторизация", async ({ page }) => {
     await openWithContract(page, "project422", "project-422");
     await page.getByTestId("orch-composer").fill("платный шаг");

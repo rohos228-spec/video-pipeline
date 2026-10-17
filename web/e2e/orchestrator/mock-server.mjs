@@ -874,7 +874,9 @@ function startScenario(session, scenario, text, mode) {
     scenario === "missingproject" ||
     scenario === "project422" ||
     scenario === "project409" ||
-    scenario === "project401"
+    scenario === "project401" ||
+    scenario === "projectnext" ||
+    scenario === "project409task"
   ) {
     void runMissingProject(session, id);
     return;
@@ -1637,6 +1639,10 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 409, { detail: "not missing_project_id" });
       return;
     }
+    if (scenario === "project409task") {
+      sendJson(res, 409, { detail: "not the active task" });
+      return;
+    }
     const taskId = taskRaw == null ? session.currentTaskId : taskRaw;
     sendJson(res, 200, {
       ok: true,
@@ -1645,6 +1651,17 @@ const server = http.createServer(async (req, res) => {
       project_id: projectId,
       status: "executing",
     });
+    if (scenario === "projectnext" && taskId != null) {
+      emit(session, "approval_required", taskId, {
+        change_id: "orch-appr-1-2",
+        approval_id: "ap-risk-after-project",
+        title: "Шаг с риском после проекта",
+        reason: "risk",
+        risk: "high",
+        action: "run_node",
+      });
+      return;
+    }
     if (taskId != null) {
       emit(session, "agent_status", taskId, {
         agent: "supervisor",
