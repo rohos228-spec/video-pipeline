@@ -467,3 +467,71 @@ async def test_exhausted_budget_parks_task_and_keeps_ready_scenes(
     assert await snapshot() == before_rows
     assert seen["n"] == 2
     assert hits == []
+
+
+@pytest.mark.asyncio
+async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> None:
+    """ApiEmergencyBlockedError не повторяется в call_opus.
+
+    Два места одного цикла: прямой проброс из try (около 233–241) и
+    except, который иначе ретраит всё кроме HTTP 4xx до 4 раз с паузой
+    15·k с (около 249–260).
+    """
+    from app.services.api_tracker_hook import ApiEmergencyBlockedError
+    from app.services.scene_boundaries import call_opus
+    from app.services.spend_guard import PaidCallBlocked
+
+    sleeps: list[float] = []
+
+    async def _fast(delay: float = 0, *args, **kwargs):
+        sleeps.append(float(delay))
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _fast)
+
+    calls = {"n": 0}
+
+    async def _emergency(_user: str, _system: str):
+        calls["n"] += 1
+        raise ApiEmergencyBlockedError("kill switch")
+
+    monkeypatch.setattr("app.services.scene_boundaries._kie_once", _emergency)
+    with pytest.raises(ApiEmergencyBlockedError):
+        await call_opus("привет", "система", "emergency", tmp_path)
+    assert calls["n"] == 1
+    assert all(delay < 15 for delay in sleeps)
+
+    calls["n"] = 0
+    sleeps.clear()
+
+    async def _five_hundred_then_blocked(_user: str, _system: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("upstream 500")
+        raise ApiEmergencyBlockedError("blocked after 500")
+
+    monkeypatch.setattr(
+        "app.services.scene_boundaries._kie_once", _five_hundred_then_blocked
+    )
+    with pytest.raises(ApiEmergencyBlockedError):
+        await call_opus("привет", "система", "mid", tmp_path / "mid")
+    assert calls["n"] == 2
+    assert [delay for delay in sleeps if delay >= 15] == [15.0]
+
+    calls["n"] = 0
+    sleeps.clear()
+
+    async def _paid(_user: str, _system: str):
+        calls["n"] += 1
+        raise PaidCallBlocked(
+            "spend_cap_run",
+            "потолок",
+            provider="gpt",
+            what="llm request",
+        )
+
+    monkeypatch.setattr("app.services.scene_boundaries._kie_once", _paid)
+    with pytest.raises(PaidCallBlocked):
+        await call_opus("привет", "система", "paid", tmp_path / "paid")
+    assert calls["n"] == 1
+    assert all(delay < 15 for delay in sleeps)

@@ -244,8 +244,11 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             (trace_dir / f"{tag}.resp.txt").write_text(txt, encoding="utf-8")
             return txt
         except Exception as e:  # noqa: BLE001
+            from app.services.api_tracker_hook import ApiEmergencyBlockedError
             from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
 
+            if isinstance(e, ApiEmergencyBlockedError):
+                raise
             ctx = getattr(e, "context", None)
             paid_blocked = isinstance(ctx, dict) and bool(ctx.get("paid_gate_blocked"))
             if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked) or paid_blocked:
