@@ -123,13 +123,13 @@ function writeEvent(res, event) {
   res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
-function emit(session, type, taskId, payload) {
+function emit(session, type, taskId, payload, sessionId = session.id) {
   const event = {
     type,
     task_id: taskId,
     payload,
     seq: ++session.seq,
-    session_id: session.id,
+    session_id: sessionId,
   };
   session.events.push(event);
   for (const client of session.clients) {
@@ -494,11 +494,27 @@ async function runBudget(session, taskId) {
     title: "Бюджет",
     detail: "budget_exhausted",
   });
+  const approvalId = "chg-budget-d4";
   emit(session, "approval_required", taskId, {
+    change_id: approvalId,
     reason: "budget_exhausted",
     action: "run_node",
     risk: "high",
+    title: "Добавить суб-бюджет",
   });
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: approvalId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision !== "approve") return;
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: "Бюджет",
+    detail: "суб-бюджет выдан",
+  });
+  emit(session, "message", taskId, { role: "assistant", text: "Суб-бюджет добавлен." });
 }
 
 async function runPlan(session, taskId) {
@@ -825,9 +841,9 @@ async function runPaidOutcome(session, taskId, restartOffered) {
     detail: "paid_outcome_unknown",
   });
   emit(session, "step_started", taskId, PAID_STEP);
-  const approvalId = `ap-paid-outcome-${session.id}`;
+  const approvalId = `chg-paid-${session.id}`;
   const approval = {
-    approval_id: approvalId,
+    change_id: approvalId,
     title: "Исход платного шага неизвестен",
     reason: "paid_outcome_unknown",
     action: "run_node",
@@ -1251,6 +1267,23 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     sendJson(res, 401, { detail: "unauthorized" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/emit") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    const taskRaw = body.task_id;
+    const taskId = taskRaw == null || taskRaw === "" ? null : Number(taskRaw);
+    const eventSession = body.event_session_id ? String(body.event_session_id) : session.id;
+    emit(
+      session,
+      String(body.type || "agent_status"),
+      Number.isFinite(taskId) ? taskId : null,
+      body.payload && typeof body.payload === "object" ? body.payload : {},
+      eventSession,
+    );
+    sendJson(res, 200, { ok: true });
     return;
   }
 
