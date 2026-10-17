@@ -74,7 +74,8 @@ class AnalyzeStyleBody(BaseModel):
 async def post_analyze_style(body: AnalyzeStyleBody) -> dict[str, Any]:
     """Референсы → запись стиля (name/desc/category/prompt_core)."""
     try:
-        return await analyze_style_images(body.paths, name_hint=body.name_hint)
+        safe = [str(_safe_cover_source(path)) for path in body.paths]
+        return await analyze_style_images(safe, name_hint=body.name_hint)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
