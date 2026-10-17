@@ -789,6 +789,29 @@ test("поверхности оркестратора берут токены IN
   expect(reports.side).toBe("rgb(4, 4, 4)");
 });
 
+test("рамка режима фикса берёт токен warning", async ({ page }) => {
+  const file = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../src/components/orchestrator/orchestrator-panel.tsx",
+  );
+  const source = readFileSync(file, "utf8");
+  expect(source).not.toContain("border-amber-400/50");
+  expect(source).toContain("border-warning/50");
+  expect(source).toContain('borderColor: "hsl(var(--warning) / 0.5)"');
+
+  await openWithToken(page, "idle", "int-warning");
+  const border = await page.evaluate(() => {
+    const el = document.createElement("input");
+    el.style.borderColor = "hsl(var(--warning) / 0.5)";
+    document.body.appendChild(el);
+    const color = getComputedStyle(el).borderTopColor;
+    el.remove();
+    return color;
+  });
+  // INT ea6c5926, --warning: 38 92% 58% при 50%. Глобальный * { border-color } этот inline не перекрывает.
+  expect(border).toBe("rgba(246, 174, 49, 0.5)");
+});
+
 test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
     const paint = () =>
       page.evaluate(() => {

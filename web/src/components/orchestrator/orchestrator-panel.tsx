@@ -708,8 +708,9 @@ export function OrchestratorPanel({ projectId }: Props) {
               }
               className={cn(
                 "h-9 flex-1 rounded-md border bg-background px-3 text-xs disabled:opacity-40",
-                fixBugsMode ? "border-amber-400/50" : "border-border",
+                fixBugsMode ? "border-warning/50" : "border-border",
               )}
+              style={fixBugsMode ? { borderColor: "hsl(var(--warning) / 0.5)" } : undefined}
             />
             <Button
               type="button"
