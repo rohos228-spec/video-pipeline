@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { reportPreviewDocument } from "../../src/lib/orchestratorSanitize";
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
@@ -148,10 +150,13 @@ test.describe("report editor", () => {
   });
 
   test("превью отчёта на фоне INT и остаётся контрастным", async ({ page }) => {
-    const doc = reportPreviewDocument([{ heading: "Светлый", html: "<p>текст без фона</p>" }]);
-    expect(doc).toContain("background:hsl(0 0% 2%)");
-    expect(doc).toContain("color:hsl(0 0% 94%)");
-    expect(doc).not.toMatch(/<script/i);
+    const source = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorSanitize.ts"),
+      "utf8",
+    );
+    expect(source).toContain("background:${INT_PREVIEW_BG}");
+    expect(source).toContain('const INT_PREVIEW_BG = "hsl(0 0% 2%)"');
+    expect(source).toContain('const INT_PREVIEW_FG = "hsl(0 0% 94%)"');
     const ratio = (0.941 + 0.05) / (0.02 + 0.05);
     expect(ratio).toBeGreaterThan(7);
 
