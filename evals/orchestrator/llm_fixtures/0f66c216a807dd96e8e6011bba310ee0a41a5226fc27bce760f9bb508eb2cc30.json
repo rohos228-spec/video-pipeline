@@ -1,0 +1,30 @@
+{
+  "key": "0f66c216a807dd96e8e6011bba310ee0a41a5226fc27bce760f9bb508eb2cc30",
+  "request_meta": {
+    "tier": "fast",
+    "temperature": null,
+    "max_tokens": null,
+    "reasoning_effort": null,
+    "messages_sha256": "c8de6ce3f528ae80084af53cb624a7c8bc1ad5afa695d491539eda5857a32347"
+  },
+  "response": {
+    "text": "{\"tier\": \"strong\", \"mode\": \"steer\"}",
+    "call_id": "script-e6",
+    "model": "gpt-5.6-sol",
+    "provider": "scripted",
+    "tier": "fast",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 64,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 1,
+    "fallback_index": 0,
+    "deterministic": true,
+    "fixture_key": "0f66c216a807dd96e8e6011bba310ee0a41a5226fc27bce760f9bb508eb2cc30"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "scripted"
+}
