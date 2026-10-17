@@ -2237,9 +2237,6 @@ def test_reworded_delete_still_requires_modify() -> None:
         "Удаляет файл пользовательской группы.",
     ):
         assert _DELETE_PHRASE_RE.search(sample), sample
-    rewritten = "Удаляет файл пользовательской группы.".replace("Удаляет", "Снимает")
-    assert rewritten.startswith("Снимает")
-    assert _DELETE_PHRASE_RE.search(rewritten)
 
     audit = _audit_text()
     assert "Детектор не видит удалений внутри обработчиков студии" in audit
@@ -2258,13 +2255,21 @@ def test_reworded_delete_still_requires_modify() -> None:
         matched_keep.append(row["id"])
     assert set(matched_keep) == set(_DELETE_WORDING_EXCEPTIONS)
 
+    group = by_id["group.delete"]
+    rewritten = group["what"].replace("Удаляет", "Снимает")
+    assert rewritten != group["what"]
+    assert _DELETE_PHRASE_RE.search(rewritten)
+    assert group["verdict"] == "modify"
+
     queue = by_id["montage.cancel_queue_ops"]
     assert queue["verdict"] == "keep"
     assert _DELETE_PHRASE_RE.search(queue["what"])
     assert _DELETE_WORDING_EXCEPTIONS["montage.cancel_queue_ops"] in audit
-    hidden = {key: value for key, value in _DELETE_WORDING_EXCEPTIONS.items() if key != queue["id"]}
-    assert queue["id"] not in hidden
-    assert _DELETE_PHRASE_RE.search(queue["what"])
+    stripped = queue["what"]
+    for word in ("Снимает", "снимает", "очищает", "Очищает", "убирает", "отменяет"):
+        stripped = stripped.replace(word, "хранит")
+    assert stripped != queue["what"]
+    assert _DELETE_PHRASE_RE.search(stripped) is None
 
 
 def test_empty_registry_is_not_green() -> None:
@@ -2461,6 +2466,7 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
         for hit in analyze_module_source(no_version, "node.set_config")
     )
 
+
 def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     """Параметр version без сравнения с текущей версией запись не разрешает."""
     unused = (
@@ -2499,8 +2505,6 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     compared_hits = analyze_module_source(compared, "node.set_config")
     assert [hit.kind for hit in compared_hits] == ["open", "os.replace"]
     assert [hit.allowed for hit in compared_hits] == [False, False]
-
-    import inspect
 
     from app.orchestrator.node_store.atomic_write import VersionConflict, atomic_write_text
 
