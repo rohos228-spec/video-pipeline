@@ -94,7 +94,8 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    и после исчерпания блокировались бы навсегда. `spent(None)` для #351
    возвращает `0.0` и ничего не блокирует. `budget_scope=pipeline` в
    счётчик $10 не входит, тоже требует `run_id` и ограничен своим
-   потолком `pipeline_sub_budget_usd` (по умолчанию $40). Другое
+   потолком `pipeline_sub_budget_usd` (по умолчанию $40;
+   `ORCH_PIPELINE_BUDGET_USD` перекрывает файл). Другое
    значение `budget_scope` — `ValueError("budget_scope must be
    internal|pipeline")` до вызова и до записи в леджер.
 2. Ход, после которого `spent >= 10`, всё равно возвращает текст модели.
@@ -339,6 +340,9 @@ ledger.hydrate(
 
 Флаги `flags.d1_confirmed` / `flags.d6_confirmed`, по умолчанию false.
 Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
+`ORCH_PIPELINE_BUDGET_USD` перекрывает потолок pipeline (дефолт 40).
+Нечисло, NaN/inf или значение меньше нуля — `ValueError`, без подстановки 40.
+Внутренний суб-бюджет $10 эта переменная не меняет.
 
 | | D выключен (дефолт) | D включен |
 |---|---|---|

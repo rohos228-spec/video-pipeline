@@ -19,7 +19,8 @@ spend:
   # D4: суб-бюджет внутренних ходов. Исчерпание → TaskStatus.waiting_approval,
   # ApprovalEvent.reason = budget_exhausted. Задачу это не валит.
   internal_sub_budget_usd: 10.0
-  # Pipeline не входит в $10, но без своего потолка это обход лимита.
+  # Pipeline не входит в $10. Потолок: ORCH_PIPELINE_BUDGET_USD, по умолчанию 40.
+  # Нечисло, NaN/inf или отрицательное — ValueError, тихого фолбэка на 40 нет.
   pipeline_sub_budget_usd: 40.0
 
 classifier:

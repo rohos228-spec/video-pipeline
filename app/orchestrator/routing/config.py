@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,23 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in _TRUE
+
+
+def _finite_usd(raw: Any, *, name: str) -> float:
+    """Конечное число долларов, не меньше нуля.
+
+    ``ORCH_PIPELINE_BUDGET_USD`` перекрывает ``pipeline_sub_budget_usd``.
+    Пока переменная не задана, потолок — 40. Нечисло, NaN, inf и
+    отрицательное значение — ``ValueError``, дефолт на их место не
+    подставляется.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number >= 0, got {raw!r}") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite number >= 0, got {raw!r}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -156,7 +174,7 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
         retries=int(data.get("retries", 2)),
         backoff_base_s=float(data.get("backoff_base_s", 1.0)),
         internal_budget_usd=float(spend.get("internal_sub_budget_usd", 10)),
-        pipeline_budget_usd=float(spend.get("pipeline_sub_budget_usd", 40)),
+        pipeline_budget_usd=_pipeline_budget_usd(spend, apply_env=apply_env),
         classifier_threshold=float(classifier.get("confidence_threshold", 0.8)),
         classifier_temperature=float(classifier.get("temperature", 0)),
         classifier_max_tokens=int(classifier.get("max_tokens", 120)),
@@ -166,6 +184,17 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
         prices=_prices(data.get("prices_usd_per_million") or {}),
         providers=_providers(data.get("providers") or {}),
     )
+
+
+def _pipeline_budget_usd(spend: dict[str, Any], *, apply_env: bool) -> float:
+    """Потолок pipeline. Env ``ORCH_PIPELINE_BUDGET_USD``, иначе файл, иначе 40."""
+    budget = _finite_usd(spend.get("pipeline_sub_budget_usd", 40), name="pipeline_sub_budget_usd")
+    if apply_env and "ORCH_PIPELINE_BUDGET_USD" in os.environ:
+        budget = _finite_usd(
+            os.environ.get("ORCH_PIPELINE_BUDGET_USD"),
+            name="ORCH_PIPELINE_BUDGET_USD",
+        )
+    return budget
 
 
 def effective_tier(config: RouteConfig, requested: str) -> str:
