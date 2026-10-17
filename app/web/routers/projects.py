@@ -262,6 +262,25 @@ async def get_project(
     return project_to_detail(p)
 
 
+@router.post("/{project_id}/sync", response_model=ProjectDetail)
+async def sync_project(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> ProjectDetail:
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    pulled, recomputed = await _sync_project_state(session, p)
+    if pulled or recomputed or session.dirty:
+        await commit_with_retry(session)
+        await session.refresh(p)
+    else:
+        await session.rollback()
+        p = await session.get(Project, project_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="Проект не найден")
+    return project_to_detail(p)
+
+
 @router.post("", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)
 async def create_project(
     body: Annotated[CreateProjectRequest, Body()],

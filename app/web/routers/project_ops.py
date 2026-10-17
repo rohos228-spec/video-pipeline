@@ -41,6 +41,17 @@ def _project_or_404(project: Project | None) -> Project:
     return project
 
 
+async def _with_master_project(project_id: int, fallback: Project, fn):
+    from app.db import session_scope
+
+    try:
+        async with session_scope() as master:
+            mp = await master.get(Project, project_id)
+            return fn(mp if mp is not None else fallback)
+    except Exception:
+        return fn(fallback)
+
+
 @router.post("/{project_id}/pause", response_model=ProjectDetail)
 async def pause_project(
     project_id: int, session: AsyncSession = Depends(get_project_session)
@@ -817,6 +828,7 @@ async def montage_board_merge_scenes(
     from app.services.montage_board_frames import merge_montage_scenes
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         result = await merge_montage_scenes(
             session,
@@ -837,6 +849,42 @@ async def montage_board_merge_scenes(
     return result
 
 
+def _refuse_if_project_busy(p: Project) -> None:
+    from app.services.project_state import is_running_status
+
+    if is_running_status(p.status):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Сейчас идёт шаг ({p.status.value}): дождитесь окончания "
+                "или остановите его, потом меняйте сцены."
+            ),
+        )
+
+
+@router.post("/{project_id}/montage-board/scenes/split-undo")
+async def montage_board_undo_split(
+    project_id: int,
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import undo_montage_split
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        result = await undo_montage_split(session, p, undo_id=(body or {}).get("undo_id"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_scenes_split_undone": True, "refresh_board": True},
+    )
+    return result
+
+
 @router.post("/{project_id}/montage-board/scenes/split")
 async def montage_board_split_scenes(
     project_id: int,
@@ -850,6 +898,7 @@ async def montage_board_split_scenes(
     )
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         frame_id = int(body["frame_id"])
     except (KeyError, TypeError, ValueError) as e:
@@ -1391,7 +1440,7 @@ async def montage_board_montage_status(
     from app.services.montage_board_montage_job import get_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    return {"job": get_montage_job(p)}
+    return {"job": await _with_master_project(project_id, p, get_montage_job)}
 
 
 @router.post("/{project_id}/montage-board/recover-outsee")
@@ -2800,10 +2849,12 @@ async def audio_align_status(
     from app.services.audio_align_job import get_audio_align_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    last = None
-    if isinstance(p.meta, dict):
-        last = p.meta.get("audio_align_last")
-    return {"job": get_audio_align_job(p), "last": last}
+
+    def _read(proj: Project) -> dict:
+        meta = proj.meta if isinstance(proj.meta, dict) else {}
+        return {"job": get_audio_align_job(proj), "last": meta.get("audio_align_last")}
+
+    return await _with_master_project(project_id, p, _read)
 
 
 @router.post("/{project_id}/remount-video")

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.generation_options import is_skippable_empty_prompt
 from app.models import Frame, FrameStatus, Project
 from app.services.content_locks import is_ui_locked
+from app.services.frame_tombstones import deleted_numbers as _deleted_numbers
 from app.services.plan_validation import is_meaningful_general_plan
 
 # --- константы под v8-шаблон ---------------------------------------------
@@ -581,6 +582,8 @@ async def bootstrap_frames_for_image_step(
     for num in frame_nums:
         prompt = prompts_shot1.get(num, "")
         fr = by_number.get(num)
+        if fr is None and num in _deleted_numbers(project):
+            continue
         if fr is None and rows:
             # FIX 2026-10-15: кадры уже в БД — не создавать строки из xlsx.
             continue
@@ -803,6 +806,9 @@ async def import_v8_xlsx(
             start_ts = t
             end_ts = t + dur
             fr = by_number.get(i)
+            if fr is None and i in _deleted_numbers(project):
+                t = end_ts
+                continue
             if fr is None and existing:
                 # FIX 2026-10-15: у проекта уже есть кадры (DB SoT) — устаревший
                 # project.xlsx не должен дописывать строки по номеру колонки

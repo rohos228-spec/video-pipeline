@@ -1066,6 +1066,8 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
+  syncProject: (id: number) =>
+    http<ProjectDetail>(`/api/projects/${id}/sync`, { method: "POST" }),
   getProjectRun: (projectId: number) =>
     http<WorkflowRunDetail>(`/api/projects/${projectId}/run`),
   createProject: (body: {
@@ -1528,6 +1530,7 @@ export const api = {
       ok: boolean;
       parent_id: number;
       parent_number: number;
+      parent_ordinal?: number | null;
       merged_frames: number;
       vo_scene_size: number;
     }>(`/api/projects/${projectId}/montage-board/scenes/merge`, {
@@ -1548,10 +1551,14 @@ export const api = {
       ok: boolean;
       scenes?: number;
       parent_number?: number;
+      parent_ordinal?: number | null;
       left_number?: number;
       right_number?: number;
+      left_ordinal?: number | null;
+      right_ordinal?: number | null;
       left_size?: number;
       right_size?: number;
+      undo_id?: string | null;
     }>(`/api/projects/${projectId}/montage-board/scenes/split`, {
       method: "POST",
       body: JSON.stringify({
@@ -1559,6 +1566,18 @@ export const api = {
         all: explode,
         ...(frameIds?.length ? { frame_ids: frameIds } : {}),
       }),
+    }),
+
+  undoSplitMontageScene: (projectId: number, undoId?: string | null) =>
+    http<{
+      ok: boolean;
+      undo_id: string;
+      restored_frames: number;
+      paid_media_kept: { images: number; videos: number; total: number };
+      can_undo_more: boolean;
+    }>(`/api/projects/${projectId}/montage-board/scenes/split-undo`, {
+      method: "POST",
+      body: JSON.stringify(undoId ? { undo_id: undoId } : {}),
     }),
 
   insertMontageFrame: (

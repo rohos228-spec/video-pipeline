@@ -128,6 +128,19 @@ def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
         return False
 
 
+def _qc_json_valid(text) -> bool:
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("ops"), list)
+        and not data.get("error")
+        and not data.get("refusal")
+    )
+
+
 _TRUNCATED_STREAM_FINISH = frozenset(
     {"stream_partial", "stream_salvaged", "stream_continued"}
 )

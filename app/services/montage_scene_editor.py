@@ -646,6 +646,14 @@ def normalize_anchor_rows(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def scene_display_ordinals(frames: list[Any]) -> dict[int, int]:
+    heads = sorted(
+        (fr for fr in frames if not is_shot_child(fr)),
+        key=lambda fr: (float(getattr(fr, "sort_key", 0) or 0.0), int(fr.number or 0)),
+    )
+    return {int(fr.id): i + 1 for i, fr in enumerate(heads) if getattr(fr, "id", None) is not None}
+
+
 def scene_index(frames: list[Any]) -> dict[str, dict[str, Any]]:
     """Все VO-сцены проекта: uuid родителя → родитель, члены, закадр сцены."""
     out: dict[str, dict[str, Any]] = {}

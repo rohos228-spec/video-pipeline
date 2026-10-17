@@ -58,6 +58,7 @@ from app.services.montage_board_regen import (
     prepare_video_regen,
 )
 from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
+from app.services.request_context import scoped_async
 
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
@@ -767,6 +768,7 @@ async def _run_ops_phase(
         await asyncio.gather(*(_guarded(fr) for fr in wave))
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def apply_montage_board(
     session: AsyncSession,
     project: Project,

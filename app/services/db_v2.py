@@ -37,11 +37,14 @@ from app.models import (
 
 _SORT_STEP = 10.0
 
-_FRAME_V2_COLS: list[tuple[str, str]] = [
-    ("uuid", "VARCHAR(64)"),
-    ("sort_key", "FLOAT"),
-    ("scene_id", "INTEGER"),
-]
+
+def _frame_v2_cols() -> list[tuple[str, str]]:
+    from app.services.schema_migrations import FRAMES_V2_COLUMNS
+
+    return list(FRAMES_V2_COLUMNS)
+
+
+_FRAME_V2_COLS: list[tuple[str, str]] = _frame_v2_cols()
 
 
 async def migrate_db_v2_schema(conn: Any) -> None:
