@@ -152,6 +152,31 @@ test("отброшенный NEXT_PUBLIC_ORCH_API пишет warn без сек�
   }
 });
 
+test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает один раз на серию запросов", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((item) => String(item)).join(" "));
+  };
+  const pageOrigin = "http://127.0.0.1:3100";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "http://evil.example/api";
+    expect(envOrchApiBase()).toBe("");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("");
+    expect(bearerTargetAllowed("http://evil.example/api", pageOrigin)).toBe(false);
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("NEXT_PUBLIC_ORCH_API отброшен");
+  } finally {
+    console.warn = original;
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    envOrchApiBase();
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
 test("валидатор NEXT_PUBLIC_ORCH_API возвращает нормализованный URL", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_API;
   const pageOrigin = "http://127.0.0.1:3100";

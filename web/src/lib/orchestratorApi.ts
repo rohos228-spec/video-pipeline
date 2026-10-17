@@ -137,7 +137,12 @@ function discardedOrchApiLabel(raw: string): string {
   }
 }
 
+/** Один warn на серию отброшенных чтений. Успешный env снова взводит флаг. */
+let discardedOrchApiWarned = false;
+
 function warnDiscardedOrchApi(raw: string): void {
+  if (discardedOrchApiWarned) return;
+  discardedOrchApiWarned = true;
   console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
 }
 
@@ -150,6 +155,7 @@ export function envOrchApiBase(): string {
     warnDiscardedOrchApi(raw);
     return "";
   }
+  discardedOrchApiWarned = false;
   return normalized;
 }
 
