@@ -52,7 +52,11 @@ export default defineConfig({
       port: 3100,
       reuseExistingServer: !process.env.CI,
       timeout: 240_000,
-      env: { ...process.env, NEXT_PUBLIC_ORCH_TASK_MODE: "1" },
+      env: {
+        ...process.env,
+        NEXT_PUBLIC_ORCH_TASK_MODE: "1",
+        NEXT_PUBLIC_ORCH_API: process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799",
+      },
     },
   ],
 });

@@ -17,7 +17,6 @@ const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
 
 function orchUrl(scenario: string, session = "studio", project?: number): string {
   const q = new URLSearchParams({
-    orchApi: MOCK,
     scenario,
     session,
   });
@@ -35,6 +34,46 @@ async function openWithToken(page: Page, scenario: string, session = "studio", p
   await page.goto(orchUrl(scenario, session, project));
   await expect(page.getByTestId("orch-composer")).toBeVisible();
 }
+
+test("?orchApi чужого origin не получает Bearer", async ({ page }) => {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  const allowed = new URL(MOCK).origin;
+  const foreigners = ["https://evil.example", "http://127.0.0.1:9"];
+  for (const [index, foreign] of foreigners.entries()) {
+    const foreignOrigin = new URL(foreign).origin;
+    const leaked: string[] = [];
+    const authed: string[] = [];
+    const onRequest = (req: { url: () => string; headers: () => Record<string, string> }) => {
+      const auth = req.headers().authorization || "";
+      if (!auth.toLowerCase().startsWith("bearer ")) return;
+      const url = req.url();
+      authed.push(url);
+      if (new URL(url).origin === foreignOrigin) leaked.push(url);
+    };
+    page.on("request", onRequest);
+    try {
+      const q = new URLSearchParams({
+        orchApi: foreign,
+        scenario: "idle",
+        session: `leak-${index}`,
+      });
+      await page.goto(`/orchestrator?${q.toString()}`);
+      await expect(page.getByTestId("orch-composer")).toBeVisible();
+      await expect.poll(() => authed.length).toBeGreaterThan(0);
+      expect(leaked).toEqual([]);
+      for (const url of authed) {
+        expect(new URL(url).origin).toBe(allowed);
+      }
+    } finally {
+      page.off("request", onRequest);
+    }
+  }
+});
 
 test.describe("orchestrator chat", () => {
   test("основной вид", async ({ page }) => {
