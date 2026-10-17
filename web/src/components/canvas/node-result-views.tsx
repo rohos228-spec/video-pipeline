@@ -1182,6 +1182,7 @@ function ShotsReportView({ snapshot }: { snapshot: NodeResultSnapshot }) {
       <iframe
         title="Отчёт кадров"
         src={url}
+        sandbox=""
         className="block h-full min-h-[70vh] w-full border-0 bg-black"
       />
     </div>
