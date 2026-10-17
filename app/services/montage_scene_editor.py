@@ -69,13 +69,20 @@ def _norm(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def _live_planned(frame: Any) -> list[dict[str, Any]]:
+    """Кадры[] для выдачи: неактивные шоты в текст и API не входят."""
+    from app.services.frame_tombstones import shot_is_active
+
+    return [item for item in planned_shots_from_attrs(frame) if shot_is_active(item)]
+
+
 def frame_template_id(frame: Any) -> str:
-    """Шаблон сцены этого кадра: camera_subdivide → кадры[0]."""
+    """Шаблон сцены этого кадра: camera_subdivide → первый живой кадр."""
     cs = _cs(frame)
     tid = normalize_template_id(str(cs.get("шаблон") or cs.get("template") or ""))
     if tid:
         return tid
-    planned = planned_shots_from_attrs(frame)
+    planned = _live_planned(frame)
     if planned:
         return normalize_template_id(
             str(planned[0].get("шаблон") or planned[0].get("template") or "")
@@ -93,7 +100,7 @@ def frame_plan(frame: Any) -> str:
     val = _norm(str(_attrs(frame).get("крупность") or ""))
     if val:
         return val
-    planned = planned_shots_from_attrs(frame)
+    planned = _live_planned(frame)
     if planned:
         return _norm(str(planned[0].get("план") or planned[0].get("plan") or ""))
     return ""
@@ -106,7 +113,7 @@ def frame_action(frame: Any) -> str:
         val = _norm(str(attrs.get(key) or ""))
         if val:
             return val
-    planned = planned_shots_from_attrs(frame)
+    planned = _live_planned(frame)
     if planned:
         return _norm(str(planned[0].get("действие") or planned[0].get("action") or ""))
     return ""
@@ -118,7 +125,7 @@ def frame_place(frame: Any) -> str:
         val = _norm(str(src or ""))
         if val:
             return val
-    planned = planned_shots_from_attrs(frame)
+    planned = _live_planned(frame)
     if planned:
         return _norm(str(planned[0].get("место") or planned[0].get("place") or ""))
     return ""
@@ -841,7 +848,7 @@ def _shot_field(frame: Any, *keys: str) -> str:
         val = _norm(str(attrs.get(key) or ""))
         if val:
             return val
-    planned = planned_shots_from_attrs(frame)
+    planned = _live_planned(frame)
     if planned:
         item = planned[0]
         for key in keys:
@@ -853,7 +860,7 @@ def _shot_field(frame: Any, *keys: str) -> str:
 
 def _who_from_kadry(parent: Any) -> str:
     seen: list[str] = []
-    for item in planned_shots_from_attrs(parent):
+    for item in _live_planned(parent):
         text = _plain_names(
             item.get("персонажи")
             or item.get("кто_в_кадре")
@@ -1191,7 +1198,7 @@ def _scene_common(parent: Any, members: list[Any]) -> dict[str, Any]:
 
 
 def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
-    planned = planned_shots_from_attrs(parent)
+    planned = _live_planned(parent)
     by_id = {
         _norm(str(item.get("id") or "")): item for item in planned if item.get("id")
     }
@@ -1253,7 +1260,7 @@ def shot_sequence_text(parent: Any, members: list[Any] | None = None) -> str:
     всех членов ячейки: лишние шоты после короткой цепи иначе возвращают
     старую ленту.
     """
-    planned = planned_shots_from_attrs(parent)
+    planned = _live_planned(parent)
     steps = [
         _norm(str(item.get("действие") or item.get("action") or ""))
         for item in planned
