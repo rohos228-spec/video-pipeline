@@ -186,5 +186,4 @@ def send_mail(to: str, subject: str, text: str) -> bool:
         return True
     except Exception as e:  # noqa: BLE001
         log.error("SMTP failed: %s; mail to=%s was not sent", e, to)
-        print(f"[VIA auth dev-mail] SMTP failed ({e}) to={to} | {text}", flush=True)
         return False
