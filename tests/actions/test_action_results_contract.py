@@ -174,6 +174,25 @@ def _edit_payload(**extra: object) -> dict:
     return payload
 
 
+def test_paid_approval_estimate_positive_or_flagged() -> None:
+    def build(name: str, estimate: float | None) -> dict:
+        return {
+            "action": name,
+            "metadata": metadata_of(name).model_dump(),
+            "reason": "проверка оценки",
+            "preview": {"change": "вызов", "estimate": estimate},
+        }
+
+    unknown = ApprovalRequired.model_validate(build("montage.suggest_scene_variants", None))
+    priced = ApprovalRequired.model_validate(build("montage.suggest_scene_variants", 0.4))
+    assert unknown.preview.estimate is None
+    assert priced.preview.estimate == 0.4
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(build("montage.suggest_scene_variants", 0))
+    free = ApprovalRequired.model_validate(build("prompt.delete_master", 0))
+    assert free.preview.estimate == 0
+
+
 def test_approval_required_has_no_change_id() -> None:
     assert "change_id" not in ApprovalRequired.model_fields
     payload = {

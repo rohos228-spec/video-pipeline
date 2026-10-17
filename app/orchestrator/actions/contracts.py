@@ -207,6 +207,17 @@ class ApprovalRequired(BaseModel):
     reason: str = Field(min_length=1)
     preview: ApprovalPreview
 
+    @model_validator(mode="after")
+    def _estimate(self) -> ApprovalRequired:
+        """None — оценки нет, 0 — бесплатно. Платное действие не бывает бесплатным молча."""
+
+        estimate = self.preview.estimate
+        if estimate is not None and estimate < 0:
+            raise ValueError("оценка не бывает отрицательной")
+        if self.metadata.paid and estimate is not None and estimate <= 0:
+            raise ValueError("платная оценка должна быть больше 0 или отсутствовать")
+        return self
+
 
 class SoftDeleteResult(BaseModel):
     """Пометка вместо физического удаления. Восстановление — отдельным действием."""
