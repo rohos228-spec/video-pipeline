@@ -14,12 +14,15 @@ from typing import Any
 from loguru import logger
 
 from app.orchestrator.contracts import (
+    ORCH_DEFAULT_TIER,
     ORCH_REASONING_EFFORT,
     AgentRole,
     BudgetScope,
     ClassifyResult,
     MessageMode,
+    budget_exhausted_response,
     orch_call_tier,
+    orch_run_id,
 )
 from app.orchestrator.db.migrations import connect, utc_now
 from app.orchestrator.events import EventBus
@@ -37,6 +40,11 @@ _STOP_TOKENS = frozenset(
         "stop",
         "cancel",
     }
+)
+_KILL_PHRASES = (
+    "аварийный стоп",
+    "kill switch",
+    "kill-switch",
 )
 _STEER_PHRASES = (
     "измени план",
@@ -72,6 +80,14 @@ def classify_deterministic(text: str) -> ClassifyResult | None:
     """Правила до LLM. None — спорный случай, нужен fast-классификатор."""
     norm = " ".join((text or "").lower().split())
     tokens = _TOKEN_RE.findall(norm)
+    if any(phrase in norm for phrase in _KILL_PHRASES):
+        return ClassifyResult(
+            tier="fast",
+            mode=MessageMode.interrupt,
+            deterministic=True,
+            confidence=1.0,
+            kill_switch=True,
+        )
     if any(token in _STOP_TOKENS for token in tokens):
         return ClassifyResult(
             tier="fast",
@@ -105,12 +121,22 @@ class MessageQueue:
         self.supervisor = supervisor
         self._pending: set[asyncio.Task[Any]] = set()
 
-    async def accept(self, session_id: str, text: str) -> int:
-        """Записать реплику, опубликовать ack и поставить классификацию в фон.
+    async def accept(
+        self,
+        session_id: str,
+        text: str,
+        mode: MessageMode | None = None,
+        project_id: int | None = None,
+    ) -> int:
+        """Записать реплику, опубликовать ack и поставить разбор в фон.
 
-        Возвращает seq события ack. Не ждёт классификацию.
+        ``run_id`` резервируется здесь, до ``classify`` и ``call``.
+        Явный ``mode`` не классифицируется, кроме фразы kill switch:
+        она перебивает mode. Неизвестное значение mode отсекает HTTP.
+        Возвращает seq события ack. Не ждёт разбор.
         """
         task_id = self.supervisor.active_task(session_id)
+        run_id = orch_run_id(task_id=task_id, session_id=session_id)
         _insert_message(session_id, "user", text, task_id=task_id, mode=None)
         ack = await self.bus.publish(
             session_id,
@@ -118,17 +144,51 @@ class MessageQueue:
             {"text": text, "accepted": True},
             task_id=task_id,
         )
-        job = asyncio.create_task(self._classify(session_id, text), name=f"orch-classify-{session_id}")
+        job = asyncio.create_task(
+            self._classify(session_id, text, run_id, mode, project_id),
+            name=f"orch-classify-{session_id}",
+        )
         self._pending.add(job)
         job.add_done_callback(self._pending.discard)
         return ack.seq
 
-    async def _classify(self, session_id: str, text: str) -> None:
+    async def drain(self, timeout: float = 2.0) -> None:
+        """Дождаться разборов, которые уже стоят в фоне."""
+        pending = [job for job in list(self._pending) if not job.done()]
+        if not pending:
+            return
+        await asyncio.wait_for(asyncio.gather(*pending), timeout)
+
+    async def _classify(
+        self,
+        session_id: str,
+        text: str,
+        run_id: str,
+        mode: MessageMode | None,
+        project_id: int | None = None,
+    ) -> None:
+        published = False
         try:
-            decided = classify_deterministic(text)
-            if decided is None:
-                decided = await self.router.classify(text)
-                decided = decided.model_copy(update={"deterministic": False})
+            forced = classify_deterministic(text)
+            if forced is not None and forced.kill_switch:
+                decided = forced
+            elif mode is not None:
+                decided = ClassifyResult(
+                    tier=ORCH_DEFAULT_TIER,
+                    mode=mode,
+                    deterministic=True,
+                    confidence=1.0,
+                )
+            else:
+                decided = forced
+                if decided is None:
+                    task_id = self.supervisor.active_task(session_id)
+                    decided = await self.router.classify(
+                        text,
+                        run_id=run_id,
+                        task_id=None if task_id is None else str(task_id),
+                    )
+                    decided = decided.model_copy(update={"deterministic": False})
             await self.bus.publish(
                 session_id,
                 "classification",
@@ -137,24 +197,40 @@ class MessageQueue:
                     "tier": decided.tier,
                     "deterministic": decided.deterministic,
                     "confidence": decided.confidence,
+                    "kill_switch": decided.kill_switch,
                 },
             )
+            published = True
             _set_message_mode(session_id, text, decided.mode.value)
-            await self._apply(session_id, text, decided)
+            await self._apply(session_id, text, decided, project_id)
         except Exception:
             logger.exception("orch classification failed for session {}", session_id)
+            if published:
+                return
             await self.bus.publish(
                 session_id,
                 "classification",
                 {"mode": MessageMode.append.value, "deterministic": False, "error": "classifier_failed"},
             )
 
-    async def _apply(self, session_id: str, text: str, decided: ClassifyResult) -> None:
+    async def _apply(
+        self,
+        session_id: str,
+        text: str,
+        decided: ClassifyResult,
+        project_id: int | None = None,
+    ) -> None:
+        if decided.kill_switch:
+            self.supervisor.request_kill(session_id)
+            return
         if decided.mode is MessageMode.interrupt:
             self.supervisor.request_cancel(session_id)
             return
         if decided.mode is MessageMode.steer:
             self.supervisor.request_steer(session_id, text)
+            return
+        if decided.mode is MessageMode.task:
+            await self.supervisor.submit_task(session_id, text, project_id=project_id)
             return
         await self._stream_fast(session_id, text, decided.tier or "fast")
 
@@ -175,7 +251,7 @@ class MessageQueue:
             orch_call_tier(tier),
             [{"role": "user", "content": text}],
             True,
-            run_id=session_id,
+            run_id=orch_run_id(task_id=task_id, session_id=session_id),
             task_id=None if task_id is None else str(task_id),
             agent_role=AgentRole.classifier.value,
             budget_scope=BudgetScope.internal.value,
@@ -186,6 +262,14 @@ class MessageQueue:
         for part in parts:
             await self.bus.publish(session_id, "token", {"text": part})
         _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
+        if budget_exhausted_response(response) and task_id is not None:
+            await self.supervisor.absorb_budget(task_id, session_id, response)
+        elif budget_exhausted_response(response):
+            await self.bus.publish(
+                session_id,
+                "approval_required",
+                {"reason": "budget_exhausted", "task_id": None},
+            )
         await self.bus.publish(
             session_id,
             "message",

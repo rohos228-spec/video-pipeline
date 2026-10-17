@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -19,7 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "ws3-r1.1"
+CONTRACT_VERSION = "ws3-r3.3"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -31,6 +32,39 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "reasoning_effort, on_delta. До D6 ходы оркестратора — strong и "
         "reasoning_effort=high. orch_steps.position — монотонный номер попытки, "
         "не индекс плана. CHECK node_key без REGEXP (GLOB).",
+    ),
+    (
+        "ws3-r3",
+        "Цикл planner → dry-run → critic → executor. MessageMode.task. "
+        "Суб-бюджет budget_exhausted. Риск шага — max(реестр, план).",
+    ),
+    (
+        "ws3-r3.1",
+        "internal-вызов без непустого run_id — ValueError; run резервируется до модели. "
+        "MessageIn.mode. metadata_of: destructive без approval. "
+        "project_id задачи, не 0. Очередь task не стартует рядом с paused. "
+        "Исполнитель не зовёт LLM перед действием. "
+        "run_validator кладёт run_id и task_id в context. missing_run_id — failed.",
+    ),
+    (
+        "ws3-r3.2",
+        "BLOCK_OUTCOMES: budget_exhausted, critic_escalation, missing_project_id "
+        "→ waiting_approval; deletion_blocked, missing_run_id, empty_plan и прочий "
+        "blocking → failed. Строки revise_limit нет. grant не исполняет удаление "
+        "и пустой чекпоинт (empty_plan → failed, без replan). "
+        "pipeline без run_id — ValueError, как internal. MessageIn.project_id.",
+    ),
+    (
+        "ws3-r3.3",
+        "Planner.make_plan и Critic.review: keyword-only run_id, task_id, "
+        "agent_role, budget_scope, reasoning_effort (как у ModelRouter.call; "
+        "task_id — str | int | None, роутер приводит к строке). "
+        "Грант риска ключуется действием и публичными params и сбрасывается "
+        "при save_plan. Цикл исполнения проверяет бюджет на каждой итерации "
+        "и перед платным шагом. ok=False — failed, не done и не paid-retry. "
+        "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
+        "таблица действий); флаги плана только ужесточают. Пока metadata_of "
+        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
     ),
 )
 
@@ -63,6 +97,9 @@ EVENT_TYPES = (
     "task_failed",
     "classification",
     "message",
+    "kill_switch",
+    "paid_retry_blocked",
+    "step_skipped",
 )
 
 
@@ -81,11 +118,21 @@ class TaskStatus(StrEnum):
 
 
 class MessageMode(StrEnum):
-    """Режим входящего сообщения (§3.3)."""
+    """Режим входящего сообщения (§3.3).
+
+    ``task`` — новая задача, не interrupt/steer/append. Если в сессии уже
+    есть активная задача, новая остаётся ``queued`` и не вливается в текущую.
+    ``paused`` и ``waiting_approval`` не свободны: вторая задача не стартует
+    рядом с ними. Дренаж очереди — только когда активная дошла до терминального
+    статуса. ``resume`` / ``grant_approval`` продолжают ту же задачу.
+    ``kill_switch`` приходит вместе с ``interrupt`` и обрабатывается как
+    аварийный стоп, с приоритетом над обычным interrupt.
+    """
 
     interrupt = "interrupt"
     steer = "steer"
     append = "append"
+    task = "task"
 
 
 class CriticVerdict(StrEnum):
@@ -136,6 +183,16 @@ class ApprovalReason(StrEnum):
     budget_exhausted = "budget_exhausted"
     risk = "risk"
     critic_escalation = "critic_escalation"
+    missing_project_id = "missing_project_id"
+
+
+class Risk(StrEnum):
+    """Риск действия. Порядок — от слабого к сильному: план не понижает реестр."""
+
+    none = "none"
+    low = "low"
+    medium = "medium"
+    high = "high"
 
 
 class ReportKind(StrEnum):
@@ -249,6 +306,41 @@ def orch_call_tier(requested: str | None) -> str:
     return requested or ORCH_DEFAULT_TIER
 
 
+def usable_project_id(value: int | None) -> int | None:
+    """Положительный id проекта. ``0``, отрицательные и не-int не сохраняются."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) -> str:
+    """Непустой id бакета до вызова модели.
+
+    Задача уже создана — ``orch-task-{id}``. Сообщения до задачи —
+    ``orch-session-{session}``, его резервируют в ``accept`` до classify.
+    """
+    if task_id is not None:
+        return f"orch-task-{int(task_id)}"
+    session = (session_id or "").strip()
+    if not session:
+        raise ValueError("internal budget requires run_id")
+    return f"orch-session-{session}"
+
+
+def require_internal_run_id(run_id: str | None, budget_scope: str | None = None) -> None:
+    """Платный вызов (``internal`` и ``pipeline``) требует непустой ``run_id``.
+
+    Пропуск scope считается internal. ``spent(None)`` нулём не считается и бакет
+    не подменяет: пустой id — ошибка, а не нулевой расход. ``pipeline`` без
+    атрибуции — та же ошибка, отдельного безымянного бакета нет.
+    """
+    del budget_scope
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("budget requires run_id")
+
+
 def can_transition(src: TaskStatus, dst: TaskStatus) -> bool:
     return dst in FSM_TRANSITIONS[src]
 
@@ -294,8 +386,30 @@ class LLMUsage(BaseModel):
     reasoning_tokens: int = 0
 
 
+class ApprovalEvent(BaseModel):
+    """Событие approval в SSE-шине и в ``LLMResponse.approval`` (WS5).
+
+    Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся
+    ``waiting_approval``, а причина лежит здесь и в payload события
+    ``approval_required`` (``reason=budget_exhausted``).
+    """
+
+    task_id: int | None = None
+    action: str = ""
+    reason: str = ""
+    risk: str = ""
+    change_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class LLMResponse(BaseModel):
-    """Ответ ``router.call`` (WS5). Текст промпта не дублируется в ``orch_llm_calls``."""
+    """Ответ ``router.call`` (WS5). Текст промпта не дублируется в ``orch_llm_calls``.
+
+    ``task_status`` и ``approval`` — сигнал супервизору, не статус LLM-вызова.
+    Исчерпание суб-бюджета $10: ``task_status=waiting_approval`` и
+    ``approval.reason=budget_exhausted``. Текст этого хода сохраняется.
+    Роутер при исчерпании исключение не бросает.
+    """
 
     text: str = ""
     call_id: str = ""
@@ -309,6 +423,8 @@ class LLMResponse(BaseModel):
     fallback_index: int = 0
     deterministic: bool = False
     fixture_key: str | None = None
+    task_status: TaskStatus | None = None
+    approval: ApprovalEvent | None = None
 
 
 class ChunkMetadata(BaseModel):
@@ -360,22 +476,6 @@ class NodeDef(BaseModel):
     stale_base: bool = False
 
 
-class ApprovalEvent(BaseModel):
-    """Событие approval в SSE-шине.
-
-    Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся
-    ``waiting_approval``, а причина лежит здесь и в payload события
-    ``approval_required`` (``reason=budget_exhausted``).
-    """
-
-    task_id: int | None = None
-    action: str = ""
-    reason: str = ""
-    risk: str = ""
-    change_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
 class OrchEvent(BaseModel):
     """Событие шины. WS4 читает ``type``, ``task_id``, ``payload``, ``seq``.
 
@@ -391,20 +491,37 @@ class OrchEvent(BaseModel):
 
 
 class ClassifyResult(BaseModel):
-    """Ответ ``router.classify`` (WS5): tier, mode, deterministic."""
+    """Ответ ``router.classify`` (WS5): tier, mode, deterministic.
+
+    ``kill_switch`` — аварийный стоп §3.3: тот же режим interrupt, плюс запрет
+    новых действий и взвод стоп-ключа only_node. Поле опционально для WS5.
+    """
 
     tier: str
     mode: MessageMode
     deterministic: bool
     confidence: float = 1.0
+    kill_switch: bool = False
 
 
 class PlanStep(BaseModel):
+    """Шаг плана R3: whitelist-действие, параметры, ожидаемый результат.
+
+    ``risk`` — только подсказка планировщика. Approval решает executor
+    по max(риск из реестра действий, этот риск): план не может понизить
+    реестр. ``parallel_group`` — независимые read-only шаги с одним
+    именем группы можно выполнять параллельно.
+    ``estimated_cost`` — прогноз spend для критика, не фактическая оплата.
+    """
+
     action: str
     params: dict[str, Any] = Field(default_factory=dict)
     expected: str = ""
     paid: bool = False
     mutating: bool = False
+    risk: str = "none"
+    parallel_group: str | None = None
+    estimated_cost: float = 0.0
 
 
 class SpendSnapshot(BaseModel):
@@ -427,12 +544,45 @@ class CheckpointData(BaseModel):
     context: str = ""
 
 
+class ActionMetadata(BaseModel):
+    """Метаданные действия из реестра WS2.
+
+    ``read_only=True`` — явное разрешение. Нет метаданных или нет явного
+    ``read_only`` — действие потенциально разрушительное.
+    ``destructive=True`` — жёсткий запрет, approval его не снимает.
+    """
+
+    risk: str = "high"
+    read_only: bool | None = None
+    destructive: bool = False
+
+
 class ActionExecutor(Protocol):
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
-        """WS2: ``actions.execute``."""
+        """WS2: ``actions.execute``.
+
+        WS2 дополнительно проверяет approval внутри ``execute`` и не
+        выполняет действие, если риск реестра не подтверждён. Супервизор
+        останавливается раньше: ``PlanStep.risk`` — подсказка, порог берётся
+        как max(реестр, план).
+        """
+
+    def risk_of(self, action_name: str) -> Risk:
+        """Риск действия из реестра WS2.
+
+        Неизвестное имя → ``Risk.high`` (``registry_risk``). План не может
+        понизить этот риск.
+        """
+
+    def metadata_of(self, action_name: str) -> ActionMetadata | None:
+        """Метаданные реестра. ``None`` — имя неизвестно.
+
+        Неизвестное имя или отсутствие явного ``read_only=True`` —
+        потенциально разрушительное. ``destructive=True`` — запрет без approval.
+        """
 
 
-# Ключ context для dry-run. Согласовано с WS1: валидатор только читает.
+# Ключ context для dry-run до критика. Согласовано с WS1: валидатор только читает.
 VALIDATOR_CONTEXT_DRY_RUN = "dry_run"
 
 
@@ -440,12 +590,26 @@ class ValidatorRunner(Protocol):
     def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
         """WS1: синхронный ``validators.run(name, project_id, context) -> ValidatorResult``.
 
-        Async тоже принимается: ``run_validator`` делает await, если ``run`` —
-        корутина или вернул awaitable, иначе вызывает его через ``asyncio.to_thread``.
+        Async-реализация тоже принимается: ``run_validator`` делает await,
+        если ``run`` — корутина или вернул awaitable, иначе вызывает её
+        через ``asyncio.to_thread``.
 
-        ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``) —
-        валидатор только читает. Сигнатура и поля результата те же:
-        ``name``, ``pass`` / ``passed``, ``details``, ``blocking``.
+        Перед критиком супервизор передаёт dry-run:
+        ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``).
+        В этом режиме валидатор только читает и ничего не меняет.
+        Live-проверка — до и после мутирующего шага, она может блокировать.
+        ``project_id`` берётся из ``orch_tasks.project_id``. Ноль и пустое
+        значение не подставляются: нет id проекта — вызова нет.
+        Сигнатура и поля результата те же: ``name``, ``pass`` / ``passed``,
+        ``details``, ``blocking``.
+
+        ``run_validator`` перед вызовом кладёт в context непустые ``run_id``
+        и ``task_id``. Без них вызова нет.
+
+        Исход blocking — ``BLOCK_OUTCOMES`` / ``block_status``: супервизор
+        не выбирает статус мимо этой таблицы. ``budget_exhausted`` —
+        ``waiting_approval``. ``missing_run_id`` и прочий blocking
+        (live и dry-run) — ``failed``.
         """
 
 
@@ -468,7 +632,9 @@ class ModelRouter(Protocol):
         ``run_id``, ``task_id``, ``agent_role``, ``budget_scope``,
         ``reasoning_effort``, ``on_delta`` — keyword-only и необязательные.
         ``task_id`` — строка, как у WS5. Собственные вызовы оркестратора
-        передают ``budget_scope=internal``.
+        передают ``budget_scope=internal`` (суб-бюджет $10).
+        ``budget_scope=internal`` и ``budget_scope=pipeline`` без непустого
+        ``run_id`` — ValueError: ``spent(None)`` не подменяет бакет.
 
         До D6 tier хода — ``strong``, ``reasoning_effort=high``
         (``ORCH_DEFAULT_TIER`` / ``ORCH_REASONING_EFFORT``).
@@ -476,25 +642,338 @@ class ModelRouter(Protocol):
         ``on_delta(text)`` — боевой стрим WS5: каждый кусок текста. Нарезка
         готового ``response.text`` на слова — заглушка, не контракт UI.
         ``stream=True`` без ``on_delta`` эту заглушку не отменяет.
+
+        После каждого вызова супервизор смотрит ``task_status`` и ``approval``.
+        ``waiting_approval`` + ``reason=budget_exhausted`` останавливает задачу:
+        чекпоинт, событие ``approval_required``, без следующих internal-вызовов.
+        Текст ответа этого хода сохраняется.
         """
 
-    async def classify(self, message: str) -> ClassifyResult:
-        """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``."""
+    async def classify(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+    ) -> ClassifyResult:
+        """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``.
+
+        Спорный (LLM) путь — internal-бюджет, поэтому ``run_id`` уже
+        зарезервирован. Детерминированные правила роутер не вызывают.
+        """
+
+
+class Retriever(Protocol):
+    """WS6: ``rag.retrieve``. Реализация не импортируется, только этот контракт."""
+
+    async def retrieve(
+        self,
+        query: str,
+        corpora: list[str] | None = None,
+        top_k: int = 8,
+    ) -> list[Chunk]:
+        """Чанки правил и истории. Planner кладёт корпус ``rules`` в system."""
 
 
 class Planner(Protocol):
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
-        """Заглушка в R1, реальный planner — R3."""
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        """План через router + правила из ``rag.retrieve``.
+
+        Keyword-only kwargs — те же, что у ``ModelRouter.call``, кроме
+        ``on_delta``. ``task_id`` здесь ``str | int | None``: супервизор
+        передаёт int, реализация приводит его к строке перед роутером.
+        """
 
 
 class Critic(Protocol):
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
-        """Вердикт approve | revise | reject."""
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        """Вердикт approve | revise | reject.
+
+        Keyword-only kwargs совпадают с ``Planner.make_plan``.
+        """
 
 
 class StepExecutor(Protocol):
     async def run(self, step: PlanStep, ctx: dict[str, Any]) -> ActionResult:
-        """Исполнение одного шага. В R1 — обёртка над моком ``actions.execute``."""
+        """Один шаг только через ``actions.execute``."""
+
+
+# Правило 9: перед run_node обязателен verify_code_state
+# (read_pipeline_code + get_node). Имена действий — мини-RFC для WS1/WS2.
+RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step.run_step"})
+DELETION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "montage.delete_frame",
+        "montage.delete_child_frame",
+        "montage.delete_image",
+        "montage.delete_video",
+        "montage.delete_manual_ref",
+    }
+)
+APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
+PIPELINE_FORECAST_LIMIT_USD = 40.0
+_RISK_RANK: dict[Risk, int] = {Risk.none: 0, Risk.low: 1, Risk.medium: 2, Risk.high: 3}
+
+
+def coerce_risk(value: Any) -> Risk:
+    """Строка плана или значение реестра. Неизвестная метка → ``high``."""
+    text = str(getattr(value, "value", value) or "").strip().lower()
+    try:
+        return Risk(text)
+    except ValueError:
+        return Risk.high
+
+
+def registry_risk(action_name: str, registry: dict[str, Any] | None) -> Risk:
+    """Риск из реестра действий. Имени нет в реестре → ``Risk.high``."""
+    if not registry or action_name not in registry:
+        return Risk.high
+    return coerce_risk(registry[action_name])
+
+
+def max_risk(*values: Any) -> Risk:
+    """Больший из рисков. Пустой набор → ``high``."""
+    if not values:
+        return Risk.high
+    return max((coerce_risk(item) for item in values), key=lambda item: _RISK_RANK[item])
+
+
+def validator_details_reason(result: Any) -> str | None:
+    """``details.reason``, если details — dict или объект с полем reason."""
+    details = getattr(result, "details", None)
+    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
+    if reason is None:
+        return None
+    return str(reason)
+
+
+def validator_budget_exhausted(result: Any) -> bool:
+    """Блокирующий ответ валидатора из-за суб-бюджета, не обычный fail.
+
+    ``blocking`` истинно и ``details.reason == "budget_exhausted"``.
+    ``details`` — dict или объект с полем ``reason``.
+    """
+    if not bool(getattr(result, "blocking", False)):
+        return False
+    return validator_details_reason(result) == ApprovalReason.budget_exhausted.value
+
+
+def validator_missing_run_id(result: Any) -> bool:
+    """Блокирующий spend_guard: в live-context не было run_id.
+
+    Исход — ``BLOCK_OUTCOMES["missing_run_id"]`` (``failed``).
+    Dry-run WS1 эту причину не ставит.
+    """
+    if not bool(getattr(result, "blocking", False)):
+        return False
+    return validator_details_reason(result) == "missing_run_id"
+
+
+# Причина → исход. Супервизор ставит статус блокировки только через block_status.
+# Строки revise_limit нет: лимит revise — critic_escalation.
+# risk, plan_sanity, critic_reject, steer_not_approved в таблицу не входят:
+# это запрос человека, не blocking валидатора, исход по-прежнему waiting_approval.
+# empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
+BLOCK_OUTCOMES: dict[str, TaskStatus] = {
+    ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
+    ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
+    ApprovalReason.missing_project_id.value: TaskStatus.waiting_approval,
+    "deletion_blocked": TaskStatus.failed,
+    "missing_run_id": TaskStatus.failed,
+    "empty_plan": TaskStatus.failed,
+}
+
+
+def block_status(reason: str) -> TaskStatus:
+    """Исход блокировки. Причины нет в ``BLOCK_OUTCOMES`` — ``failed`` (прочий blocking)."""
+    return BLOCK_OUTCOMES.get(reason, TaskStatus.failed)
+
+
+def grant_forbidden(reason: str | None) -> bool:
+    """Терминальная причина из таблицы: grant этот план не исполняет."""
+    if reason is None or reason not in BLOCK_OUTCOMES:
+        return False
+    return BLOCK_OUTCOMES[reason] in TERMINAL_STATUSES
+
+
+def budget_exhausted_response(response: Any) -> bool:
+    """Ответ роутера, после которого супервизор больше не делает internal-вызовы.
+
+    Условие WS5: ``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``.
+    """
+    status = getattr(response, "task_status", None)
+    status_value = getattr(status, "value", status)
+    approval = getattr(response, "approval", None)
+    reason = getattr(approval, "reason", "") if approval is not None else ""
+    return (
+        status_value == TaskStatus.waiting_approval.value
+        and reason == ApprovalReason.budget_exhausted.value
+    )
+
+
+def _action_segments(action: str) -> set[str]:
+    return {part for part in re.split(r"[._]", (action or "").lower()) if part}
+
+
+def is_deletion_action(action: str) -> bool:
+    """Удаление кадра или сцены по имени.
+
+    Точные имена реестра, подстроки ``delete_frame`` / ``delete_scene``,
+    и сегменты имени (разрыв по ``.`` и ``_``): ``purge``, ``drop``,
+    а ``remove`` только рядом с ``frame`` или ``scene``.
+    ``montage.remove_frame``, ``shots.purge``, ``scene.drop`` попадают.
+    ``dropdown`` и ``remove_watermark`` — нет.
+
+    Это эвристика по имени, пока нет ``metadata_of``. ``drop`` / ``purge``
+    заденут и ``drop_cache``. ``erase`` / ``wipe`` / ``truncate`` сюда не входят:
+    их закроет реестр WS2.
+    """
+    name = (action or "").strip()
+    if name in DELETION_ACTIONS:
+        return True
+    lowered = name.lower()
+    if "delete_frame" in lowered or "delete_scene" in lowered:
+        return True
+    parts = _action_segments(name)
+    if parts & {"purge", "drop"}:
+        return True
+    return "remove" in parts and bool(parts & {"frame", "scene"})
+
+
+_MISSING = object()
+
+
+def action_unknown(action: str, registry: Any | None) -> bool:
+    """Имени нет в реестре.
+
+    ``metadata_of`` — источник, когда метод есть: ``None`` значит неизвестно.
+    Пока его нет (R2): закрытый словарь ``risks`` без ключа, реестр без
+    ``risk_of``, или реестра нет вовсе. Открытый мок (``risks is None``)
+    считает любое имя известным как ``Risk.none`` — тестовые планы живут.
+    """
+    if registry is None:
+        return True
+    metadata_of = getattr(registry, "metadata_of", None)
+    if metadata_of is not None:
+        return metadata_of(action) is None
+    risks = getattr(registry, "risks", _MISSING)
+    if risks is None:
+        return False
+    if isinstance(risks, dict):
+        return action not in risks
+    return True
+
+
+def action_guard(action: str, registry: Any | None = None) -> str | None:
+    """``hard`` — destructive или неизвестное.
+
+    ``name`` — запрет по имени (``deletion_blocked`` → failed, grant запрещён).
+    ``None`` — действие можно планировать.
+
+    Флаги плана (``mutating``, ``read_only``) сюда не входят: они не ослабляют
+    реестр. Удаление по имени блокируется даже если план сказал ``mutating=False``.
+    Пока нет ``metadata_of``, неизвестное имя — destructive.
+    """
+    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
+    meta = metadata_of(action) if metadata_of is not None else None
+    if meta is not None and bool(getattr(meta, "destructive", False)):
+        return "hard"
+    if is_deletion_action(action):
+        return "name"
+    if metadata_of is not None:
+        if meta is None or getattr(meta, "read_only", None) is not True:
+            return "hard"
+        return None
+    if action_unknown(action, registry):
+        return "hard"
+    return None
+
+
+def registry_is_readonly(action: str, registry: Any | None) -> bool:
+    """Read-only решает реестр, не план.
+
+    Удаление и неизвестное имя — не read-only. Явный ``metadata.read_only``
+    нужен, когда ``metadata_of`` есть. Риск реестра из ``APPROVAL_RISKS`` тоже
+    не read-only. Открытый мок без метаданных и с ``Risk.none`` — read-only.
+    """
+    if is_deletion_action(action) or action_unknown(action, registry):
+        return False
+    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
+    if metadata_of is not None:
+        meta = metadata_of(action)
+        if meta is None or bool(getattr(meta, "destructive", False)):
+            return False
+        if getattr(meta, "read_only", None) is not True:
+            return False
+    risk_of = getattr(registry, "risk_of", None) if registry is not None else None
+    if risk_of is None:
+        return True
+    return coerce_risk(risk_of(action)) not in APPROVAL_RISKS
+
+
+def step_is_readonly(step: PlanStep, registry: Any | None) -> bool:
+    """Реестр решает read-only. ``paid`` / ``mutating`` / риск плана только ужесточают."""
+    if not registry_is_readonly(step.action, registry):
+        return False
+    if step.paid or step.mutating:
+        return False
+    return coerce_risk(step.risk) not in APPROVAL_RISKS
+
+
+def plan_deletions(plan: list[PlanStep]) -> list[str]:
+    return [step.action for step in plan if is_deletion_action(step.action)]
+
+
+def plan_missing_verify(plan: list[PlanStep]) -> bool:
+    """True, если run_node стоит раньше verify_code_state (или пары read+get_node)."""
+    for index, step in enumerate(plan):
+        if step.action not in RUN_NODE_ACTIONS:
+            continue
+        prior = plan[:index]
+        if any(item.action == "verify_code_state" for item in prior):
+            continue
+        seen = {item.action for item in prior}
+        if "read_pipeline_code" in seen and "get_node" in seen:
+            continue
+        return True
+    return False
+
+
+def forecast_cost(plan: list[PlanStep]) -> float:
+    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды."""
+    total = 0.0
+    for step in plan:
+        if step.estimated_cost:
+            total += float(step.estimated_cost)
+        else:
+            total += float(step.params.get("estimated_cost") or 0)
+    return total
+
+
+def paid_step_identity(action: str, params: dict[str, Any]) -> str:
+    """Ключ paid-retry: то же действие и те же параметры без служебных ``_``-полей."""
+    kept = {key: value for key, value in params.items() if not str(key).startswith("_")}
+    return action + "\n" + json.dumps(kept, ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -704,6 +1183,7 @@ ORCH_TASKS = TableSpec(
         ColumnSpec("error", "TEXT", nullable=True),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
         ColumnSpec("updated_at", "TEXT", nullable=False, note="ISO UTC"),
+        ColumnSpec("project_id", "INTEGER", nullable=True, note="проект WS1, не 0"),
     ),
     indexes=(IndexSpec("ix_orch_tasks_session", ("session_id",)),),
 )
@@ -794,7 +1274,7 @@ ORCH_MESSAGES = TableSpec(
         ColumnSpec("task_id", "INTEGER", nullable=True),
         ColumnSpec("role", "TEXT", nullable=False),
         ColumnSpec("content", "TEXT", nullable=False),
-        ColumnSpec("mode", "TEXT", nullable=True, note="interrupt|steer|append после классификации"),
+        ColumnSpec("mode", "TEXT", nullable=True, note="interrupt|steer|append|task"),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
     ),
     indexes=(IndexSpec("ix_orch_messages_session", ("session_id", "id")),),
@@ -923,7 +1403,18 @@ def export_contract_schemas() -> dict[str, Any]:
             "BudgetScope": [v.value for v in BudgetScope],
             "RouterImpl": [v.value for v in RouterImpl],
             "ChunkCorpus": [v.value for v in ChunkCorpus],
+            "Risk": [v.value for v in Risk],
             "EventType": list(EVENT_TYPES),
         },
         "fsm": {src.value: sorted(dst.value for dst in allowed) for src, allowed in FSM_TRANSITIONS.items()},
+        "rules": {
+            "run_node_actions": sorted(RUN_NODE_ACTIONS),
+            "deletion_actions": sorted(DELETION_ACTIONS),
+            "approval_risks": sorted(APPROVAL_RISKS),
+            "pipeline_forecast_limit_usd": PIPELINE_FORECAST_LIMIT_USD,
+            "validator_context_dry_run": VALIDATOR_CONTEXT_DRY_RUN,
+            "risk_order": [item.value for item in Risk],
+            "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
+            "default_block_outcome": TaskStatus.failed.value,
+        },
     }

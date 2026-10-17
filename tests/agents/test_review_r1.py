@@ -26,7 +26,7 @@ class _RecordingPlanner:
     def __init__(self) -> None:
         self.contexts: list[str] = []
 
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
         del goal
         self.contexts.append(context)
         return [PlanStep(action="noop", paid=False, mutating=False)]
@@ -36,7 +36,7 @@ class _ReviseTwice:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
+    async def review(self, plan: list[PlanStep], context: str = "", **_call: Any) -> str:
         del plan
         self.seen.append(context)
         if len(self.seen) == 1:
@@ -89,7 +89,7 @@ async def test_shield_records_paid_step_when_driver_is_cancelled(token: str) -> 
     del token
     actions = MockActions()
     step = PlanStep(
-        action="run_node",
+        action="charge",
         params={"_wait": True, "_change_id": "chg-shield", "_cost": 2.5},
         expected="paid",
         paid=True,
@@ -103,7 +103,7 @@ async def test_shield_records_paid_step_when_driver_is_cancelled(token: str) -> 
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("shield-1", "платный")
+        task_id = await rt.supervisor.start_task("shield-1", "платный", project_id=13)
         await actions.started.wait()
         run = rt.supervisor._runs[task_id]
         run.cancel()
@@ -147,9 +147,7 @@ async def test_stream_uses_on_delta_and_strong_high(runtime) -> None:
     runtime.router.deltas = ["раз", " два"]
     runtime.router.answer = "не эта нарезка"
     await runtime.queue.accept("delta-1", "который час?")
-    pending = list(runtime.queue._pending)
-    if pending:
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    await runtime.queue.drain()
     text = "".join(
         event.payload.get("text", "")
         for event in runtime.bus.replay("delta-1", 0)
@@ -173,8 +171,10 @@ async def test_run_validator_sync_and_async() -> None:
     sync = _SyncValidators()
     async_runner = MockValidators()
     caller = threading.current_thread().name
-    sync_result = await run_validator(sync, "plan_sanity", 3, {"phase": "before"})
-    async_result = await run_validator(async_runner, "plan_sanity", 4, {})
+    sync_result = await run_validator(
+        sync, "plan_sanity", 3, {"phase": "before"}, run_id="orch-task-1", task_id=1
+    )
+    async_result = await run_validator(async_runner, "plan_sanity", 4, {}, run_id="orch-task-2", task_id=2)
     assert sync_result.passed is True
     assert async_result.passed is True
     assert sync.calls[0]["project_id"] == 3
@@ -193,7 +193,7 @@ async def test_sync_validator_runs_inside_supervisor(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("v-sync", "проверка")
+        task_id = await rt.supervisor.start_task("v-sync", "проверка", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
         assert validators.calls

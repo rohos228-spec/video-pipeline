@@ -65,7 +65,7 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
         planner=FixedPlanner(
             [
                 PlanStep(
-                    action="run_node",
+                    action="paid_mock",
                     params={"_wait": True, "_change_id": "chg-paid", "_cost": 1},
                     expected="paid",
                     paid=True,
@@ -76,14 +76,10 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task(session, "платный")
+        task_id = await rt.supervisor.start_task(session, "платный", project_id=13)
         await actions.started.wait()
         await rt.queue.accept(session, "стой")
-        pending = [task for task in rt.queue._pending]
-        if pending:
-            import asyncio
-
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
         actions.release.set()
         await rt.supervisor.wait(task_id, timeout=5)
