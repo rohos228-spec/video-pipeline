@@ -7,7 +7,9 @@
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
  * Approve/kill в том роутере нет — мок держит их до WS2.
- * Базовый URL можно подменить мок-сервером (`?orchApi=http://127.0.0.1:8799`).
+ * Куда уходит Bearer: тот же origin, относительный `/api/...` или
+ * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
+ * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
 import type {
@@ -83,12 +85,71 @@ export function readOrchProjectId(): number | null {
   }
 }
 
+/** Абсолютный хост API из сборки. Пусто — относительный `/api/...` на том же origin. */
+export function envOrchApiBase(): string {
+  return (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+}
+
+function queryApiOverrideEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_ORCH_QUERY_API;
+  return raw === "1" || raw === "true";
+}
+
+function normalizeBase(value: string): string {
+  return value.trim().replace(/\/$/, "");
+}
+
+/** Same-origin `/api` или `/api/...`. `//host` — чужой origin, не путь. */
+export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
+  const raw = normalizeBase(value);
+  if (!raw || !pageOrigin) return false;
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    return raw === "/api" || raw.startsWith("/api/");
+  }
+  try {
+    const url = new URL(raw);
+    if (url.origin !== new URL(pageOrigin).origin) return false;
+    return url.pathname === "/api" || url.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * База запросов с Bearer.
+ * Query не выбирает хост. При тестовом флаге принимается только same-origin `/api/...`.
+ * Иначе остаётся адрес из `NEXT_PUBLIC_ORCH_API` (или пустая строка — тот же origin).
+ */
+export function resolveOrchApiBase(queryApi: string | null, pageOrigin: string): string {
+  const query = queryApi == null ? "" : normalizeBase(queryApi);
+  if (query && queryApiOverrideEnabled() && isSameOriginApiBase(query, pageOrigin)) {
+    return query;
+  }
+  return envOrchApiBase();
+}
+
+/** Пустая база, env-хост или same-origin `/api/...`. Чужой origin — нет. */
+export function bearerTargetAllowed(apiBase: string, pageOrigin = ""): boolean {
+  const base = normalizeBase(apiBase);
+  if (!base) return true;
+  const env = envOrchApiBase();
+  if (env && base === env) return true;
+  return isSameOriginApiBase(base, pageOrigin);
+}
+
+function assertBearerTarget(apiBase: string): void {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  if (!bearerTargetAllowed(apiBase, origin)) {
+    throw new OrchApiError(0, "отказ: токен не уходит на чужой origin");
+  }
+}
+
 export function readOrchBoot(): { apiBase: string; session: string; scenario: string } {
   if (typeof window === "undefined") {
-    return { apiBase: "", session: "studio", scenario: "stream" };
+    return { apiBase: envOrchApiBase(), session: "studio", scenario: "stream" };
   }
   const q = new URLSearchParams(window.location.search);
-  const apiBase = (q.get("orchApi") || "").replace(/\/$/, "");
+  const apiBase = resolveOrchApiBase(q.get("orchApi"), window.location.origin);
   const session = (q.get("session") || "studio").trim() || "studio";
   const scenario = (q.get("scenario") || "stream").trim() || "stream";
   return { apiBase, session, scenario };
@@ -120,6 +181,7 @@ async function readError(res: Response): Promise<string> {
 }
 
 async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  assertBearerTarget(cfg.apiBase);
   const headers = authHeaders(cfg);
   headers.set("Content-Type", "application/json");
   const res = await fetch(apiUrl(cfg.apiBase, path), {
@@ -170,6 +232,7 @@ export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signa
 
 /** Проверка Bearer до записи в localStorage. Тело стрима закрывается сразу после статуса. */
 export async function probeOrchAuth(cfg: OrchClientConfig): Promise<void> {
+  assertBearerTarget(cfg.apiBase);
   const ac = new AbortController();
   const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/stream`), {
     method: "GET",
@@ -209,6 +272,7 @@ export interface ReportMutation {
 }
 
 async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSignal): Promise<T> {
+  assertBearerTarget(cfg.apiBase);
   const res = await fetch(apiUrl(cfg.apiBase, path), {
     method: "GET",
     headers: authHeaders(cfg, { Accept: "application/json" }),
@@ -321,6 +385,7 @@ export interface StreamHandlers {
  * 401 и прочие HTTP — OrchApiError. Abort — DOMException AbortError.
  */
 export async function consumeOrchStream(cfg: OrchClientConfig, handlers: StreamHandlers): Promise<void> {
+  assertBearerTarget(cfg.apiBase);
   const headers = authHeaders(cfg, { Accept: "text/event-stream" });
   if (handlers.lastEventId > 0) {
     headers.set("Last-Event-ID", String(handlers.lastEventId));

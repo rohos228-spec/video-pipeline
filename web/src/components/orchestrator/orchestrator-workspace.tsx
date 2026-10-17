@@ -22,6 +22,7 @@ import {
   isTerminalBlock,
   TASK_STATUS_LABEL,
   type ApprovalView,
+  type KillNoticeView,
   type PlanStepView,
   type StepView,
 } from "@/lib/orchestratorSession";
@@ -85,10 +86,16 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
   },
 };
 
-function killBannerText(notice: { text: string; paidBoundary: boolean }): string {
-  if (!notice.paidBoundary) return notice.text;
+function killBannerText(notice: KillNoticeView): string {
+  if (notice.phase === "stopping") return "Останавливаю…";
+  if (notice.phase === "error") return notice.text.trim() || "Остановка не подтверждена";
+  const lead = "Остановлено";
+  if (!notice.paidBoundary) {
+    const extra = notice.text.trim();
+    return extra ? `${lead}. ${extra}` : lead;
+  }
   const extra = notice.text.trim();
-  return extra ? `${KILL_HONEST} ${extra}` : KILL_HONEST;
+  return extra ? `${lead}. ${KILL_HONEST} ${extra}` : `${lead}. ${KILL_HONEST}`;
 }
 
 function statusBadgeVariant(status: string): "default" | "success" | "warning" | "destructive" | "info" | "muted" {
@@ -202,9 +209,22 @@ export function OrchestratorWorkspace() {
       {chat.state.killNotice ? (
         <div
           data-testid="orch-kill-status"
+          data-kill-phase={chat.state.killNotice.phase}
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
-          Kill switch: {killBannerText(chat.state.killNotice)}
+          <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
+          {chat.state.killNotice.phase === "error" ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-2 h-7 text-[11px]"
+              data-testid="orch-kill-retry"
+              onClick={() => void chat.kill()}
+            >
+              Повторить
+            </Button>
+          ) : null}
         </div>
       ) : null}
 
@@ -622,7 +642,7 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : (
+        ) : approval.serverId ? (
           <>
             <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
               Approve
@@ -631,6 +651,10 @@ function ApprovalCard({
               Reject
             </Button>
           </>
+        ) : (
+          <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
+            Нет approval_id от сервера — подтвердить нельзя.
+          </p>
         )}
       </div>
       {error ? (

@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { installFrozenClock, installStudioMocks, seedStudio, settleVisual } from "./studio-mock";
 
 const TOKEN = "orch-dev-token";
-const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
 
 async function shot(page: Page, name: string) {
   await settleVisual(page);
@@ -108,7 +107,7 @@ test("11 страница оркестратора", async ({ page }) => {
     },
     [TOKEN],
   );
-  const q = new URLSearchParams({ orchApi: MOCK, scenario: "idle", session: "visual" });
+  const q = new URLSearchParams({ scenario: "idle", session: "visual" });
   await page.goto(`/orchestrator?${q.toString()}`);
   await expect(page.getByTestId("orch-composer")).toBeVisible();
   await expect(page.getByTestId("orch-agent-supervisor")).toBeVisible();
@@ -122,7 +121,7 @@ test("12 редактор отчётов", async ({ page }) => {
     },
     [TOKEN],
   );
-  const q = new URLSearchParams({ orchApi: MOCK, scenario: "idle", session: "visual", project: "13" });
+  const q = new URLSearchParams({ scenario: "idle", session: "visual", project: "13" });
   await page.goto(`/orchestrator/reports?${q.toString()}`);
   await expect(page.getByTestId("orch-report-title")).toHaveText("Разбор сцен");
   await expect(page.getByTestId("orch-report-preview")).toHaveAttribute("srcdoc", /молчит/);
