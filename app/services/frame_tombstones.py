@@ -137,6 +137,13 @@ def park_marked_frame_numbers(frames: list, project=None) -> int:
     for frame in frames:
         if not frame_marked_deleted(frame):
             continue
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        if "исходный_номер" not in attrs:
+            current = getattr(frame, "number", None)
+            if current is not None:
+                attrs["исходный_номер"] = int(current)
+                frame.attrs = attrs
+                _flag_frame(frame)
         frame.number = 900_000 + parked
         if project is not None:
             remember_deleted(project, int(frame.number))

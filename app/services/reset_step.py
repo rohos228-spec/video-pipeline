@@ -247,7 +247,10 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     Было: ``await session.delete(fr)`` после ``p.unlink()`` файлов кадровых
     артефактов — сброс шага стирал кадры, cascade забирал артефакты.
     """
-    from app.services.frame_tombstones import mark_frame_deleted
+    from app.services.frame_tombstones import (
+        mark_frame_deleted,
+        park_marked_frame_numbers,
+    )
 
     frame_arts = (
         await session.execute(
@@ -273,6 +276,8 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
             project,
             "reset_step split: сброс шага помечает кадр, строка сохранена",
         )
+    # До снимка meta: парковка пишет и номер 900000+, и deleted_frame_numbers.
+    park_marked_frame_numbers(list(frames), project)
     meta = dict(project.meta or {})
     meta_cleared: list[str] = []
     for key in (

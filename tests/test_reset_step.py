@@ -407,6 +407,66 @@ async def test_clear_step_outputs_split_force_wipe_deletes_frames(session) -> No
 
 
 @pytest.mark.asyncio
+async def test_wipe_split_parks_numbers_so_resplit_does_not_revive(session):
+    """Повторный split после сброса не падает на unique и не оживляет старые строки."""
+    from app.services.db_v2 import replace_all_frames
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.reset_step import _wipe_split
+
+    p = await _mkproject(session, slug="re-split")
+    p.meta = {"split_completed": True}
+    old_a = await _mkframe(session, p, 1)
+    old_b = await _mkframe(session, p, 2)
+    id_a, id_b = old_a.id, old_b.id
+    vo_a, vo_b = old_a.voiceover_text, old_b.voiceover_text
+
+    await _wipe_split(session, p)
+    await session.flush()
+
+    parked = (
+        await session.execute(select(Frame).where(Frame.project_id == p.id))
+    ).scalars().all()
+    assert {fr.number for fr in parked} == {900_000, 900_001}
+    by_id = {fr.id: fr for fr in parked}
+    assert by_id[id_a].attrs["исходный_номер"] == 1
+    assert by_id[id_b].attrs["исходный_номер"] == 2
+    tomb = set((p.meta or {}).get("deleted_frame_numbers") or [])
+    assert {1, 2, 900_000, 900_001} <= tomb
+    assert (p.meta or {}).get("split_completed") is None
+
+    session.add(
+        Frame(
+            project_id=p.id,
+            number=1,
+            voiceover_text="свежий",
+            status=FrameStatus.planned,
+        )
+    )
+    await session.flush()
+
+    created = await replace_all_frames(
+        session,
+        p,
+        [
+            {"voiceover_text": "новая ячейка один"},
+            {"voiceover_text": "новая ячейка два"},
+        ],
+    )
+    await session.flush()
+
+    again_a = await session.get(Frame, id_a)
+    again_b = await session.get(Frame, id_b)
+    assert again_a is not None and again_b is not None
+    assert again_a.voiceover_text == vo_a
+    assert again_b.voiceover_text == vo_b
+    assert frame_is_active(again_a) is False
+    assert frame_is_active(again_b) is False
+    assert again_a.attrs["исходный_номер"] == 1
+    assert {c.id for c in created}.isdisjoint({id_a, id_b})
+    assert all(frame_is_active(c) for c in created)
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_video_preserves_mp4(
     session, tmp_path: Path, monkeypatch,
 ):
