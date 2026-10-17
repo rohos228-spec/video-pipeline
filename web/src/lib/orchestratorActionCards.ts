@@ -55,6 +55,7 @@ export interface TextDiffLine {
 
 export interface FieldDiffRow {
   key: string;
+  op: "set" | "removed";
   before: string | null;
   after: string | null;
 }
@@ -263,7 +264,13 @@ function readFields(value: unknown): FieldDiffRow[] | null {
   for (const key of Object.keys(raw).sort()) {
     const cell = plainObject(raw[key]);
     if (!cell) continue;
-    rows.push({ key, before: fieldString(cell.before), after: fieldString(cell.after) });
+    const op = cell.op === "removed" ? "removed" : "set";
+    rows.push({
+      key,
+      op,
+      before: fieldString(cell.before),
+      after: op === "removed" ? null : fieldString(cell.after),
+    });
   }
   return rows.length ? rows : null;
 }

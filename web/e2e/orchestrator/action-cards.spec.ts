@@ -176,6 +176,20 @@ test("карточка правки: дифф текстом, создание �
   await expect(temperature).toContainText("стало 0.4");
 });
 
+test("удалённый ключ в диффе не выглядит как null", async ({ page }) => {
+  await openWithToken(page, "act-removed");
+  await emit(page, "act-removed", "step_finished", EXAMPLE_NODE_EDIT);
+  const node = page.getByTestId("orch-action-card").filter({ hasText: "Правка ноды" });
+  const source = node.getByTestId("orch-field-row").filter({ hasText: "source" });
+  await expect(source).toHaveAttribute("data-op", "set");
+  await expect(source).toContainText("стало git");
+  const removed = node.getByTestId("orch-field-row").filter({ hasText: "db_version" });
+  await expect(removed).toHaveAttribute("data-op", "removed");
+  await expect(removed.getByTestId("orch-field-removed")).toContainText("удалён");
+  await expect(removed.getByTestId("orch-field-after")).toHaveCount(0);
+  await expect(removed).toContainText("было 4");
+});
+
 test("html-отчёт: sandbox без скриптов, правка шлёт один запрос", async ({ page }) => {
   await openWithToken(page, "act-report");
   await emit(page, "act-report", "step_finished", EXAMPLE_REPORT);

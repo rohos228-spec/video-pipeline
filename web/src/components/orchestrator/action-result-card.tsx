@@ -57,10 +57,14 @@ function Fields({ rows, hideBefore }: { rows: FieldDiffRow[]; hideBefore: boolea
   return (
     <div className="mt-2 space-y-1" data-testid="orch-field-diff">
       {rows.map((row) => (
-        <div key={row.key} className="text-[11px] text-white/80" data-testid="orch-field-row" data-field={row.key}>
+        <div key={row.key} className="text-[11px] text-white/80" data-testid="orch-field-row" data-field={row.key} data-op={row.op}>
           <span className="text-white/45">{row.key}</span>
           {hideBefore || row.before == null ? null : <span data-testid="orch-field-before">{` было ${row.before}`}</span>}
-          <span data-testid="orch-field-after">{row.after == null ? "" : ` стало ${row.after}`}</span>
+          {row.op === "removed" ? (
+            <span data-testid="orch-field-removed"> удалён</span>
+          ) : (
+            <span data-testid="orch-field-after">{row.after == null ? " стало null" : ` стало ${row.after}`}</span>
+          )}
         </div>
       ))}
     </div>
