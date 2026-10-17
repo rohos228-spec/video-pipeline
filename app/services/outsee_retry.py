@@ -1173,14 +1173,16 @@ async def generate_image_with_retries(
                                 from app.bots.outsee_http import _download
 
                                 await _download(img_url, out_path)
-                                return GenerationResult(
+                                dl_result = GenerationResult(
                                     file_path=out_path,
                                     raw_url=img_url,
                                     gen_id=gen_id or None,
                                 )
+                                await _idem_downloaded(e, dl_result)
+                                return dl_result
                             if outsee is None:
                                 raise last_err or e
-                            return await outsee.retry_image_download(
+                            dl_result = await outsee.retry_image_download(
                                 img_url=img_url,
                                 out_path=out_path,
                                 gen_id=gen_id,
