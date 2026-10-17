@@ -61,6 +61,44 @@ def test_budget_exhausted_blocks_with_reason() -> None:
     assert signaled.details["reason"] == "budget_exhausted"
 
 
+def test_forecast_counts_toward_aggregate_caps_before_call() -> None:
+    """Без явных run/project/daily сумма internal+actions входит в эти потолки."""
+
+    result = run(
+        "spend_guard",
+        1,
+        {
+            "spend": _totals(run_spent_usd=48),
+            "forecast_usd": {"actions": 5},
+            "run_id": "run-1",
+        },
+    )
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "spend_cap_run"
+    assert result.details["forecast_usd"]["actions"] == 5.0
+    assert result.details["forecast_usd"]["run"] == 5.0
+    assert result.details["forecast_usd"]["project"] == 5.0
+    assert result.details["forecast_usd"]["daily"] == 5.0
+    run_hit = next(item for item in result.details["violations"] if item["reason"] == "spend_cap_run")
+    assert run_hit["spent_usd"] == 48
+    assert run_hit["forecast_usd"] == 5
+    assert run_hit["cap_usd"] == 50
+
+    explicit = run(
+        "spend_guard",
+        1,
+        {
+            "spend": _totals(run_spent_usd=48),
+            "forecast_usd": {"actions": 5, "run": 0, "project": 0, "daily": 0},
+            "run_id": "run-1",
+        },
+    )
+    assert explicit.passed is True
+    assert explicit.details["forecast_usd"]["run"] == 0.0
+    assert explicit.details["forecast_usd"]["actions"] == 5.0
+
+
 def test_forecast_exhausts_internal_sub_budget() -> None:
     result = run(
         "spend_guard",

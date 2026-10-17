@@ -27,7 +27,9 @@
 Потолки плана, если источник их не передал: $200 сутки / $100 проект /
 $50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` выключен
 (как ``caps()`` в #342). Прогноз ``context["forecast_usd"]`` прибавляется
-к прочитанному и никуда не записывается.
+к прочитанному до вызова и никуда не записывается. Если ключи
+``run`` / ``project`` / ``daily`` не переданы явно, в эти потолки входит
+сумма ``internal`` + ``actions``.
 
 ``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
 или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
@@ -684,13 +686,24 @@ def _spend_unreadable() -> Any:
 
 
 def _forecast(raw: Any) -> dict[str, float]:
+    """Прогноз до вызова. Агрегаты без явного ключа = internal + actions."""
+
     src = raw if isinstance(raw, Mapping) else {}
+    internal = _num(src.get("internal"))
+    actions = _num(src.get("actions"))
+    implied = internal + actions
+
+    def aggregate(key: str) -> float:
+        if key in src and src.get(key) is not None:
+            return _num(src.get(key))
+        return implied
+
     return {
-        "internal": _num(src.get("internal")),
-        "actions": _num(src.get("actions")),
-        "run": _num(src.get("run")),
-        "project": _num(src.get("project")),
-        "daily": _num(src.get("daily")),
+        "internal": internal,
+        "actions": actions,
+        "run": aggregate("run"),
+        "project": aggregate("project"),
+        "daily": aggregate("daily"),
     }
 
 
