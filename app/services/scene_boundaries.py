@@ -244,9 +244,9 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             (trace_dir / f"{tag}.resp.txt").write_text(txt, encoding="utf-8")
             return txt
         except Exception as e:  # noqa: BLE001
-            from app.services.spend_guard import is_budget_exhausted
+            from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
 
-            if is_budget_exhausted(e):
+            if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked):
                 raise
             last = e
             msg = f"{type(e).__name__}: {e}"

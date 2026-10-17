@@ -380,9 +380,22 @@ async def _park_budget_exhausted(
 
     from app.models import NodeRun, NodeRunStatus, ProjectStatus, WorkflowRun
 
+    from app.services.spend_guard import REFUSAL_CODES, BudgetExhausted, PaidCallBlocked
+
+    reason = "budget_exhausted"
+    cur: BaseException | None = error
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, PaidCallBlocked) and cur.code not in REFUSAL_CODES:
+            reason = cur.code
+            break
+        if isinstance(cur, BudgetExhausted):
+            break
+        cur = cur.__cause__
     meta = dict(project.meta or {})
     meta["approval_status"] = "waiting_approval"
-    meta["approval_reason"] = "budget_exhausted"
+    meta["approval_reason"] = reason
     meta["paused_from_status"] = project.status.value
     project.meta = meta
     flag_modified(project, "meta")
@@ -399,7 +412,7 @@ async def _park_budget_exhausted(
     for nr in running:
         node_meta = dict(nr.meta or {})
         node_meta["status"] = "waiting_approval"
-        node_meta["reason"] = "budget_exhausted"
+        node_meta["reason"] = reason
         nr.meta = node_meta
         flag_modified(nr, "meta")
     project.status = ProjectStatus.paused
@@ -418,9 +431,12 @@ async def record_step_failure(
     *,
     error: Exception,
 ) -> str:
-    from app.services.spend_guard import is_budget_exhausted
+    from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
 
-    if is_budget_exhausted(error):
+    blocked = error
+    if not isinstance(blocked, PaidCallBlocked):
+        blocked = getattr(error, "__cause__", None)
+    if is_budget_exhausted(error) or isinstance(error, PaidCallBlocked) or isinstance(blocked, PaidCallBlocked):
         return await _park_budget_exhausted(session, project, error)
 
     if is_chrome_infra_error(error):
