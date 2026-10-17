@@ -26,6 +26,12 @@ class Runtime:
     tasks: TaskStore
     router: Any
     runtime_degraded: tuple[str, ...] = ()
+    compaction: Any = None
+
+    async def shutdown(self) -> None:
+        job = self.compaction
+        if job is not None:
+            await job.shutdown()
 
 
 def build_runtime(
@@ -104,9 +110,17 @@ def build_production_runtime() -> Runtime:
         critic=RouterCritic(router, rag),
     )
     runtime.runtime_degraded = tuple(degraded)
+    from app.orchestrator.agents.compaction import attach_compaction
+
+    attach_compaction(runtime)
     return runtime
 
 
 def set_runtime(runtime: Runtime | None) -> None:
     global _runtime
+    previous = _runtime
     _runtime = runtime
+    if previous is not None and previous is not runtime:
+        job = getattr(previous, "compaction", None)
+        if job is not None:
+            job.request_stop()

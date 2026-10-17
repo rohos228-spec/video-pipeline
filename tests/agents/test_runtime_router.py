@@ -198,4 +198,5 @@ async def test_production_planner_uses_routing_call_and_classify(monkeypatch: py
         assert inner.calls[-1][0] == "classify"
         assert all(item[0] != "ledger" for item in inner.calls)
     finally:
+        await runtime.shutdown()
         set_runtime(None)

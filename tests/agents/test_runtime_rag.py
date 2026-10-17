@@ -89,6 +89,7 @@ async def test_production_rag_uses_module_signature(monkeypatch: pytest.MonkeyPa
         await runtime.supervisor.planner.make_plan("цель", run_id="run-rag", task_id=3)
         await runtime.supervisor.critic.review([PlanStep(action="noop")], run_id="run-rag", task_id=3)
     finally:
+        await runtime.shutdown()
         set_runtime(None)
     assert len(seen) == 2
     for _query, corpora, top_k, kwargs in seen:

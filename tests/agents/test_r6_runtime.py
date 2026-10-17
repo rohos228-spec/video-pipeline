@@ -472,4 +472,5 @@ async def test_prod_ignores_x_orch_scenario(monkeypatch: pytest.MonkeyPatch) -> 
             ensure_ascii=False,
         )
     finally:
+        await runtime.shutdown()
         set_runtime(None)
