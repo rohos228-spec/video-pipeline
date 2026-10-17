@@ -24,7 +24,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Artifact,
     Entity,
     Frame,
     FrameEdge,
@@ -176,40 +175,37 @@ async def replace_all_frames(
     project: Project,
     specs: list[dict[str, Any]],
 ) -> list[Frame]:
-    """Полная замена кадров проекта (шаг split, DB SoT).
+    """Добавить кадры проекта по specs. Старые кадры архивируются, не удаляются.
 
     ``specs`` — список ``{"voiceover_text"|"закадр": str,
     "duration_seconds"|"длительность"?: float, "uuid"?: str, "meaning"|"смысл"?: str}``.
-    Артефакты отвязываются (frame_id=NULL), не удаляются с диска.
+    Артефакты, промты и тексты старых кадров остаются на них.
     Если в spec есть ``uuid`` — сохраняем его (restore / import), иначе генерируем.
     """
-    from sqlalchemy import delete, update
-
     if not specs or len(specs) < 2:
         raise ValueError(f"replace_all_frames: нужно ≥2 кадра, получили {len(specs)}")
 
-    # Не трогаем файлы на диске — только отвязка от старых Frame.id.
-    await session.execute(
-        update(Artifact)
-        .where(Artifact.project_id == project.id)
-        .values(frame_id=None)
-    )
-    await session.execute(
-        delete(FrameEdge).where(FrameEdge.project_id == project.id)
-    )
-    old_ids = list(
+    old_frames = list(
         (
-            await session.execute(select(Frame.id).where(Frame.project_id == project.id))
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id)
+            )
         ).scalars()
     )
-    if old_ids:
-        await session.execute(
-            delete(PromptVersion).where(PromptVersion.frame_id.in_(old_ids))
-        )
-        await session.execute(
-            delete(FrameText).where(FrameText.frame_id.in_(old_ids))
-        )
-        await session.execute(delete(Frame).where(Frame.project_id == project.id))
+    if old_frames:
+        # Номера строго выше текущего максимума: повторный replace не
+        # сталкивается с уже архивным кадром (uq_frame_number).
+        hi = max(int(fr.number or 0) for fr in old_frames)
+        park = hi + 1_000_000
+        for i, fr in enumerate(old_frames):
+            attrs = dict(fr.attrs or {})
+            cs = dict(attrs.get("camera_subdivide") or {})
+            cs["leftover"] = True
+            attrs["camera_subdivide"] = cs
+            attrs["archived"] = True
+            fr.attrs = attrs
+            fr.number = park + i
+            fr.sort_key = float(park + i)
     await session.flush()
 
     # Одна сцена-контейнер
@@ -288,9 +284,10 @@ async def replace_all_frames(
     await session.flush()
     await backfill_project_v2(session, project)
     logger.info(
-        "[#{}] replace_all_frames: {} кадров (DB SoT)",
+        "[#{}] replace_all_frames: {} новых, {} в архиве",
         project.id,
         len(created),
+        len(old_frames),
     )
     return created
 
