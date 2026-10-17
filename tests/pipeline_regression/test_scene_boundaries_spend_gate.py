@@ -262,17 +262,35 @@ async def session() -> AsyncSession:
     await engine.dispose()
 
 
-def test_gate_source_has_no_semaphore_queue_or_sleep() -> None:
-    source = "\n".join(
-        inspect.getsource(fn)
-        for fn in (spend_guard.paid_call, spend_guard.paid_gate, spend_guard._paid_gate)
-    )
-    forbidden = {"Semaphore", "Queue", "PriorityQueue", "LifoQueue", "sleep"}
+def _assert_no_queue(source: str, forbidden: set[str]) -> None:
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in forbidden:
             raise AssertionError(node.attr)
         if isinstance(node, ast.Name) and node.id in forbidden:
             raise AssertionError(node.id)
+
+
+def test_gate_source_has_no_semaphore_queue_or_sleep() -> None:
+    source = "\n".join(
+        inspect.getsource(fn)
+        for fn in (spend_guard.paid_call, spend_guard.paid_gate, spend_guard._paid_gate)
+    )
+    _assert_no_queue(source, {"Semaphore", "Queue", "PriorityQueue", "LifoQueue", "sleep"})
+    from app.services import gpt_api
+
+    live = "\n".join(
+        inspect.getsource(fn)
+        for fn in (
+            gpt_api._chat_completions_stream,
+            gpt_api._chat_completions_stream_http,
+            sb.call_opus,
+            sb._kie_once,
+        )
+    )
+    # Семафор пачек живёт в _chat_packed_parallel и в этот список не входит.
+    _assert_no_queue(
+        live, {"Semaphore", "Lock", "Queue", "PriorityQueue", "LifoQueue"}
+    )
 
 
 async def test_gate_does_not_change_batch_order_or_overlap(
