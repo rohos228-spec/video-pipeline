@@ -3,6 +3,7 @@
  * Дедуп по seq делает вызывающий код до dispatch.
  */
 
+import { readActionResult, type ActionResultView } from "./orchestratorActionCards";
 import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
@@ -216,6 +217,7 @@ export interface OrchScreenState {
   agents: AgentView[];
   tasks: TaskView[];
   approvals: ApprovalView[];
+  actionResults: ActionResultView[];
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
@@ -247,6 +249,7 @@ export function initialOrchScreen(): OrchScreenState {
     agents: IDLE_AGENTS.map((agent) => ({ ...agent })),
     tasks: [],
     approvals: [],
+    actionResults: [],
     ack: null,
     classification: null,
     killNotice: null,
@@ -478,6 +481,13 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
   });
 }
 
+function rememberActionResult(state: OrchScreenState, payload: Record<string, unknown>, seq: number): void {
+  const view = readActionResult(payload, seq);
+  if (!view) return;
+  if (state.actionResults.some((item) => item.id === view.id)) return;
+  state.actionResults.push(view);
+}
+
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
   if (action.type === "reset") return initialOrchScreen();
   if (action.type === "user-message") {
@@ -530,6 +540,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       plan: task.plan.map((step) => ({ ...step })),
     })),
     approvals: state.approvals.map((item) => ({ ...item })),
+    actionResults: state.actionResults.map((item) => ({ ...item })),
   };
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
@@ -573,6 +584,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const text = str(payload.text);
     if (text && str(payload.role) !== "user") appendToken(next, taskId, text);
     absorbLlmSignal(next, taskId, payload, event.seq);
+    rememberActionResult(next, payload, event.seq);
     return next;
   }
 
@@ -628,6 +640,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (event.type === "step_finished") {
       const body = payload as StepPayload & Record<string, unknown>;
       step.status = body.ok === false ? "failed" : "done";
+      rememberActionResult(next, payload, event.seq);
     }
     return next;
   }

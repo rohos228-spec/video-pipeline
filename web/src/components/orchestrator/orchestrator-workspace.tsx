@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ActionResultCard } from "@/components/orchestrator/action-result-card";
 import {
   AGENT_LABEL,
   groupPlanSteps,
@@ -266,6 +267,9 @@ export function OrchestratorWorkspace() {
                   .filter((step) => step.node && isNodeResultAction(step.action))
                   .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
               )}
+              {chat.state.actionResults.map((result) => (
+                <ActionResultCard key={result.id} result={result} />
+              ))}
               {openApprovals.map((approval) => (
                 <ApprovalCard
                   key={approval.id}
