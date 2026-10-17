@@ -1260,15 +1260,74 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
     return hits
 
 
+def _rebound_names(fn_node: ast.AST) -> set[str]:
+    """Имена, которые внутри функции уже не являются свободной переменной h."""
+    found = set(_param_names(fn_node))
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not fn_node:
+            return
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            found.update(node.names)
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            found.update(_target_names(node.target))
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    found.update(_target_names(item.optional_vars))
+        if isinstance(node, ast.ExceptHandler) and isinstance(node.name, str):
+            found.add(node.name)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                found.update(_target_names(target))
+        elif isinstance(node, ast.AnnAssign):
+            found.update(_target_names(node.target))
+        elif isinstance(node, (ast.NamedExpr, ast.AugAssign)):
+            found.update(_target_names(node.target))
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    walk(fn_node)
+    return found
+
+
+def _closure_cell(fn: Callable, name: str):
+    code = getattr(fn, "__code__", None)
+    if code is None or name not in code.co_freevars:
+        return None
+    cells = getattr(fn, "__closure__", None) or ()
+    index = code.co_freevars.index(name)
+    if index >= len(cells):
+        return None
+    try:
+        return cells[index].cell_contents
+    except ValueError:
+        return None
+
+
 def _handler_kind(fn: Callable) -> str | None:
-    for cell in getattr(fn, "__closure__", None) or ():
-        try:
-            value = cell.cell_contents
-        except ValueError:
-            continue
-        kind = getattr(value, "kind", None)
-        if isinstance(kind, str):
-            return kind
+    """kind только из ячейки замыкания h, если h и _FILE_KINDS внутри не затенены."""
+    try:
+        source = inspect.getsource(fn)
+        parsed = ast.parse(textwrap.dedent(source))
+    except (OSError, TypeError, SyntaxError):
+        return None
+    fn_nodes = [
+        node
+        for node in parsed.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if len(fn_nodes) != 1:
+        return None
+    rebound = _rebound_names(fn_nodes[0])
+    if "h" in rebound or "_FILE_KINDS" in rebound:
+        return None
+    value = _closure_cell(fn, "h")
+    if value is None:
+        return None
+    kind = getattr(value, "kind", None)
+    if isinstance(kind, str):
+        return kind
     return None
 
 
@@ -2011,6 +2070,45 @@ def test_and_file_kind_gate_still_prunes_unreachable_body() -> None:
     assert _open_targets(source, file_kind="file_voice", file_kinds=kinds) == [
         "templates/secret.txt"
     ]
+
+
+def test_loop_h_is_not_the_closure_handler() -> None:
+    spec = type("Handler", (), {"kind": "master_prompt"})()
+
+    def make(spec):
+        def executor(items):
+            marker = spec
+            for h in items:
+                if h.kind in _FILE_KINDS:
+                    open("templates/secret.txt", "w")
+            return marker
+
+        return executor
+
+    handler = type("Handler", (), {"kind": "master_prompt"})()
+
+    def make_bound(h):
+        def executor(ctx, params):
+            if h.kind in _FILE_KINDS and isinstance(params, dict):
+                open("templates/secret.txt", "w")
+            return params
+
+        return executor
+
+    fn = make(spec)
+    bound = make_bound(handler)
+    saved = fn.__globals__.get("_FILE_KINDS")
+    fn.__globals__["_FILE_KINDS"] = frozenset({"file_voice", "file_music"})
+    try:
+        hits = reachable_write_hits(fn, "prompt.save_master")
+        assert any(hit.sketch == "templates/secret.txt" for hit in hits)
+        kept = reachable_write_hits(bound, "prompt.save_master")
+        assert not any(hit.sketch == "templates/secret.txt" for hit in kept)
+    finally:
+        if saved is None:
+            fn.__globals__.pop("_FILE_KINDS", None)
+        else:
+            fn.__globals__["_FILE_KINDS"] = saved
 
 
 def test_missing_file_kinds_does_not_prune() -> None:
