@@ -6,6 +6,7 @@
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   metapaid | metaunpaid | metaunknown | fallbackpaid | fallbackfree
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -759,6 +760,26 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
+  if (scenario === "metapaid") {
+    void runRegistryStep(session, id, { title: "платный по реестру", action: "run_node", paid: false });
+    return;
+  }
+  if (scenario === "metaunpaid") {
+    void runRegistryStep(session, id, { title: "чтение по реестру", action: "read_pipeline_code", paid: true });
+    return;
+  }
+  if (scenario === "metaunknown") {
+    void runRegistryStep(session, id, { title: "неизвестное действие", action: "test.not_in_registry", paid: false });
+    return;
+  }
+  if (scenario === "fallbackpaid") {
+    void runRegistryStep(session, id, { title: "шаг из step_started", action: "run_node", paid: true });
+    return;
+  }
+  if (scenario === "fallbackfree") {
+    void runRegistryStep(session, id, { title: "бесплатный шаг", action: "read_pipeline_code", paid: false });
+    return;
+  }
   void runStream(session, id);
 }
 
@@ -835,7 +856,25 @@ async function runUnknownReason(session, taskId) {
   });
 }
 
-function handleKill(session) {
+/**
+ * Черновик WS2 ActionMetadata. Форма provisional, SHA R2 ещё нет.
+ * registry_sha мока: provisional-r2. Потом прибить к SHA R2.
+ * GET /api/orchestrator/actions/metadata → { actions, registry_sha }
+ * GET /api/orchestrator/actions/{name}/metadata → объект или 404.
+ * Сценарии без записи здесь отвечают 404 на список: клиент падает на step_started.paid.
+ */
+const PROVISIONAL_REGISTRY_SHA = "provisional-r2";
+const PROVISIONAL_ACTIONS = {
+  metapaid: [{ name: "run_node", risk: "high", read_only: false, destructive: false, paid: true }],
+  metaunpaid: [{ name: "read_pipeline_code", risk: "none", read_only: true, destructive: false, paid: false }],
+  metaunknown: [{ name: "read_pipeline_code", risk: "none", read_only: true, destructive: false, paid: false }],
+};
+
+function provisionalActions(scenario) {
+  return PROVISIONAL_ACTIONS[scenario] || null;
+}
+
+function handleKill(session, scenario) {
   session.killed = true;
   const taskId = session.currentTaskId;
   if (taskId) {
@@ -867,11 +906,26 @@ function handleKill(session) {
       });
     }
   }
+  const neutral = scenario === "metaunpaid" || scenario === "fallbackfree";
   return {
     ok: true,
     status: "cancelled",
-    detail: "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
+    detail: neutral
+      ? "остановлены только неплатные шаги"
+      : "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
   };
+}
+
+async function runRegistryStep(session, taskId, step) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", step.title));
+  emit(session, "step_started", taskId, {
+    step_id: "s-meta",
+    title: step.title,
+    action: step.action,
+    paid: step.paid,
+  });
 }
 
 function handleStream(req, res, sessionId) {
@@ -1245,11 +1299,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "actions" && parts[3] === "metadata" && parts.length === 4) {
+    const actions = provisionalActions(scenarioOf(req, url));
+    if (!actions) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    sendJson(res, 200, { actions, registry_sha: PROVISIONAL_REGISTRY_SHA });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "actions" && parts[4] === "metadata" && parts.length === 5) {
+    const actions = provisionalActions(scenarioOf(req, url));
+    const name = decodeURIComponent(parts[3]);
+    const hit = actions && actions.find((item) => item.name === name);
+    if (!hit) {
+      sendJson(res, 404, { detail: "unknown action" });
+      return;
+    }
+    sendJson(res, 200, hit);
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "kill") {
     const body = await readBody(req);
     const sessionId = String(body.session_id || "studio");
     const session = sessionOf(sessionId);
-    sendJson(res, 200, handleKill(session));
+    sendJson(res, 200, handleKill(session, scenarioOf(req, url)));
     return;
   }
 
