@@ -8,15 +8,17 @@ import {
   ACTION_CONTRACT_VERSION,
   ACTION_SCHEMA_SHA256,
   EXAMPLE_CORE_APPROVAL,
-  EXAMPLE_PAID_APPROVAL,
-  EXAMPLE_UNKNOWN_APPROVAL,
   EXAMPLE_DELETE_OK,
   EXAMPLE_FAILED,
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
   EXAMPLE_PARAMS_EDIT,
+  EXAMPLE_PAID_APPROVAL,
   EXAMPLE_PROMPT_EDIT,
+  EXAMPLE_R21_CONFLICT,
+  EXAMPLE_R21_DELETE,
   EXAMPLE_REPORT,
+  EXAMPLE_UNKNOWN_APPROVAL,
   metadataOf,
   reportEditBody,
   unifiedLines,
@@ -199,4 +201,32 @@ test("ApprovalRequired без события ядра не даёт кнопки
   await expect(core).toBeVisible();
   await expect(core).toHaveAttribute("data-change-id", "orch-appr-99-3");
   await expect(core.getByTestId("orch-approve")).toBeVisible();
+});
+
+test("поля r2.1: предупреждения, пропуск, конфликт и снимок", async ({ page }) => {
+  await openWithToken(page, "act-r21");
+  await emit(page, "act-r21", "step_finished", EXAMPLE_R21_CONFLICT);
+  const conflict = page.getByTestId("orch-action-card").filter({ hasText: "Правка промта" });
+  await expect(conflict).toHaveAttribute("data-conflict", "true");
+  await expect(conflict.getByTestId("orch-version-conflict")).toContainText("Конфликт версий");
+  await expect(conflict.getByTestId("orch-version-conflict")).toContainText("409");
+  await expect(conflict.getByTestId("orch-action-warnings")).toContainText("черновик устарел");
+  await expect(conflict.getByTestId("orch-action-partial")).toContainText("Частично");
+  await expect(conflict.getByTestId("orch-action-skipped")).toContainText("group");
+
+  await emit(page, "act-r21", "step_finished", EXAMPLE_R21_DELETE);
+  const mark = page.getByTestId("orch-action-card").filter({ hasText: "Пометка" });
+  await expect(mark.getByTestId("orch-snapshot")).toContainText("snap-r21-6");
+  const posts: { action?: { name?: string; change_id?: string; snapshot_id?: string } }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes("/message")) return;
+    posts.push(req.postDataJSON());
+  });
+  await mark.getByTestId("orch-restore").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]?.action).toEqual({
+    name: "history.rollback",
+    change_id: "orch-appr-13-6",
+    snapshot_id: "snap-r21-6",
+  });
 });
