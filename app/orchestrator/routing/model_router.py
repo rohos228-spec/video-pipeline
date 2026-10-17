@@ -141,6 +141,24 @@ def _latency_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
 
 
+def estimate_usage(text: str) -> LLMUsage:
+    """Консервативная оценка, если провайдер не прислал usage.
+
+    4 символа ответа ≈ 1 completion-токен, минимум 1. Цена берётся
+    по strong, чтобы пустой SSE не обнулял суб-бюджет.
+    """
+    tokens = max(1, (len(text) + 3) // 4)
+    return LLMUsage(prompt_tokens=0, completion_tokens=tokens, reasoning_tokens=0)
+
+
+def _usage_missing(usage: LLMUsage) -> bool:
+    return (
+        usage.prompt_tokens == 0
+        and usage.completion_tokens == 0
+        and usage.reasoning_tokens == 0
+    )
+
+
 class ModelRouter:
     """Общая политика: классификация, бюджет, ретраи, лог попыток."""
 
@@ -159,7 +177,13 @@ class ModelRouter:
     ) -> None:
         self.config = config or load_config()
         self.transport = transport
-        self.ledger = ledger if ledger is not None else get_spend_ledger()
+        if ledger is None:
+            shared = get_spend_ledger()
+            shared.internal_budget_usd = float(self.config.internal_budget_usd)
+            shared.pipeline_budget_usd = float(self.config.pipeline_budget_usd)
+            self.ledger = shared
+        else:
+            self.ledger = ledger
         self.sink = sink or NullLlmCallSink()
         self._sleep = sleeper or asyncio.sleep
         self._rng = rng or random.Random()
@@ -361,6 +385,12 @@ class ModelRouter:
     async def _dispatch(self, ctx: CallContext) -> LLMResponse:
         return await self._run_chain(ctx)
 
+    def _strong_price_model(self) -> str:
+        for hop in (*self.config.strong_unconfirmed, *self.config.strong_confirmed):
+            if hop.model:
+                return hop.model
+        return "gpt-5.6-sol"
+
     def _hops(self, ctx: CallContext) -> list[Hop]:
         hops = expand_hops(self.config, ctx.effective_tier)
         if not hops:
@@ -368,7 +398,9 @@ class ModelRouter:
         return hops
 
     def _blocked(self, ctx: CallContext) -> bool:
-        return ctx.budget_scope == "internal" and self.ledger.exhausted(ctx.run_id)
+        if ctx.budget_scope == "pipeline":
+            return self.ledger.pipeline_exhausted(ctx.run_id)
+        return self.ledger.exhausted(ctx.run_id)
 
     async def _run_chain(self, ctx: CallContext) -> LLMResponse:
         hops = self._hops(ctx)
@@ -490,10 +522,14 @@ class ModelRouter:
             reasoning_tokens=int(result.reasoning_tokens),
         )
         model = result.model or hop.model
+        price_model = model
+        if cost_override is None and _usage_missing(usage) and (result.text or "").strip():
+            usage = estimate_usage(result.text)
+            price_model = self._strong_price_model()
         cost = (
             float(cost_override)
             if cost_override is not None
-            else compute_cost(model, usage, self.config.prices)
+            else compute_cost(price_model, usage, self.config.prices)
         )
         approval = self._charge(ctx, cost)
         latency = _latency_ms(started) if latency_override is None else int(latency_override)
@@ -531,18 +567,39 @@ class ModelRouter:
 
     def _charge(self, ctx: CallContext, cost: float) -> ApprovalEvent | None:
         result = self.ledger.charge(ctx.run_id, cost, scope=ctx.budget_scope)
-        if ctx.budget_scope != "internal" or not result.over_budget:
+        if not result.over_budget:
             return None
-        return self._approval(ctx, result.spent_usd)
+        budget = (
+            result.budget_usd
+            if result.budget_usd is not None
+            else self._scope_budget(ctx.budget_scope)
+        )
+        return self._approval(ctx, result.spent_usd, budget)
 
-    def _approval(self, ctx: CallContext, spent: float) -> ApprovalEvent:
-        return self._approval_for(ctx.run_id, ctx.task_id, spent)
+    def _scope_budget(self, scope: str) -> float:
+        if scope == "pipeline":
+            return self.ledger.pipeline_budget_usd
+        return self.ledger.internal_budget_usd
+
+    def _scope_spent(self, ctx: CallContext) -> float:
+        if ctx.budget_scope == "pipeline":
+            return self.ledger.pipeline_spent(ctx.run_id)
+        return self.ledger.spent(ctx.run_id)
+
+    def _approval(self, ctx: CallContext, spent: float, budget_usd: float | None = None) -> ApprovalEvent:
+        return self._approval_for(
+            ctx.run_id,
+            ctx.task_id,
+            spent,
+            budget_usd=self._scope_budget(ctx.budget_scope) if budget_usd is None else budget_usd,
+        )
 
     def _approval_for(
         self,
         run_id: str | None,
         raw_task_id: str | int | None,
         spent: float,
+        budget_usd: float | None = None,
     ) -> ApprovalEvent:
         raw = raw_task_id
         task_id: int | None
@@ -558,7 +615,9 @@ class ModelRouter:
         return budget_approval(
             task_id=task_id,
             spent_usd=spent,
-            budget_usd=self.ledger.internal_budget_usd,
+            budget_usd=(
+                self.ledger.internal_budget_usd if budget_usd is None else budget_usd
+            ),
             run_id=run_id,
             task_ref=task_ref,
         )
@@ -584,7 +643,7 @@ class ModelRouter:
             deterministic=ctx.deterministic,
             fixture_key=None,
             task_status=waiting_approval_status(),
-            approval=self._approval(ctx, self.ledger.spent(ctx.run_id)),
+            approval=self._approval(ctx, self._scope_spent(ctx)),
         )
 
     def _log(

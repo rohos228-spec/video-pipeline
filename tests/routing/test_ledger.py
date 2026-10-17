@@ -87,19 +87,83 @@ async def test_other_run_is_not_blocked(config):
 async def test_pipeline_scope_does_not_eat_internal_budget(config):
     priced = _priced(config)
     transport = FakeTransport([ok("p", prompt_tokens=100), ok("i", prompt_tokens=1)])
-    router = LiveRouter(priced, transport=transport)
+    ledger = SpendLedger(internal_budget_usd=10, pipeline_budget_usd=40)
+    router = LiveRouter(priced, transport=transport, ledger=ledger)
     pipe = await router.call(
         "strong",
         [{"role": "user", "content": "x"}],
         run_id="run-p",
         budget_scope="pipeline",
     )
-    assert pipe.approval is None
+    assert pipe.text == "p"
+    assert pipe.task_status == "waiting_approval"
+    assert pipe.approval is not None
+    assert pipe.approval.reason == "budget_exhausted"
+    assert pipe.approval.payload["budget_usd"] == 40
+    assert pipe.approval.payload["spent_usd"] == 100
+    assert ledger.pipeline_spent("run-p") == 100
+    assert ledger.spent("run-p") == 0
+    assert ledger.pipeline_exhausted("run-p") is True
+    assert ledger.exhausted("run-p") is False
+    assert ledger.totals("run-p")["budget_exhausted"] is False
     internal = await router.call(
         "strong", [{"role": "user", "content": "y"}], run_id="run-p"
     )
     assert internal.text == "i"
     assert internal.approval is None
+    assert ledger.spent("run-p") == 1
+
+
+async def test_pipeline_cap_blocks_before_the_call(config):
+    ledger = SpendLedger(internal_budget_usd=10, pipeline_budget_usd=40)
+    ledger.hydrate("run-p", 0, 40)
+    transport = FakeTransport([ok("still")])
+    router = LiveRouter(config, transport=transport, ledger=ledger)
+    blocked = await router.call(
+        "strong",
+        [{"role": "user", "content": "x"}],
+        stream=True,
+        run_id="run-p",
+        budget_scope="pipeline",
+    )
+    assert blocked.text == ""
+    assert blocked.task_status == "waiting_approval"
+    assert blocked.approval is not None
+    assert blocked.approval.reason == "budget_exhausted"
+    assert blocked.approval.payload["budget_usd"] == 40
+    assert blocked.approval.payload["spent_usd"] == 40
+    assert transport.calls == []
+    internal = await router.call(
+        "strong",
+        [{"role": "user", "content": "y"}],
+        run_id="run-p",
+    )
+    assert internal.text == "still"
+    assert internal.approval is None
+    assert len(transport.calls) == 1
+
+
+async def test_unknown_budget_scope_is_an_error(config):
+    transport = FakeTransport([ok("x")])
+    router = LiveRouter(config, transport=transport)
+    with pytest.raises(ValueError, match=r"internal\|pipeline"):
+        await router.call(
+            "strong",
+            [{"role": "user", "content": "да"}],
+            run_id="run-x",
+            budget_scope="external",
+        )
+    assert transport.calls == []
+
+
+def test_charge_rejects_unknown_scope():
+    ledger = SpendLedger()
+    with pytest.raises(ValueError, match=r"internal\|pipeline"):
+        ledger.charge("run-x", 1, scope="external")
+    with pytest.raises(ValueError, match=r"internal\|pipeline"):
+        ledger.charge(None, 1, scope="sideways")
+    assert ledger.spent("run-x") == 0.0
+    assert ledger.pipeline_spent("run-x") == 0.0
 
 
 def test_missing_run_id_is_not_an_anonymous_bucket():

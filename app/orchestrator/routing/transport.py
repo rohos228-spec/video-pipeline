@@ -94,6 +94,9 @@ def build_body(request: ProviderRequest, api: str) -> dict[str, Any]:
         body["reasoning_effort"] = request.reasoning_effort
     if request.stream:
         body["stream"] = True
+        # Без этого флага OpenAI-совместимый SSE не присылает usage,
+        # и ход выглядит бесплатным для лимита.
+        body["stream_options"] = {"include_usage": True}
     return body
 
 

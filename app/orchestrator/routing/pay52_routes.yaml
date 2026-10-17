@@ -19,6 +19,8 @@ spend:
   # D4: суб-бюджет внутренних ходов. Исчерпание → TaskStatus.waiting_approval,
   # ApprovalEvent.reason = budget_exhausted. Задачу это не валит.
   internal_sub_budget_usd: 10.0
+  # Pipeline не входит в $10, но без своего потолка это обход лимита.
+  pipeline_sub_budget_usd: 40.0
 
 classifier:
   confidence_threshold: 0.8
