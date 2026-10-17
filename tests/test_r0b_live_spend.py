@@ -127,3 +127,38 @@ async def test_one_live_call_reserves_once(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_calls_cannot_both_pass_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
+    _quiet_gate(monkeypatch, run_cap=estimate * 1.5)
+    started = 0
+    release = asyncio.Event()
+
+    async def slow_sums(_session: object, **_k: object) -> dict[str, float]:
+        nonlocal started
+        started += 1
+        if started >= 2:
+            release.set()
+        await release.wait()
+        return {"run": 0.0, "project": 0.0, "daily": 0.0}
+
+    monkeypatch.setattr(spend_guard, "conservative_sums", slow_sums)
+    results = await asyncio.gather(
+        spend_guard.paid_gate(
+            provider="gpt", what="a", estimate_usd=estimate, run_id="run-1"
+        ),
+        spend_guard.paid_gate(
+            provider="gpt", what="b", estimate_usd=estimate, run_id="run-1"
+        ),
+        return_exceptions=True,
+    )
+    ok = [item for item in results if isinstance(item, spend_guard.PaidTicket)]
+    blocked = [item for item in results if isinstance(item, spend_guard.PaidCallBlocked)]
+    assert len(ok) == 1
+    assert len(blocked) == 1
+    assert spend_guard.inflight_usd(run_id="run-1")["count"] == 1
+    ok[0].release()
+
+
+@pytest.mark.asyncio
