@@ -96,6 +96,44 @@ def _included_paths(app: FastAPI) -> set[str]:
     return paths
 
 
+@pytest.mark.asyncio
+async def test_options_preflight_does_not_open_the_chat(monkeypatch: pytest.MonkeyPatch, runtime) -> None:
+    del runtime
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    transport = ASGITransport(app=_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.options("/api/orchestrator/chat/s1/message")
+    assert response.status_code != 401
+    assert TEST_TOKEN not in response.text
+    if response.headers.get("content-type", "").startswith("application/json"):
+        assert response.json().get("ok") is not True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_path_without_slash_requires_token(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime,
+) -> None:
+    del runtime
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    app = _app()
+
+    @app.get("/api/orchestrator")
+    async def orch_root() -> dict[str, bool]:
+        return {"ok": True}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.get("/api/orchestrator")
+        ok = await client.get(
+            "/api/orchestrator",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+    assert missing.status_code == 401
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+
+
 def test_create_app_mounts_chat_and_middleware() -> None:
     app = create_app()
     paths = _included_paths(app)

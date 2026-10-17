@@ -29,6 +29,8 @@ class ScriptedRouter:
         self.call_count = 0
         self.started = asyncio.Event()
         self.fail_if_called = False
+        self.last_call: dict[str, Any] = {}
+        self.deltas: list[str] = []
 
     async def classify(self, message: str) -> ClassifyResult:
         del message
@@ -52,9 +54,29 @@ class ScriptedRouter:
         tier: str,
         messages: list[dict[str, Any]],
         stream: bool = False,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+        on_delta: Any = None,
     ) -> LLMResponse:
-        del messages, stream
+        del messages
         self.call_count += 1
+        self.last_call = {
+            "tier": tier,
+            "stream": stream,
+            "run_id": run_id,
+            "task_id": task_id,
+            "agent_role": agent_role,
+            "budget_scope": budget_scope,
+            "reasoning_effort": reasoning_effort,
+            "on_delta": on_delta,
+        }
+        if self.deltas and on_delta is not None:
+            for piece in self.deltas:
+                on_delta(piece)
         return LLMResponse(
             text=self.answer,
             call_id="scripted-call",

@@ -19,7 +19,25 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "ws3-r1"
+CONTRACT_VERSION = "ws3-r1.1"
+
+# История версии контракта. WS4 смотрит ``version`` и этот список.
+CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
+    ("ws3-r1", "Ядро агентов, SSE, миграции, FSM, таблицы node_defs и orch_*."),
+    (
+        "ws3-r1.1",
+        "ValidatorRunner синхронный, вызов через run_validator. "
+        "ModelRouter.call: keyword-only run_id, task_id, agent_role, budget_scope, "
+        "reasoning_effort, on_delta. До D6 ходы оркестратора — strong и "
+        "reasoning_effort=high. orch_steps.position — монотонный номер попытки, "
+        "не индекс плана. CHECK node_key без REGEXP (GLOB).",
+    ),
+)
+
+# До подтверждения D6 классификатор и router.call оркестратора не уходят в fast.
+D6_FAST_TIER_ENABLED = False
+ORCH_DEFAULT_TIER = "strong"
+ORCH_REASONING_EFFORT = "high"
 
 NODE_KEY_RE = re.compile(r"^n_[a-z0-9_]+$")
 GROUP_KEY_RE = re.compile(r"^[a-z0-9_]+$")
@@ -224,6 +242,13 @@ FSM_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 TERMINAL_STATUSES = frozenset({TaskStatus.done, TaskStatus.failed, TaskStatus.cancelled})
 
 
+def orch_call_tier(requested: str | None) -> str:
+    """Фактический tier хода оркестратора. До D6 всегда ``strong``."""
+    if not D6_FAST_TIER_ENABLED:
+        return ORCH_DEFAULT_TIER
+    return requested or ORCH_DEFAULT_TIER
+
+
 def can_transition(src: TaskStatus, dst: TaskStatus) -> bool:
     return dst in FSM_TRANSITIONS[src]
 
@@ -407,9 +432,21 @@ class ActionExecutor(Protocol):
         """WS2: ``actions.execute``."""
 
 
+# Ключ context для dry-run. Согласовано с WS1: валидатор только читает.
+VALIDATOR_CONTEXT_DRY_RUN = "dry_run"
+
+
 class ValidatorRunner(Protocol):
-    async def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
-        """WS1: ``validators.run``."""
+    def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
+        """WS1: синхронный ``validators.run(name, project_id, context) -> ValidatorResult``.
+
+        Async тоже принимается: ``run_validator`` делает await, если ``run`` —
+        корутина или вернул awaitable, иначе вызывает его через ``asyncio.to_thread``.
+
+        ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``) —
+        валидатор только читает. Сигнатура и поля результата те же:
+        ``name``, ``pass`` / ``passed``, ``details``, ``blocking``.
+        """
 
 
 class ModelRouter(Protocol):
@@ -418,11 +455,31 @@ class ModelRouter(Protocol):
         tier: str,
         messages: list[dict[str, Any]],
         stream: bool = False,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+        on_delta: Any = None,
     ) -> LLMResponse:
-        """WS5: ``router.call``. ``stream=True`` — fast-ответ режется на token-события вызывающим."""
+        """WS5: ``router.call``.
+
+        ``run_id``, ``task_id``, ``agent_role``, ``budget_scope``,
+        ``reasoning_effort``, ``on_delta`` — keyword-only и необязательные.
+        ``task_id`` — строка, как у WS5. Собственные вызовы оркестратора
+        передают ``budget_scope=internal``.
+
+        До D6 tier хода — ``strong``, ``reasoning_effort=high``
+        (``ORCH_DEFAULT_TIER`` / ``ORCH_REASONING_EFFORT``).
+
+        ``on_delta(text)`` — боевой стрим WS5: каждый кусок текста. Нарезка
+        готового ``response.text`` на слова — заглушка, не контракт UI.
+        ``stream=True`` без ``on_delta`` эту заглушку не отменяет.
+        """
 
     async def classify(self, message: str) -> ClassifyResult:
-        """WS5: ``router.classify``."""
+        """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``."""
 
 
 class Planner(Protocol):
@@ -497,8 +554,8 @@ NODE_DEFS = TableSpec(
             "TEXT",
             nullable=False,
             unique=True,
-            check="^n_[a-z0-9_]+$",
-            note="UNIQUE, формат ^n_[a-z0-9_]+$",
+            check="length>=3 AND GLOB n_[a-z0-9_]* AND NOT GLOB *[^a-z0-9_]*",
+            note="UNIQUE, формат ^n_[a-z0-9_]+$ через GLOB, без REGEXP",
         ),
         ColumnSpec("group_key", "TEXT", nullable=False),
         ColumnSpec("title", "TEXT", nullable=True, check="length <= 120"),
@@ -654,7 +711,12 @@ ORCH_TASKS = TableSpec(
 
 ORCH_STEPS = TableSpec(
     name="orch_steps",
-    notes="Шаги плана задачи.",
+    notes=(
+        "Попытка шага. position — монотонный номер попытки внутри задачи "
+        "(0, 1, 2, …), не индекс плана и не переиспользуется. "
+        "Индекс следующего шага текущего плана — orch_tasks.position "
+        "и orch_checkpoints.position. Payload step_started.position — индекс плана."
+    ),
     columns=(
         ColumnSpec("id", "INTEGER", primary_key=True, nullable=False),
         ColumnSpec("task_id", "INTEGER", nullable=False, references="orch_tasks.id"),
@@ -696,7 +758,8 @@ ORCH_EVENTS = TableSpec(
     name="orch_events",
     notes=(
         "Укрупнённые события. token сюда не пишется (кольцо в памяти). "
-        "seq монотонен на сессию, счётчик — orch_event_seq, в том числе для token."
+        "seq монотонен на сессию. orch_event_seq хранит верхнюю отметку: "
+        "номера токенов резервируются пачкой в памяти и не пишут БД по одному."
     ),
     columns=(
         ColumnSpec("id", "INTEGER", primary_key=True, nullable=False),
@@ -839,6 +902,7 @@ def export_contract_schemas() -> dict[str, Any]:
     """JSON Schema для генерации TS (WS4, ``web/scripts/gen_orch_types.py``)."""
     return {
         "version": CONTRACT_VERSION,
+        "changelog": [{"version": ver, "note": note} for ver, note in CONTRACT_CHANGELOG],
         "models": {name: model.model_json_schema() for name, model in WIRE_MODELS.items()},
         "tables": [spec.to_dict() for spec in TABLE_SPECS],
         "enums": {

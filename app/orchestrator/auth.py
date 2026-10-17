@@ -12,7 +12,14 @@ from typing import Annotated
 
 from fastapi import Header, HTTPException
 
-_PREFIX = "/api/orchestrator/"
+_PREFIX = "/api/orchestrator"
+
+
+def is_orchestrator_path(path: str) -> bool:
+    """``/api/orchestrator`` и всё под ним, включая путь без завершающего слэша."""
+    if path == _PREFIX:
+        return True
+    return path.startswith(_PREFIX + "/")
 
 
 def expected_token() -> str:
@@ -48,7 +55,7 @@ class OrchestratorAuthMiddleware:
             await self.app(scope, receive, send)  # type: ignore[misc]
             return
         path = scope.get("path") or ""
-        if not path.startswith(_PREFIX) or scope.get("method") == "OPTIONS":
+        if not is_orchestrator_path(path) or scope.get("method") == "OPTIONS":
             await self.app(scope, receive, send)  # type: ignore[misc]
             return
         raw: bytes | None = None

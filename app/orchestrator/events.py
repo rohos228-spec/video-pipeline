@@ -1,18 +1,22 @@
 """SSE-шина оркестратора.
 
-Монотонный ``seq`` на сессию (в БД, переживает рестарт). Token-события живут
-только в кольце на 1000 событий и доступны для replay, пока жив процесс.
-Укрупнённые события пишутся в ``orch_events``. Компакция — отдельная функция.
+Монотонный ``seq`` на сессию. Token-события живут только в кольце на 1000
+событий и в БД не пишутся. Номера для них берутся из памяти пачками
+(``SEQ_RESERVE``): в ``orch_event_seq`` уходит верхняя отметка резерва,
+не каждый токен. Укрупнённые события пишутся в ``orch_events`` через
+одно долгоживущее соединение на файл БД (WAL). Компакция — отдельно.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.orchestrator.contracts import (
@@ -23,7 +27,15 @@ from app.orchestrator.contracts import (
     TOKEN_RING_SIZE,
     OrchEvent,
 )
-from app.orchestrator.db.migrations import connect
+from app.orchestrator.db.migrations import connect, resolve_db_path
+
+# Сколько seq резервировать одним UPDATE. Токен не трогает БД, пока пачка не кончилась.
+SEQ_RESERVE = 64
+
+_LOCK = threading.RLock()
+_CONNS: dict[str, Any] = {}
+_BATCHES: dict[tuple[str, str], list[int]] = {}
+_RESERVES: dict[tuple[str, str], int] = {}
 
 _KEEP_SQL = ", ".join(f"'{name}'" for name in sorted(RETAINED_EVENT_TYPES))
 
@@ -155,6 +167,72 @@ def _enforce_cap(conn: Any, session_id: str, cap: int) -> int:
     return len(victims)
 
 
+def seq_reserve_count(session_id: str, path: Path | None = None) -> int:
+    """Сколько раз для сессии писали верхнюю отметку seq (не число событий)."""
+    key = (str(resolve_db_path(path)), session_id)
+    with _LOCK:
+        return _RESERVES.get(key, 0)
+
+
+def forget_seq_batch(session_id: str, path: Path | None = None) -> None:
+    """Сбросить память пачки, как после рестарта процесса. Отметка в БД остаётся."""
+    key = (str(resolve_db_path(path)), session_id)
+    with _LOCK:
+        _BATCHES.pop(key, None)
+
+
+def _event_conn(path: Path) -> Any:
+    """Одно соединение на файл. Вызывать под ``_LOCK``."""
+    key = str(path)
+    conn = _CONNS.get(key)
+    if conn is not None:
+        return conn
+    from app.orchestrator.db.migrations import ensure_migrated
+
+    ensure_migrated(path)
+    import sqlite3
+
+    conn = sqlite3.connect(key, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL").fetchone()
+    _CONNS[key] = conn
+    return conn
+
+
+def _take_seq(path: Path, session_id: str) -> int:
+    """Следующий seq. БД обновляется пачкой ``SEQ_RESERVE``, не на каждый токен."""
+    key = (str(path), session_id)
+    with _LOCK:
+        window = _BATCHES.get(key)
+        if window is None or window[0] > window[1]:
+            conn = _event_conn(path)
+            row = conn.execute(
+                "SELECT seq FROM orch_event_seq WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            current = int(row["seq"]) if row is not None else 0
+            high = current + SEQ_RESERVE
+            if row is None:
+                conn.execute(
+                    "INSERT INTO orch_event_seq (session_id, seq) VALUES (?, ?)",
+                    (session_id, high),
+                )
+            else:
+                conn.execute(
+                    "UPDATE orch_event_seq SET seq = ? WHERE session_id = ?",
+                    (high, session_id),
+                )
+            conn.commit()
+            window = [current + 1, high]
+            _BATCHES[key] = window
+            _RESERVES[key] = _RESERVES.get(key, 0) + 1
+        seq = window[0]
+        window[0] = seq + 1
+        return seq
+
+
 def _insert_event(
     session_id: str,
     event_type: str,
@@ -164,9 +242,10 @@ def _insert_event(
     created_at: str | None,
     persist: bool,
 ) -> tuple[int, str]:
-    conn = connect()
-    try:
-        seq = _next_seq(conn, session_id)
+    path = resolve_db_path()
+    with _LOCK:
+        conn = _event_conn(path)
+        seq = _take_seq(path, session_id)
         stamp = created_at or _utc_stamp(conn)
         if persist:
             conn.execute(
@@ -183,29 +262,8 @@ def _insert_event(
                     stamp,
                 ),
             )
-        conn.commit()
+            conn.commit()
         return seq, stamp
-    finally:
-        conn.close()
-
-
-def _next_seq(conn: Any, session_id: str) -> int:
-    row = conn.execute(
-        "SELECT seq FROM orch_event_seq WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO orch_event_seq (session_id, seq) VALUES (?, 1)",
-            (session_id,),
-        )
-        return 1
-    nxt = int(row["seq"]) + 1
-    conn.execute(
-        "UPDATE orch_event_seq SET seq = ? WHERE session_id = ?",
-        (nxt, session_id),
-    )
-    return nxt
 
 
 def _utc_stamp(conn: Any) -> str:

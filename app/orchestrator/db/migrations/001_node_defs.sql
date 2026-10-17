@@ -18,5 +18,11 @@ CREATE TABLE IF NOT EXISTS node_defs (
     updated_at TEXT NOT NULL,
     created_by TEXT,
     CHECK (title IS NULL OR length(title) <= 120),
-    CHECK (node_key REGEXP '^n_[a-z0-9_]+$')
+    -- Без REGEXP: функция regexp есть только в connect() этого модуля,
+    -- голое sqlite3 её не знает. GLOB — встроенный оператор SQLite.
+    CHECK (
+        length(node_key) >= 3
+        AND node_key GLOB 'n_[a-z0-9_]*'
+        AND node_key NOT GLOB '*[^a-z0-9_]*'
+    )
 );

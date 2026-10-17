@@ -60,10 +60,10 @@ from app.web.routers import (
     knowledge as knowledge_router,
 )
 from app.web.routers import (
-    library as library_router,
+    meta_agent as meta_agent_router,
 )
 from app.web.routers import (
-    meta_agent as meta_agent_router,
+    library as library_router,
 )
 from app.web.routers import (
     node_groups as node_groups_router,

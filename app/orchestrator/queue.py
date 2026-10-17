@@ -13,7 +13,14 @@ from typing import Any
 
 from loguru import logger
 
-from app.orchestrator.contracts import ClassifyResult, MessageMode
+from app.orchestrator.contracts import (
+    ORCH_REASONING_EFFORT,
+    AgentRole,
+    BudgetScope,
+    ClassifyResult,
+    MessageMode,
+    orch_call_tier,
+)
 from app.orchestrator.db.migrations import connect, utc_now
 from app.orchestrator.events import EventBus
 
@@ -152,15 +159,32 @@ class MessageQueue:
         await self._stream_fast(session_id, text, decided.tier or "fast")
 
     async def _stream_fast(self, session_id: str, text: str, tier: str) -> None:
+        """Заглушка стрима: слова из готового ``response.text``.
+
+        Это не контракт UI. Боевой путь — keyword-only ``on_delta`` у
+        ``router.call`` (WS5): каждый delta публикуется как token.
+        Если роутер не зовёт ``on_delta``, остаётся нарезка готового текста.
+        """
+        task_id = self.supervisor.active_task(session_id)
+        deltas: list[str] = []
+
+        def on_delta(piece: str) -> None:
+            deltas.append(str(piece))
+
         response = await self.router.call(
-            tier,
+            orch_call_tier(tier),
             [{"role": "user", "content": text}],
-            stream=True,
+            True,
+            run_id=session_id,
+            task_id=None if task_id is None else str(task_id),
+            agent_role=AgentRole.classifier.value,
+            budget_scope=BudgetScope.internal.value,
+            reasoning_effort=ORCH_REASONING_EFFORT,
+            on_delta=on_delta,
         )
-        parts = _token_pieces(response.text)
+        parts = deltas or _token_pieces(response.text)
         for part in parts:
             await self.bus.publish(session_id, "token", {"text": part})
-        task_id = self.supervisor.active_task(session_id)
         _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
         await self.bus.publish(
             session_id,

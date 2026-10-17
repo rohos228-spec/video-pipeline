@@ -9,6 +9,7 @@ from app.orchestrator.agents.stubs import FallbackRouter, StubCritic, StubPlanne
 from app.orchestrator.agents.supervisor import Supervisor
 from app.orchestrator.agents.task_store import TaskStore
 from app.orchestrator.checkpoints import CheckpointStore
+from app.orchestrator.db.migrations import ensure_migrated
 from app.orchestrator.events import EventBus
 from app.orchestrator.queue import MessageQueue
 
@@ -32,6 +33,7 @@ def build_runtime(
     critic: Any | None = None,
     executor: Any | None = None,
 ) -> Runtime:
+    ensure_migrated()
     bus = EventBus()
     checkpoints = CheckpointStore()
     tasks = TaskStore()

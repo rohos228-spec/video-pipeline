@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.orchestrator.contracts import (
+    ORCH_DEFAULT_TIER,
     ActionResult,
     ClassifyResult,
     LLMResponse,
@@ -63,9 +64,9 @@ class UnlinkedActions:
 
 
 class UnlinkedValidators:
-    """Мок-заглушка, пока WS1 не отдал ``validators.run``."""
+    """Мок-заглушка, пока WS1 не отдал ``validators.run``. Сигнатура синхронная."""
 
-    async def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
+    def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
         del project_id, context
         return ValidatorResult(name=name, passed=True, details="validators.run не подключён (ждёт WS1)", blocking=False)
 
@@ -73,13 +74,14 @@ class UnlinkedValidators:
 class FallbackRouter:
     """Роутер-заглушка до WS5. Сеть не вызывает.
 
-    Спорная классификация уходит в append/fast, чтобы чат R1 мог стримить ответ.
+    До D6 спорная классификация — append и tier ``strong``.
+    ``on_delta`` принимается и не вызывается: стрим из готового текста — заглушка очереди.
     """
 
     async def classify(self, message: str) -> ClassifyResult:
         del message
         return ClassifyResult(
-            tier="fast",
+            tier=ORCH_DEFAULT_TIER,
             mode=MessageMode.append,
             deterministic=False,
             confidence=0.5,
@@ -90,14 +92,21 @@ class FallbackRouter:
         tier: str,
         messages: list[dict[str, Any]],
         stream: bool = False,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+        on_delta: Any = None,
     ) -> LLMResponse:
-        del messages, stream
+        del messages, stream, run_id, task_id, agent_role, budget_scope, reasoning_effort, on_delta
         return LLMResponse(
             text="",
             call_id="",
             model="stub",
             provider="",
-            tier=tier or "fast",
+            tier=tier or ORCH_DEFAULT_TIER,
             finish_reason="stop",
             cost_usd=0.0,
             latency_ms=0,

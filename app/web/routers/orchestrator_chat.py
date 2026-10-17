@@ -6,6 +6,7 @@ GET  ``/api/orchestrator/chat/{session}/stream``  (Last-Event-ID)
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,6 +24,8 @@ router = APIRouter(
 )
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+# Как часто перепроверять дисконнект, пока в очереди тишина.
+_STREAM_POLL_SEC = 1.0
 
 
 class MessageIn(BaseModel):
@@ -72,7 +75,10 @@ async def stream_session(session: str, request: Request) -> EventSourceResponse:
             while True:
                 if await request.is_disconnected():
                     break
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=_STREAM_POLL_SEC)
+                except TimeoutError:
+                    continue
                 if event.seq <= last_seq or event.seq in seen:
                     continue
                 seen.add(event.seq)

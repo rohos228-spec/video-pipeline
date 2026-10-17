@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS orch_tasks (
 
 CREATE INDEX IF NOT EXISTS ix_orch_tasks_session ON orch_tasks (session_id);
 
+-- orch_steps.position — монотонный номер попытки внутри задачи (с 0),
+-- не индекс плана. Индекс следующего шага плана — orch_tasks.position
+-- и orch_checkpoints.position. UNIQUE не даёт переиспользовать номер.
 CREATE TABLE IF NOT EXISTS orch_steps (
     id INTEGER PRIMARY KEY,
     task_id INTEGER NOT NULL REFERENCES orch_tasks (id),

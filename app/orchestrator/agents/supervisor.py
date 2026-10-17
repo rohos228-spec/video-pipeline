@@ -20,6 +20,7 @@ from app.orchestrator.agents.stubs import (
     UnlinkedValidators,
 )
 from app.orchestrator.agents.task_store import TaskStore
+from app.orchestrator.agents.validator_call import run_validator
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
     TERMINAL_STATUSES,
@@ -66,6 +67,9 @@ class Supervisor:
         self._session_task: dict[str, int] = {}
         self._change_ids: dict[int, list[str]] = {}
         self._context: dict[int, str] = {}
+        self._step_recorded: set[int] = set()
+        self._paid_open: set[int] = set()
+        self._shield_orphaned: set[int] = set()
 
     async def start_task(self, session_id: str, goal: str) -> int:
         self._cancel.discard(session_id)
@@ -158,6 +162,10 @@ class Supervisor:
             await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
             await self._execute_plan(task_id, session_id, plan, 0, goal)
         except asyncio.CancelledError:
+            if task_id in self._paid_open or task_id in self._shield_orphaned:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                return
             current = self._status(task_id)
             if current not in TERMINAL_STATUSES:
                 await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
@@ -203,8 +211,10 @@ class Supervisor:
             if revises > 2:
                 await self._escalate(task_id, session_id, "revise_limit")
                 return None
+            context = (context + "\n" + f"critic: {verdict}").strip()
+            self._context[task_id] = context
             await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-            plan = list(await self.planner.make_plan(goal, context=context or "revise"))
+            plan = list(await self.planner.make_plan(goal, context=context))
             self.tasks.save_plan(task_id, plan)
 
     async def _execute_plan(
@@ -257,10 +267,21 @@ class Supervisor:
                 {"position": index, "action": step.action, "paid": step.paid},
                 task_id=task_id,
             )
-            step_id = self.tasks.insert_step(task_id, index, step)
+            step_id = self.tasks.insert_step(task_id, self._next_step_position(task_id), step)
             try:
-                result = await self._run_one(session_id, step, {"task_id": task_id, "session_id": session_id})
+                result = await self._run_one(
+                    session_id,
+                    step,
+                    {"task_id": task_id, "session_id": session_id},
+                    task_id=task_id,
+                    step_id=step_id,
+                    plan=plan,
+                    index=index,
+                )
             except asyncio.CancelledError:
+                if step.paid:
+                    self._shield_orphaned.add(task_id)
+                    raise
                 self.tasks.finish_step(step_id, "cancelled", None, 0.0)
                 current = self._status(task_id)
                 if current not in TERMINAL_STATUSES:
@@ -278,15 +299,8 @@ class Supervisor:
                 )
                 return
 
-            cost = float(result.cost or 0)
-            self.tasks.finish_step(step_id, "done", result.change_id, cost)
-            if result.change_id:
-                self._change_ids.setdefault(task_id, []).append(result.change_id)
-            if cost:
-                if step.paid:
-                    self.tasks.add_spend(task_id, actions=cost)
-                else:
-                    self.tasks.add_spend(task_id, internal=cost)
+            if self._claim_step(step_id):
+                self._write_step_done(task_id, step, step_id, result)
             await self.bus.publish(
                 session_id,
                 "step_finished",
@@ -344,13 +358,38 @@ class Supervisor:
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         return revised, 0
 
-    async def _run_one(self, session_id: str, step: PlanStep, ctx: dict[str, Any]) -> Any:
+    async def _run_one(
+        self,
+        session_id: str,
+        step: PlanStep,
+        ctx: dict[str, Any],
+        *,
+        task_id: int,
+        step_id: int,
+        plan: list[PlanStep],
+        index: int,
+    ) -> Any:
         async def _call() -> Any:
             return await self.executor.run(step, ctx)
 
         if step.paid:
             inner: asyncio.Task[Any] = asyncio.create_task(_call())
-            return await asyncio.shield(inner)
+            self._paid_open.add(task_id)
+            inner.add_done_callback(
+                lambda done: self._on_shield_done(
+                    done,
+                    task_id=task_id,
+                    session_id=session_id,
+                    step=step,
+                    step_id=step_id,
+                    plan=plan,
+                    index=index,
+                )
+            )
+            try:
+                return await asyncio.shield(inner)
+            finally:
+                self._paid_open.discard(task_id)
         inner = asyncio.create_task(_call())
         self._unpaid[session_id] = inner
         try:
@@ -359,9 +398,81 @@ class Supervisor:
             if self._unpaid.get(session_id) is inner:
                 self._unpaid.pop(session_id, None)
 
+    def _on_shield_done(
+        self,
+        done: asyncio.Task[Any],
+        *,
+        task_id: int,
+        session_id: str,
+        step: PlanStep,
+        step_id: int,
+        plan: list[PlanStep],
+        index: int,
+    ) -> None:
+        """Сторож: платный шаг дожил после отмены внешней задачи — записать результат."""
+        if done.cancelled():
+            return
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            return
+        if task_id not in self._shield_orphaned:
+            return
+        if not self._claim_step(step_id):
+            return
+        self._write_step_done(task_id, step, step_id, done.result())
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            self._pause_after_shield(task_id, session_id, plan, index + 1),
+            name=f"orch-shield-{task_id}",
+        )
+
+    async def _pause_after_shield(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        position: int,
+    ) -> None:
+        self._shield_orphaned.discard(task_id)
+        current = self._status(task_id)
+        if current in TERMINAL_STATUSES:
+            return
+        await self._checkpoint(task_id, session_id, plan, position)
+        if current is TaskStatus.executing:
+            await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
+
+    def _claim_step(self, step_id: int) -> bool:
+        if step_id in self._step_recorded:
+            return False
+        self._step_recorded.add(step_id)
+        return True
+
+    def _write_step_done(self, task_id: int, step: PlanStep, step_id: int, result: Any) -> None:
+        cost = float(getattr(result, "cost", 0) or 0)
+        change_id = getattr(result, "change_id", None)
+        self.tasks.finish_step(step_id, "done", change_id, cost)
+        if change_id:
+            self._change_ids.setdefault(task_id, []).append(str(change_id))
+        if cost:
+            if step.paid:
+                self.tasks.add_spend(task_id, actions=cost)
+            else:
+                self.tasks.add_spend(task_id, internal=cost)
+
+    def _next_step_position(self, task_id: int) -> int:
+        """Монотонный номер попытки. Не индекс плана."""
+        rows = self.tasks.list_steps(task_id)
+        if not rows:
+            return 0
+        return max(int(row["position"]) for row in rows) + 1
+
     async def _validate(self, task_id: int, session_id: str, step: PlanStep) -> bool:
         project_id = int(step.params.get("project_id") or 0)
-        result = await self.validators.run(
+        result = await run_validator(
+            self.validators,
             "plan_sanity",
             project_id,
             {"action": step.action, "task_id": task_id},

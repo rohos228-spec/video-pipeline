@@ -384,3 +384,36 @@ def test_export_schema_has_ws5_models() -> None:
         text="t",
         metadata={"node_key": "n_qc_vo", "version": 1},
     )
+
+
+def test_node_key_check_works_on_bare_sqlite() -> None:
+    """CHECK на GLOB, без Python-функции regexp. Голое sqlite3.connect вставляет строку."""
+    owned = connect()
+    path = owned.execute("PRAGMA database_list").fetchone()[2]
+    owned.close()
+    bare = sqlite3.connect(path)
+    stamp = utc_now()
+    try:
+        bare.execute(
+            """
+            INSERT INTO node_defs (
+                node_key, group_key, title, origin, is_new_group, status,
+                created_at, updated_at
+            ) VALUES ('n_qc_vo', 'g', 'QC', 'db', 0, 'active', ?, ?)
+            """,
+            (stamp, stamp),
+        )
+        bare.commit()
+        for bad in ("Foo", "n_", "n_Bad", "n_a-b"):
+            with pytest.raises(sqlite3.IntegrityError):
+                bare.execute(
+                    """
+                    INSERT INTO node_defs (
+                        node_key, group_key, title, origin, is_new_group, status,
+                        created_at, updated_at
+                    ) VALUES (?, 'g', 't', 'db', 0, 'active', ?, ?)
+                    """,
+                    (bad, stamp, stamp),
+                )
+    finally:
+        bare.close()

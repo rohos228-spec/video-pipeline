@@ -7,6 +7,7 @@ import contextlib
 
 import pytest
 from fastapi import FastAPI
+from sse_starlette.sse import AppStatus
 
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.contracts import TOKEN_RING_SIZE
@@ -68,6 +69,41 @@ async def _read_sse_until_id(app: FastAPI, path: str, headers: list[tuple[bytes,
         with contextlib.suppress(asyncio.CancelledError):
             await task
     return bytes(body)
+
+
+@pytest.mark.asyncio
+async def test_stream_ends_when_client_disconnects(monkeypatch: pytest.MonkeyPatch, runtime) -> None:
+    del runtime
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    app = _chat_app()
+    path = "/api/orchestrator/chat/s-disc/stream"
+    headers = [
+        (b"authorization", f"Bearer {TEST_TOKEN}".encode()),
+    ]
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        del message
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+    }
+    try:
+        await asyncio.wait_for(app(scope, receive, send), timeout=3)
+    finally:
+        AppStatus.should_exit_event = None
 
 
 @pytest.mark.asyncio
