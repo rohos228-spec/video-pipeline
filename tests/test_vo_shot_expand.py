@@ -2488,3 +2488,40 @@ def test_merge_flattened_coverage_rebuilds_kadry() -> None:
     assert "двор целиком" in parent.voiceover_text
     assert "жест рук" in parent.voiceover_text
     assert kadry[1]["закадр"] == "жест рук, две бумаги жалоб."
+
+
+def test_merge_flattened_keeps_extra_shot_inactive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Лишний id лестницы остаётся в хвосте с активен: False."""
+    from loguru import logger
+
+    from app.services.vo_shot_expand import (
+        flattened_coverage_groups,
+        merge_flattened_coverage_members,
+    )
+
+    k1 = _kadry_frame(1, "5-K1")
+    k1.voiceover_text = "двор целиком."
+    k1.attrs["кадры"].append(
+        {"id": "5-OLD", "закадр": "старый кусок", "действие": "ждёт"}
+    )
+    k2 = _kadry_frame(2, "5-K2")
+    k2.voiceover_text = "жест рук."
+    k2.attrs["camera_subdivide"]["parent_uuid"] = k2.uuid
+    k1.attrs["camera_subdivide"]["parent_uuid"] = k1.uuid
+    groups = flattened_coverage_groups([k1, k2])
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        parent, _extra = merge_flattened_coverage_members(groups["5"])
+    finally:
+        logger.remove(sink)
+    kadry = parent.attrs["кадры"]
+    by_id = {s["id"]: s for s in kadry}
+    assert set(by_id) == {"5-K1", "5-K2", "5-OLD"}
+    assert by_id["5-K1"].get("активен") is not False
+    assert by_id["5-K2"].get("активен") is not False
+    assert by_id["5-OLD"]["активен"] is False
+    assert by_id["5-OLD"]["закадр"] == "старый кусок"
+    assert "5-OLD" in caplog.text
+    assert "активен: False" in caplog.text

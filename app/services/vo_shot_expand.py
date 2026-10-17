@@ -569,7 +569,9 @@ def merge_flattened_coverage_members(
         parent.voiceover_text = full
         parent.duration_seconds = vo_duration_sec(full, shots=1)
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = shots
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), shots)
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
