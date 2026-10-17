@@ -3185,7 +3185,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     on_progress=_progress,
-                    allow_empty_ops=qc_prompts or shots_qc,
+                    allow_empty_ops=allows_qc_noop(
+                        project,
+                        node_key,
+                        variant=variant,
+                        output_mode=output_mode,
+                        check_mode=check_mode,
+                    ),
                 )
                 if fw_frames:
                     from sqlalchemy import select as _sel_fw
