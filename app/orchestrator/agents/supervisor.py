@@ -87,6 +87,7 @@ from app.orchestrator.contracts import (
     forecast_unknown,
     grant_forbidden,
     metadata_call_gate,
+    not_in_whitelist,
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
@@ -393,6 +394,13 @@ class Supervisor:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
+        pending = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
+        if (
+            pending is not None
+            and int(pending.position) < len(pending.plan)
+            and not_in_whitelist(pending.plan[int(pending.position)].action, self.actions)
+        ):
+            raise ApprovalGrantError(403, "not_in_whitelist")
         decided = _coerce_decision(decision)
         reason = self._block_reason.get(task_id)
         if retry_grant:
@@ -1243,6 +1251,9 @@ class Supervisor:
             await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
+            if not_in_whitelist(step.action, self.actions):
+                await self._apply_block(task_id, session_id, "not_in_whitelist")
+                return True
             if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
@@ -1337,6 +1348,9 @@ class Supervisor:
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
+            if any(not_in_whitelist(item.action, self.actions) for item in batch):
+                await self._apply_block(task_id, session_id, "not_in_whitelist")
+                return
             # Группа собирается только из read-only. Чужой шаг в батче — сбой,
             # не assert: под python -O assert исчез бы и шаг ушёл бы в исполнение.
             if len(batch) > 1 and any(not step_is_readonly(item, self.actions) for item in batch):

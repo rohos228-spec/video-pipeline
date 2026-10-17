@@ -835,6 +835,17 @@ class StepExecutor(Protocol):
 # Правило 9: перед run_node обязателен verify_code_state
 # (read_pipeline_code + get_node). Имена действий — мини-RFC для WS1/WS2.
 RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step.run_step"})
+# Имена, которых нет в белом списке ни при каком реестре. Одобрение их не пускает.
+ACTION_DENYLIST: frozenset[str] = frozenset(
+    {
+        "edit_files",
+        "exec",
+        "fix_bugs",
+        "run_tests",
+        "shell",
+        "write_file",
+    }
+)
 DELETION_ACTIONS: frozenset[str] = frozenset(
     {
         "montage.delete_frame",
@@ -1136,6 +1147,18 @@ def lookup_action_metadata(action: str, registry: Any | None) -> tuple[str, Any]
         return "miss", None
 
 
+def not_in_whitelist(action: str, registry: Any | None) -> bool:
+    """Имя нельзя ни одобрить, ни выполнить.
+
+    Явный denylist ядра или ``KeyError`` из ``metadata_of`` (имени нет в реестре).
+    Открытый мок без ``metadata_of`` сюда не попадает: это не закрытый реестр.
+    """
+    if action in ACTION_DENYLIST:
+        return True
+    kind, _meta = lookup_action_metadata(action, registry)
+    return kind == "miss"
+
+
 def _meta_field(meta: Any, key: str, default: Any = None) -> Any:
     if isinstance(meta, dict):
         return meta.get(key, default)
@@ -1363,7 +1386,8 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     """``name`` — ``deletion_blocked``. ``None`` — действие можно планировать.
 
     Запрет по умолчанию: нет явных ``read_only`` и не-destructive, либо в имени
-    маркер удаления. ``KeyError`` реестра — не удаление: шаг платный и ждёт approval.
+    маркер удаления. ``KeyError`` — не удаление кадра: супервизор ставит
+    ``not_in_whitelist`` и не открывает approval.
     Флаги плана это не ослабляют. Сцены, кадры, персонажи и VO с глаголом удаления
     не оправдываются метаданными.
     """

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import types
 
@@ -11,6 +10,7 @@ import pytest
 
 from app.orchestrator.agents.runtime import build_runtime, get_runtime, set_runtime
 from app.orchestrator.agents.stubs import StubCritic, UnlinkedValidators
+from app.orchestrator.agents.supervisor import InvalidTransition
 from app.orchestrator.agents.wiring import ActionsBridge
 from app.orchestrator.contracts import (
     ActionResult,
@@ -40,7 +40,8 @@ class _Registry:
 
 
 @pytest.mark.asyncio
-async def test_unknown_action_requires_approval_and_is_paid(token: str) -> None:
+async def test_unknown_action_is_not_in_whitelist(token: str) -> None:
+    """KeyError реестра — терминальный отказ, не карточка и не execute."""
     del token
     registry = _Registry()
     actions = ActionsBridge(registry)
@@ -61,31 +62,15 @@ async def test_unknown_action_requires_approval_and_is_paid(token: str) -> None:
     try:
         task_id = await runtime.supervisor.start_task("unk-act", "коснись", project_id=13)
         await runtime.supervisor.wait(task_id, timeout=5)
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert runtime.tasks.get(task_id)["error"] == "not_in_whitelist"
         assert registry.calls == []
-        stored = json.loads(runtime.tasks.get(task_id)["plan_json"])
-        assert stored[0]["paid"] is True
+        assert float(runtime.tasks.get(task_id)["spend_actions"] or 0) == 0.0
         approvals = [event for event in runtime.bus.replay("unk-act", 0) if event.type == "approval_required"]
-        assert len(approvals) == 1
-        assert approvals[0].payload["reason"] == "risk"
-        assert str(approvals[0].payload["change_id"]).startswith("orch-appr-")
-        await runtime.supervisor.grant_approval("unk-act")
-        await registry.started.wait()
-        await runtime.queue.accept("unk-act", "стой")
-        await runtime.queue.drain()
-        for _ in range(50):
-            if runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value:
-                reason = runtime.supervisor._block_reason.get(task_id)
-                if reason == "paid_outcome_unknown":
-                    break
-            await asyncio.sleep(0.02)
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
-        assert runtime.supervisor._block_reason.get(task_id) == "paid_outcome_unknown"
-        later = [event for event in runtime.bus.replay("unk-act", 0) if event.type == "approval_required"]
-        assert later[-1].payload["reason"] == "paid_outcome_unknown"
-        assert later[-1].payload["change_id"] != "chg-touch"
-        registry.release.set()
-        await runtime.supervisor.wait(task_id, timeout=5)
+        assert approvals == []
+        with pytest.raises(InvalidTransition):
+            await runtime.supervisor.grant_approval("unk-act")
+        assert registry.calls == []
     finally:
         set_runtime(None)
 
