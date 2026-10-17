@@ -122,6 +122,22 @@ def test_hard_caps_block() -> None:
     assert actions.details["reason"] == "actions_sub_budget"
 
 
+def test_numeric_string_amounts_stay_valid() -> None:
+    result = run(
+        "spend_guard",
+        1,
+        {
+            "spend": {**_totals(run_spent_usd=1.0), "run_cap_usd": "50"},
+            "forecast_usd": {"actions": "1.5"},
+            "run_id": "run-1",
+        },
+    )
+    assert result.passed is True
+    assert result.details["reason"] == "ok"
+    assert result.details["forecast_usd"]["actions"] == 1.5
+    assert result.details["forecast_usd"]["run"] == 1.5
+
+
 def test_exact_hard_cap_still_passes_and_internal_does_not() -> None:
     ok = run(
         "spend_guard",
@@ -357,8 +373,33 @@ def test_garbage_spend_numbers_do_not_count() -> None:
             "run_id": "run-1",
         },
     )
-    assert result.passed is True
-    assert result.details["totals"]["internal_spent_usd"] == 0.0
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "invalid_amount"
+    assert validator_budget_exhausted(result) is False
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), -1, "abc", None])
+@pytest.mark.parametrize("slot", ["forecast", "cap"])
+def test_invalid_amount_blocks_forecast_and_cap(bad: object, slot: str) -> None:
+    """inf, NaN, отрицательные, мусор и None не становятся нулём."""
+
+    if slot == "forecast":
+        context = {
+            "spend": _totals(run_spent_usd=1.0),
+            "forecast_usd": {"actions": bad},
+            "run_id": "run-1",
+        }
+    else:
+        spend = _totals(run_spent_usd=1.0)
+        spend["run_cap_usd"] = bad  # type: ignore[assignment]
+        context = {"spend": spend, "run_id": "run-1"}
+    result = run("spend_guard", 1, context)
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "invalid_amount"
+    assert result.details["reason"] != "missing_run_id"
+    assert validator_budget_exhausted(result) is False
 
 
 def test_unreadable_sources_are_ignored() -> None:

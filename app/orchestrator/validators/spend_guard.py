@@ -29,7 +29,10 @@ $50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` 
 (как ``caps()`` в #342). Прогноз ``context["forecast_usd"]`` прибавляется
 к прочитанному до вызова и никуда не записывается. Если ключи
 ``run`` / ``project`` / ``daily`` не переданы явно, в эти потолки входит
-сумма ``internal`` + ``actions``.
+сумма ``internal`` + ``actions``. Нечисло, inf, NaN, отрицательное и
+явный ``None`` в расходе, потолке, прогнозе или сумме — не 0, а
+``blocking`` с ``reason=invalid_amount``. Конечные числа ``>= 0`` и
+числовые строки, которые принимает ``float``, остаются как были.
 
 ``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
 или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
@@ -92,6 +95,14 @@ class _SpendReadError(Exception):
     """Чтение бюджета сорвалось. Повторного вызова без аргументов нет."""
 
 
+class _InvalidAmount(Exception):
+    """Сумма не конечное число >= 0. В ноль её не подменяем."""
+
+    def __init__(self, field: str) -> None:
+        self.field = field
+        super().__init__(field)
+
+
 class SpendReader(Protocol):
     """Чтение spend action layer (#342). ``read_totals`` WS2 принимает как есть.
 
@@ -151,6 +162,8 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
         return _checked(project_id, context)
     except _SpendReadError:
         return _spend_unreadable()
+    except _InvalidAmount as exc:
+        return _invalid_amount(exc)
     except ValueError as exc:
         if "run_id" in str(exc):
             return _missing_run_id()
@@ -264,10 +277,9 @@ def _signal_violation(signal: dict[str, Any], view: dict[str, Any] | None) -> di
         cap = view["caps"]["internal_cap_usd"]
     payload = signal.get("payload") if isinstance(signal.get("payload"), Mapping) else {}
     if spent is None:
-        spent = _num(payload.get("spent_usd"))
+        spent = _payload_amount(payload, "spent_usd", default=0.0)
     if cap is None:
-        raw_budget = payload.get("budget_usd")
-        cap = _num(raw_budget) if raw_budget is not None else CAP_INTERNAL_USD
+        cap = _payload_amount(payload, "budget_usd", default=CAP_INTERNAL_USD)
     return _violation(
         _BUDGET_EXHAUSTED,
         spent=spent,
@@ -334,13 +346,10 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
     if action is not None:
         raw, action_source = action
         for key in _SPENT_KEYS:
-            spent[key] = _num(raw.get(key))
+            spent[key] = _field_amount(raw, key, default=0.0)
             known.add(key)
         for key, default in _CAP_DEFAULTS.items():
-            if key in raw and raw.get(key) is not None:
-                caps[key] = _num(raw.get(key))
-            else:
-                caps[key] = default
+            caps[key] = _field_amount(raw, key, default=default)
         sources.append(action_source)
         internal_source = action_source
     pipeline_from_totals = False
@@ -445,7 +454,7 @@ def _call_pipeline(fn: Any, *, project_id: int, run_id: str | None) -> float:
             value = fn(run_id)
         except TypeError as exc:
             raise _SpendReadError("pipeline") from exc
-    return _num(value)
+    return _require_amount(value, field="pipeline_spent_usd")
 
 
 def _apply_pipeline_scope(
@@ -534,11 +543,11 @@ def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:
     if not callable(spent_fn):
         return None
     try:
-        spent = _num(spent_fn(_run_id(context)))
+        spent = _require_amount(spent_fn(_run_id(context)), field="internal_spent_usd")
     except TypeError as exc:
         raise _SpendReadError("spent") from exc
     budget_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
-    budget = CAP_INTERNAL_USD if budget_raw is None else _num(budget_raw)
+    budget = CAP_INTERNAL_USD if budget_raw is None else _require_amount(budget_raw, field="internal_budget_usd")
     return {"spent_usd": spent, "budget_usd": budget, "budget_exhausted": False}
 
 
@@ -554,32 +563,39 @@ def _read_ledger_totals(ledger: Any, run_id: str | None) -> dict[str, Any] | Non
         raise _SpendReadError("totals") from exc
     if not isinstance(raw, Mapping):
         return None
-    limit_raw = raw.get("internal_limit_usd", getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD))
-    limit = CAP_INTERNAL_USD if limit_raw is None else _num(limit_raw)
+    if "internal_limit_usd" in raw:
+        limit = _require_amount(raw.get("internal_limit_usd"), field="internal_limit_usd")
+    else:
+        limit_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
+        limit = CAP_INTERNAL_USD if limit_raw is None else _require_amount(limit_raw, field="internal_budget_usd")
     out: dict[str, Any] = {
-        "spent_usd": _num(raw.get("internal_spent_usd")),
+        "spent_usd": _field_amount(raw, "internal_spent_usd", default=0.0),
         "budget_usd": limit,
         "budget_exhausted": raw.get("budget_exhausted") is True,
         "from_totals": True,
     }
-    if "internal_remaining_usd" in raw and not isinstance(raw.get("internal_remaining_usd"), bool):
-        remaining = _signed_num(raw.get("internal_remaining_usd"))
+    if "internal_remaining_usd" in raw:
+        remaining = _remaining_amount(raw.get("internal_remaining_usd"))
         if remaining is not None:
             out["remaining_usd"] = remaining
-    if "pipeline_spent_usd" in raw and not isinstance(raw.get("pipeline_spent_usd"), bool):
-        out["pipeline_spent_usd"] = _num(raw.get("pipeline_spent_usd"))
+    if "pipeline_spent_usd" in raw:
+        out["pipeline_spent_usd"] = _require_amount(raw.get("pipeline_spent_usd"), field="pipeline_spent_usd")
     return out
 
 
-def _signed_num(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
+def _remaining_amount(value: Any) -> float | None:
+    """Остаток может быть отрицательным. None — поля нет. Мусор — ошибка."""
+
+    if value is None:
         return None
+    if isinstance(value, bool):
+        raise _InvalidAmount("internal_remaining_usd")
     try:
         number = float(value)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        raise _InvalidAmount("internal_remaining_usd") from exc
     if number != number or number in (float("inf"), float("-inf")):
-        return None
+        raise _InvalidAmount("internal_remaining_usd")
     return number
 
 
@@ -685,18 +701,30 @@ def _spend_unreadable() -> Any:
     )
 
 
+def _invalid_amount(exc: _InvalidAmount) -> Any:
+    return make_result(
+        name=_NAME,
+        passed=False,
+        blocking=True,
+        details={"reason": "invalid_amount", "field": exc.field},
+    )
+
+
 def _forecast(raw: Any) -> dict[str, float]:
     """Прогноз до вызова. Агрегаты без явного ключа = internal + actions."""
 
-    src = raw if isinstance(raw, Mapping) else {}
-    internal = _num(src.get("internal"))
-    actions = _num(src.get("actions"))
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise _InvalidAmount("forecast_usd")
+    internal = _field_amount(raw, "internal", default=0.0)
+    actions = _field_amount(raw, "actions", default=0.0)
     implied = internal + actions
 
     def aggregate(key: str) -> float:
-        if key in src and src.get(key) is not None:
-            return _num(src.get(key))
-        return implied
+        if key not in raw:
+            return implied
+        return _require_amount(raw.get(key), field=f"forecast_usd.{key}")
 
     return {
         "internal": internal,
@@ -707,13 +735,29 @@ def _forecast(raw: Any) -> dict[str, float]:
     }
 
 
-def _num(value: Any) -> float:
+def _field_amount(raw: Mapping[str, Any], key: str, *, default: float) -> float:
+    """Нет ключа — ``default``. Ключ есть, даже если значение None — проверка."""
+
+    if key not in raw:
+        return default
+    return _require_amount(raw.get(key), field=key)
+
+
+def _payload_amount(payload: Mapping[str, Any], key: str, *, default: float) -> float:
+    if key not in payload:
+        return default
+    return _require_amount(payload.get(key), field=f"payload.{key}")
+
+
+def _require_amount(value: Any, *, field: str) -> float:
+    """Конечное число >= 0. Числовая строка допустима, мусор — нет."""
+
     if value is None or isinstance(value, bool):
-        return 0.0
+        raise _InvalidAmount(field)
     try:
         number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    except (TypeError, ValueError) as exc:
+        raise _InvalidAmount(field) from exc
     if number < 0 or number != number or number in (float("inf"), float("-inf")):
-        return 0.0
+        raise _InvalidAmount(field)
     return number
