@@ -67,9 +67,12 @@ def test_insert_duplicate_delete_reorder_stay_on_one_door() -> None:
     assert copied["id"] != custom["id"]
     assert copied["collapsed"] is False
     card = delete_block(card, "door1", custom["id"])
-    ids = [block["id"] for block in card["doors"][0]["blocks"]]
-    assert custom["id"] not in ids
-    assert copied["id"] in ids
+    blocks = card["doors"][0]["blocks"]
+    kept = next(block for block in blocks if block["id"] == custom["id"])
+    assert kept["активен"] is False
+    assert kept["text"] == "мост между мирами"
+    assert [block["id"] for block in blocks].count(custom["id"]) == 1
+    assert copied["id"] in [block["id"] for block in blocks]
     card = move_block(card, "door1", copied["id"], -1)
     assert card["doors"][0]["blocks"][1]["id"] == copied["id"]
     card = move_block(card, "door1", card["doors"][0]["blocks"][0]["id"], -1)
