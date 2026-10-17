@@ -260,9 +260,26 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
         ndcgs = [item[name]["ndcg_at_8"] for item in payload["passes"]]
         assert hits[0] == hits[1] == hits[2]
         assert ndcgs[0] == ndcgs[1] == ndcgs[2]
-    assert CONTOUR_B_EXPERIMENTAL is False
+    assert CONTOUR_B_EXPERIMENTAL is True
     assert CONTOUR_B_R5_NOTE == ""
     assert NDCG_AT_8_MIN == 0.65
+
+
+def test_fusion_weights_stay_experimental_until_dev_selection() -> None:
+    """rrf 0.5/1.5 не выбран choose_default: на dev hit@5 был 0.88."""
+    from app.orchestrator.rag.profile import (
+        CONTOUR_B_EXPERIMENTAL,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
+    )
+
+    assert CONTOUR_B_RERANK_FUSION == "rrf"
+    assert CONTOUR_B_FUSION_BM25 == 0.5
+    assert CONTOUR_B_FUSION_RERANK == 1.5
+    assert CONTOUR_B_EXPERIMENTAL is True
+    missed = choose_default([("rrf", "rrf 0.5/1.5", {"ndcg_at_8": 0.7, "hit_at_5": 0.88, "p95_s": 0.4})])
+    assert missed[0] == ""
 
 
 def test_r5_below_0_65_is_experimental_and_threshold_stays() -> None:
