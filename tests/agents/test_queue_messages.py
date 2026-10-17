@@ -31,3 +31,17 @@ async def test_identical_texts_keep_their_own_modes(runtime) -> None:
     await runtime.queue.accept(session, "одно и то же", mode=MessageMode.append)
     await runtime.queue.drain()
     assert _user_modes(session) == [MessageMode.task.value, MessageMode.append.value]
+
+
+@pytest.mark.asyncio
+async def test_classifier_failure_marks_that_row_append(runtime) -> None:
+    session = "cls-fail"
+    runtime.router.fail_if_called = True
+    await runtime.queue.accept(session, "добро пожаловать")
+    await runtime.queue.drain()
+    assert _user_modes(session) == [MessageMode.append.value]
+    events = runtime.bus.replay(session, 0)
+    failed = [event for event in events if event.type == "classification"]
+    assert len(failed) == 1
+    assert failed[0].payload.get("error") == "classifier_failed"
+    assert failed[0].payload.get("mode") == MessageMode.append.value

@@ -209,6 +209,8 @@ class MessageQueue:
             logger.exception("orch classification failed for session {}", session_id)
             if published:
                 return
+            if message_id is not None:
+                _set_message_mode(message_id, MessageMode.append.value)
             await self.bus.publish(
                 session_id,
                 "classification",
