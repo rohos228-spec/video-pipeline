@@ -10,7 +10,14 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
-import { paidOutcomeRetryReady } from "../../src/lib/orchestratorPaidOutcome";
+import {
+  PAID_OUTCOME_BODY_FIELDS,
+  paidOutcomeDecisionBody,
+  paidOutcomeGrantBody,
+  paidOutcomeRetryReady,
+  paidOutcomeWireBody,
+  type PaidOutcomeApproveBody,
+} from "../../src/lib/orchestratorPaidOutcome";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
 const SHOTS =
@@ -70,6 +77,32 @@ test("первое approval_required несёт change_id, forecast_usd и retry
   expect(updated.approvals).toHaveLength(1);
   expect(updated.approvals[0]?.retryArmed).toBe(true);
   expect(updated.approvals[0]?.forecast).toBe(2.4);
+});
+
+test("клиент approve шлёт только change_id, decision и retry_grant", () => {
+  const fields = [...PAID_OUTCOME_BODY_FIELDS];
+  const decision = paidOutcomeDecisionBody("orch-appr-1-1", "retry_step");
+  const grant = paidOutcomeGrantBody("orch-appr-1-1");
+  expect(Object.keys(decision)).toEqual(fields);
+  expect(Object.keys(grant)).toEqual(fields);
+  const dirty = {
+    ...decision,
+    note: "лишнее",
+    approval_id: "appr-1",
+    task_id: "1",
+  } as PaidOutcomeApproveBody;
+  const wire = paidOutcomeWireBody(dirty);
+  expect(Object.keys(wire)).toEqual(fields);
+  expect(JSON.parse(JSON.stringify(wire))).toEqual({
+    change_id: "orch-appr-1-1",
+    decision: "retry_step",
+    retry_grant: false,
+  });
+  expect(JSON.parse(JSON.stringify(paidOutcomeWireBody(grant)))).toEqual({
+    change_id: "orch-appr-1-1",
+    decision: null,
+    retry_grant: true,
+  });
 });
 
 test("подтверждение перезапуска требует retry_armed и конечный forecast_usd", () => {
@@ -975,6 +1008,32 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-paid-deny")).toBeEnabled();
     await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
     await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+  });
+
+  test("paid_outcome_unknown: тело approve без лишних ключей", async ({ page }) => {
+    const bodies: Record<string, unknown>[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/approve")) return;
+      bodies.push(req.postDataJSON() as Record<string, unknown>);
+    });
+    await openWithToken(page, "paidoutcome", "paid-wire");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(1);
+    expect(bodies.map((body) => Object.keys(body))).toEqual([
+      ["change_id", "decision", "retry_grant"],
+      ["change_id", "decision", "retry_grant"],
+    ]);
+    expect(bodies[0]).toEqual({ change_id: "orch-appr-1-1", decision: "retry_step", retry_grant: false });
+    expect(bodies[1]).toEqual({ change_id: "orch-appr-1-1", decision: null, retry_grant: true });
+    for (const body of bodies) {
+      expect(body).not.toHaveProperty("approval_id");
+      expect(body).not.toHaveProperty("task_id");
+      expect(body).not.toHaveProperty("note");
+    }
   });
 
   test("paid_outcome_unknown: карточка и три кнопки", async ({ page }) => {

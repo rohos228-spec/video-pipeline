@@ -16,6 +16,7 @@
 import {
   paidOutcomeApprovePath,
   paidOutcomeRetryReady,
+  paidOutcomeWireBody,
   parsePaidOutcomeJson,
   readPaidOutcomeExecuted,
   readPaidOutcomeFailureReason,
@@ -424,7 +425,7 @@ export async function postPaidOutcomeDecision(
   body: PaidOutcomeApproveBody,
   signal?: AbortSignal,
 ): Promise<PaidOutcomeDecisionResult> {
-  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), body, signal);
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), paidOutcomeWireBody(body), signal);
   return readPaidOutcomeDecisionResult(raw);
 }
 
@@ -434,7 +435,7 @@ export async function postPaidOutcomeRestartGrant(
   body: PaidOutcomeApproveBody,
   signal?: AbortSignal,
 ): Promise<PaidOutcomeDecisionResult> {
-  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), body, signal);
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), paidOutcomeWireBody(body), signal);
   return readPaidOutcomeDecisionResult(raw);
 }
 

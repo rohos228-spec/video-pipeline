@@ -67,6 +67,15 @@ export function paidOutcomeGrantBody(changeId: string): PaidOutcomeApproveBody {
   return { change_id: changeId, decision: null, retry_grant: true };
 }
 
+/** На провод уходят только три поля. Лишний ключ сервер отклоняет 422 (`extra=forbid`). */
+export function paidOutcomeWireBody(body: PaidOutcomeApproveBody): PaidOutcomeApproveBody {
+  return {
+    change_id: body.change_id ?? null,
+    decision: body.decision ?? null,
+    retry_grant: body.retry_grant === true,
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
