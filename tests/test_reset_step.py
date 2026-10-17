@@ -260,15 +260,17 @@ async def test_reset_img_pr_cascades_to_img_and_below(
 
 @pytest.mark.asyncio
 async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
-    """Сброс split удаляет все Frame'ы (cascade удалит и Artifact'ы
-    с frame_id)."""
+    """Было: session.delete(fr) и unlink картинки. Строка кадра и файл остаются.
+
+    Статус всё равно script_ready: живых кадров нет, plan и script на месте.
+    """
     p = await _mkproject(session)
     fr1 = await _mkframe(
         session, p, 1, image_prompt="p1", status=FrameStatus.image_approved,
     )
     img_p = tmp_path / "im1.png"
     img_p.write_bytes(b"x")
-    await _mkart(
+    art = await _mkart(
         session, p, ArtifactKind.scene_image,
         path=str(img_p), frame_id=fr1.id,
     )
@@ -277,17 +279,20 @@ async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
 
     await reset_step(session, p, "split")
 
-    # Frame'ы удалены
     frames = (await session.execute(
         select(Frame).where(Frame.project_id == p.id)
     )).scalars().all()
-    assert not frames
-    # файл картинки тоже удалён (мы его руками unlink'нули до удаления
-    # frame'а)
-    assert not img_p.exists()
-    # статус пересчитался на script_ready (plan + script есть, но
-    # frames удалены split-ом).
+    assert len(frames) == 1
+    assert (frames[0].attrs or {}).get("удалён") is True
+    assert (frames[0].attrs or {}).get("активен") is False
+    # Downstream-сброс img копирует scene_image в old/ и снимает исходный
+    # файл. Кадр при этом не стирается. Копия картинки остаётся.
+    backups = list((p.data_dir / "old").rglob("*im1.png"))
+    assert backups
+    # plan + script есть, живых кадров нет — тот же откат статуса, что раньше
+    # давало физическое удаление.
     assert p.status is ProjectStatus.script_ready
+    assert art.id is not None
 
 
 @pytest.mark.asyncio
