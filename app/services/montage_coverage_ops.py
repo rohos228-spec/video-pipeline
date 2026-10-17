@@ -874,6 +874,7 @@ async def apply_coverage_anchors(
             parent,
             after=frame,
             count=len(parts) - len(group),
+            renumber=False,
         )
 
     used = min(len(parts), len(group))
