@@ -48,16 +48,11 @@ async def test_scripted_miss_is_not_a_live_call(config):
     assert transport.calls == []
 
 
-async def test_scripted_provider_must_be_52pay_or_kie(config):
-    router = ScriptedRouter(
-        config,
-        scripts=[{"contains": "план", "text": "x", "provider": "openai"}],
-    )
+def test_scripted_provider_must_be_52pay_or_kie(config):
     with pytest.raises(ValueError, match="52pay\\|kie"):
-        await router.call(
-            "strong",
-            [{"role": "user", "content": "составь план"}],
-            run_id="s-bad",
+        ScriptedRouter(
+            config,
+            scripts=[{"contains": "план", "text": "x", "provider": "openai"}],
         )
 
 

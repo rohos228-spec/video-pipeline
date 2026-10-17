@@ -31,6 +31,10 @@ class ScriptedRouter(ModelRouter):
     ) -> None:
         super().__init__(config, **kwargs)
         self.scripts = list(scripts or [])
+        for script in self.scripts:
+            provider = str(script.get("provider") or "52pay")
+            if provider not in {"52pay", "kie"}:
+                raise ValueError("provider must be 52pay|kie")
 
     def _match(self, messages: list[dict[str, str]]) -> dict[str, Any] | None:
         text = ""
