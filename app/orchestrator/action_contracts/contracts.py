@@ -1,7 +1,8 @@
 """Контракт результатов действий R2 для веб-чата WS4.
 
 Только схемы. Исполнителей, записи в БД и HTTP здесь нет.
-Имена действий взяты из аудита (102 id) и из плана §6 / ``revert_node_to_git``.
+102 id и их флаги зафиксированы в ``audit_metadata.json``.
+Markdown аудита при импорте не читается: его сверяет тест.
 Файл ``app/orchestrator/contracts.py`` принадлежит WS3 и здесь не используется.
 """
 
@@ -15,15 +16,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONTRACT_VERSION = "ws2-r2.2"
+CONTRACT_VERSION = "ws2-r2.3"
 
 # Форма id как у WS3 #358: выдаёт только сервер, ``n`` растёт внутри задачи.
 _CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
-_SCRIPT = re.compile(
+# Детектор явных скриптов, не санитайзер. Не ловит ``<svg/onload=…>``,
+# ``<img/onerror=…>`` и ``&#106;avascript:``.
+_SCRIPT_DETECTOR = re.compile(
     r"<\s*/?\s*script\b|javascript\s*:|\son[a-z]+\s*=",
     re.IGNORECASE,
 )
-_AUDIT_PATH = Path(__file__).resolve().parents[3] / "docs" / "fable" / "actions_audit.md"
+_META_PATH = Path(__file__).with_name("audit_metadata.json")
 
 # Правка отчёта из чата. Имя из плана §6.3, не новое.
 REPORT_EDIT_ACTION = "update_report"
@@ -181,16 +184,18 @@ class EditResult(BaseModel):
             raise ValueError("нужен before или snapshot_id")
         if self.version <= self.base_version:
             raise ValueError("version должна быть больше base_version")
-        if self.skipped:
-            self.partial = True
+        if self.skipped and not self.partial:
+            raise ValueError("skipped требует partial=true")
         if self.partial and not self.skipped:
             raise ValueError("partial требует список skipped")
         return self
 
 
 class ReportResult(BaseModel):
-    """Уже санитизированный HTML отчёта для чата.
+    """HTML отчёта для чата.
 
+    ``_SCRIPT_DETECTOR`` только отмечает явный script, ``javascript:``
+    и ``on*=``. Это не санитайзер.
     Кнопка «Править» шлёт ``edit_action`` сообщением в чат.
     DOM отчёта на месте не меняется.
     """
@@ -205,8 +210,8 @@ class ReportResult(BaseModel):
     @field_validator("html")
     @classmethod
     def _no_script(cls, value: str) -> str:
-        if _SCRIPT.search(value):
-            raise ValueError("html содержит скрипт и не прошёл санитизацию")
+        if _SCRIPT_DETECTOR.search(value):
+            raise ValueError("детектор нашёл script, javascript: или on*=; это не санитайзер")
         return value
 
 
@@ -245,8 +250,8 @@ class ApprovalRequired(BaseModel):
         if self.metadata.paid and estimate is not None and estimate <= 0:
             raise ValueError("платная оценка должна быть больше 0 или отсутствовать")
         expected = metadata_of(self.metadata.name)
-        if self.metadata != expected:
-            raise ValueError("metadata не совпадает с реестром")
+        if not _metadata_not_weaker(self.metadata, expected):
+            raise ValueError("metadata слабее реестра")
         if self.action != self.metadata.name:
             raise ValueError("action не совпадает с metadata.name")
         return self
@@ -289,8 +294,8 @@ class SoftDeleteResult(BaseModel):
             raise ValueError("restore_action не восстанавливает этот kind")
         if self.restore_action not in metadata_registry():
             raise ValueError("restore_action вне реестра")
-        if self.skipped:
-            self.partial = True
+        if self.skipped and not self.partial:
+            raise ValueError("skipped требует partial=true")
         if self.partial and not self.skipped:
             raise ValueError("partial требует список skipped")
         return self
@@ -377,6 +382,7 @@ def _r2_metadata() -> dict[str, ActionMetadata]:
         ("stop_node", "medium", False, False, False),
         ("resume_node", "high", False, True, True),
         ("create_node", "medium", False, False, False),
+        ("create_node@new_group", "high", False, True, False),
         ("edit_node_prompt", "medium", False, True, False),
         ("edit_node_params", "medium", False, True, False),
         ("create_report", "low", False, False, False),
@@ -399,21 +405,39 @@ def _r2_metadata() -> dict[str, ActionMetadata]:
     }
 
 
+_RISK_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _metadata_not_weaker(offered: ActionMetadata, base: ActionMetadata) -> bool:
+    """Разрешено совпадение и ужесточение. Ослабить риск или флаги нельзя."""
+
+    if offered.name != base.name:
+        return False
+    if _RISK_RANK[offered.risk] < _RISK_RANK[base.risk]:
+        return False
+    if offered.read_only and not base.read_only:
+        return False
+    if base.destructive and not offered.destructive:
+        return False
+    if base.paid and not offered.paid:
+        return False
+    return True
+
+
 def _load_registry() -> tuple[tuple[str, ...], dict[str, ActionMetadata]]:
-    text = _AUDIT_PATH.read_text(encoding="utf-8")
-    parsed = _audit_rows(text)
-    if len(parsed) != 102 or len({name for name, _, _ in parsed}) != 102:
-        raise RuntimeError("таблица аудита должна дать 102 уникальных действия")
-    ids = tuple(name for name, _, _ in parsed)
+    payload = json.loads(_META_PATH.read_text(encoding="utf-8"))
+    parsed = payload["actions"]
+    if len(parsed) != 102 or len({row["name"] for row in parsed}) != 102:
+        raise RuntimeError("audit_metadata.json должен дать 102 уникальных действия")
+    ids = tuple(row["name"] for row in parsed)
     meta: dict[str, ActionMetadata] = {}
-    for name, risk, tier in parsed:
-        read_only, destructive, paid = _flags(name, tier)
-        meta[name] = ActionMetadata(
-            name=name,
-            risk=risk,  # type: ignore[arg-type]
-            read_only=read_only,
-            destructive=destructive,
-            paid=paid,
+    for row in parsed:
+        meta[row["name"]] = ActionMetadata(
+            name=row["name"],
+            risk=row["risk"],
+            read_only=row["read_only"],
+            destructive=row["destructive"],
+            paid=row["paid"],
         )
     extra = _r2_metadata()
     overlap = set(extra) & set(meta)
@@ -423,7 +447,7 @@ def _load_registry() -> tuple[tuple[str, ...], dict[str, ActionMetadata]]:
     return ids, meta
 
 
-ACTION_IDS, _METADATA = _load_registry()
+AUDIT_ACTION_IDS, _METADATA = _load_registry()
 
 
 def metadata_registry() -> dict[str, ActionMetadata]:
@@ -469,12 +493,13 @@ EDIT_CONFLICT_HTTP = 409
 
 
 def reject_stale_edit(*, base_version: int, current_version: int) -> ActionResult:
-    """Устаревшая base_version не меняет данные.
+    """База не равна текущей версии: данные не меняются.
 
-    Конверт ``status=failed``, ``error=conflict``. HTTP-статус — 409.
+    И прошлое, и будущее — ``status=failed``, ``error=conflict``, HTTP 409.
+    Совпадение с текущей версией конфликтом не является.
     """
 
-    if base_version >= current_version:
+    if base_version == current_version:
         raise ValueError("версия не устарела")
     return ActionResult(status="failed", result=None, error="conflict")
 
