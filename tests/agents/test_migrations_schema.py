@@ -49,10 +49,22 @@ def test_node_and_report_constraints() -> None:
             """
             INSERT INTO node_prompt_versions (
                 node_key, version, prompt_template, params_json, kind,
-                is_active, change_id, created_at
+                change_id, created_at
             ) VALUES (
                 'n_qc_vo', 1, 'prompt', '{"model":"gpt-5.6-sol"}', 'create',
-                1, 'chg-text', ?
+                'chg-text', ?
+            )
+            """,
+            (stamp,),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind,
+                change_id, created_at
+            ) VALUES (
+                'n_qc_vo', 2, 'other', '{}', 'edit_prompt',
+                'chg-2', ?
             )
             """,
             (stamp,),
@@ -62,10 +74,10 @@ def test_node_and_report_constraints() -> None:
                 """
                 INSERT INTO node_prompt_versions (
                     node_key, version, prompt_template, params_json, kind,
-                    is_active, change_id, created_at
+                    change_id, created_at
                 ) VALUES (
-                    'n_qc_vo', 2, 'other', '{}', 'edit_prompt',
-                    1, 'chg-2', ?
+                    'n_qc_vo', 2, 'dup', '{}', 'edit_prompt',
+                    'chg-dup', ?
                 )
                 """,
                 (stamp,),
@@ -215,11 +227,11 @@ def test_revert_to_git_and_studio_ui_columns() -> None:
             """
             INSERT INTO node_prompt_versions (
                 node_key, version, prompt_template, params_json, kind,
-                parent_version, base_git_sha256, is_active, change_id,
+                parent_version, base_git_sha256, change_id,
                 created_at, created_by, created_via
             ) VALUES (
                 'n_qc_vo', 1, 'prompt', '{}', 'revert_to_git',
-                NULL, 'deadbeef', 0, 'chg-revert',
+                NULL, 'deadbeef', 'chg-revert',
                 ?, 'studio-user', 'studio_ui'
             )
             """,
@@ -227,20 +239,24 @@ def test_revert_to_git_and_studio_ui_columns() -> None:
         )
         row = conn.execute(
             """
-            SELECT kind, base_git_sha256, created_via, is_active
+            SELECT kind, base_git_sha256, created_via
             FROM node_prompt_versions WHERE version = 1
             """
         ).fetchone()
-        assert tuple(row) == ("revert_to_git", "deadbeef", "studio_ui", 0)
+        assert tuple(row) == ("revert_to_git", "deadbeef", "studio_ui")
+        columns = [info[1] for info in conn.execute("PRAGMA table_info(node_prompt_versions)")]
+        assert "is_active" not in columns
+        indexes = {info[1] for info in conn.execute("PRAGMA index_list(node_prompt_versions)")}
+        assert "ux_node_prompt_versions_one_active" not in indexes
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 """
                 INSERT INTO node_prompt_versions (
                     node_key, version, prompt_template, params_json, kind,
-                    is_active, change_id, created_at, created_via
+                    change_id, created_at, created_via
                 ) VALUES (
                     'n_qc_vo', 2, 'prompt', '{}', 'ui_edit',
-                    0, 'chg-ui', ?, 'studio_ui'
+                    'chg-ui', ?, 'studio_ui'
                 )
                 """,
                 (stamp,),
@@ -250,14 +266,99 @@ def test_revert_to_git_and_studio_ui_columns() -> None:
                 """
                 INSERT INTO node_prompt_versions (
                     node_key, version, prompt_template, params_json, kind,
-                    is_active, change_id, created_at, created_via
+                    change_id, created_at, created_via
                 ) VALUES (
                     'n_qc_vo', 3, 'prompt', '{}', 'edit_prompt',
-                    0, 'chg-via', ?, 'notepad'
+                    'chg-via', ?, 'notepad'
                 )
                 """,
                 (stamp,),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_active_version_points_at_existing_non_revert() -> None:
+    conn = connect()
+    stamp = utc_now()
+    try:
+        conn.execute(
+            """
+            INSERT INTO node_defs (
+                node_key, group_key, title, origin, is_new_group, status,
+                created_at, updated_at
+            ) VALUES ('n_qc_vo', 'g', 'QC', 'db', 0, 'active', ?, ?)
+            """,
+            (stamp, stamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_defs (
+                node_key, group_key, title, origin, is_new_group, status,
+                created_at, updated_at
+            ) VALUES ('n_other', 'g', 'Other', 'db', 0, 'active', ?, ?)
+            """,
+            (stamp, stamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind, change_id, created_at
+            ) VALUES ('n_qc_vo', 1, 'prompt', '{}', 'create', 'chg-1', ?)
+            """,
+            (stamp,),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind, change_id, created_at
+            ) VALUES ('n_qc_vo', 2, 'back', '{}', 'revert_to_git', 'chg-2', ?)
+            """,
+            (stamp,),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind, change_id, created_at
+            ) VALUES ('n_other', 1, 'other', '{}', 'create', 'chg-3', ?)
+            """,
+            (stamp,),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind, change_id, created_at
+            ) VALUES ('n_other', 7, 'only-other', '{}', 'edit_prompt', 'chg-7', ?)
+            """,
+            (stamp,),
+        )
+        conn.execute("UPDATE node_defs SET active_version = 1 WHERE node_key = 'n_qc_vo'")
+        conn.execute("UPDATE node_defs SET active_version = NULL WHERE node_key = 'n_qc_vo'")
+        with pytest.raises(sqlite3.IntegrityError, match="non-revert"):
+            conn.execute("UPDATE node_defs SET active_version = 2 WHERE node_key = 'n_qc_vo'")
+        with pytest.raises(sqlite3.IntegrityError, match="non-revert"):
+            conn.execute("UPDATE node_defs SET active_version = 9 WHERE node_key = 'n_qc_vo'")
+        with pytest.raises(sqlite3.IntegrityError, match="non-revert"):
+            conn.execute("UPDATE node_defs SET active_version = 7 WHERE node_key = 'n_qc_vo'")
+        with pytest.raises(sqlite3.IntegrityError, match="non-revert"):
+            conn.execute(
+                """
+                INSERT INTO node_defs (
+                    node_key, group_key, title, origin, is_new_group, status,
+                    active_version, created_at, updated_at
+                ) VALUES ('n_fresh', 'g', 'F', 'db', 0, 'active', 1, ?, ?)
+                """,
+                (stamp, stamp),
+            )
+        pointed = conn.execute(
+            "SELECT active_version FROM node_defs WHERE node_key = 'n_other'"
+        ).fetchone()
+        assert pointed[0] is None
+        conn.execute("UPDATE node_defs SET active_version = 1 WHERE node_key = 'n_other'")
+        assert conn.execute(
+            "SELECT active_version FROM node_defs WHERE node_key = 'n_qc_vo'"
+        ).fetchone()[0] is None
         conn.commit()
     finally:
         conn.close()

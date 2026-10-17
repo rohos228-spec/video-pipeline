@@ -320,9 +320,9 @@ class NodeDef(BaseModel):
     DB-версии (``base_git_sha256`` версии не совпал с текущим ``git_sha256``).
 
     Колонка ``node_defs.active_version`` в этот тип не копируется.
-    ``active_version IS NULL`` значит «сейчас как в git» (после
-    ``revert_node_to_git``): ``source=git``, ``db_version=None``,
-    ``stale_base=False``.
+    Это единственный указатель активной DB-версии: ``NULL`` значит
+    «сейчас как в git» (после ``revert_node_to_git``): ``source=git``,
+    ``db_version=None``, ``stale_base=False``. В истории нет ``is_active``.
     """
 
     node_key: str
@@ -485,8 +485,10 @@ NODE_DEFS = TableSpec(
     name="node_defs",
     notes=(
         "Спецификация WS2. Одна строка на ноду, созданную или переопределённую "
-        "оркестратором. active_version ссылается на node_prompt_versions.version "
-        "этой ноды (логическая связь, без циклического FK)."
+        "оркестратором. active_version — единственный источник активной версии "
+        "(NULL = git-шаблон). Триггер проверяет, что не-NULL ссылается на "
+        "существующую версию этой ноды и не на kind=revert_to_git. "
+        "Циклический FK не ставим."
     ),
     columns=(
         ColumnSpec("id", "INTEGER", primary_key=True, nullable=False),
@@ -514,7 +516,8 @@ NODE_DEFS = TableSpec(
             "INTEGER",
             nullable=True,
             note=(
-                "node_prompt_versions.version этой ноды. NULL — резолвер берёт git "
+                "Единственный указатель активной версии: node_prompt_versions.version "
+                "этой ноды, не kind=revert_to_git. NULL — резолвер берёт git "
                 "(revert_node_to_git). Статус reverted не вводим: active|disabled "
                 "описывают включённость, а не источник промпта."
             ),
@@ -535,7 +538,8 @@ NODE_PROMPT_VERSIONS = TableSpec(
         "Спецификация WS2. Неизменяемая история: откат — новая строка "
         "kind=rollback, возврат на git-шаблон — новая строка kind=revert_to_git "
         "(действие revert_node_to_git) и node_defs.active_version=NULL. "
-        "Старые строки не удаляются и не правятся. "
+        "Старые строки не удаляются и не правятся. Колонки is_active нет: "
+        "какая версия активна, решает только node_defs.active_version. "
         "base_git_sha256 — sha256 git-файла на момент записи версии; "
         "по нему resolve_node считает NodeDef.stale_base. "
         "Правка из UI студии — created_via=studio_ui, не отдельный kind."
@@ -572,7 +576,6 @@ NODE_PROMPT_VERSIONS = TableSpec(
             nullable=True,
             note="sha256 базового git-файла на момент записи версии; NULL если базы не было",
         ),
-        ColumnSpec("is_active", "INTEGER", nullable=False, default="0", note="BOOL, ≤1 активной на ноду"),
         ColumnSpec("change_id", "TEXT", nullable=False),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
         ColumnSpec("created_by", "TEXT", nullable=True),
@@ -586,14 +589,6 @@ NODE_PROMPT_VERSIONS = TableSpec(
         ),
     ),
     unique=(("node_key", "version"),),
-    indexes=(
-        IndexSpec(
-            name="ux_node_prompt_versions_one_active",
-            columns=("node_key",),
-            unique=True,
-            where="is_active = 1",
-        ),
-    ),
 )
 
 
