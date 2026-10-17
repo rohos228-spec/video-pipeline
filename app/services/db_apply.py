@@ -1371,6 +1371,53 @@ def export_project_xlsx(
     }
 
 
+_RESTORE_VERBS = {"activate", "set_active", "restore", "восстановить"}
+
+
+def _shot_address_id(op: dict[str, Any]) -> str:
+    """id шота: явный shot_id, иначе индекс в fields.кадры[]."""
+
+    if op.get("shot_id") not in (None, ""):
+        return str(op["shot_id"])
+    fields = op.get("fields")
+    кадры = fields.get("кадры") if isinstance(fields, dict) else None
+    if not isinstance(кадры, list):
+        return ""
+    for key in ("shot_index", "index", "индекс"):
+        if key not in op:
+            continue
+        try:
+            idx = int(op[key])
+        except (TypeError, ValueError):
+            return ""
+        if 0 <= idx < len(кадры) and isinstance(кадры[idx], dict):
+            return str(кадры[idx].get("id") or "")
+        return ""
+    return ""
+
+
+def _ops_with_shot_address(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Явный restore/activate по индексу кадры[] получает shot_id для preservation."""
+
+    prepared: list[dict[str, Any]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            prepared.append(op)
+            continue
+        verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+        if verb not in _RESTORE_VERBS or op.get("shot_id") not in (None, ""):
+            prepared.append(op)
+            continue
+        sid = _shot_address_id(op)
+        if not sid:
+            prepared.append(op)
+            continue
+        patched = dict(op)
+        patched["shot_id"] = sid
+        prepared.append(patched)
+    return prepared
+
+
 def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]]) -> None:
     """Отказ, если правка добавила error. То, что уже было на before, не блокирует."""
 
@@ -1554,7 +1601,7 @@ async def apply_ops(
             _raise_if_new_preservation(
                 preservation_before,
                 await _project_preservation_view(session, project),
-                ops,
+                _ops_with_shot_address(ops),
             )
             exported = None
             if export_xlsx:
@@ -1741,7 +1788,7 @@ async def apply_ops(
             _raise_if_new_preservation(
                 preservation_before,
                 await _project_preservation_view(session, project),
-                ops,
+                _ops_with_shot_address(ops),
             )
 
         await session.flush()

@@ -451,3 +451,69 @@ async def test_rejected_apply_ops_leaves_session_clean(session: AsyncSession) ->
     assert [item.text for item in texts] == ["привет"]
     assert [item.type for item in edges] == ["next"]
     assert person.name == "Анна"
+
+
+@pytest.mark.asyncio
+async def test_db_apply_restore_shot_via_kadry_edit_passes(session: AsyncSession) -> None:
+    """Явный restore шота по shot_id или индексу в кадры[] проходит preservation."""
+    project = Project(slug="revive", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="cccccccccccccccccccccccc",
+        voiceover_text="один два",
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "текст": "один"},
+                {"id": "1-K2", "текст": "два", "активен": False},
+            ]
+        },
+    )
+    session.add(frame)
+    await session.commit()
+
+    revived = [
+        {"id": "1-K1", "текст": "один"},
+        {"id": "1-K2", "текст": "два", "активен": True},
+    ]
+    await db_apply.apply_ops(
+        session,
+        project,
+        [
+            {
+                "target": "frame",
+                "frame_uuid": frame.uuid,
+                "op": "restore",
+                "shot_index": 1,
+                "fields": {"кадры": revived},
+            }
+        ],
+    )
+    await session.refresh(frame)
+    assert frame.attrs["кадры"][1]["активен"] is True
+
+    frame.attrs = {
+        "кадры": [
+            {"id": "1-K1", "текст": "один"},
+            {"id": "1-K2", "текст": "два", "активен": False},
+        ]
+    }
+    await session.commit()
+    await db_apply.apply_ops(
+        session,
+        project,
+        [
+            {
+                "target": "frame",
+                "frame_uuid": frame.uuid,
+                "action": "activate",
+                "shot_id": "1-K2",
+                "fields": {"кадры": revived},
+            }
+        ],
+    )
+    await session.refresh(frame)
+    assert frame.attrs["кадры"][1]["id"] == "1-K2"
+    assert frame.attrs["кадры"][1]["активен"] is True
