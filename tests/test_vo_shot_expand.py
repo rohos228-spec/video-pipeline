@@ -979,6 +979,119 @@ def test_relink_keeps_ids_missing_from_rebuild(
     assert "child-extra" in caplog.text
 
 
+def test_sync_qc_keeps_ids_missing_from_mirror(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Id, которого нет в плане QC, не исчезает из сцены: хвост с активен: False.
+
+    Зеркало ребёнка схлопывается в один шот, а фильтр сцены снимает шот без
+    номера с лестницы родителя. Оба id были только там и должны остаться.
+    """
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.services.vo_shot_expand import sync_qc_kadry_onto_coverage_frames
+
+    parent_uid = "11" * 12
+    child_uid = "22" * 12
+    parent = SimpleNamespace(
+        number=1,
+        sort_key=1.0,
+        uuid=parent_uid,
+        voiceover_text="Первая.",
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-S1-K1",
+                    "сцена": 1,
+                    "план": "общий",
+                    "место": "двор",
+                    "действие": "стоит",
+                    "закадр": "Первая.",
+                },
+                {
+                    "id": "1-S1-K2",
+                    "сцена": 1,
+                    "план": "средний",
+                    "место": "двор",
+                    "действие": "шаг",
+                    "закадр": "Вторая.",
+                },
+                {
+                    "id": "orphan",
+                    "действие": "смотрит",
+                    "закадр": "хвост родителя",
+                },
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_index": 1,
+                "shots_in_beat": 2,
+                "scene_split": 1,
+                "сцена": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        sort_key=2.0,
+        uuid=child_uid,
+        voiceover_text="Вторая.",
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-S1-K2",
+                    "сцена": 1,
+                    "план": "средний",
+                    "место": "двор",
+                    "действие": "шаг",
+                    "закадр": "Вторая.",
+                },
+                {
+                    "id": "child-extra",
+                    "действие": "ждёт",
+                    "закадр": "хвост ребёнка",
+                },
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_index": 2,
+                "shots_in_beat": 2,
+                "scene_split": 1,
+                "сцена": 1,
+            },
+        },
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        sync_qc_kadry_onto_coverage_frames([parent, child])
+    finally:
+        logger.remove(sink)
+
+    def _by_id(frames: list) -> dict[str, list[dict]]:
+        found: dict[str, list[dict]] = {}
+        for fr in frames:
+            for shot in (getattr(fr, "attrs", None) or {}).get("кадры") or []:
+                if isinstance(shot, dict) and shot.get("id"):
+                    found.setdefault(str(shot["id"]), []).append(shot)
+        return found
+
+    scene = _by_id([parent, child])
+    assert "orphan" in scene
+    assert scene["orphan"][0]["активен"] is False
+    assert scene["orphan"][0]["закадр"] == "хвост родителя"
+    assert "child-extra" in scene
+    assert scene["child-extra"][0]["активен"] is False
+    assert scene["child-extra"][0]["закадр"] == "хвост ребёнка"
+    assert any(s.get("активен") is not False for s in scene["1-S1-K1"])
+    assert any(s.get("активен") is not False for s in scene["1-S1-K2"])
+    assert "orphan" in caplog.text
+    assert "child-extra" in caplog.text
+
+
 def test_relink_skips_existing_parent_child() -> None:
     from types import SimpleNamespace
 

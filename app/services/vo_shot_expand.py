@@ -2652,7 +2652,10 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
 
     Не делает adopt/expand/rebuild — только обновляет meta уже существующих
     vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
+    Id, которого нет в новом плане, остаётся в ``кадры[]`` с ``активен: False``.
     """
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
     updated = 0
     work = [f for f in frames if _is_pipeline_frame(f)]
     for members in _group_by_parent(work).values():
@@ -2675,8 +2678,10 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
         # Ensure parent carries full ladder (QC SoT).
         pattrs = dict(getattr(parent, "attrs", None) or {})
         if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
-            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+            pattrs["кадры"] = merge_kadry_keep_missing(
+                pattrs.get("кадры"),
+                [dict(s) for s in planned if isinstance(s, dict)],
+            )
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
@@ -2694,10 +2699,13 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             before_plan = str(_cs(fr).get("план") or "")
             before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             _apply_shot_meta(fr, shot)
-            # Children keep single-shot кадры mirror for report overlays.
+            # Зеркало ребёнка — один живой шот. Прочие id остаются неактивными.
             if fr is not parent and is_shot_child(fr):
                 cattrs = dict(getattr(fr, "attrs", None) or {})
-                cattrs["кадры"] = [dict(shot)]
+                cattrs["кадры"] = merge_kadry_keep_missing(
+                    cattrs.get("кадры"),
+                    [dict(shot)],
+                )
                 # раскладка already set by _apply_shot_meta on attrs
                 fr.attrs = cattrs
                 _flag_attrs(fr)
