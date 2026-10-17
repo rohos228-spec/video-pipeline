@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,112 @@ def query_text(record: dict[str, Any]) -> str:
     if stored:
         return stored
     return f"{record['dataset']} {record['record_id']}"
+
+
+# Фильтр пула. Правило в коде, до shuffle. Текст отсекается, если сработало хотя бы одно.
+RULE_VO_BRACKET = "vo_bracket"
+RULE_DATASET_FRAME = "dataset_frame_id"
+RULE_SINGLE_LETTER = "single_letter"
+RULE_FEW_CONTENT_WORDS = "few_content_words"
+FILTER_RULES = (
+    RULE_VO_BRACKET,
+    RULE_DATASET_FRAME,
+    RULE_SINGLE_LETTER,
+    RULE_FEW_CONTENT_WORDS,
+)
+_VO_BRACKET_RE = re.compile(r"\[vo-[^\]]*\]", re.IGNORECASE)
+_DATASET_FRAME_RE = re.compile(r"^(?:65-clean|65-seeded|65-canary)\s+fr-[0-9A-Za-z-]+$")
+_TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+(?:-[0-9A-Za-zА-Яа-яЁё]+)*")
+_ID_TOKEN_RE = re.compile(r"(?i)^(?:vo|fr|sc|scene|frame|rule|live|hold|h3)(?:-[a-z0-9]+)+$")
+# Стоп-слова не считаются содержательными. Односимвольные отсекаются отдельно, до этого списка.
+_STOP_WORDS = frozenset(
+    {
+        "это", "как", "где", "кто", "для", "или", "при", "что", "она", "они", "все", "уже",
+        "нет", "про", "из", "от", "до", "по", "на", "со", "без", "если", "когда", "чем",
+        "только", "можно", "нужно", "надо", "этот", "эта", "эти", "тот", "та", "те", "его",
+        "ее", "их", "под", "над", "ли", "бы", "же", "не", "да", "так", "еще", "один", "одна",
+        "два", "три", "весь", "вся", "после", "перед", "между", "внутри", "потом", "затем",
+        "чтобы", "который", "которая", "которые", "а", "и", "в", "во", "но", "к", "у", "о",
+        "об", "с", "за", "то", "он", "я", "мы", "вы", "ты", "ко", "ну", "вот", "там", "тут",
+        "этого", "этом", "этой", "мой", "моя", "мое", "был", "была", "было", "были", "быть",
+    }
+)
+
+
+def _norm_token(token: str) -> str:
+    return token.lower().replace("ё", "е")
+
+
+def _is_id_token(token: str) -> bool:
+    if any(char.isdigit() for char in token):
+        return True
+    return _ID_TOKEN_RE.fullmatch(token) is not None
+
+
+def _content_words(text: str) -> list[str]:
+    """Слова длиннее одного символа, не стоп-слова, не id и не ряд из одной буквы."""
+    words: list[str] = []
+    for token in _TOKEN_RE.findall(_VO_BRACKET_RE.sub(" ", text)):
+        if len(token) < 2 or _is_id_token(token):
+            continue
+        letters = [char.lower() for char in token if char.isalpha()]
+        if letters and len(set(letters)) == 1 and len(letters) == len(token):
+            continue
+        norm = _norm_token(token)
+        if norm in _STOP_WORDS:
+            continue
+        words.append(norm)
+    return words
+
+
+def _single_letter_row(text: str) -> bool:
+    """После скобок ``[vo-…]`` и id-токенов остаются буквы ровно одного вида."""
+    letters: list[str] = []
+    for token in _TOKEN_RE.findall(_VO_BRACKET_RE.sub(" ", text)):
+        if _is_id_token(token):
+            continue
+        letters.extend(char.lower() for char in token if char.isalpha())
+    return bool(letters) and len(set(letters)) == 1
+
+
+def _dataset_frame_text(text: str, record: dict[str, Any] | None) -> bool:
+    stripped = " ".join(text.split())
+    if _DATASET_FRAME_RE.fullmatch(stripped):
+        return True
+    if record is None or str(record.get("record_type") or "") != "frame":
+        return False
+    synthetic = f"{record.get('dataset', '')} {record.get('record_id', '')}"
+    return stripped == " ".join(synthetic.split()) and bool(record.get("record_id"))
+
+
+def rejection_rules(text: str, record: dict[str, Any] | None = None) -> list[str]:
+    """Имена сработавших правил. Пустой список — текст остаётся в пуле."""
+    reasons: list[str] = []
+    if _VO_BRACKET_RE.search(text):
+        reasons.append(RULE_VO_BRACKET)
+    if _dataset_frame_text(text, record):
+        reasons.append(RULE_DATASET_FRAME)
+    if _single_letter_row(text):
+        reasons.append(RULE_SINGLE_LETTER)
+    if len(_content_words(text)) < 3:
+        reasons.append(RULE_FEW_CONTENT_WORDS)
+    return reasons
+
+
+def filter_pool(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Детерминированный фильтр. Порядок сохранившихся записей — порядок входа."""
+    kept: list[dict[str, Any]] = []
+    rejected = {rule: 0 for rule in FILTER_RULES}
+    for record in records:
+        text = query_text(record)
+        reasons = rejection_rules(text, record)
+        if not reasons:
+            kept.append(record)
+            continue
+        for reason in reasons:
+            rejected[reason] += 1
+    report = {"pool": len(records), "kept": len(kept), "rejected": rejected}
+    return kept, report
 
 
 def quota_slots() -> list[str]:
