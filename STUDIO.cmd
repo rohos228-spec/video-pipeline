@@ -9,13 +9,12 @@ if exist "%~dp0.venv\Scripts\python.exe" goto :have_venv
 
 echo.
 echo ============================================================
-echo  Студия еще не установлена на этом компьютере (.venv не найден).
+echo  Studio is not installed on this computer (.venv missing).
 echo ============================================================
 echo.
-set /p "RUN_SETUP=Запустить быструю установку прямо сейчас? (Y/n, Enter = Да): "
+set /p "RUN_SETUP=Run quick setup now? (Y/n, Enter = Yes): "
 if "%RUN_SETUP%"=="" goto :do_setup
 if /i "%RUN_SETUP%"=="y" goto :do_setup
-if /i "%RUN_SETUP%"=="д" goto :do_setup
 exit /b 1
 
 :do_setup

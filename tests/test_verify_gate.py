@@ -8,6 +8,16 @@ from pathlib import Path
 
 HOOK = Path(__file__).resolve().parents[1] / ".cursor" / "hooks" / "verify_gate.py"
 
+# f1093525 удалил весь .cursor/hooks, а этот тест оставил. Без файла
+# импорт роняет collection всей сессии.
+if not HOOK.is_file():
+    import pytest
+
+    pytest.skip(
+        "verify_gate.py удалён в f1093525 вместе с .cursor/hooks",
+        allow_module_level=True,
+    )
+
 
 def _load():
     spec = importlib.util.spec_from_file_location("verify_gate_under_test", HOOK)

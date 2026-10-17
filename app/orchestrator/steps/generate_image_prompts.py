@@ -26,28 +26,28 @@ def is_parent_grid_frame(fr: Frame) -> bool:
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
-    from app.services.vo_shot_expand import is_img_pr_vo_parent
+    """VO-родители сетки без промта. Дочерние шоты не считаем.
 
+    uuid не требуется: кадр без uuid всё ещё родитель, если это не шот.
+    """
     return [
         fr
         for fr in frames
         if (
-            is_img_pr_vo_parent(fr)
-            and is_parent_grid_frame(fr)
+            is_parent_grid_frame(fr)
+            and str(getattr(fr, "voiceover_text", "") or "").strip()
             and not (fr.image_prompt or "").strip()
         )
     ]
 
 
 def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
-    from app.services.vo_shot_expand import is_img_pr_vo_parent
-
     return [
         fr
         for fr in frames
         if (
-            is_img_pr_vo_parent(fr)
-            and is_parent_grid_frame(fr)
+            is_parent_grid_frame(fr)
+            and str(getattr(fr, "voiceover_text", "") or "").strip()
             and (fr.image_prompt or "").strip()
         )
     ]

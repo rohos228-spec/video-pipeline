@@ -137,7 +137,7 @@ def test_shots_use_short_parallel_packs():
     )
 
     assert SHOTS_UNITS_PER_BATCH == 3
-    assert SHOTS_PARALLEL == 10
+    assert SHOTS_PARALLEL == 16
     assert SHOTS_STAGGER_SEC == 3.0
     frames = [{"uuid": f"p{i:02d}", "voiceover_text": "текст"} for i in range(38)]
     packs = split_into_fixed_units(frames, SHOTS_UNITS_PER_BATCH)

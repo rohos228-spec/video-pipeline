@@ -26,7 +26,6 @@ from contextvars import ContextVar
 from typing import Any
 
 from app.services.scene_shot_grammar import (
-    SHOT_VO_MIN,
     classify_object,
     visible_len,
 )
@@ -549,7 +548,11 @@ _PUNCT_END = (",", ".", ";", ":", "—", "!", "?", "…")
 
 
 def _split_vo(text: str) -> tuple[str, str] | None:
-    """Кусок закадра надвое: по знаку препинания ближе к середине, иначе по слову."""
+    """Кусок закадра надвое: по знаку препинания ближе к середине, иначе по слову.
+
+    Короткий закадр порога тоже режется (сумма половин = исходный текст).
+    Иначе кадр «открывает дверь» не вставляется и глагол дописывается в хвост.
+    """
     words = str(text or "").split()
     if len(words) < 2:
         return None
@@ -557,16 +560,11 @@ def _split_vo(text: str) -> tuple[str, str] | None:
     best: tuple[int, int, int] | None = None
     for cut in range(1, len(words)):
         a = " ".join(words[:cut])
-        b = " ".join(words[cut:])
-        if visible_len(a) < SHOT_VO_MIN or visible_len(b) < SHOT_VO_MIN:
-            continue
         rank = 0 if words[cut - 1].endswith(_PUNCT_END) else 1
         score = abs(visible_len(a) - total // 2)
         if best is None or (rank, score) < best[:2]:
             best = (rank, score, cut)
-    if best is None:
-        return None
-    cut = best[2]
+    cut = best[2] if best is not None else 1
     return " ".join(words[:cut]), " ".join(words[cut:])
 
 

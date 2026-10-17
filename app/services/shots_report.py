@@ -93,10 +93,11 @@ def _kadry_list(fr: Any) -> list[dict[str, Any]]:
 
 
 def _scene_n(shot: dict[str, Any], fr: Any) -> int:
-    # Prefer id prefix "10-S10-K1" / "10-S1-K1" so wrong сцена=1 in a batch
-    # cannot collapse scenes 9–16 into scene 1 in the HTML header.
+    # id «{ячейка}-S{сцена}-K{кадр}»: сцена — число после S.
+    # «1-S1-K1» и «1-S2-K1» — разные сцены одной ячейки, не одна сцена «1».
+    # Без -S («1-K7») остаётся поле сцена.
     sid = str(shot.get("id") or "")
-    m = re.match(r"^(\d+)-S", sid)
+    m = re.search(r"-S(\d+)", sid)
     if m:
         return int(m.group(1))
     n = _int(shot.get("сцена"), 0)

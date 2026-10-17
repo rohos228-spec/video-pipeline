@@ -1310,14 +1310,14 @@ async def _generate_frame_job(
     session_maker: Any = None,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker
-
-        p_dir = out_dir.parent
-        session_maker = await get_project_sessionmaker(p_dir)
+    from app.project_db import project_db_session_scope
 
     async with acquire_image_slot():
-        async with session_maker() as session:
+        if session_maker is not None:
+            session_cm = session_maker()
+        else:
+            session_cm = project_db_session_scope(project_id)
+        async with session_cm as session:
             project = await session.get(Project, project_id)
             frame = await session.get(Frame, frame_id)
             if project is None or frame is None:

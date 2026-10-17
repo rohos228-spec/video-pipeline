@@ -487,6 +487,10 @@ def _safe_upload_node_key(node_key: str) -> str:
     return cleaned.strip(" .") or "node"
 
 
+def _fw_shots_frames_qc(node_key: str) -> bool:
+    return str(node_key or "").endswith(("_fw_shots", "_fw_frames", "_fw_qc"))
+
+
 def _canvas_has_fw_shots(project) -> bool:
     """На канвасе есть нода T/X (не путать с «группа вставлена»)."""
     graph = (getattr(project, "meta", None) or {})
@@ -3569,8 +3573,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 nk_now,
                 n_sync,
             )
-        elif nk_now.endswith(("_fw_shots", "_fw_frames")) and _canvas_has_fw_shots(
-            project
+        elif (
+            _fw_shots_frames_qc(nk_now)
+            and not nk_now.endswith("_fw_qc")
+            and _canvas_has_fw_shots(project)
         ):
             from app.services.vo_shot_expand import apply_shot_coverage_to_vo_cells
 

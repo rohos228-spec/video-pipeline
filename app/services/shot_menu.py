@@ -401,6 +401,31 @@ def _subdivide_parent_uuid(frame: dict[str, Any]) -> str:
     return str(cs.get("parent_uuid") or "").strip()
 
 
+def _display_vo_parts(text: str, n: int) -> list[str]:
+    """Фрагменты для ленты. Смысловой рез не оставляем пустым слот, если слов хватает.
+
+    ``split_text_into_parts`` не рвёт фразу без знаков — хвост пустой, и в меню
+    это «—». На показе каждый шот ячейки получает свой кусок, сумма = текст.
+    Кадры не пишем.
+    """
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
+    parts = split_text_into_parts(text, n)
+    if n <= 1 or all(str(p or "").strip() for p in parts):
+        return parts
+    words = (text or "").split()
+    if len(words) < n:
+        return parts
+    base, extra = divmod(len(words), n)
+    out: list[str] = []
+    i = 0
+    for k in range(n):
+        take = base + (1 if k < extra else 0)
+        out.append(" ".join(words[i : i + take]))
+        i += take
+    return out
+
+
 def group_vo_cells(
     frames: list[dict[str, Any]],
     shot_plan: list[dict[str, Any]] | None = None,
@@ -410,8 +435,6 @@ def group_vo_cells(
     ячейка, пустой VO присоединяется как шот. Текст ячейки = voiceover_text
     родителя (разбивка). По шотам показываем vo_shot — дубликат, который
     режет expand. Frame.voiceover_text не пишем."""
-    from app.services.scene_design.camera_expand import split_text_into_parts
-
     cells: list[dict[str, Any]] = []
     current_frames: list[dict[str, Any]] = []
     current_pu = ""
@@ -435,7 +458,7 @@ def group_vo_cells(
         if copies and all(copies):
             vo_parts = copies
         elif len(current_frames) > 1 and len(nonempty) == 1:
-            vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
+            vo_parts = _display_vo_parts(nonempty[0], len(current_frames))
         else:
             vo_parts = vos
         shots = [

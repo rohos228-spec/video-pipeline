@@ -160,7 +160,9 @@ class FakeGpt:
         ctx = json.loads(path.read_text(encoding="utf-8"))
         frames = list(ctx.get("frames") or [])
         ops: list[dict[str, Any]] = []
-        if "(главное действие" in acc:
+        # fw_action с action.md — инвентарь площадки (footer place_inventory),
+        # не «главное действие». Площадку всё равно отдаём: шоты чинят порог по ней.
+        if "(главное действие" in acc or "Пиши только fields.площадка" in acc:
             kind = "action"
         elif "(кадры-шаги" in acc:
             kind = "shots"

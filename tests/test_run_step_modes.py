@@ -145,7 +145,7 @@ async def test_start_step_resume_mode_preserves_existing_images(session, tmp_pat
 
 @pytest.mark.asyncio
 async def test_start_step_ui_play_without_force_wipe_keeps_images(session, tmp_path: Path):
-    """Обычный ▶ не жжёт готовые картинки и включает auto_mode для цепочки."""
+    """Обычный ▶ не жжёт готовые картинки. auto_mode не включается (контракт main)."""
     data_dir = tmp_path / "p3"
     scenes_dir = data_dir / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
@@ -194,4 +194,4 @@ async def test_start_step_ui_play_without_force_wipe_keeps_images(session, tmp_p
     ).scalars().all()
     assert len(remaining_arts) == 1
     assert img_file.exists()
-    assert p.auto_mode is True
+    assert p.auto_mode is False

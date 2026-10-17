@@ -137,13 +137,9 @@ def _library_prompt_path(step_code: str, name: str) -> str:
 
 
 def _prompt_modified(step_code: str, name: str, p: Path) -> float | None:
-    meta = get_prompt_saved_at(step_code, name)
-    if meta is not None:
-        return meta
-    try:
-        return p.stat().st_mtime
-    except OSError:
-        return None
+    """Штамп из meta. Без записи saved_at — None, не mtime файла."""
+    del p
+    return get_prompt_saved_at(step_code, name)
 
 
 @router.get("/{step_code}/resolve", response_model=PromptResolveInfo)

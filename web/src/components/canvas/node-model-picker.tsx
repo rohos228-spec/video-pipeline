@@ -307,7 +307,7 @@ function ModelNodeMenu({
     const t = window.setTimeout(() => setMounted(false), 350);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- catalog identity churns every render
-  }, [open]);
+  }, [open, selectedId]);
 
   useEffect(() => {
     if (!open) return;
@@ -585,7 +585,7 @@ function ModelRow({
             ) : null}
             {media.aspects.length ? (
               <MiniMenu
-                label="Формат"
+                label="Соотношение"
                 value={aspect}
                 options={media.aspects.map((a) => ({ id: a, label: a }))}
                 onChange={setAspect}

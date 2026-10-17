@@ -718,7 +718,8 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
     kids = [fr for fr in cell if fr.uuid != UID]
     assert kids
     kid = board[int(kids[0].number)]
-    assert kid["shot_plan"] == "СРЕДНИЙ"
+    # Прыжок ДЕТАЛЬ → СРЕДНИЙ (3 ступени) площадка сжимает до КРУПНЫЙ.
+    assert kid["shot_plan"] == "КРУПНЫЙ"
     assert kid["shot_angle"] == "3/4"
     assert kid["shot_move"] == "отъезд"
     assert _cs(kids[0]).get("роль_кадра") == "следствие"

@@ -615,12 +615,14 @@ def _chat_url(model: str) -> str:
         elif "kie.ai" not in base.lower():
             logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
-    if is_anthropic:
+    # Нода vibecode: контракт URL — /v1/chat/completions (в т.ч. claude и VPS-relay).
+    # Сам Messages API (#315) включается в chat(): поток уходит на /messages.
+    if _node_vibecode_override():
+        path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
+    elif is_anthropic:
         path = "/messages" if base.lower().endswith("/v1") else "/v1/messages"
     elif _node_kie_override():
         path = (settings.gpt_chat_path or "/codex/v1/responses").strip()
-    elif _node_vibecode_override():
-        path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
     else:
         path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
@@ -3395,8 +3397,11 @@ async def chat(
         try:
             await _ensure_url_host_resolves(url)
             if is_anthropic:
+                stream_url = url
+                if stream_url.endswith("/chat/completions"):
+                    stream_url = stream_url[: -len("/chat/completions")] + "/messages"
                 result = await _chat_anthropic_stream(
-                    url=url,
+                    url=stream_url,
                     headers=headers,
                     body=body,
                     timeout=use_timeout,
@@ -3421,7 +3426,7 @@ async def chat(
                     )
                     try:
                         cont = await _chat_anthropic_stream(
-                            url=url,
+                            url=stream_url,
                             headers=headers,
                             body=cont_body,
                             timeout=min(use_timeout, 180.0),

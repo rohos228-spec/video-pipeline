@@ -830,8 +830,10 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
         attrs["place"] = place
     if action:
         attrs["shot01_action"] = action
-        # НИКОГДА не пишем действие шота в main_action: иначе stub первого
-        # шага затирает/маскирует полное главное_действие и shots видит steps=0.
+        # Пустую ячейку заполняем. Уже записанную цепь сцен не затираем
+        # коротким действием шота — иначе shots видит steps=0.
+        if not str(attrs.get("main_action") or "").strip():
+            attrs["main_action"] = action
     for key in ("раскладка", "зона"):
         val = str(shot.get(key) or "").strip()
         if val:
@@ -1574,6 +1576,9 @@ def assigned_place_run_keys(frames: list[Any]) -> list[str]:
                 gap = False
         if gap:
             run_place = raw_place
+        # Ручное разделение на доске: пустое место не склеивает новые
+        # VO-родители обратно в одну семью.
+        held = bool(_cs(fr).get("montage_split")) and not is_shot_child(fr)
         if (
             prev is not None
             and not gap
@@ -1583,6 +1588,9 @@ def assigned_place_run_keys(frames: list[Any]) -> list[str]:
         ):
             split_i += 1
             key = f"x:{split_i}"
+        elif held and prev is not None:
+            split_i += 1
+            key = f"ms:{split_i}"
         elif prev is not None and not gap and prev_key and (
             not raw_place or not run_place or raw_place == run_place
         ):
@@ -1947,6 +1955,16 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
         idx += 1
         seen.add(id(fr))
     extra: list[Any] = []
+    seen_extra: set[int] = set()
+
+    def _take(members: list[Any]) -> None:
+        for fr in members:
+            marker = id(fr)
+            if marker in seen_extra:
+                continue
+            seen_extra.add(marker)
+            extra.append(fr)
+
     for items in ladders.values():
         if len(items) < 2:
             continue
@@ -1954,7 +1972,28 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
         for item in items:
             if item is keep:
                 continue
-            extra.extend(item[1])
+            _take(item[1])
+    # Старый ``1-K7`` после renumber живёт рядом с ``3-S2-K*``: префикс
+    # уже не совпадает, но это вторая лестница той же сцены. S-лестницу
+    # оставляем, безымянную K-лестницу снимаем.
+    by_scene: dict[int, list[list[tuple[int, list[Any]]]]] = {}
+    for (_cell, sc), items in ladders.items():
+        by_scene.setdefault(int(sc), []).append(items)
+    for groups in by_scene.values():
+        s_groups: list[list[tuple[int, list[Any]]]] = []
+        plain: list[list[tuple[int, list[Any]]]] = []
+        for items in groups:
+            has_s = any(
+                _S_LADDER_RE.match(coverage_shot_id(fr) or "")
+                for _idx, members in items
+                for fr in members
+            )
+            (s_groups if has_s else plain).append(items)
+        if not s_groups or not plain:
+            continue
+        for items in plain:
+            for _idx, members in items:
+                _take(members)
     return extra
 
 
@@ -2523,6 +2562,42 @@ async def adopt_full_kadry_ladder(
 
 
 
+def _keep_shorter_door_run(old: str, new: str) -> str:
+    """QC схлопнул «бежит по улице» и «к двери» в одну фразу.
+
+    Кадр уже нёс короткий заход. Хвост «к … двери» остаётся на кадре порога,
+    этот кадр не переписываем длинной фразой.
+    """
+    old_n = " ".join((old or "").split())
+    new_n = " ".join((new or "").split())
+    if not old_n or not new_n.startswith(old_n + " "):
+        return new
+    tail = new_n[len(old_n) :].strip()
+    if re.match(r"к\s+\S+", tail) and re.search(r"двер", tail, re.IGNORECASE):
+        return old_n
+    return new
+
+
+def _repair_door_actions(parent: Any, planned: list[dict]) -> list[dict]:
+    """QC часто оставляет «бежит к открытой двери». Физика порога — после синка."""
+    plan = (getattr(parent, "attrs", None) or {}).get("площадка")
+    shots = [dict(s) for s in planned if isinstance(s, dict)]
+    if not shots:
+        return planned
+    try:
+        from app.services.scene_plan import apply_scene_plan_cells
+
+        apply_scene_plan_cells([{
+            "key": str(getattr(parent, "uuid", "") or "qc"),
+            "shots": shots,
+            "plan": plan,
+            "owned": True,
+        }])
+    except Exception:  # noqa: BLE001
+        return planned
+    return shots or planned
+
+
 def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
     """После QC: перенести план/раскладка/ракурс из attrs.кадры на ячейки покрытия.
 
@@ -2543,6 +2618,7 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
         )
         if not planned:
             continue
+        planned = _repair_door_actions(parent, planned)
         ordered = list(members)
         ordered.sort(
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
@@ -2559,6 +2635,13 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             shot = planned[i] if i < len(planned) else None
             if not isinstance(shot, dict):
                 continue
+            old_action = str(
+                (getattr(fr, "attrs", None) or {}).get("shot01_action") or ""
+            )
+            kept = _keep_shorter_door_run(old_action, str(shot.get("действие") or ""))
+            if kept and kept != str(shot.get("действие") or "").strip():
+                shot = dict(shot)
+                shot["действие"] = kept
             before_plan = str(_cs(fr).get("план") or "")
             before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             _apply_shot_meta(fr, shot)

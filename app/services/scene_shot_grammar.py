@@ -1212,7 +1212,6 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
             f"{prefix}кадр пустой закадр "
             "— у каждого кадра свой кусок"
         )
-    norm_vo = " ".join((vo or "").split())
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
     for shot in shots:
@@ -1239,16 +1238,16 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         chunk = str(shot.get("закадр") or "").strip()
         if chunk:
             n = visible_len(chunk)
-            covers = bool(norm_vo) and " ".join(chunk.split()) == norm_vo
             cell_short = len(shots) == 1 and visible_len(vo) < SHOT_VO_MIN
             cutaway = is_cutaway_shot(shot)
-            whole = vo_piece_ends_sentence(chunk)
-            if n > SHOT_VO_MAX and not whole:
+            # Точка в конце не отменяет норму длины: целая фраза длиннее 80
+            # или короче 26 (не перебивка) — всё ещё «симв».
+            if n > SHOT_VO_MAX:
                 return (
                     f"{prefix}кадр закадр {n} симв. "
                     f"(разрежь, не вали весь VO; норма {SHOT_VO_MIN}–{SHOT_VO_MAX})"
                 )
-            if n < SHOT_VO_CUTAWAY_MIN and not (cutaway or cell_short or whole):
+            if n < SHOT_VO_CUTAWAY_MIN and not (cutaway or cell_short):
                 return (
                     f"{prefix}кадр закадр {n} симв. "
                     f"(<{SHOT_VO_CUTAWAY_MIN} только у перебивки/реакции)"
@@ -1257,7 +1256,6 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
                 n < SHOT_VO_MIN
                 and not cutaway
                 and not cell_short
-                and not whole
             ):
                 return (
                     f"{prefix}кадр закадр {n} симв. "
@@ -1382,9 +1380,13 @@ def vo_sentence_problems(shots, vo):
     rows = [s for s in shots if isinstance(s, dict)]
     pieces = [(s, " ".join(str(s.get("закадр") or "").split())) for s in rows]
     nonempty = [(s, t) for s, t in pieces if t]
-    for s, t in nonempty[:-1]:
-        if not vo_piece_ends_sentence(t):
-            out.append(f"{s.get('id')}: закадр рвёт предложение «…{t[-30:]}»")
+    cell = " ".join(str(vo or "").split())
+    # Без конца предложения в VO ячейки резать «по предложениям» нечего:
+    # куски вроде «кусок закадра первый» — нормальная склейка, не брак.
+    if not cell or _END_OK.search(cell) or _SENT_END.search(cell):
+        for s, t in nonempty[:-1]:
+            if not vo_piece_ends_sentence(t):
+                out.append(f"{s.get('id')}: закадр рвёт предложение «…{t[-30:]}»")
     for s, t in pieces:
         if t and str(s.get("реплика") or "").strip():
             out.append(f"{s.get('id')}: закадр и реплика в одном кадре")

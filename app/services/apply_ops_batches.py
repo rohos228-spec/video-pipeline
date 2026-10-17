@@ -73,7 +73,7 @@ VO_UNITS_PER_BATCH = 6
 # fw_frames (старые канвасы) — по 6 кадров (тяжёлые image+anim).
 # Из main: соло-пачка жирного K1, автопочинка UUID, не резать пачку на salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
-SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 8
+SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 # Шоты (13.10.2026, прогон 18:37–19:25 на vibecode.moe напрямую, без relay):
 # пачка из 3 ячеек на reasoning high = 40–73k символов, 5–7 мин потока;
 # 34 пачки, 0 обрывов, 0 502, но 3 пачки упёрлись в стену 540 с и были
@@ -1441,6 +1441,16 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
+        for shot in shots:
+            if not isinstance(shot, dict):
+                continue
+            chunk = _shot_vo_chunk(shot)
+            if vo_chunk_is_dangling(chunk):
+                sid = str(shot.get("id") or "")
+                return (
+                    f"uuid {uid[:8]}: кадр {sid or '?'} обрубок закадра "
+                    f"({chunk[-24:]!r})"
+                )
         # Чиним НА МЕСТЕ: раньше сюда шла копия списка — удаления/склейки
         # терялись, а перенесённый текст оставался и в источнике (дубли).
         notes = repair_shot_vo_lengths(shots, vo)
@@ -1495,6 +1505,27 @@ def prompts_ops_reason(
         if not (img or vid or img2 or has_kids):
             return f"uuid {uid[:8]}: нет промт_картинки"
     return None
+
+
+def _shots_step_count_note(frames: list[dict[str, Any]] | None) -> str:
+    """Жирная цепь: сказать модели сколько шагов, не схлопывать в 1–5."""
+    lines: list[str] = []
+    for fr in frames or []:
+        if not isinstance(fr, dict):
+            continue
+        uid = str(fr.get("uuid") or "")[:8]
+        if not uid:
+            continue
+        steps = _frame_action_steps(fr)
+        if steps <= 0:
+            continue
+        lines.append(
+            f"uuid {uid}: ≈ {steps} шагов, не схлопывай в 1–5. "
+            "Потолок 50 шагов. 26–80 — длина закадра ОДНОГО кадра."
+        )
+    if not lines:
+        return ""
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def _batch_footer(
@@ -1564,6 +1595,7 @@ def _batch_footer(
             "{кто, где, лицом, движется}, меняет {предмет, состояние} — "
             "лево/право и раскладку посчитает код. "
             "Не пиши биты и главное_действие. JSON apply-ops, без прозы.\n"
+            f"{_shots_step_count_note(frames)}"
         )
 
     if kind in {"shots_qc", "qc_shots"}:
@@ -3175,6 +3207,8 @@ async def run_apply_ops_batched(
                         return
                     _skip_pack(chunk, level, f"LLM/сеть после {_cap} повторов: {msg[:200]}")
                     return
+                if isinstance(exc, PassStopError) and "скопирован" in msg:
+                    raise
                 logger.error(
                     "[#{}] apply_ops node={!r}: L{} пачка упала, "
                     "ноду не перезапускаем: {}",
@@ -3377,6 +3411,7 @@ async def run_apply_ops_batched(
         except BaseException as exc:
             # Пачка или внутренняя ошибка не должны ронять шаг:
             # soft retry заново открывает ноду с первой пачки.
+            # Скопированный смысл аналитики — стоп пачки, не тихий пропуск.
             recorder.finish(ok=False, error=f"{type(exc).__name__}: {exc}")
             logger.error(
                 "[#{}] apply_ops node={!r}: прогон пачек остановился, "
@@ -3385,6 +3420,8 @@ async def run_apply_ops_batched(
                 node_key,
                 exc,
             )
+            if isinstance(exc, PassStopError) and "скопирован" in str(exc):
+                raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)
             recorder.finish(

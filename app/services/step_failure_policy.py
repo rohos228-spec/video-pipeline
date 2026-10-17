@@ -427,7 +427,10 @@ async def record_step_failure(
     # Площадка / excel: упавшая пачка не должна заново запускать всю ноду.
     # Раньше soft retry ставил статус обратно в enriching_* и prepare
     # сбрасывал карточку на первую пачку.
-    if str(step_code).startswith("enrich") or step_code == "excel_gpt":
+    # Каждые FAILS_PER_CYCLE (3, 6) — сон, как у остальных шагов.
+    if (
+        str(step_code).startswith("enrich") or step_code == "excel_gpt"
+    ) and total % FAILS_PER_CYCLE != 0:
         fs["last_error"] = err_msg
         fs["last_error_code"] = err_code
         fs["last_running"] = key

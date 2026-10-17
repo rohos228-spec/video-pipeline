@@ -367,8 +367,9 @@ async def start_step(
         )
     try:
         # Wipe только по явному force_wipe=True. Обычный ▶ не жжёт готовое.
+        # img_pr: явный ▶ всегда пересобирает промты (force_wipe), авто — нет.
         if force_wipe is None:
-            force_wipe = False
+            force_wipe = bool(explicit_ui_start and step_code == "img_pr")
 
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с

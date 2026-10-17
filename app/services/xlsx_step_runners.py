@@ -2017,17 +2017,28 @@ async def _project_runtime_session(project: Project) -> AsyncIterator[AsyncSessi
     Wipe и валидатор шага уже ходят в project.db. Loader/apply на SessionLocal
     видели чужие старые промты и пропускали GPT.
     """
-    data_dir = getattr(project, "data_dir", None)
-    if data_dir:
-        from app.project_db import get_project_sessionmaker
+    # Сначала кэш (тест main регистрирует project.db не в videos/<slug>),
+    # затем живой project.db по вычисленному data_dir, иначе scope по id.
+    from app.project_db import (
+        _PROJECT_DIR_CACHE,
+        get_project_sessionmaker,
+        project_db_session_scope,
+        resolve_project_db_path,
+    )
 
+    cached = _PROJECT_DIR_CACHE.get(getattr(project, "id", None))
+    if cached is not None and resolve_project_db_path(cached).is_file():
+        sm = await get_project_sessionmaker(cached)
+        async with sm() as session:
+            yield session
+        return
+    data_dir = getattr(project, "data_dir", None)
+    if data_dir is not None and resolve_project_db_path(data_dir).is_file():
         sm = await get_project_sessionmaker(data_dir)
         async with sm() as session:
             yield session
         return
-    from app.db import SessionLocal
-
-    async with SessionLocal() as session:
+    async with project_db_session_scope(project.id) as session:
         yield session
 
 
