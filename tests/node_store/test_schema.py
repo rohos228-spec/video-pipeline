@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
+
+_REPO = Path(__file__).resolve().parents[2]
+_MIGRATION_001 = _REPO / "app/orchestrator/db/migrations/001_node_defs.sql"
+_MIGRATION_002 = _REPO / "app/orchestrator/db/migrations/002_node_prompt_versions.sql"
 
 NODE_DEF_COLUMNS = [
     "id",
@@ -154,3 +159,13 @@ def test_active_version_cannot_point_at_missing_or_revert(conn: sqlite3.Connecti
     )
     conn.execute("UPDATE node_defs SET active_version = 2 WHERE node_key = 'n_qc_vo'")
     assert conn.execute("SELECT active_version FROM node_defs").fetchone()[0] == 2
+
+
+@pytest.mark.skipif(
+    not (_MIGRATION_001.is_file() and _MIGRATION_002.is_file()),
+    reason="TODO: после мёржа #346 сверить schema_346.sql с миграциями 001 и 002",
+)
+def test_schema_346_matches_ws3_migrations() -> None:
+    fixture = (Path(__file__).parent / "schema_346.sql").read_text(encoding="utf-8")
+    assert _MIGRATION_001.read_text(encoding="utf-8").strip() in fixture
+    assert _MIGRATION_002.read_text(encoding="utf-8").strip() in fixture

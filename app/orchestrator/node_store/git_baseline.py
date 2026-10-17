@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,10 +36,30 @@ def default_templates_root() -> Path:
     return Path(__file__).resolve().parents[3] / "templates" / "node_groups"
 
 
+@dataclass(frozen=True)
+class _CacheEntry:
+    mtime_ns: int
+    size: int
+    baseline: GitBaseline
+
+
+# Ключ: (корень, node_key). Попадание годится, пока mtime и размер файла те же.
+# Размер нужен, потому что правка в ту же наносекунду не двигает mtime.
+_cache: dict[tuple[str, str], _CacheEntry] = {}
+_cache_lock = threading.Lock()
+
+
 def load_git_baseline(node_key: str, templates_root: Path | None = None) -> GitBaseline:
     if not NODE_KEY_RE.fullmatch(node_key or ""):
         raise ValueError("node_key должен соответствовать ^n_[a-z0-9_]+$")
     root = templates_root if templates_root is not None else default_templates_root()
+    cache_key = (str(root), node_key)
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached is not None:
+        fresh = _cached_if_same_mtime(cached)
+        if fresh is not None:
+            return fresh
     path = _find_template(root, node_key)
     if path is None:
         return GitBaseline(
@@ -49,6 +70,34 @@ def load_git_baseline(node_key: str, templates_root: Path | None = None) -> GitB
             group_key=None,
             title=None,
         )
+    baseline = _read_template(path, root)
+    try:
+        stat = path.stat()
+    except OSError:
+        return baseline
+    with _cache_lock:
+        _cache[cache_key] = _CacheEntry(
+            mtime_ns=stat.st_mtime_ns,
+            size=stat.st_size,
+            baseline=baseline,
+        )
+    return baseline
+
+
+def _cached_if_same_mtime(cached: _CacheEntry) -> GitBaseline | None:
+    path = cached.baseline.path
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if stat.st_mtime_ns != cached.mtime_ns or stat.st_size != cached.size:
+        return None
+    return cached.baseline
+
+
+def _read_template(path: Path, root: Path) -> GitBaseline:
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if path.suffix == ".json":

@@ -35,6 +35,21 @@ def conn() -> sqlite3.Connection:
 
 
 @pytest.fixture()
+def autocommit_conn(tmp_path: Path) -> sqlite3.Connection:
+    """Соединение в autocommit: транзакцию держит только явный BEGIN."""
+    connection = sqlite3.connect(tmp_path / "node_store.db")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.create_function("regexp", 2, _regexp)
+    connection.executescript(_SCHEMA)
+    connection.isolation_level = None
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+@pytest.fixture()
 def templates(tmp_path: Path) -> Path:
     root = tmp_path / "node_groups"
     root.mkdir()

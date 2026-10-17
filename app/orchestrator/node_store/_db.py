@@ -44,17 +44,6 @@ def _regexp(pattern: str, value: object) -> int:
     return 1 if re.search(pattern, str(value)) else 0
 
 
-def ensure_conn(conn: sqlite3.Connection) -> None:
-    """Включить FK и REGEXP, без которых CHECK из миграции #346 не исполняется.
-
-    PRAGMA foreign_keys внутри уже открытой транзакции SQLite игнорирует,
-    поэтому вызывающий, который сам начал транзакцию, включает FK заранее.
-    """
-    if not conn.in_transaction:
-        conn.execute("PRAGMA foreign_keys=ON")
-    conn.create_function("regexp", 2, _regexp)
-
-
 def validate_node_key(node_key: str) -> str:
     key = (node_key or "").strip()
     if not NODE_KEY_RE.fullmatch(key):
@@ -114,24 +103,69 @@ def validate_reason(reason: str, *, required: bool) -> str | None:
     return text
 
 
+# Глубина вложенного atomic на соединение. Имена savepoint не повторяются.
+_txn_depth: dict[int, int] = {}
+
+
+def ensure_conn(conn: sqlite3.Connection) -> None:
+    """Включить FK, busy_timeout и REGEXP до BEGIN.
+
+    PRAGMA foreign_keys внутри уже открытой транзакции SQLite игнорирует,
+    поэтому вызывающий, который сам начал транзакцию, включает FK заранее.
+    """
+    if not conn.in_transaction:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+    conn.create_function("regexp", 2, _regexp)
+
+
 @contextmanager
 def atomic(conn: sqlite3.Connection) -> Iterator[None]:
-    """Одна транзакция записи.
+    """Одна транзакция записи: ``BEGIN IMMEDIATE``.
 
-    Внешней транзакции нет — коммит или полный откат через контекст sqlite3.
-    Внешняя уже есть — SAVEPOINT, чтобы не закоммитить чужую работу.
+    Работает и при ``isolation_level=None`` (autocommit), и в дефолтном
+    режиме модуля sqlite3. Вложенный вызов берёт savepoint со своим
+    номером глубины и не снимает внешний. Номер версии читается уже
+    внутри этой транзакции.
     """
     ensure_conn(conn)
     if conn.in_transaction:
-        conn.execute("SAVEPOINT node_store_write")
+        depth = _txn_depth.get(id(conn), 0)
+        name = f"node_store_w{depth}"
+        _txn_depth[id(conn)] = depth + 1
+        conn.execute(f"SAVEPOINT {name}")
         try:
             yield
         except BaseException:
-            conn.execute("ROLLBACK TO SAVEPOINT node_store_write")
-            conn.execute("RELEASE SAVEPOINT node_store_write")
+            conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+            conn.execute(f"RELEASE SAVEPOINT {name}")
             raise
         else:
-            conn.execute("RELEASE SAVEPOINT node_store_write")
+            conn.execute(f"RELEASE SAVEPOINT {name}")
+        finally:
+            if depth == 0:
+                _txn_depth.pop(id(conn), None)
+            else:
+                _txn_depth[id(conn)] = depth
         return
-    with conn:
-        yield
+
+    previous_isolation = conn.isolation_level
+    switched = previous_isolation is not None
+    if switched:
+        # Иначе обёртка sqlite3 сама откроет DEFERRED до нашего BEGIN.
+        conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+    finally:
+        _txn_depth.pop(id(conn), None)
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        if switched:
+            conn.isolation_level = previous_isolation

@@ -61,6 +61,7 @@ def test_resolve_db_snapshot_over_git_keeps_current_hash(
         prompt_template="db prompt",
         params={"model": "db-model"},
         change_id="chg-1",
+        origin="git_override",
         templates_root=templates,
     )
     node = resolve_node("n_qc_vo", conn, templates_root=templates)
@@ -91,6 +92,7 @@ def test_db_params_replace_git_params(conn: sqlite3.Connection, templates: Path)
         prompt_template="from db",
         params={"model": "db-model"},
         change_id="chg-1",
+        origin="git_override",
         templates_root=templates,
     )
     node = resolve_node("n_qc_vo", conn, templates_root=templates)
@@ -109,13 +111,14 @@ def test_stale_base_when_git_file_changes(conn: sqlite3.Connection, templates: P
         prompt_template="db",
         params={"model": "m"},
         change_id="chg-1",
+        origin="git_override",
         templates_root=templates,
     )
     stored = conn.execute(
         "SELECT base_git_sha256 FROM node_prompt_versions WHERE version = 1"
     ).fetchone()
     assert stored[0] == path_hash
-    new_bytes = b"v2\n"
+    new_bytes = b"v2-changed\n"
     (templates / "excel_gpt" / "n_qc_vo.md").write_bytes(new_bytes)
     node = resolve_node("n_qc_vo", conn, templates_root=templates)
     assert node.git_sha256 == hashlib.sha256(new_bytes).hexdigest()
@@ -161,3 +164,61 @@ def test_unknown_node_and_ambiguous_template(conn: sqlite3.Connection, templates
 def test_bad_node_key_rejected(conn: sqlite3.Connection, templates: Path) -> None:
     with pytest.raises(ValueError, match="node_key"):
         resolve_node("Foo", conn, templates_root=templates)
+
+
+def test_null_pointer_without_git_is_not_an_empty_node(
+    conn: sqlite3.Connection, templates: Path
+) -> None:
+    create_node(
+        conn,
+        node_key="n_only_db",
+        group_key="excel_gpt",
+        title="Только БД",
+        prompt_template="из базы",
+        change_id="chg-1",
+        templates_root=templates,
+    )
+    conn.execute("UPDATE node_defs SET active_version = NULL WHERE node_key = 'n_only_db'")
+    with pytest.raises(NodeNotFoundError, match="не найдена в git"):
+        resolve_node("n_only_db", conn, templates_root=templates)
+    with pytest.raises(NodeNotFoundError, match="не найдена в git"):
+        get_node("n_only_db", conn, templates_root=templates)
+
+
+def test_disabled_node_still_resolves(conn: sqlite3.Connection, templates: Path) -> None:
+    create_node(
+        conn,
+        node_key="n_only_db",
+        group_key="excel_gpt",
+        title="Только БД",
+        prompt_template="из базы",
+        change_id="chg-1",
+        templates_root=templates,
+    )
+    conn.execute("UPDATE node_defs SET status = 'disabled' WHERE node_key = 'n_only_db'")
+    node = resolve_node("n_only_db", conn, templates_root=templates)
+    assert node.source == "db"
+    assert node.prompt_template == "из базы"
+    assert node.db_version == 1
+
+
+def test_broken_params_json_is_node_store_error(conn: sqlite3.Connection, templates: Path) -> None:
+    create_node(
+        conn,
+        node_key="n_only_db",
+        group_key="excel_gpt",
+        title="Только БД",
+        prompt_template="из базы",
+        change_id="chg-1",
+        templates_root=templates,
+    )
+    conn.execute(
+        """
+        INSERT INTO node_prompt_versions (
+            node_key, version, prompt_template, params_json, kind, change_id, created_at
+        ) VALUES ('n_only_db', 2, 'из базы', 'не json', 'edit_params', 'chg-2', '2026-10-17T00:00:00.000000Z')
+        """
+    )
+    conn.execute("UPDATE node_defs SET active_version = 2 WHERE node_key = 'n_only_db'")
+    with pytest.raises(NodeStoreError, match="не JSON"):
+        resolve_node("n_only_db", conn, templates_root=templates)

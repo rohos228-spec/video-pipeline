@@ -115,7 +115,7 @@ def test_edit_prompt_replace_section_and_ui_version(
     conn: sqlite3.Connection, templates: Path
 ) -> None:
     _git(templates)
-    assert _create(conn, templates) == 1
+    assert _create(conn, templates, origin="git_override") == 1
     replaced = writer.edit_prompt(
         conn,
         node_key="n_qc_vo",
@@ -277,7 +277,7 @@ def test_revert_returns_to_git_and_blocks_pointer(
     conn: sqlite3.Connection, templates: Path
 ) -> None:
     _git(templates, "git-текст\n")
-    _create(conn, templates, prompt_template="db-текст")
+    _create(conn, templates, prompt_template="db-текст", origin="git_override")
     writer.edit_prompt(
         conn,
         node_key="n_qc_vo",
@@ -353,7 +353,7 @@ def test_failed_section_and_duplicate_leave_no_rows(
             templates_root=templates,
         )
     assert _counts(conn) == (0, 0)
-    _create(conn, templates)
+    _create(conn, templates, origin="git_override")
     with pytest.raises(NodeExistsError):
         _create(conn, templates, change_id="chg-dup")
     assert _counts(conn) == (1, 1)
@@ -405,6 +405,328 @@ def test_atomicity_when_update_trigger_aborts(conn: sqlite3.Connection, template
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         conn.execute("DELETE FROM node_prompt_versions")
     assert conn.execute("SELECT prompt_template FROM node_prompt_versions").fetchone()[0] == "версия один"
+
+
+def test_revert_without_git_and_only_for_git_override(
+    conn: sqlite3.Connection, templates: Path
+) -> None:
+    _create(conn, templates)
+    with pytest.raises(NodeNotFoundError, match="нечего восстанавливать из git"):
+        writer.revert_node_to_git(
+            conn,
+            node_key="n_qc_vo",
+            change_id="chg-revert",
+            reason="некуда",
+            templates_root=templates,
+        )
+    assert _counts(conn) == (1, 1)
+    assert conn.execute("SELECT active_version FROM node_defs").fetchone()[0] == 1
+    _git(templates, "git-текст\n")
+    with pytest.raises(NodeStoreError, match="git_override"):
+        writer.revert_node_to_git(
+            conn,
+            node_key="n_qc_vo",
+            change_id="chg-revert-2",
+            reason="origin db",
+            templates_root=templates,
+        )
+    assert _counts(conn) == (1, 1)
+
+
+def test_create_over_git_requires_explicit_origin(conn: sqlite3.Connection, templates: Path) -> None:
+    _git(templates, "git\n")
+    with pytest.raises(NodeExistsError, match="git_override"):
+        _create(conn, templates)
+    assert _counts(conn) == (0, 0)
+    with pytest.raises(ValueError, match="prompt_template пуст"):
+        writer.create_node(
+            conn,
+            node_key="n_empty",
+            group_key="excel_gpt",
+            title="Пусто",
+            prompt_template="   ",
+            change_id="chg-empty",
+            templates_root=templates,
+        )
+    assert _create(conn, templates, origin="git_override") == 1
+
+
+def test_reasoning_effort_cannot_drop_below_high(conn: sqlite3.Connection, templates: Path) -> None:
+    _create(conn, templates)
+    with pytest.raises(NodeStoreError, match="reasoning_effort"):
+        writer.edit_params(
+            conn,
+            node_key="n_qc_vo",
+            params_patch={"reasoning_effort": "low"},
+            change_id="chg-low",
+            reason="понизить",
+            templates_root=templates,
+        )
+    with pytest.raises(NodeStoreError, match="reasoning_effort"):
+        writer.create_node(
+            conn,
+            node_key="n_low",
+            group_key="excel_gpt",
+            title="Low",
+            prompt_template="промпт",
+            params={"reasoning_effort": "low"},
+            change_id="chg-low-create",
+            templates_root=templates,
+        )
+    assert _counts(conn) == (1, 1)
+    # Правило stagger/parallel снято: эти поля пишутся без проверки.
+    version = writer.edit_params(
+        conn,
+        node_key="n_qc_vo",
+        params_patch={"stagger_sec": 0, "parallel": 1},
+        change_id="chg-stagger",
+        reason="сдвиг снят",
+        templates_root=templates,
+    )
+    assert version == 2
+
+
+def test_rollback_rejects_revert_row(conn: sqlite3.Connection, templates: Path) -> None:
+    _git(templates, "git-текст\n")
+    _create(conn, templates, origin="git_override")
+    reverted = writer.revert_node_to_git(
+        conn,
+        node_key="n_qc_vo",
+        change_id="chg-revert",
+        reason="на git",
+        templates_root=templates,
+    )
+    with pytest.raises(NodeStoreError, match="revert_to_git"):
+        writer.rollback_to_version(
+            conn,
+            node_key="n_qc_vo",
+            version=reverted,
+            change_id="chg-roll",
+            reason="обойти revert",
+            templates_root=templates,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM node_prompt_versions").fetchone()[0] == 2
+    assert conn.execute("SELECT active_version FROM node_defs").fetchone()[0] is None
+
+
+def test_rule_anchor_section(conn: sqlite3.Connection, templates: Path) -> None:
+    prompt = "intro\n   R-NO-OVERSPLIT. старое\n   продолжение\n   R-OTHER. не трогать\n"
+    _git(templates, prompt)
+    version = writer.edit_prompt(
+        conn,
+        node_key="n_qc_vo",
+        content="   R-NO-OVERSPLIT. новое",
+        patch_mode="section",
+        section_anchor="R-NO-OVERSPLIT",
+        change_id="chg-rule",
+        reason="правило",
+        templates_root=templates,
+    )
+    assert version == 1
+    stored = conn.execute("SELECT prompt_template FROM node_prompt_versions").fetchone()[0]
+    assert stored == "intro\n   R-NO-OVERSPLIT. новое\n   R-OTHER. не трогать\n"
+    with pytest.raises(ValueError, match="section_anchor не найден"):
+        writer.edit_prompt(
+            conn,
+            node_key="n_qc_vo",
+            content="x",
+            patch_mode="section",
+            section_anchor="старое",
+            change_id="chg-body",
+            reason="тело не якорь",
+            templates_root=templates,
+        )
+
+
+def test_materialize_group_and_title(conn: sqlite3.Connection, templates: Path) -> None:
+    from app.orchestrator.node_store.git_baseline import GitBaseline
+    from app.orchestrator.node_store.writer import _materialize_group, _materialize_title, _State
+
+    empty = _State(
+        exists=False,
+        active_version=None,
+        prompt="",
+        params={},
+        params_json="{}",
+        baseline=GitBaseline(
+            path=None,
+            prompt_template="",
+            params={},
+            sha256=None,
+            group_key=None,
+            title=None,
+        ),
+    )
+    with pytest.raises(ValueError, match="group_key"):
+        _materialize_group(empty, None)
+    with pytest.raises(ValueError, match="title"):
+        _materialize_title(empty, None)
+    assert _materialize_group(empty, "excel_gpt") == "excel_gpt"
+    assert _materialize_title(empty, "QC заголовок") == "QC заголовок"
+
+    (templates / "n_root.md").write_text("# only\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="group_key"):
+        writer.edit_prompt(
+            conn,
+            node_key="n_root",
+            content="новый",
+            patch_mode="replace",
+            change_id="chg-root",
+            reason="без группы",
+            templates_root=templates,
+        )
+    assert _counts(conn) == (0, 0)
+    version = writer.edit_prompt(
+        conn,
+        node_key="n_root",
+        content="новый",
+        patch_mode="replace",
+        change_id="chg-root-2",
+        reason="с группой",
+        group_key="excel_gpt",
+        templates_root=templates,
+    )
+    assert version == 1
+    meta = conn.execute("SELECT group_key, title, origin FROM node_defs").fetchone()
+    assert tuple(meta) == ("excel_gpt", "n_root", "git_override")
+
+
+def test_nested_atomic_savepoint(conn: sqlite3.Connection) -> None:
+    from app.orchestrator.node_store._db import atomic
+
+    stamp = "2026-10-17T00:00:00.000000Z"
+    with atomic(conn):
+        conn.execute(
+            """
+            INSERT INTO node_defs (
+                node_key, group_key, title, origin, is_new_group, status,
+                active_version, created_at, updated_at
+            ) VALUES ('n_qc_vo', 'excel_gpt', 'QC', 'db', 0, 'active', NULL, ?, ?)
+            """,
+            (stamp, stamp),
+        )
+        with pytest.raises(RuntimeError, match="inner"), atomic(conn):
+            conn.execute(
+                """
+                    INSERT INTO node_prompt_versions (
+                        node_key, version, prompt_template, params_json, kind,
+                        change_id, created_at
+                    ) VALUES ('n_qc_vo', 1, 'p', '{}', 'create', 'chg', ?)
+                    """,
+                (stamp,),
+            )
+            raise RuntimeError("inner")
+        assert _counts(conn) == (1, 0)
+    assert _counts(conn) == (1, 0)
+
+
+def test_atomicity_autocommit(
+    autocommit_conn: sqlite3.Connection, templates: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("mid-transaction")
+
+    monkeypatch.setattr(writer, "_set_active_version", boom)
+    with pytest.raises(RuntimeError, match="mid-transaction"):
+        _create(autocommit_conn, templates)
+    assert _counts(autocommit_conn) == (0, 0)
+    monkeypatch.undo()
+    assert _create(autocommit_conn, templates) == 1
+
+
+def test_unique_version_retries(
+    conn: sqlite3.Connection, templates: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create(conn, templates)
+    real = writer._insert_version_row
+    calls = {"n": 0}
+
+    def flaky(*args: object, **kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.IntegrityError(
+                "UNIQUE constraint failed: node_prompt_versions.node_key, node_prompt_versions.version"
+            )
+        real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(writer, "_insert_version_row", flaky)
+    version = writer.edit_prompt(
+        conn,
+        node_key="n_qc_vo",
+        content="после коллизии",
+        patch_mode="replace",
+        change_id="chg-retry",
+        reason="retry",
+        templates_root=templates,
+    )
+    assert version == 2
+    assert calls["n"] == 2
+    assert conn.execute("SELECT COUNT(*) FROM node_prompt_versions").fetchone()[0] == 2
+
+
+def test_two_writers(tmp_path: Path, templates: Path) -> None:
+    import threading
+
+    db_path = tmp_path / "writers.db"
+    schema = (Path(__file__).parent / "schema_346.sql").read_text(encoding="utf-8")
+
+    def open_conn() -> sqlite3.Connection:
+        connection = sqlite3.connect(db_path, timeout=5)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.create_function(
+            "regexp",
+            2,
+            lambda pattern, value: 0 if value is None else int(__import__("re").search(pattern, str(value)) is not None),
+        )
+        return connection
+
+    setup = open_conn()
+    setup.executescript(schema)
+    _create(setup, templates)
+    setup.close()
+
+    versions: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def worker(index: int) -> None:
+        connection = open_conn()
+        try:
+            version = writer.edit_prompt(
+                connection,
+                node_key="n_qc_vo",
+                content=f"писатель {index}",
+                patch_mode="replace",
+                change_id=f"chg-w{index}",
+                reason="два писателя",
+                templates_root=templates,
+            )
+        except BaseException as exc:  # noqa: BLE001 — тест собирает ошибки потока
+            with lock:
+                errors.append(exc)
+        else:
+            with lock:
+                versions.append(version)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert sorted(versions) == [2, 3]
+    check = open_conn()
+    try:
+        rows = check.execute(
+            "SELECT version, prompt_template FROM node_prompt_versions ORDER BY version"
+        ).fetchall()
+        assert [row[0] for row in rows] == [1, 2, 3]
+        assert {row[1] for row in rows[1:]} == {"писатель 1", "писатель 2"}
+    finally:
+        check.close()
 
 
 def test_missing_node_and_bad_key(conn: sqlite3.Connection, templates: Path) -> None:

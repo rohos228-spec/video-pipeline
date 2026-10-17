@@ -34,8 +34,12 @@ from app.orchestrator.node_store._db import (
     validate_title,
 )
 from app.orchestrator.node_store.git_baseline import GitBaseline, load_git_baseline
+from app.orchestrator.node_store.params import parse_params_json
+from app.orchestrator.node_store.rules import default_params, validate_reasoning_effort
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_RULE_ANCHOR = re.compile(r"R-[A-Z0-9]+(?:-[A-Z0-9]+)*")
+_VERSION_ATTEMPTS = 5
 
 _KIND_CREATE = "create"
 _KIND_EDIT_PROMPT = "edit_prompt"
@@ -69,14 +73,19 @@ def create_node(
     via = validate_created_via(created_via)
     origin_value = validate_origin(origin)
     reason_text = validate_reason(reason, required=False)
-    if not isinstance(prompt_template, str):
-        raise ValueError("prompt_template должен быть строкой")
-    snapshot = _normalize_params(params if params is not None else _default_params())
+    if not isinstance(prompt_template, str) or not prompt_template.strip():
+        raise ValueError("prompt_template пуст")
+    snapshot = _normalize_params(params if params is not None else default_params())
+    validate_reasoning_effort(snapshot)
     after = _optional_node_key(after_node_key)
     with atomic(conn):
         if _def_exists(conn, key):
             raise NodeExistsError(f"нода {key} уже есть")
         baseline = load_git_baseline(key, templates_root)
+        if baseline.found and origin_value != "git_override":
+            raise NodeExistsError(
+                f"для {key} уже есть git-шаблон; нужен явный origin='git_override'"
+            )
         stamp = utc_now()
         _insert_def(
             conn,
@@ -128,8 +137,14 @@ def edit_prompt(
     """Новая версия kind=edit_prompt. При активной vN возвращает N+1.
 
     patch_mode: ``replace`` / ``replace_full`` заменяют промпт целиком.
-    ``section`` / ``replace_section`` заменяют тело секции по заголовку
-    ``section_anchor``. ``append_section`` дописывает в конец этой секции.
+    ``section`` / ``replace_section`` заменяют секцию, ``append_section``
+    дописывает в её конец.
+
+    ``section_anchor`` — только текст markdown-заголовка (``## Камера``
+    или ``Камера``) либо идентификатор правила ``R-…`` (``R-NO-OVERSPLIT``).
+    Произвольная строка из тела промпта якорем не является. Для заголовка
+    строка заголовка сохраняется, тело секции заменяется. Для ``R-…``
+    заменяется весь блок до следующего заголовка или другого ``R-…``.
     """
     key = validate_node_key(node_key)
     change = validate_change_id(change_id)
@@ -207,9 +222,8 @@ def edit_params(
     patch = _normalize_params(params_patch)
     with atomic(conn):
         state = _read_state(conn, key, templates_root)
-        merged = dict(state.params)
-        merged.update(patch)
-        _normalize_params(merged)
+        merged = _normalize_params({**state.params, **patch})
+        validate_reasoning_effort(merged)
         stamp = utc_now()
         _ensure_def(
             conn,
@@ -264,7 +278,7 @@ def rollback_to_version(
             raise NodeNotFoundError(f"нода {key} не найдена")
         source = conn.execute(
             """
-            SELECT prompt_template, params_json
+            SELECT prompt_template, params_json, kind
             FROM node_prompt_versions
             WHERE node_key = ? AND version = ?
             """,
@@ -272,6 +286,8 @@ def rollback_to_version(
         ).fetchone()
         if source is None:
             raise NodeStoreError(f"версия {version} ноды {key} не найдена")
+        if source[2] == _KIND_REVERT:
+            raise NodeStoreError("нельзя откатываться на revert_to_git")
         baseline = load_git_baseline(key, templates_root)
         stamp = utc_now()
         new_version = _insert_version(
@@ -308,7 +324,10 @@ def revert_node_to_git(
 
     Возвращает номер строки истории. Этот номер нельзя записывать
     в active_version: триггер миграции такое UPDATE отвергает.
-    Повторный revert, когда указатель и так NULL, ничего не пишет.
+    Разрешён только для ``origin='git_override'`` и только если git-файл
+    есть. Иначе ``NodeNotFoundError`` («нечего восстанавливать из git»)
+    или отказ по origin. Повторный revert при указателе NULL бросает
+    ``NodeStoreError`` и ничего не пишет.
     """
     key = validate_node_key(node_key)
     change = validate_change_id(change_id)
@@ -316,15 +335,19 @@ def revert_node_to_git(
     reason_text = validate_reason(reason, required=True)
     with atomic(conn):
         row = conn.execute(
-            "SELECT active_version FROM node_defs WHERE node_key = ?",
+            "SELECT active_version, origin FROM node_defs WHERE node_key = ?",
             (key,),
         ).fetchone()
         if row is None:
             raise NodeNotFoundError(f"нода {key} не найдена")
+        baseline = load_git_baseline(key, templates_root)
+        if not baseline.found:
+            raise NodeNotFoundError("нечего восстанавливать из git")
+        if row[1] != "git_override":
+            raise NodeStoreError("revert разрешён только для origin='git_override'")
         if row[0] is None:
             raise NodeStoreError(f"нода {key} уже на git-шаблоне")
         parent = int(row[0])
-        baseline = load_git_baseline(key, templates_root)
         stamp = utc_now()
         version = _insert_version(
             conn,
@@ -380,9 +403,9 @@ def _read_state(conn: sqlite3.Connection, node_key: str, templates_root: Path | 
         "SELECT active_version FROM node_defs WHERE node_key = ?",
         (node_key,),
     ).fetchone()
-    if row is None and not baseline.found:
-        raise NodeNotFoundError(f"нода {node_key} не найдена ни в БД, ни в git")
     if row is None or row[0] is None:
+        if not baseline.found:
+            raise NodeNotFoundError(f"нода {node_key} не найдена в git")
         params = dict(baseline.params)
         return _State(
             exists=row is not None,
@@ -405,9 +428,7 @@ def _read_state(conn: sqlite3.Connection, node_key: str, templates_root: Path | 
         raise NodeStoreError(f"active_version {version} ноды {node_key} не найден в истории")
     if stored[2] == _KIND_REVERT:
         raise NodeStoreError("active_version не может указывать на revert_to_git")
-    params = json.loads(stored[1])
-    if not isinstance(params, dict):
-        raise NodeStoreError(f"params_json ноды {node_key} версии {version} должен быть объектом")
+    params = parse_params_json(stored[1], node_key=node_key, version=version)
     return _State(
         exists=True,
         active_version=version,
@@ -528,11 +549,59 @@ def _insert_version(
     created_via: str,
     stamp: str,
 ) -> int:
-    current = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM node_prompt_versions WHERE node_key = ?",
-        (node_key,),
-    ).fetchone()
-    version = int(current[0]) + 1
+    last_unique: sqlite3.IntegrityError | None = None
+    for _attempt in range(_VERSION_ATTEMPTS):
+        # MAX читается в той же транзакции, что и INSERT (BEGIN IMMEDIATE).
+        current = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM node_prompt_versions WHERE node_key = ?",
+            (node_key,),
+        ).fetchone()
+        version = int(current[0]) + 1
+        try:
+            _insert_version_row(
+                conn,
+                node_key=node_key,
+                version=version,
+                prompt_template=prompt_template,
+                params_json=params_json,
+                kind=kind,
+                patch_mode=patch_mode,
+                section_anchor=section_anchor,
+                reason=reason,
+                parent_version=parent_version,
+                base_git_sha256=base_git_sha256,
+                change_id=change_id,
+                created_by=created_by,
+                created_via=created_via,
+                stamp=stamp,
+            )
+        except sqlite3.IntegrityError as exc:
+            if "unique" not in str(exc).lower():
+                raise
+            last_unique = exc
+            continue
+        return version
+    raise NodeStoreError(f"не удалось занять номер версии ноды {node_key}") from last_unique
+
+
+def _insert_version_row(
+    conn: sqlite3.Connection,
+    *,
+    node_key: str,
+    version: int,
+    prompt_template: str,
+    params_json: str,
+    kind: str,
+    patch_mode: str | None,
+    section_anchor: str | None,
+    reason: str | None,
+    parent_version: int | None,
+    base_git_sha256: str | None,
+    change_id: str,
+    created_by: str | None,
+    created_via: str,
+    stamp: str,
+) -> None:
     conn.execute(
         """
         INSERT INTO node_prompt_versions (
@@ -558,7 +627,6 @@ def _insert_version(
             created_via,
         ),
     )
-    return version
 
 
 def _set_active_version(
@@ -593,47 +661,77 @@ def _apply_prompt_patch(
     if not section_anchor:
         raise ValueError("section_anchor обязателен для section")
     lines = prompt.splitlines(keepends=True)
-    start: int | None = None
-    level = 0
+    located = _locate_section(lines, section_anchor)
+    if located is None:
+        raise ValueError(f"section_anchor не найден: {section_anchor}")
+    start, end, kind = located
+    if kind == "heading":
+        heading_line = lines[start]
+        if not heading_line.endswith("\n"):
+            heading_line += "\n"
+        if patch_mode in SECTION_MODES:
+            body = _with_newline(content)
+            return "".join(lines[:start]) + heading_line + body + "".join(lines[end:])
+        if patch_mode in APPEND_MODES:
+            body = "".join(lines[start + 1 : end])
+            if body and not body.endswith("\n"):
+                body += "\n"
+            return (
+                "".join(lines[:start])
+                + heading_line
+                + body
+                + _with_newline(content)
+                + "".join(lines[end:])
+            )
+    elif patch_mode in SECTION_MODES:
+        return "".join(lines[:start]) + _with_newline(content) + "".join(lines[end:])
+    elif patch_mode in APPEND_MODES:
+        body = "".join(lines[start:end])
+        if body and not body.endswith("\n"):
+            body += "\n"
+        return "".join(lines[:start]) + body + _with_newline(content) + "".join(lines[end:])
+    raise ValueError(f"неизвестный patch_mode: {patch_mode}")
+
+
+def _locate_section(lines: list[str], anchor: str) -> tuple[int, int, str] | None:
+    """Заголовок или блок правила ``R-…``. Иначе None."""
     for index, line in enumerate(lines):
         match = _HEADING.match(line.rstrip("\r\n"))
         if match is None:
             continue
         heading = match.group(2).strip()
-        if heading == section_anchor or line.strip() == section_anchor:
-            start = index
+        if heading == anchor or line.strip() == anchor:
             level = len(match.group(1))
-            break
-    if start is None:
-        raise ValueError(f"section_anchor не найден: {section_anchor}")
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        match = _HEADING.match(lines[index].rstrip("\r\n"))
-        if match is not None and len(match.group(1)) <= level:
-            end = index
-            break
-    heading_line = lines[start]
-    if not heading_line.endswith("\n"):
-        heading_line += "\n"
-    if patch_mode in SECTION_MODES:
-        body = _with_newline(content)
-        return "".join(lines[:start]) + heading_line + body + "".join(lines[end:])
-    if patch_mode in APPEND_MODES:
-        body = "".join(lines[start + 1 : end])
-        if body and not body.endswith("\n"):
-            body += "\n"
-        return "".join(lines[:start]) + heading_line + body + _with_newline(content) + "".join(lines[end:])
-    raise ValueError(f"неизвестный patch_mode: {patch_mode}")
+            end = len(lines)
+            for follow in range(index + 1, len(lines)):
+                follow_match = _HEADING.match(lines[follow].rstrip("\r\n"))
+                if follow_match is not None and len(follow_match.group(1)) <= level:
+                    end = follow
+                    break
+            return index, end, "heading"
+    if _RULE_ANCHOR.fullmatch(anchor) is None:
+        return None
+    token = re.compile(rf"(?<![A-Z0-9-]){re.escape(anchor)}(?![A-Z0-9-])")
+    for index, line in enumerate(lines):
+        if token.search(line) is None:
+            continue
+        end = len(lines)
+        for follow in range(index + 1, len(lines)):
+            if _HEADING.match(lines[follow].rstrip("\r\n")):
+                end = follow
+                break
+            other = _RULE_ANCHOR.search(lines[follow])
+            if other is not None and other.group(0) != anchor:
+                end = follow
+                break
+        return index, end, "rule"
+    return None
 
 
 def _with_newline(content: str) -> str:
     if not content or content.endswith("\n"):
         return content
     return content + "\n"
-
-
-def _default_params() -> dict[str, Any]:
-    return {"model": "gpt-5.6-sol", "reasoning_effort": "high"}
 
 
 def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:

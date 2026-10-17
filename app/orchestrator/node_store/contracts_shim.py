@@ -7,14 +7,20 @@
 
 from __future__ import annotations
 
+import importlib.util
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-try:
+# find_spec не выполняет модуль. ImportError внутри contracts (битая
+# зависимость) не маскируется шимом: импорт ниже пробросит её наружу.
+_CONTRACTS_SPEC = importlib.util.find_spec("app.orchestrator.contracts")
+
+if _CONTRACTS_SPEC is not None:
     from app.orchestrator.contracts import NodeDef, NodeSource
-except ImportError:  # #346 ещё не в main
+else:
+
     class NodeSource(StrEnum):
         """Откуда resolve_node собрал определение (§3.6)."""
 

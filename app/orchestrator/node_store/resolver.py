@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 from app.orchestrator.node_store._db import NodeNotFoundError, NodeStoreError, ensure_conn, validate_node_key
 from app.orchestrator.node_store.contracts_shim import NodeDef, NodeSource
 from app.orchestrator.node_store.git_baseline import GitBaseline, load_git_baseline
+from app.orchestrator.node_store.params import parse_params_json
 
 
 def resolve_node(
@@ -27,8 +26,12 @@ def resolve_node(
     с текущим хешем.
 
     Иначе (строки нет или ``active_version`` NULL, в том числе после
-    revert) — ``source='git'``, ``db_version=None``, ``stale_base=False``.
-    ``version`` для git равен 0: в таблице версии нумеруются с 1.
+    revert) — git-шаблон: ``source='git'``, ``db_version=None``,
+    ``stale_base=False``. Если указатель NULL, а файла шаблона нет,
+    это ``NodeNotFoundError``, не пустая нода. ``version`` для git равен 0.
+
+    ``status='disabled'`` резолв не меняет: в ``NodeDef`` нет поля
+    включённости, промпт и params отдаются как у активной строки.
     """
     key = validate_node_key(node_key)
     ensure_conn(conn)
@@ -37,9 +40,9 @@ def resolve_node(
         "SELECT active_version FROM node_defs WHERE node_key = ?",
         (key,),
     ).fetchone()
-    if row is None and not baseline.found:
-        raise NodeNotFoundError(f"нода {key} не найдена ни в БД, ни в git")
     if row is None or row[0] is None:
+        if not baseline.found:
+            raise NodeNotFoundError(f"нода {key} не найдена в git")
         return _from_git(key, baseline)
     version = int(row[0])
     stored = conn.execute(
@@ -55,7 +58,7 @@ def resolve_node(
     kind = stored[3]
     if kind == "revert_to_git":
         raise NodeStoreError("active_version не может указывать на revert_to_git")
-    params = _load_params(stored[1], key, version)
+    params = parse_params_json(stored[1], node_key=key, version=version)
     base_hash = stored[2]
     return NodeDef(
         node_key=key,
@@ -90,17 +93,3 @@ def _from_git(node_key: str, baseline: GitBaseline) -> NodeDef:
         git_sha256=baseline.sha256,
         stale_base=False,
     )
-
-
-def _load_params(params_json: str, node_key: str, version: int) -> dict[str, Any]:
-    try:
-        params = json.loads(params_json)
-    except json.JSONDecodeError as exc:
-        raise NodeStoreError(
-            f"params_json ноды {node_key} версии {version} не JSON"
-        ) from exc
-    if not isinstance(params, dict):
-        raise NodeStoreError(
-            f"params_json ноды {node_key} версии {version} должен быть объектом"
-        )
-    return params
