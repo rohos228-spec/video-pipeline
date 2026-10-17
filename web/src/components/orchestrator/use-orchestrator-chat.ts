@@ -244,25 +244,33 @@ export function useOrchestratorChat() {
     dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
   }, []);
 
+  const killTaskId = state.killNotice?.taskId ?? null;
+  const killSessionId = state.killNotice?.sessionId ?? null;
+  const killPhase = state.killNotice?.phase;
   useEffect(() => {
-    if (state.killNotice?.phase !== "stopping") return;
+    if (killPhase !== "stopping") return;
     const timer = window.setTimeout(() => {
       dispatch({
         type: "kill-notice",
         detail: "Нет подтверждения остановки",
         paidBoundary: false,
         phase: "error",
+        taskId: killTaskId,
+        sessionId: killSessionId,
       });
     }, KILL_CONFIRM_MS);
     return () => window.clearTimeout(timer);
-  }, [state.killNotice?.phase]);
+  }, [killPhase, killSessionId, killTaskId]);
 
   const kill = useCallback(async () => {
-    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, phase: "stopping" });
+    const taskId = state.tasks.at(-1)?.id ?? null;
+    const sessionId = boot.session;
+    const notice = { taskId, sessionId };
+    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, phase: "stopping", ...notice });
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), KILL_CONFIRM_MS);
     const fail = (detail: string) => {
-      dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error" });
+      dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
     };
     try {
       const result = (await postOrchKill(
@@ -277,6 +285,7 @@ export function useOrchestratorChat() {
           detail: body.detail || "",
           paidBoundary: true,
           phase: "stopped",
+          ...notice,
         });
         setSendError("");
         return;
@@ -294,7 +303,7 @@ export function useOrchestratorChat() {
     } finally {
       window.clearTimeout(timer);
     }
-  }, [boot.session, cfg, noteAuth]);
+  }, [boot.session, cfg, noteAuth, state.tasks]);
 
   return {
     boot,

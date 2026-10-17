@@ -198,14 +198,17 @@ export interface ClassificationView {
   killSwitch: boolean;
 }
 
-export type KillPhase = "stopping" | "stopped" | "error";
+export type KillPhase = "stopping" | "stopped" | "error" | "unconfirmed";
 
 export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
   paidBoundary: boolean;
-  /** stopping — запрос ушёл; stopped — сервер подтвердил; error — отказ или stop_key_set=false. */
+  /** stopping — запрос ушёл; stopped — stop_key_set; error — отказ; unconfirmed — задача отменена без ключа. */
   phase: KillPhase;
+  /** Задача, которую останавливали. Чужой task_id баннер не двигает. */
+  taskId: string | null;
+  sessionId: string | null;
 }
 
 export interface OrchScreenState {
@@ -221,7 +224,14 @@ export interface OrchScreenState {
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
-  | { type: "kill-notice"; detail: string; paidBoundary: boolean; phase: KillPhase }
+  | {
+      type: "kill-notice";
+      detail: string;
+      paidBoundary: boolean;
+      phase: KillPhase;
+      taskId?: string | null;
+      sessionId?: string | null;
+    }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
 
@@ -340,38 +350,59 @@ function readStopKey(payload: Record<string, unknown>): boolean | null {
   return null;
 }
 
-function markKill(next: OrchScreenState, phase: KillPhase, text: string, paidBoundary: boolean): void {
-  if (phase === "error" && next.killNotice?.phase === "stopped") return;
-  next.killNotice = { phase, text, paidBoundary };
+function markKill(
+  next: OrchScreenState,
+  phase: KillPhase,
+  text: string,
+  paidBoundary: boolean,
+  target?: { taskId: string | null; sessionId: string | null },
+): void {
+  const current = next.killNotice;
+  if (current?.phase === "stopped" && phase !== "stopped") return;
+  if (current?.phase === "error" && phase !== "error" && phase !== "stopped") return;
+  next.killNotice = {
+    phase,
+    text,
+    paidBoundary,
+    taskId: target?.taskId ?? current?.taskId ?? null,
+    sessionId: target?.sessionId ?? current?.sessionId ?? null,
+  };
 }
 
-/** Запрос остановки или событие kill_switch. «Остановлено» — только после подтверждения. */
-function noteKillRequested(next: OrchScreenState, payload: Record<string, unknown>): void {
+/** «Остановлено» только при stop_key_set=true. Иначе запрос или ошибка. */
+function noteKillRequested(
+  next: OrchScreenState,
+  payload: Record<string, unknown>,
+  target: { taskId: string | null; sessionId: string | null },
+): void {
   const stopKey = readStopKey(payload);
   const detail = str(payload.detail);
-  const status = str(payload.status) || str(payload.task_status);
   if (stopKey === true) {
-    markKill(next, "stopped", detail, true);
+    markKill(next, "stopped", detail, true, target);
     return;
   }
   if (stopKey === false) {
-    markKill(next, "error", detail || "Стоп-ключ не установлен", false);
+    markKill(next, "error", detail || "Стоп-ключ не установлен", false, target);
     return;
   }
-  if (isTerminalKillStatus(status)) {
-    markKill(next, "stopped", detail || next.killNotice?.text || "", next.killNotice?.paidBoundary ?? true);
-    return;
-  }
-  if (next.killNotice?.phase === "stopped") return;
-  markKill(next, "stopping", "", true);
+  if (next.killNotice?.phase === "stopped" || next.killNotice?.phase === "error") return;
+  markKill(next, "stopping", "", true, target);
 }
 
-/** SSE cancelled/killed подтверждает уже запрошенную остановку. */
-function promoteKillIfTerminal(next: OrchScreenState, status: string): void {
-  if (!isTerminalKillStatus(status)) return;
-  const phase = next.killNotice?.phase;
-  if (phase !== "stopping" && phase !== "error") return;
-  markKill(next, "stopped", next.killNotice?.text ?? "", next.killNotice?.paidBoundary ?? true);
+/** cancelled/killed той же задачи и сессии. Шаг и чужая задача сюда не попадают. Ошибку ключа не затирает. */
+function noteTaskCancelled(next: OrchScreenState, event: OrchEvent): void {
+  const notice = next.killNotice;
+  if (!notice || notice.phase !== "stopping") return;
+  if (!notice.taskId || !notice.sessionId) return;
+  if (taskKey(event.task_id) !== notice.taskId) return;
+  if (event.session_id !== notice.sessionId) return;
+  next.killNotice = {
+    phase: "unconfirmed",
+    text: "Задача отменена, стоп-ключ не подтверждён.",
+    paidBoundary: false,
+    taskId: notice.taskId,
+    sessionId: notice.sessionId,
+  };
 }
 
 function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
@@ -459,10 +490,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     };
   }
   if (action.type === "kill-notice") {
-    if (state.killNotice?.phase === "stopped" && action.phase === "error") return state;
+    if (state.killNotice?.phase === "stopped" && action.phase !== "stopped" && action.phase !== "stopping") return state;
+    if (state.killNotice?.phase === "error" && action.phase === "unconfirmed") return state;
     return {
       ...state,
-      killNotice: { text: action.detail, paidBoundary: action.paidBoundary, phase: action.phase },
+      killNotice: {
+        text: action.detail,
+        paidBoundary: action.paidBoundary,
+        phase: action.phase,
+        taskId: action.taskId ?? state.killNotice?.taskId ?? null,
+        sessionId: action.sessionId ?? state.killNotice?.sessionId ?? null,
+      },
     };
   }
   if (action.type === "approval-resolved") {
@@ -523,7 +561,9 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         seq: event.seq,
         killSwitch,
       };
-      if (killSwitch) noteKillRequested(next, payload);
+      if (killSwitch) {
+        noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
+      }
     }
     absorbLlmSignal(next, taskId, payload, event.seq);
     return next;
@@ -542,7 +582,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   }
 
   if (event.type === "kill_switch") {
-    noteKillRequested(next, payload);
+    noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
     return next;
   }
 
@@ -552,15 +592,13 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (found) {
       found.status = str(payload.status, found.status);
       found.detail = str(payload.detail);
-      promoteKillIfTerminal(next, found.status);
     }
+    const taskStatusRaw = str(payload.task_status);
+    if (isTerminalKillStatus(taskStatusRaw)) noteTaskCancelled(next, event);
     if (!taskId) return next;
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
-    const taskStatus = asTaskStatus(str(payload.task_status));
-    if (taskStatus) {
-      task.status = taskStatus;
-      promoteKillIfTerminal(next, taskStatus);
-    }
+    const taskStatus = asTaskStatus(taskStatusRaw);
+    if (taskStatus) task.status = taskStatus;
     return next;
   }
 

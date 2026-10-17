@@ -325,6 +325,116 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
+  async function emitBus(
+    page: Page,
+    session: string,
+    type: string,
+    taskId: number | null,
+    payload: Record<string, unknown>,
+    eventSession?: string,
+  ) {
+    const res = await page.request.post(`${MOCK}/api/orchestrator/test/emit`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      data: {
+        session_id: session,
+        type,
+        task_id: taskId,
+        payload,
+        ...(eventSession ? { event_session_id: eventSession } : {}),
+      },
+    });
+    expect(res.ok()).toBeTruthy();
+  }
+
+  test("kill: cancelled чужой задачи или шага не даёт Остановлено", async ({ page }) => {
+    await openWithToken(page, "kill", "kill-scope");
+    await page.getByTestId("orch-composer").fill("платная генерация");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("run_node");
+    let release = () => {};
+    const hang = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await hang;
+      await route.fulfill({ status: 204, body: "" }).catch(() => undefined);
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await emitBus(page, "kill-scope", "agent_status", 2, {
+      agent: "supervisor",
+      status: "cancelled",
+      task_status: "cancelled",
+    });
+    await expect(page.getByTestId("orch-task-panel")).toContainText("отменено");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).not.toContainText("Остановлено");
+    await emitBus(page, "kill-scope", "step_finished", 1, {
+      step_id: "s-paid",
+      title: "run_node images",
+      ok: false,
+      note: "шаг отменён",
+    });
+    await expect(page.getByTestId("orch-task-panel")).toContainText("шаг отменён");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await emitBus(page, "kill-scope", "agent_status", 1, {
+      agent: "executor",
+      status: "cancelled",
+      detail: "агент встал",
+    });
+    await expect(page.getByTestId("orch-agent-executor")).toContainText("cancelled");
+    await expect(banner).not.toContainText("Остановлено");
+    await emitBus(
+      page,
+      "kill-scope",
+      "agent_status",
+      1,
+      { agent: "supervisor", status: "cancelled", task_status: "cancelled" },
+      "other-session",
+    );
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await emitBus(page, "kill-scope", "agent_status", 1, {
+      agent: "supervisor",
+      status: "idle",
+      task_status: "cancelled",
+    });
+    await expect(banner).toHaveAttribute("data-kill-phase", "unconfirmed");
+    await expect(banner).toContainText("Задача отменена, стоп-ключ не подтверждён");
+    await expect(banner).not.toContainText("Остановлено");
+    release();
+  });
+
+  test("kill: после stop_key_set=false cancelled не затирает ошибку", async ({ page }) => {
+    await openWithToken(page, "kill", "kill-keep-error");
+    await page.getByTestId("orch-composer").fill("платная генерация");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("run_node");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, stop_key_set: false, detail: "стоп-ключ не встал" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await emitBus(page, "kill-keep-error", "agent_status", 1, {
+      agent: "supervisor",
+      status: "cancelled",
+      task_status: "cancelled",
+    });
+    await expect(page.getByTestId("orch-task-status")).toContainText("отменено");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+  });
+
   test("kill: ответ без stop_key_set показывает ошибку и повтор", async ({ page }) => {
     await openWithToken(page, "idle", "kill-nokey");
     await page.route("**/api/orchestrator/kill", async (route) => {

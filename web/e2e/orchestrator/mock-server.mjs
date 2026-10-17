@@ -100,13 +100,13 @@ function writeEvent(res, event) {
   res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
-function emit(session, type, taskId, payload) {
+function emit(session, type, taskId, payload, sessionId = session.id) {
   const event = {
     type,
     task_id: taskId,
     payload,
     seq: ++session.seq,
-    session_id: session.id,
+    session_id: sessionId,
   };
   session.events.push(event);
   for (const client of session.clients) {
@@ -1122,6 +1122,23 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     sendJson(res, 401, { detail: "unauthorized" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/emit") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    const taskRaw = body.task_id;
+    const taskId = taskRaw == null || taskRaw === "" ? null : Number(taskRaw);
+    const eventSession = body.event_session_id ? String(body.event_session_id) : session.id;
+    emit(
+      session,
+      String(body.type || "agent_status"),
+      Number.isFinite(taskId) ? taskId : null,
+      body.payload && typeof body.payload === "object" ? body.payload : {},
+      eventSession,
+    );
+    sendJson(res, 200, { ok: true });
     return;
   }
 
