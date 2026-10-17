@@ -33,7 +33,9 @@ function approvalPostAccepted(
   result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
   approvalId: string,
 ): boolean {
-  if (!result || result.ok === false || result.matched === false) return false;
+  // 204 No Content — успех без тела. Пустой отказ сюда не попадает: его отсекает !res.ok.
+  if (result == null) return true;
+  if (result.ok === false || result.matched === false) return false;
   if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
   return true;
 }

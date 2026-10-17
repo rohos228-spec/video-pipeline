@@ -645,6 +645,44 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("204 на approve, deny и повтор закрывает карточку без ошибки", async ({ page }) => {
+    const fulfill204 = async (route: { fulfill: (opts: { status: number; body: string }) => Promise<void> }) => {
+      await route.fulfill({ status: 204, body: "" });
+    };
+
+    await openWithToken(page, "approval", "approve-204");
+    await page.route("**/api/orchestrator/approvals/**/approve", fulfill204);
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await page.unroute("**/api/orchestrator/approvals/**/approve");
+
+    await openWithToken(page, "approval", "deny-204");
+    await page.route("**/api/orchestrator/approvals/**/reject", fulfill204);
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await page.unroute("**/api/orchestrator/approvals/**/reject");
+
+    await openWithToken(page, "approvefail", "retry-204");
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("approve failed");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.route("**/api/orchestrator/approvals/**/approve", fulfill204);
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+  });
+
   test("чужой change_id не закрывает карточку, свой закрывает", async ({ page }) => {
     await openWithToken(page, "idle", "chg-close");
     await emitBus(page, "chg-close", "approval_required", 1, {
