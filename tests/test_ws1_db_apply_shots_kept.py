@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -10,6 +11,16 @@ from app.models import Base, Frame, Project
 from app.services import db_v2
 from app.services.db_apply import apply_ops
 from app.services.frame_tombstones import deleted_numbers, frame_is_active, shot_is_active
+
+
+@pytest.fixture
+def warn_log():
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink)
 
 
 @pytest.fixture
@@ -391,8 +402,14 @@ async def test_incoming_inactive_shot_stays_inactive(session: AsyncSession) -> N
 
 
 @pytest.mark.asyncio
-async def test_non_list_kadry_keeps_old_shots(session: AsyncSession) -> None:
-    """``{}``, не-JSON и прочий не-список не затирают кадры, как ``null``."""
+async def test_garbage_kadry_returns_old_unchanged(
+    session: AsyncSession, warn_log: list[str]
+) -> None:
+    """``{}`` и не-JSON не список: поле не меняется, живой шот не гаснет.
+
+    Явный ``null`` по-прежнему становится пустым списком и помечает шоты
+    неактивными — это отдельная семантика, не мусор.
+    """
     project = Project(slug="ws1-nonspec", topic="t", status=None)  # type: ignore[arg-type]
     session.add(project)
     await session.flush()
@@ -427,14 +444,24 @@ async def test_non_list_kadry_keeps_old_shots(session: AsyncSession) -> None:
         ],
         export_xlsx=False,
     )
-    for fr in (as_null, as_obj, as_text):
+
+    await session.refresh(as_null)
+    null_shots = as_null.attrs["кадры"]
+    assert isinstance(null_shots, list)
+    null_by_id = {shot["id"]: shot for shot in null_shots}
+    assert set(null_by_id) == {"a", "b"}
+    assert shot_is_active(null_by_id["a"]) is False
+    assert shot_is_active(null_by_id["b"]) is False
+
+    for fr in (as_obj, as_text):
         await session.refresh(fr)
         shots = fr.attrs["кадры"]
-        assert isinstance(shots, list), shots
+        assert shots == [dict(shot) for shot in stored]
         by_id = {shot["id"]: shot for shot in shots}
-        assert set(by_id) == {"a", "b"}
+        assert by_id["a"].get("активен") is not False
+        assert shot_is_active(by_id["a"]) is True
+        assert by_id["b"]["активен"] is False
+        assert shot_is_active(by_id["b"]) is False
         assert by_id["a"]["закадр"] == "альфа"
         assert by_id["b"]["закадр"] == "бета"
-        assert by_id["b"]["активен"] is False
-        assert shot_is_active(by_id["a"]) is False
-        assert shot_is_active(by_id["b"]) is False
+    assert any("WARN" in line and "кадры" in line for line in warn_log)
