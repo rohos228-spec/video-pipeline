@@ -17,6 +17,7 @@ import {
   EXAMPLE_PROMPT_EDIT,
   EXAMPLE_R21_CONFLICT,
   EXAMPLE_R21_DELETE,
+  EXAMPLE_VERSION_CONFLICT,
   EXAMPLE_REPORT,
   EXAMPLE_UNKNOWN_APPROVAL,
   metadataOf,
@@ -248,6 +249,38 @@ test("ApprovalRequired без события ядра не даёт кнопки
   await expect(core).toBeVisible();
   await expect(core).toHaveAttribute("data-change-id", "orch-appr-99-3");
   await expect(core.getByTestId("orch-approve")).toBeVisible();
+});
+
+test("конфликт версии 409 предлагает обновить и повторить", async ({ page }) => {
+  await openWithToken(page, "act-409");
+  await emit(page, "act-409", "step_finished", EXAMPLE_R21_CONFLICT);
+  const edit = page.getByTestId("orch-action-card").filter({ hasText: "Правка промта" });
+  await expect(edit).toHaveAttribute("data-conflict", "true");
+  await expect(edit.getByTestId("orch-version-conflict")).toContainText("Конфликт версий");
+  await expect(edit.getByTestId("orch-version-conflict")).toContainText("409");
+  await expect(edit.getByTestId("orch-version-conflict")).toContainText("Данные не изменены");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  const posts: { text?: string; action?: { name?: string; base_version?: number } }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes("/message")) return;
+    posts.push(req.postDataJSON());
+  });
+  await edit.getByTestId("orch-conflict-retry").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toEqual({
+    text: "Обновить и повторить",
+    action: { name: "edit_node_prompt", base_version: 4 },
+  });
+
+  await emit(page, "act-409", "step_finished", EXAMPLE_VERSION_CONFLICT);
+  const bare = page.getByTestId("orch-action-card").filter({ hasText: "Данные не изменены" }).last();
+  await expect(bare.getByTestId("orch-version-conflict")).toContainText("409");
+  await bare.getByTestId("orch-conflict-retry").click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1]).toEqual({
+    text: "Обновить и повторить",
+    action: { name: "conflict" },
+  });
 });
 
 test("поля r2.1: предупреждения, пропуск, конфликт и снимок", async ({ page }) => {

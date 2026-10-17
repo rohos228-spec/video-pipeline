@@ -109,6 +109,14 @@ export interface RestoreBody {
   };
 }
 
+export interface ConflictRetryBody {
+  text: string;
+  action: {
+    name: string;
+    base_version?: number;
+  };
+}
+
 const R2_METADATA: Record<string, ActionMetadata> = {
   read_pipeline_code: { name: "read_pipeline_code", risk: "none", read_only: true, destructive: false, paid: false },
   rag_search: { name: "rag_search", risk: "none", read_only: true, destructive: false, paid: false },
@@ -459,6 +467,12 @@ export function restoreBody(restoreAction: string, changeId: string | null, snap
   return { text: "Восстановить", action };
 }
 
+export function conflictRetryBody(actionName: string, baseVersion: number | null): ConflictRetryBody {
+  const action: ConflictRetryBody["action"] = { name: actionName.trim() || "conflict" };
+  if (baseVersion != null) action.base_version = baseVersion;
+  return { text: "Обновить и повторить", action };
+}
+
 export function openStudioNode(ref: ActionNodeRef): void {
   if (typeof window === "undefined" || !ref.node_id) return;
   window.dispatchEvent(new CustomEvent("studio-select-project", { detail: { projectId: ref.project_id } }));
@@ -623,7 +637,14 @@ export const EXAMPLE_CORE_APPROVAL = {
   action: "montage.suggest_scene_variants",
 };
 
-/** Устаревшая правка: конверт failed, на карточке остаётся diff и версии. */
+/** Конверт reject_stale_edit: failed, result пустой, error=conflict, HTTP 409. */
+export const EXAMPLE_VERSION_CONFLICT = stepPayload("s-409", "конфликт версий", {
+  status: "failed",
+  result: null,
+  error: "conflict",
+});
+
+/** Устаревшая правка с телом: карточка остаётся правкой и предлагает повтор. */
 export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт версий", {
   status: "failed",
   status_code: 409,

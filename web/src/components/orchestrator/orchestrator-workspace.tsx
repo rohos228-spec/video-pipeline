@@ -268,7 +268,13 @@ export function OrchestratorWorkspace() {
                   .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
               )}
               {chat.state.actionResults.map((result) => (
-                <ActionResultCard key={result.id} result={result} onReportEdit={chat.sendReportEdit} onRestore={chat.sendRestore} />
+                <ActionResultCard
+                  key={result.id}
+                  result={result}
+                  onReportEdit={chat.sendReportEdit}
+                  onRestore={chat.sendRestore}
+                  onConflictRetry={chat.sendConflictRetry}
+                />
               ))}
               {openApprovals.map((approval) => (
                 <ApprovalCard

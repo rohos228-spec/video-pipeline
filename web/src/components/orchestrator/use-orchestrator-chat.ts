@@ -19,7 +19,7 @@ import {
   writeOrchToken,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
-import { reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
+import { conflictRetryBody, reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
 import {
   initialOrchScreen,
   reduceOrchScreen,
@@ -252,6 +252,30 @@ export function useOrchestratorChat() {
     [blocked, cfg, noteAuth, state.messages.length, token],
   );
 
+  const sendConflictRetry = useCallback(
+    async (actionName: string, baseVersion: number | null) => {
+      const body = conflictRetryBody(actionName, baseVersion);
+      if (!body.text || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-conflict-${body.action.name}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "повтор правки не ушёл");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
@@ -372,6 +396,7 @@ export function useOrchestratorChat() {
     sendMessage,
     sendReportEdit,
     sendRestore,
+    sendConflictRetry,
     decide,
     dismissBlock,
     kill,

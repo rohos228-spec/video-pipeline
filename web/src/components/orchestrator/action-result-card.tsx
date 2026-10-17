@@ -83,7 +83,7 @@ function Extras({ result }: { result: ActionResultView }) {
     <>
       {result.conflict ? (
         <p className="mt-2 text-[11px] text-destructive" data-testid="orch-version-conflict">
-          Конфликт версий · 409
+          Конфликт версий · 409. Данные не изменены, версия устарела.
           {result.version != null ? ` · версия ${result.version}` : ""}
           {result.baseVersion != null ? ` · база ${result.baseVersion}` : ""}
         </p>
@@ -123,7 +123,7 @@ function Extras({ result }: { result: ActionResultView }) {
           ) : null}
         </div>
       ) : null}
-      {result.error ? (
+      {result.error && !result.conflict ? (
         <p className="mt-2 text-[11px] text-destructive" data-testid="orch-action-error">
           {result.error}
         </p>
@@ -136,16 +136,19 @@ export function ActionResultCard({
   result,
   onReportEdit,
   onRestore,
+  onConflictRetry,
 }: {
   result: ActionResultView;
   onReportEdit: (reportId: number, instruction: string) => Promise<boolean>;
   onRestore: (restoreAction: string, changeId: string | null, snapshotId: string | null) => Promise<boolean>;
+  onConflictRetry: (actionName: string, baseVersion: number | null) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [retried, setRetried] = useState(false);
 
   const sendEdit = async () => {
     if (!result.reportId || busy || sent || !instruction.trim()) return;
@@ -164,6 +167,17 @@ export function ActionResultCard({
     try {
       const ok = await onRestore(result.restoreAction, result.changeId, result.snapshotId);
       if (ok) setRestored(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendRetry = async () => {
+    if (!result.conflict || busy || retried) return;
+    setBusy(true);
+    try {
+      const ok = await onConflictRetry(result.action, result.baseVersion);
+      if (ok) setRetried(true);
     } finally {
       setBusy(false);
     }
@@ -227,6 +241,19 @@ export function ActionResultCard({
             </Button>
           )}
         </div>
+      ) : null}
+      {result.conflict ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="mt-2 h-7 text-[11px]"
+          data-testid="orch-conflict-retry"
+          disabled={busy || retried}
+          onClick={() => void sendRetry()}
+        >
+          {retried ? "Отправлено" : "Обновить и повторить"}
+        </Button>
       ) : null}
       {result.restoreAction ? (
         <Button

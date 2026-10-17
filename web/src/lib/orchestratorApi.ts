@@ -224,7 +224,7 @@ export function postOrchMessage(
 /** Правка отчёта (`update_report`) или восстановление пометки. Тело в контракте #378 не задано. */
 export function postOrchActionMessage(
   cfg: OrchClientConfig,
-  body: { text: string; action: { name: string; report_id?: number; change_id?: string; snapshot_id?: string } },
+  body: { text: string; action: { name: string; report_id?: number; change_id?: string; snapshot_id?: string; archive_ref?: string; base_version?: number } },
   signal?: AbortSignal,
 ): Promise<OrchMessageAckHttp> {
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
