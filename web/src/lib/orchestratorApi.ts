@@ -41,7 +41,10 @@ export interface OrchClientConfig {
   apiBase: string;
   session: string;
   token: string;
-  /** Уходит заголовком X-Orch-Scenario, мок-сервер выбирает по нему сценарий. */
+  /**
+   * Сценарий мока. В заголовок попадает только при NEXT_PUBLIC_ORCH_TEST.
+   * Query и localStorage сами по себе заголовок не включают.
+   */
   scenario: string;
 }
 
@@ -61,6 +64,15 @@ export function writeOrchToken(token: string): void {
 /** Чекбокс «Новая задача». По умолчанию выключен: NEXT_PUBLIC_ORCH_TASK_MODE не задан. */
 export function orchTaskModeEnabled(): boolean {
   const raw = process.env.NEXT_PUBLIC_ORCH_TASK_MODE;
+  return raw === "1" || raw === "true";
+}
+
+/**
+ * Тестовый режим сборки, аналог ORCH_TEST=1.
+ * Без флага прод-клиент не шлёт X-Orch-Scenario.
+ */
+export function orchTestModeEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_ORCH_TEST;
   return raw === "1" || raw === "true";
 }
 
@@ -161,10 +173,11 @@ function apiUrl(apiBase: string, path: string): string {
   return `${apiBase}${path}`;
 }
 
-function authHeaders(cfg: OrchClientConfig, extra?: Record<string, string>): Headers {
+/** Bearer всегда. X-Orch-Scenario — только в тестовой сборке, значение сценария не важно. */
+export function orchAuthHeaders(cfg: OrchClientConfig, extra?: Record<string, string>): Headers {
   const headers = new Headers(extra);
   headers.set("Authorization", `Bearer ${cfg.token}`);
-  headers.set("X-Orch-Scenario", cfg.scenario);
+  if (orchTestModeEnabled()) headers.set("X-Orch-Scenario", cfg.scenario);
   return headers;
 }
 
@@ -183,7 +196,7 @@ async function readError(res: Response): Promise<string> {
 
 async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   assertBearerTarget(cfg.apiBase);
-  const headers = authHeaders(cfg);
+  const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
   const res = await fetch(apiUrl(cfg.apiBase, path), {
     method: "POST",
@@ -242,7 +255,7 @@ export async function probeOrchAuth(cfg: OrchClientConfig): Promise<void> {
   const ac = new AbortController();
   const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/stream`), {
     method: "GET",
-    headers: authHeaders(cfg, { Accept: "text/event-stream" }),
+    headers: orchAuthHeaders(cfg, { Accept: "text/event-stream" }),
     signal: ac.signal,
   });
   const status = res.status;
@@ -281,7 +294,7 @@ async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSig
   assertBearerTarget(cfg.apiBase);
   const res = await fetch(apiUrl(cfg.apiBase, path), {
     method: "GET",
-    headers: authHeaders(cfg, { Accept: "application/json" }),
+    headers: orchAuthHeaders(cfg, { Accept: "application/json" }),
     signal,
   });
   if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
@@ -392,7 +405,7 @@ export interface StreamHandlers {
  */
 export async function consumeOrchStream(cfg: OrchClientConfig, handlers: StreamHandlers): Promise<void> {
   assertBearerTarget(cfg.apiBase);
-  const headers = authHeaders(cfg, { Accept: "text/event-stream" });
+  const headers = orchAuthHeaders(cfg, { Accept: "text/event-stream" });
   if (handlers.lastEventId > 0) {
     headers.set("Last-Event-ID", String(handlers.lastEventId));
   }

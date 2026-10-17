@@ -88,6 +88,9 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
 
 function killBannerText(notice: KillNoticeView): string {
   if (notice.phase === "stopping") return "Останавливаю…";
+  if (notice.phase === "unconfirmed") {
+    return notice.text.trim() || "Задача отменена, стоп-ключ не подтверждён.";
+  }
   if (notice.phase === "error") return notice.text.trim() || "Остановка не подтверждена";
   const lead = "Остановлено";
   if (!notice.paidBoundary) {

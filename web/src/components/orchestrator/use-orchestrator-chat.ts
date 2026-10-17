@@ -27,6 +27,9 @@ import {
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
+/** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
+const KILL_CONFIRM_MS = 12_000;
+
 function approvalPostAccepted(
   result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
   approvalId: string,
@@ -264,56 +267,90 @@ export function useOrchestratorChat() {
     dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
   }, []);
 
+  const killTaskId = state.killNotice?.taskId ?? null;
+  const killSessionId = state.killNotice?.sessionId ?? null;
+  const killPhase = state.killNotice?.phase;
+  useEffect(() => {
+    if (killPhase !== "stopping") return;
+    const timer = window.setTimeout(() => {
+      dispatch({
+        type: "kill-notice",
+        detail: "Нет подтверждения остановки",
+        paidBoundary: false,
+        phase: "error",
+        taskId: killTaskId,
+        sessionId: killSessionId,
+      });
+    }, KILL_CONFIRM_MS);
+    return () => window.clearTimeout(timer);
+  }, [killPhase, killSessionId, killTaskId]);
+
   const kill = useCallback(async () => {
-    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, destructive: false, phase: "stopping" });
+    const taskId = state.tasks.at(-1)?.id ?? null;
+    const sessionId = boot.session;
+    const notice = { taskId, sessionId };
+    dispatch({
+      type: "kill-notice",
+      detail: "",
+      paidBoundary: true,
+      destructive: false,
+      phase: "stopping",
+      ...notice,
+    });
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), KILL_CONFIRM_MS);
+    const fail = (detail: string) => {
+      dispatch({
+        type: "kill-notice",
+        detail,
+        paidBoundary: false,
+        destructive: false,
+        phase: "error",
+        ...notice,
+      });
+    };
     try {
       const [result, actions] = await Promise.all([
-        postOrchKill(cfg, {
-          session_id: boot.session,
-          reason: "kill switch из чата",
-        }) as Promise<{ ok?: boolean; detail?: string; stop_key_set?: boolean }>,
+        postOrchKill(
+          cfg,
+          { session_id: boot.session, reason: "kill switch из чата" },
+          ac.signal,
+        ),
         loadActionRegistry(cfg).catch((error: unknown) => {
           if (error instanceof OrchApiError && error.status === 401) throw error;
           return null;
         }),
       ]);
+      const body = (result ?? {}) as { ok?: boolean; detail?: string; stop_key_set?: boolean };
       const steps = state.tasks.flatMap((task) => task.steps);
       const honesty = resolveKillHonesty(
         steps,
         actions ? { status: "ready", actions } : { status: "missing" },
       );
-      if (result.stop_key_set === true && result.ok !== false) {
+      if (body.stop_key_set === true && body.ok !== false) {
         dispatch({
           type: "kill-notice",
-          detail: result.detail || "",
+          detail: body.detail || "",
           paidBoundary: honesty.paidBoundary,
           destructive: honesty.destructive,
           phase: "stopped",
+          ...notice,
         });
         setSendError("");
         return;
       }
-      if (result.stop_key_set === false || result.ok === false) {
-        dispatch({
-          type: "kill-notice",
-          detail: result.detail || (result.stop_key_set === false ? "Стоп-ключ не установлен" : "остановка не подтверждена"),
-          paidBoundary: false,
-          destructive: false,
-          phase: "error",
-        });
+      const missing = body.stop_key_set !== true && body.stop_key_set !== false;
+      fail(body.detail || (missing ? "В ответе нет stop_key_set" : "Стоп-ключ не установлен"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "kill switch не прошёл";
+      if (isAbortError(error)) {
+        fail("Нет подтверждения остановки");
         return;
       }
-      setSendError("");
-    } catch (error) {
-      if (!noteAuth(error)) {
-        dispatch({
-          type: "kill-notice",
-          detail: error instanceof Error ? error.message : "kill switch не прошёл",
-          paidBoundary: false,
-          destructive: false,
-          phase: "error",
-        });
-      }
+      noteAuth(error);
+      fail(message);
+    } finally {
+      window.clearTimeout(timer);
     }
   }, [boot.session, cfg, noteAuth, state.tasks]);
 
