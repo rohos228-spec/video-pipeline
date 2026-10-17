@@ -134,6 +134,39 @@ async def test_orchestrator_path_without_slash_requires_token(
     assert ok.json()["ok"] is True
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_websocket_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    app = _app()
+    sent: list[dict] = []
+
+    async def receive() -> dict[str, object]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "path": "/api/orchestrator/chat/s1/stream",
+            "raw_path": b"/api/orchestrator/chat/s1/stream",
+            "query_string": b"",
+            "headers": [],
+            "scheme": "ws",
+            "client": ("127.0.0.1", 1),
+            "server": ("test", 80),
+            "subprotocols": [],
+        },
+        receive,
+        send,
+    )
+    assert sent[0]["type"] == "websocket.http.response.start"
+    assert sent[0]["status"] == 401
+    assert TEST_TOKEN not in sent[1]["body"].decode()
+
+
 def test_create_app_mounts_chat_and_middleware() -> None:
     app = create_app()
     paths = _included_paths(app)

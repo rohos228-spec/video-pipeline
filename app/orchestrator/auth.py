@@ -51,10 +51,24 @@ class OrchestratorAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope: dict, receive: object, send: object) -> None:
+        path = scope.get("path") or ""
+        # Websocket под /api/orchestrator/** не обходит Bearer: эндпоинтов нет,
+        # но открытый upgrade был бы дырой.
+        if scope.get("type") == "websocket" and is_orchestrator_path(path):
+            await send(  # type: ignore[misc]
+                {
+                    "type": "websocket.http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(  # type: ignore[misc]
+                {"type": "websocket.http.response.body", "body": b'{"detail":"unauthorized"}'}
+            )
+            return
         if scope.get("type") != "http":
             await self.app(scope, receive, send)  # type: ignore[misc]
             return
-        path = scope.get("path") or ""
         if not is_orchestrator_path(path) or scope.get("method") == "OPTIONS":
             await self.app(scope, receive, send)  # type: ignore[misc]
             return
