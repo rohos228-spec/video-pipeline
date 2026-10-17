@@ -1438,6 +1438,19 @@ def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]
             raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
 
 
+def _frame_preservation_id(frame: Any) -> str:
+    """Стабильный id кадра в снимке. Без uuid — номер, не пустая строка."""
+
+    uid = str(getattr(frame, "uuid", "") or "").strip()
+    if uid:
+        return uid
+    number = getattr(frame, "number", None)
+    if number is not None:
+        return f"n{number}"
+    pk = getattr(frame, "id", None)
+    return "" if pk is None else str(pk)
+
+
 def _preservation_view(
     frames: list[Any],
     texts: list[Any] | None = None,
@@ -1451,7 +1464,7 @@ def _preservation_view(
         attrs = getattr(frame, "attrs", None)
         attrs = attrs if isinstance(attrs, dict) else {}
         row: dict[str, Any] = {
-            "id": str(getattr(frame, "uuid", "") or ""),
+            "id": _frame_preservation_id(frame),
             "номер": getattr(frame, "number", None),
         }
         if "кадры" in attrs:

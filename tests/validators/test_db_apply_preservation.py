@@ -567,3 +567,14 @@ async def test_db_apply_restore_shot_via_kadry_edit_passes(session: AsyncSession
     await session.refresh(frame)
     assert frame.attrs["кадры"][1]["id"] == "1-K2"
     assert frame.attrs["кадры"][1]["активен"] is True
+
+
+def test_preservation_view_frame_without_uuid_keeps_id() -> None:
+    """Кадр без uuid не схлопывается в пустой id снимка."""
+    frame = Frame(
+        number=4,
+        voiceover_text="текст",
+        attrs={"кадры": [{"id": "k"}]},
+    )
+    view = db_apply._preservation_view([frame])
+    assert view["сцены"][0]["id"] == "n4"

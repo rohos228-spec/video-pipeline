@@ -54,11 +54,11 @@ def run_preservation_validators(
 
     ``mode="reject"`` (по умолчанию) — любой error поднимает
     ``PreservationRejected``, ``after`` не меняется.
-    ``mode="soft"`` — кадр, который можно оставить в ``кадры[]``, помечается
-    ``активен: False`` и становится warn ``kept_inactive``. ``vo_on_inactive``
-    и ``inactive_shot_used`` на этом же id не отказывают: текст кадра сохранён,
-    но шот больше не живой. Оставшийся error (сцена, персонаж, чужой кадр)
-    по-прежнему отказ.
+    ``mode="soft"`` — пропавший живой шот дописывается в ``кадры[]`` с
+    ``активен: False`` и warn ``kept_inactive``. На id этого шота не
+    отказывают ``frame_deleted``, ``shot_dropped``, ``vo_on_inactive`` и
+    ``inactive_shot_used``. ``vo_on_inactive`` с id сцены soft не гасит.
+    Другой error по-прежнему отказ.
     """
 
     if mode not in {"reject", "soft"}:
