@@ -588,12 +588,15 @@ PLAN §2.2.3 и §3.6 оценивали **2–4** call-site (`apply_ops_batches
 
 К списку плана §6.3 добавляется действие куратора. Остальные новые id плана этот аудит не переписывает.
 
-#### `revert_node_to_git` (risk: medium)
+#### `revert_node_to_git` (risk: medium, tier: destructive)
+
+Действие вне реестра 102. История версий не удаляется, git-файл не пишется. Ярус destructive: активная версия ноды в БД деактивируется.
 
 ```json
 {"params": {
    "node_key": {"type": "string", "required": true},
    "reason": {"type": "string", "required": true}},
+ "tier": "destructive",
  "effects": [
    "change_control: деактивирует версию ноды в БД",
    "история версий не удаляется",

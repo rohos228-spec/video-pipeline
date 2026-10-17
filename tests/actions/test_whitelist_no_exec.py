@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import json
 import os
 import re
 import sys
@@ -2014,6 +2015,24 @@ def test_audit_header_counters() -> None:
 _VALID_TIERS = frozenset(
     {"read", "local_safe", "paid", "destructive", "destructive+paid"}
 )
+
+
+def test_revert_node_to_git_has_tier() -> None:
+    """revert_node_to_git вне реестра 102, но ярус указан и входит в шкалу."""
+    text = _audit_text()
+    match = re.search(
+        r"#### `revert_node_to_git` \(risk: medium, tier: ([a-z0-9+]+)\)\n"
+        r".*?```json\n(.*?)\n```",
+        text,
+        re.DOTALL,
+    )
+    assert match, "у revert_node_to_git нет яруса"
+    heading_tier = match.group(1)
+    payload = json.loads(match.group(2))
+    assert payload.get("tier") == heading_tier
+    assert heading_tier in _VALID_TIERS
+    assert heading_tier == "destructive"
+    assert "revert_node_to_git" not in {row["id"] for row in action_table_rows()}
 
 
 def test_tier_values_valid() -> None:
