@@ -208,6 +208,7 @@ async def test_aborted_stream_is_charged(config, sink, sleeper):
         )
     assert caught.value.partial is not None
     assert caught.value.partial.text == "привет"
+    assert caught.value.billable is True
 
     partial = CompletionResult(text="привет", finish_reason="", model="gpt-5.6-sol")
     transport = FakeTransport(
@@ -229,7 +230,7 @@ async def test_aborted_stream_is_charged(config, sink, sleeper):
     router = LiveRouter(priced, transport=cancelled, ledger=ledger, sink=sink, sleeper=sleeper)
     with pytest.raises(asyncio.CancelledError):
         await router.call("strong", messages, max_tokens=4, run_id="run-cancel")
-    assert ledger.spent("run-cancel") > 0
+    assert ledger.spent("run-cancel") == 0.0
 
 
 async def test_exhausted_budget_blocks_stream_before_transport(config):

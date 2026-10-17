@@ -19,10 +19,22 @@ from app.orchestrator.routing.wire import (
 )
 
 
+def _body_started(partial: CompletionResult | None) -> bool:
+    """Тело уже пошло: в снимке есть текст чанка."""
+    return bool(partial and str(partial.text or "").strip())
+
+
 class ProviderTimeout(Exception):
-    def __init__(self, message: str = "", *, partial: CompletionResult | None = None) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        partial: CompletionResult | None = None,
+        billable: bool | None = None,
+    ) -> None:
         super().__init__(message)
         self.partial = partial
+        self.billable = _body_started(partial) if billable is None else bool(billable)
 
 
 class ProviderError(Exception):
@@ -33,11 +45,20 @@ class ProviderError(Exception):
         retryable: bool,
         status_code: int | None = None,
         partial: CompletionResult | None = None,
+        billable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
         self.partial = partial
+        if billable is None:
+            if status_code is not None and status_code >= 400:
+                billable = False
+            elif "empty" in message.lower():
+                billable = True
+            else:
+                billable = _body_started(partial)
+        self.billable = bool(billable)
 
 
 @dataclass
@@ -114,11 +135,29 @@ def _remember_partial(exc: BaseException, partial: CompletionResult) -> None:
 
 
 def _raise_with_partial(exc: BaseException, partial: CompletionResult) -> None:
+    """Списываем обрыв только если тело уже пошло. Статус >=400 и connect — нет."""
     _remember_partial(exc, partial)
+    started = _body_started(partial)
     if isinstance(exc, httpx.TimeoutException):
-        raise ProviderTimeout(str(exc) or "timeout", partial=partial) from exc
+        raise ProviderTimeout(str(exc) or "timeout", partial=partial, billable=started) from exc
     if isinstance(exc, httpx.TransportError):
-        raise ProviderError(str(exc) or "transport", retryable=True, partial=partial) from exc
+        raise ProviderError(
+            str(exc) or "transport",
+            retryable=True,
+            partial=partial,
+            billable=started,
+        ) from exc
+    if isinstance(exc, ProviderError):
+        code = exc.status_code
+        if code is not None and code >= 400:
+            exc.billable = False
+        elif started:
+            exc.billable = True
+    elif started:
+        try:
+            exc.billable = True  # type: ignore[attr-defined]
+        except Exception:
+            return
     raise exc
 
 
