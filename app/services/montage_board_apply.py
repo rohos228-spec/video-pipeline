@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -626,6 +627,26 @@ async def _run_op_with_short_sessions(
         return await _finalize_video_with_retry(project_id, prep, new_path, board)
 
 
+def merge_kept_ops(
+    pending: list[dict[str, Any]],
+    held: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Невыбранные правки (keep_ops) остаются в очереди рядом с незавершёнными."""
+    out = [op for op in pending if isinstance(op, dict)]
+    seen = {
+        json.dumps(op, sort_keys=True, ensure_ascii=False, default=str) for op in out
+    }
+    for op in held or []:
+        if not isinstance(op, dict):
+            continue
+        key = json.dumps(op, sort_keys=True, ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        out.append(op)
+        seen.add(key)
+    return out
+
+
 async def _run_ops_phase(
     *,
     project_id: int,
@@ -639,6 +660,7 @@ async def _run_ops_phase(
     on_progress: ProgressCb | None,
     phase_label: str,
     parent_of: dict[int, int | None] | None = None,
+    held_ops: list[dict[str, Any]] | None = None,
 ) -> None:
     """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго.
 
@@ -674,7 +696,8 @@ async def _run_ops_phase(
     total = len(all_ops)
 
     def _pending_snapshot() -> list[dict[str, Any]]:
-        return [all_ops[i] for i, st in enumerate(op_status) if st != "ok"]
+        open_ops = [all_ops[i] for i, st in enumerate(op_status) if st != "ok"]
+        return merge_kept_ops(open_ops, held_ops)
 
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
@@ -825,7 +848,7 @@ async def apply_montage_board(
     )
 
     # Commit trim/highlights до долгих Outsee — не держим write-txn.
-    board["pending_ops"] = list(ops)
+    board["pending_ops"] = merge_kept_ops(list(ops), held)
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
@@ -847,6 +870,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="coverage",
+        held_ops=held,
     )
     # После coverage роли актуальны: ребёнок ждёт родителя только если тот
     # тоже в этой пачке. Уже готовый родитель на диске детей не блокирует.
@@ -867,6 +891,7 @@ async def apply_montage_board(
         on_progress=on_progress,
         phase_label="images",
         parent_of=parent_of,
+        held_ops=held,
     )
     await _run_ops_phase(
         project_id=project_id,
@@ -880,6 +905,7 @@ async def apply_montage_board(
         on_progress=on_progress,
         phase_label="videos",
         parent_of=parent_of,
+        held_ops=held,
     )
     await _run_ops_phase(
         project_id=project_id,
@@ -892,6 +918,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="other",
+        held_ops=held,
     )
 
     remaining = [ops[i] for i, st in enumerate(op_status) if st != "ok"]
