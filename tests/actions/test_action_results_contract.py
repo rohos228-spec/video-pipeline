@@ -306,6 +306,15 @@ def test_partial_edit_lists_skipped_items() -> None:
         )
 
 
+def test_edit_result_version_after_base() -> None:
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(before={"a": 1}, version=1, base_version=5))
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(before={"a": 1}, version=2, base_version=2))
+    edited = EditResult.model_validate(_edit_payload(before={"a": 1}, version=6, base_version=5))
+    assert edited.version > edited.base_version
+
+
 def test_edit_result_has_required_version() -> None:
     missing = _edit_payload(before={"prompt_template": "было"})
     missing.pop("version")

@@ -48,7 +48,7 @@
 | `node_ref.kind` | `node` / `prompt` / `params` / `report` |
 | `before` / `after` | значение до и после. Без `before` нужен `snapshot_id` |
 | `snapshot_id` | снимок прежнего значения, если `before` не передан |
-| `version` | номер версии после успешной правки, целое ≥ 1 |
+| `version` | номер версии после успешной правки, целое ≥ 1, строго больше `base_version` |
 | `base_version` | версия, которую читал писатель, целое ≥ 1 |
 
 `update_report` — тот же `EditResult`, поэтому версия и база обязательны и у отчёта.
@@ -187,7 +187,7 @@ DOM отчёта на месте не правится.
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "node"},
     "before": null,
     "snapshot_id": "snap-13-1",
-    "version": 1,
+    "version": 2,
     "base_version": 1,
     "after": {"title": "Сцены", "group": "script_frames_qc"},
     "diff": {"fields": {"title": {"before": null, "after": "Сцены"}}},

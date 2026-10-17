@@ -166,6 +166,8 @@ class EditResult(BaseModel):
     def _before_or_snapshot(self) -> EditResult:
         if self.before is None and not self.snapshot_id:
             raise ValueError("нужен before или snapshot_id")
+        if self.version <= self.base_version:
+            raise ValueError("version должна быть больше base_version")
         if self.partial and not self.skipped:
             raise ValueError("partial требует список skipped")
         return self
