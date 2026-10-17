@@ -15,7 +15,7 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
-from . import no_deletions, plan_sanity, shot_merge, spend_guard, wide_before_dialogue
+from . import no_deletions, plan_sanity, preservation, shot_merge, spend_guard, wide_before_dialogue
 from .result import (
     VALIDATOR_CONTEXT_DRY_RUN,
     dry_run_key,
@@ -35,6 +35,7 @@ _ORDER = (
     "shot_merge",
     "spend_guard",
     "plan_sanity",
+    "preservation",
 )
 
 _CHECKS: dict[str, Checker] = {
@@ -43,6 +44,7 @@ _CHECKS: dict[str, Checker] = {
     "shot_merge": shot_merge.check,
     "spend_guard": spend_guard.check,
     "plan_sanity": plan_sanity.check,
+    "preservation": preservation.check,
 }
 
 VO_LENGTH = "vo_length"
