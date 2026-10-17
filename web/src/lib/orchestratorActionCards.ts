@@ -1,29 +1,38 @@
 /**
  * Карточки результатов действий по контракту WS2.
  *
- * ws2-r2.0 — PR #378 @ ae950ce6 (база #344, сейчас ead3f7e8).
+ * ws2-r2.1 — PR #378 @ ed355997.
  * Схема: web/src/lib/orchestratorActionResults.schema.json
- * sha256 850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa
+ * sha256 e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d
  *
- * Моки без пометки r2.1 — JSON из docs/fable/action_results_contract.md.
- * Поля snapshot_id / version / base_version / warnings / skipped / partial
- * в r2.0 нет: они опциональны и помечены как r2.1-предварительные.
- * Когда WS2 выложит ws2-r2.1, сверять этот файл, флаг версии и sha256.
+ * Моки — JSON из docs/fable/action_results_contract.md этой версии.
+ * Обязательны: version и base_version у правки, before или snapshot_id,
+ * у мягкого удаления ссылка на снимок (snapshot_id или archive_ref) и
+ * marked=true при ok, warnings у конверта, skipped вместе с partial.
  *
  * Шина (в contracts.py события нет): конверт ActionResult лежит в payload
  * step_finished или message.
  *
- * ApprovalRequired не становится кнопкой одобрения и его change_id
- * не используется. Строка «Ждёт подтверждения» ждёт событие ядра
- * approval_required / approval_decided. ActionMetadata — только подпись риска.
+ * ApprovalRequired не становится кнопкой одобрения. change_id у него нет.
+ * Строка «Ждёт подтверждения» ждёт событие ядра approval_required /
+ * approval_decided. ActionMetadata — только подпись риска.
  *
  * Тело POST «Править» и «Восстановить» моделью не задано.
  */
 
-export const ACTION_CONTRACT_VERSION = "ws2-r2.0";
-export const ACTION_CONTRACT_REF = "ae950ce6c81892c9b8b3fc07b095780b5f26c075";
-export const ACTION_SCHEMA_SHA256 = "850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa";
+export const ACTION_CONTRACT_VERSION = "ws2-r2.1";
+export const ACTION_CONTRACT_REF = "ed35599772d3280760c405c4c8236db7833dd58e";
+export const ACTION_SCHEMA_SHA256 = "e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d";
 export const REPORT_EDIT_ACTION = "update_report";
+const CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
+
+/** Мягкое удаление возвращает только свой kind. history.rollback эти четыре не восстанавливает. */
+const SOFT_DELETE_RESTORE: Record<string, string> = {
+  "montage.delete_frame": "frame.restore",
+  "montage.delete_child_frame": "frame.restore",
+  "group.delete": "group.restore",
+  "prompt.delete_master": "prompt.restore_master",
+};
 
 export interface ActionMetadata {
   name: string;
@@ -69,12 +78,15 @@ export interface ActionResultView {
   marked: boolean;
   restoreAction: string | null;
   error: string | null;
-  /** r2.1-предварительные. Пустые, если в конверте полей нет. */
+  /** Всегда массив, в том числе пустой. */
   warnings: string[];
+  /** Пустой, если частичного пропуска нет. partial=true без списка не принимается. */
   skipped: string[];
   partial: boolean;
   snapshotId: string | null;
+  archiveRef: string | null;
   snapshotUrl: string | null;
+  /** У правки и отчёта — целое ≥ 1. Иначе карточка успеха не строится. */
   version: number | null;
   baseVersion: number | null;
   conflict: boolean;
@@ -102,14 +114,20 @@ const R2_METADATA: Record<string, ActionMetadata> = {
   rag_search: { name: "rag_search", risk: "none", read_only: true, destructive: false, paid: false },
   run_validators: { name: "run_validators", risk: "none", read_only: true, destructive: false, paid: false },
   stop_node: { name: "stop_node", risk: "medium", read_only: false, destructive: false, paid: false },
-  resume_node: { name: "resume_node", risk: "medium", read_only: false, destructive: false, paid: true },
+  resume_node: { name: "resume_node", risk: "high", read_only: false, destructive: true, paid: true },
   create_node: { name: "create_node", risk: "medium", read_only: false, destructive: false, paid: false },
-  edit_node_prompt: { name: "edit_node_prompt", risk: "medium", read_only: false, destructive: false, paid: false },
-  edit_node_params: { name: "edit_node_params", risk: "medium", read_only: false, destructive: false, paid: false },
+  edit_node_prompt: { name: "edit_node_prompt", risk: "medium", read_only: false, destructive: true, paid: false },
+  edit_node_params: { name: "edit_node_params", risk: "medium", read_only: false, destructive: true, paid: false },
   create_report: { name: "create_report", risk: "low", read_only: false, destructive: false, paid: false },
-  update_report: { name: "update_report", risk: "low", read_only: false, destructive: false, paid: false },
+  update_report: { name: "update_report", risk: "low", read_only: false, destructive: true, paid: false },
   export_nodes_snapshot: { name: "export_nodes_snapshot", risk: "low", read_only: true, destructive: false, paid: false },
-  revert_node_to_git: { name: "revert_node_to_git", risk: "medium", read_only: false, destructive: false, paid: false },
+  revert_node_to_git: { name: "revert_node_to_git", risk: "medium", read_only: false, destructive: true, paid: false },
+  "frame.restore": { name: "frame.restore", risk: "high", read_only: false, destructive: true, paid: false },
+  "group.restore": { name: "group.restore", risk: "high", read_only: false, destructive: true, paid: false },
+  "prompt.restore_master": { name: "prompt.restore_master", risk: "high", read_only: false, destructive: true, paid: false },
+  "group.delete": { name: "group.delete", risk: "high", read_only: false, destructive: true, paid: false },
+  "montage.delete_frame": { name: "montage.delete_frame", risk: "high", read_only: false, destructive: true, paid: false },
+  "montage.delete_child_frame": { name: "montage.delete_child_frame", risk: "high", read_only: false, destructive: true, paid: false },
   "prompt.delete_master": { name: "prompt.delete_master", risk: "high", read_only: false, destructive: true, paid: false },
   "prompt.create_master": { name: "prompt.create_master", risk: "medium", read_only: false, destructive: true, paid: false },
   "montage.suggest_scene_variants": {
@@ -194,6 +212,16 @@ function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function intGe1(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
+function validChangeId(value: unknown): string | null {
+  const id = str(value).trim();
+  return CHANGE_ID.test(id) ? id : null;
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
@@ -264,6 +292,7 @@ function blankView(id: string, metadata: ActionMetadata, kind: ActionCardKind): 
     skipped: [],
     partial: false,
     snapshotId: null,
+    archiveRef: null,
     snapshotUrl: null,
     version: null,
     baseVersion: null,
@@ -271,20 +300,63 @@ function blankView(id: string, metadata: ActionMetadata, kind: ActionCardKind): 
   };
 }
 
+function diffShape(result: Record<string, unknown>): "unified" | "fields" | null {
+  const diff = plainObject(result.diff);
+  if (!diff) return null;
+  const hasUnified = typeof diff.unified === "string" && diff.unified.trim() !== "";
+  const hasFields = plainObject(diff.fields) != null;
+  if (hasUnified === hasFields) return null;
+  return hasUnified ? "unified" : "fields";
+}
+
+function partialPair(result: Record<string, unknown> | null, payload: Record<string, unknown>): { partial: boolean; skipped: string[] } {
+  const fromResult = result ? stringList(result.skipped) : [];
+  const skipped = fromResult.length ? fromResult : stringList(payload.skipped);
+  const partial = result?.partial === true || payload.partial === true;
+  return { partial, skipped };
+}
+
+/** Правка ws2-r2.1: версия, база, before или снимок, ровно один diff. */
+function editSatisfied(result: Record<string, unknown>): boolean {
+  if (!str(result.action).trim() || !validChangeId(result.change_id)) return false;
+  if (!readNodeRef(result.node_ref)) return false;
+  if (intGe1(result.version) == null || intGe1(result.base_version) == null) return false;
+  if (result.before == null && !str(result.snapshot_id).trim()) return false;
+  if (!diffShape(result)) return false;
+  if (!str(result.open_url).trim() || typeof result.reversible !== "boolean") return false;
+  const pair = partialPair(result, {});
+  if (pair.partial && pair.skipped.length === 0) return false;
+  return true;
+}
+
+/** ok-пометка: marked=true, restore своего kind, снимок или архив. */
+function softDeleteSatisfied(result: Record<string, unknown>): boolean {
+  const action = str(result.action).trim();
+  const restore = str(result.restore_action).trim();
+  if (SOFT_DELETE_RESTORE[action] !== restore) return false;
+  if (result.marked !== true || !validChangeId(result.change_id)) return false;
+  if (!str(result.snapshot_id).trim() && !str(result.archive_ref).trim()) return false;
+  const pair = partialPair(result, {});
+  if (pair.partial && pair.skipped.length === 0) return false;
+  return true;
+}
+
 function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unknown>, result: Record<string, unknown> | null): void {
+  const pair = partialPair(result, payload);
   view.warnings = stringList(payload.warnings);
-  view.skipped = stringList(payload.skipped);
-  view.partial = payload.partial === true;
+  view.skipped = pair.skipped;
+  view.partial = pair.partial;
   const source = result ?? {};
   view.snapshotId = str(source.snapshot_id).trim() || str(payload.snapshot_id).trim() || null;
+  view.archiveRef = str(source.archive_ref).trim() || str(payload.archive_ref).trim() || null;
   view.snapshotUrl = str(source.snapshot_url).trim() || str(payload.snapshot_url).trim() || null;
-  view.version = num(source.version) ?? num(payload.version);
-  view.baseVersion = num(source.base_version) ?? num(payload.base_version);
+  view.version = intGe1(source.version) ?? intGe1(payload.version);
+  view.baseVersion = intGe1(source.base_version) ?? intGe1(payload.base_version);
   const statusCode = num(payload.status_code);
   const error = str(payload.error);
   view.conflict =
     payload.status === "failed" &&
-    (statusCode === 409 || (view.version != null && view.baseVersion != null && view.version !== view.baseVersion) || /409|конфликт версий/i.test(error));
+    (statusCode === 409 || error.trim().toLowerCase() === "conflict" || /409|конфликт версий/i.test(error));
 }
 
 export function readActionEnvelope(payload: Record<string, unknown>, seq: number): ActionResultView | null {
@@ -304,8 +376,7 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
   }
   if (status === "failed") {
     const error = str(payload.error).trim();
-    const action = result ? str(result.action).trim() : "";
-    if (result && (action || num(result.version) != null || num(result.base_version) != null)) {
+    if (result && editSatisfied(result)) {
       const view = readEdit(result, seq);
       view.error = error || null;
       applyEnvelopeExtras(view, payload, result);
@@ -322,6 +393,7 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
   const reportId = num(result.report_id);
   const html = typeof result.html === "string" ? result.html : null;
   if (reportId != null && html != null && result.edit_action === REPORT_EDIT_ACTION) {
+    if (intGe1(result.version) == null || !html.trim()) return null;
     const view = blankView(`report-${reportId}`, metadataOf("create_report"), "report");
     view.action = "create_report";
     view.html = html;
@@ -330,11 +402,13 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
     applyEnvelopeExtras(view, payload, result);
     return view;
   }
-  const changeId = str(result.change_id).trim();
-  if (result.marked === true && changeId) {
-    const restore = str(result.restore_action).trim() || "history.rollback";
-    const view = blankView(changeId, metadataOf(restore), "mark");
-    view.action = restore;
+  const deleteAction = str(result.action).trim();
+  if (result.marked === true || Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, deleteAction)) {
+    if (!softDeleteSatisfied(result)) return null;
+    const changeId = validChangeId(result.change_id);
+    const restore = str(result.restore_action).trim();
+    const view = blankView(changeId || `mark-${seq}`, metadataOf(deleteAction), "mark");
+    view.action = deleteAction;
     view.changeId = changeId;
     view.marked = true;
     view.restoreAction = restore;
@@ -342,7 +416,7 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
     view.conflict = false;
     return view;
   }
-  if (!str(result.action).trim() && !plainObject(result.diff)) return null;
+  if (!editSatisfied(result)) return null;
   const view = readEdit(result, seq);
   applyEnvelopeExtras(view, payload, result);
   view.conflict = false;
@@ -403,6 +477,9 @@ export const EXAMPLE_NODE_CREATE = stepPayload("s-create", "новая нода"
     change_id: "orch-appr-13-1",
     node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "node" },
     before: null,
+    snapshot_id: "snap-13-1",
+    version: 1,
+    base_version: 1,
     after: { title: "Сцены", group: "script_frames_qc" },
     diff: { fields: { title: { before: null, after: "Сцены" } } },
     open_url: "/api/projects/13",
@@ -418,6 +495,8 @@ export const EXAMPLE_PROMPT_EDIT = stepPayload("s-prompt", "правка про�
     change_id: "orch-appr-13-2",
     node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "prompt" },
     before: { prompt_template: "было" },
+    version: 2,
+    base_version: 1,
     after: { prompt_template: "стало" },
     diff: { unified: "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n" },
     open_url: "/api/projects/13",
@@ -433,6 +512,8 @@ export const EXAMPLE_PARAMS_EDIT = stepPayload("s-params", "параметры",
     change_id: "orch-appr-13-3",
     node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "params" },
     before: { temperature: 0.2 },
+    version: 3,
+    base_version: 2,
     after: { temperature: 0.4 },
     diff: { fields: { temperature: { before: 0.2, after: 0.4 } } },
     open_url: "/api/projects/13",
@@ -448,8 +529,15 @@ export const EXAMPLE_NODE_EDIT = stepPayload("s-revert", "откат к git", {
     change_id: "orch-appr-13-5",
     node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "node" },
     before: { source: "db", db_version: 4 },
+    version: 5,
+    base_version: 4,
     after: { source: "git", db_version: null },
-    diff: { fields: { source: { before: "db", after: "git" } } },
+    diff: {
+      fields: {
+        source: { op: "set", before: "db", after: "git" },
+        db_version: { op: "removed", before: 4 },
+      },
+    },
     open_url: "/api/projects/13",
     reversible: true,
   },
@@ -477,8 +565,10 @@ export const EXAMPLE_DELETE_OK = stepPayload("s-delete-ok", "пометка пр
   status: "ok",
   result: {
     change_id: "orch-appr-13-6",
+    action: "prompt.delete_master",
     marked: true,
-    restore_action: "history.rollback",
+    restore_action: "prompt.restore_master",
+    snapshot_id: "snap-13-6",
   },
   error: null,
 });
@@ -486,7 +576,7 @@ export const EXAMPLE_DELETE_OK = stepPayload("s-delete-ok", "пометка пр
 export const EXAMPLE_PAID_APPROVAL = stepPayload("s-paid", "платный вызов", {
   status: "approval_required",
   result: {
-    change_id: "orch-appr-13-7",
+    action: "montage.suggest_scene_variants",
     metadata: {
       name: "montage.suggest_scene_variants",
       risk: "high",
@@ -494,8 +584,11 @@ export const EXAMPLE_PAID_APPROVAL = stepPayload("s-paid", "платный вы�
       destructive: false,
       paid: true,
     },
-    summary: "Один вызов LLM за вариантами сцены",
-    estimate: 0,
+    reason: "Платный вызов LLM",
+    preview: {
+      change: "Один вызов LLM за вариантами сцены",
+      estimate: null,
+    },
   },
   error: null,
 });
@@ -503,7 +596,7 @@ export const EXAMPLE_PAID_APPROVAL = stepPayload("s-paid", "платный вы�
 export const EXAMPLE_UNKNOWN_APPROVAL = stepPayload("s-unknown", "неизвестное", {
   status: "approval_required",
   result: {
-    change_id: "orch-appr-13-9",
+    action: "widget.spin",
     metadata: {
       name: "widget.spin",
       risk: "none",
@@ -511,8 +604,11 @@ export const EXAMPLE_UNKNOWN_APPROVAL = stepPayload("s-unknown", "неизвес
       destructive: false,
       paid: false,
     },
-    summary: "Неизвестное действие",
-    estimate: 0,
+    reason: "Имя вне реестра",
+    preview: {
+      change: "Неизвестное действие",
+      estimate: null,
+    },
   },
   error: null,
 });
@@ -527,10 +623,7 @@ export const EXAMPLE_CORE_APPROVAL = {
   action: "montage.suggest_scene_variants",
 };
 
-/**
- * r2.1-предварительный мок. В ws2-r2.0 этих полей нет.
- * Снимок и версии станут обязательными, когда выйдет схема r2.1.
- */
+/** Устаревшая правка: конверт failed, на карточке остаётся diff и версии. */
 export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт версий", {
   status: "failed",
   status_code: 409,
@@ -553,16 +646,15 @@ export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт 
   error: "конфликт версий",
 });
 
-/** r2.1-предварительный: ссылка на снимок у мягкого удаления. */
+/** Мягкое удаление со снимком. restore_action — kind этой пометки. */
 export const EXAMPLE_R21_DELETE = stepPayload("s-r21-delete", "пометка со снимком", {
   status: "ok",
   result: {
     change_id: "orch-appr-13-6",
+    action: "prompt.delete_master",
     marked: true,
-    restore_action: "history.rollback",
+    restore_action: "prompt.restore_master",
     snapshot_id: "snap-r21-6",
-    snapshot_url: "/api/projects/13/snapshots/snap-r21-6",
-    version: 2,
   },
   error: null,
 });

@@ -20,6 +20,7 @@ import {
   EXAMPLE_REPORT,
   EXAMPLE_UNKNOWN_APPROVAL,
   metadataOf,
+  readActionEnvelope,
   reportEditBody,
   unifiedLines,
 } from "../../src/lib/orchestratorActionCards";
@@ -51,13 +52,59 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
   expect(res.ok()).toBeTruthy();
 }
 
-test("схема ws2-r2.0 закреплена sha256", () => {
+test("схема ws2-r2.1 закреплена sha256", () => {
   const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorActionResults.schema.json");
   const hash = createHash("sha256").update(readFileSync(file)).digest("hex");
   expect(hash).toBe(ACTION_SCHEMA_SHA256);
-  expect(hash).toBe("850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa");
-  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.0");
-  expect(ACTION_CONTRACT_REF).toBe("ae950ce6c81892c9b8b3fc07b095780b5f26c075");
+  expect(hash).toBe("e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d");
+  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.1");
+  expect(ACTION_CONTRACT_REF).toBe("ed35599772d3280760c405c4c8236db7833dd58e");
+});
+
+test("версия, снимок и marked обязательны", () => {
+  const prompt = readActionEnvelope(EXAMPLE_PROMPT_EDIT, 1);
+  expect(prompt?.version).toBe(2);
+  expect(prompt?.baseVersion).toBe(1);
+  expect(prompt?.metadata.destructive).toBe(true);
+  expect(metadataOf("revert_node_to_git").destructive).toBe(true);
+  expect(metadataOf("resume_node")).toMatchObject({ risk: "high", destructive: true, paid: true });
+
+  const created = readActionEnvelope(EXAMPLE_NODE_CREATE, 2);
+  expect(created?.snapshotId).toBe("snap-13-1");
+  expect(created?.version).toBe(1);
+  expect(created?.baseVersion).toBe(1);
+
+  const marked = readActionEnvelope(EXAMPLE_DELETE_OK, 3);
+  expect(marked?.marked).toBe(true);
+  expect(marked?.restoreAction).toBe("prompt.restore_master");
+  expect(marked?.snapshotId).toBe("snap-13-6");
+  expect(marked?.changeId).toBe("orch-appr-13-6");
+
+  const missingVersion = structuredClone(EXAMPLE_PROMPT_EDIT);
+  const missingResult = missingVersion.result as { version?: number; base_version?: number; before?: unknown; snapshot_id?: string };
+  delete missingResult.version;
+  delete missingResult.base_version;
+  expect(readActionEnvelope(missingVersion, 4)).toBeNull();
+
+  const noBefore = structuredClone(EXAMPLE_PROMPT_EDIT);
+  const bare = noBefore.result as { before?: unknown; snapshot_id?: string };
+  bare.before = null;
+  delete bare.snapshot_id;
+  expect(readActionEnvelope(noBefore, 5)).toBeNull();
+
+  const noSnapshot = structuredClone(EXAMPLE_DELETE_OK);
+  const dropped = noSnapshot.result as { snapshot_id?: string; archive_ref?: string; marked?: boolean };
+  delete dropped.snapshot_id;
+  delete dropped.archive_ref;
+  expect(readActionEnvelope(noSnapshot, 6)).toBeNull();
+
+  dropped.archive_ref = "old/scenes/13";
+  dropped.snapshot_id = undefined;
+  expect(readActionEnvelope(noSnapshot, 7)?.archiveRef).toBe("old/scenes/13");
+
+  const unmarked = structuredClone(EXAMPLE_DELETE_OK);
+  (unmarked.result as { marked?: boolean }).marked = false;
+  expect(readActionEnvelope(unmarked, 8)).toBeNull();
 });
 
 test("построчный дифф промта не теряет строки", () => {
@@ -177,7 +224,7 @@ test("сбой и мягкое удаление рисуются карточк�
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
     text: "Восстановить",
-    action: { name: "history.rollback", change_id: "orch-appr-13-6" },
+    action: { name: "prompt.restore_master", change_id: "orch-appr-13-6", snapshot_id: "snap-13-6" },
   });
 });
 
@@ -225,7 +272,7 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   await mark.getByTestId("orch-restore").click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]?.action).toEqual({
-    name: "history.rollback",
+    name: "prompt.restore_master",
     change_id: "orch-appr-13-6",
     snapshot_id: "snap-r21-6",
   });
