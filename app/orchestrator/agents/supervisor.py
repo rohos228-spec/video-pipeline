@@ -28,23 +28,27 @@ from app.orchestrator.agents.stubs import (
     UnlinkedValidators,
 )
 from app.orchestrator.agents.task_store import TaskStore
+from app.orchestrator.agents.validator_call import run_validator
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
     APPROVAL_RISKS,
     TERMINAL_STATUSES,
     VALIDATOR_CONTEXT_DRY_RUN,
     AgentRole,
+    ApprovalEvent,
     ApprovalReason,
     BudgetScope,
     CheckpointData,
     PlanStep,
     SpendSnapshot,
     TaskStatus,
+    ValidatorResult,
     budget_exhausted_response,
     can_transition,
     paid_step_identity,
     plan_deletions,
     plan_missing_verify,
+    validator_budget_exhausted,
 )
 from app.orchestrator.events import EventBus
 
@@ -407,7 +411,10 @@ class Supervisor:
         if not plan:
             await self._escalate(task_id, session_id, "plan_sanity")
             return True
-        if not await self._dry_run(task_id, session_id, plan):
+        dry = await self._dry_run(task_id, session_id, plan)
+        if dry == "budget":
+            return True
+        if dry == "blocked":
             await self._escalate(task_id, session_id, "validator_blocked")
             return True
         if plan_deletions(plan):
@@ -472,7 +479,13 @@ class Supervisor:
             if step.paid:
                 await self._checkpoint(task_id, session_id, plan, index)
             for item in batch:
-                if item.mutating and not await self._validate(task_id, session_id, item, "before"):
+                if not item.mutating:
+                    continue
+                outcome, verdict = await self._validate(task_id, session_id, item, "before")
+                if outcome == "budget":
+                    await self._halt_for_validator_budget(task_id, session_id, plan, index, verdict)
+                    return
+                if outcome == "blocked":
                     await self._fail_validation(task_id, session_id)
                     return
 
@@ -534,9 +547,20 @@ class Supervisor:
                     self._paid_done.setdefault(task_id, set()).add(
                         paid_step_identity(done_step.action, done_step.params)
                     )
-                if done_step.mutating and not await self._validate(task_id, session_id, done_step, "after"):
-                    await self._fail_validation(task_id, session_id)
-                    return
+                if done_step.mutating:
+                    outcome, verdict = await self._validate(task_id, session_id, done_step, "after")
+                    if outcome == "budget":
+                        await self._halt_for_validator_budget(
+                            task_id,
+                            session_id,
+                            plan,
+                            index + offset + 1,
+                            verdict,
+                        )
+                        return
+                    if outcome == "blocked":
+                        await self._fail_validation(task_id, session_id)
+                        return
 
             index += len(batch)
             if any(done.mutating or done.paid for done, _ in started):
@@ -610,26 +634,28 @@ class Supervisor:
     async def _run_parallel(self, session_id: str, steps: list[PlanStep], ctx: dict[str, Any]) -> list[Any]:
         return await self._cancellable(session_id, run_many(self.executor, steps, ctx))
 
-    async def _validate(self, task_id: int, session_id: str, step: PlanStep, phase: str) -> bool:
+    async def _validate(
+        self,
+        task_id: int,
+        session_id: str,
+        step: PlanStep,
+        phase: str,
+    ) -> tuple[str, ValidatorResult | None]:
         project_id = int(step.params.get("project_id") or 0)
         names = ("no_deletions", "plan_sanity", "spend_guard") if phase == "after" else ("plan_sanity", "no_deletions")
         for name in names:
-            result = await self.validators.run(
+            result = await run_validator(
+                self.validators,
                 name,
                 project_id,
                 {"action": step.action, "task_id": task_id, "phase": phase},
             )
-            await self.bus.publish(
-                session_id,
-                "validator_result",
-                result.model_dump(by_alias=True),
-                task_id=task_id,
-            )
-            if not bool(result.passed) and bool(result.blocking):
-                return False
-        return True
+            outcome = await self._publish_validator(task_id, session_id, result)
+            if outcome != "ok":
+                return outcome, result
+        return "ok", None
 
-    async def _dry_run(self, task_id: int, session_id: str, plan: list[PlanStep]) -> bool:
+    async def _dry_run(self, task_id: int, session_id: str, plan: list[PlanStep]) -> str:
         project_id = 0
         for step in plan:
             if step.params.get("project_id"):
@@ -641,16 +667,48 @@ class Supervisor:
             "task_id": task_id,
         }
         for name in _DRY_RUN:
-            result = await self.validators.run(name, project_id, payload)
-            await self.bus.publish(
-                session_id,
-                "validator_result",
-                result.model_dump(by_alias=True),
-                task_id=task_id,
-            )
-            if not bool(result.passed) and bool(result.blocking):
-                return False
-        return True
+            result = await run_validator(self.validators, name, project_id, payload)
+            outcome = await self._publish_validator(task_id, session_id, result)
+            if outcome == "budget":
+                await self._halt_for_validator_budget(task_id, session_id, plan, 0, result)
+                return "budget"
+            if outcome == "blocked":
+                return "blocked"
+        return "ok"
+
+    async def _publish_validator(self, task_id: int, session_id: str, result: ValidatorResult) -> str:
+        await self.bus.publish(
+            session_id,
+            "validator_result",
+            result.model_dump(by_alias=True),
+            task_id=task_id,
+        )
+        if bool(result.passed) or not bool(result.blocking):
+            return "ok"
+        if validator_budget_exhausted(result):
+            return "budget"
+        return "blocked"
+
+    async def _halt_for_validator_budget(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        position: int,
+        result: ValidatorResult | None,
+    ) -> None:
+        details = getattr(result, "details", None)
+        payload = dict(details) if isinstance(details, dict) else {"details": details}
+        approval = ApprovalEvent(
+            task_id=task_id,
+            reason=ApprovalReason.budget_exhausted.value,
+            payload=payload,
+        )
+        self._budget_stop.add(task_id)
+        await self._checkpoint(task_id, session_id, plan, position)
+        extra = approval.model_dump()
+        extra.pop("reason", None)
+        await self._escalate(task_id, session_id, approval.reason, extra=extra)
 
     async def _fail_validation(self, task_id: int, session_id: str) -> None:
         await self._set_status(

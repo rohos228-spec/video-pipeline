@@ -498,14 +498,21 @@ class ValidatorRunner(Protocol):
     def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
         """WS1: синхронный ``validators.run(name, project_id, context) -> ValidatorResult``.
 
-        Async тоже принимается: ``run_validator`` делает await, если ``run`` —
-        корутина или вернул awaitable, иначе вызывает его через ``asyncio.to_thread``.
+        Async-реализация тоже принимается: ``run_validator`` делает await,
+        если ``run`` — корутина или вернул awaitable, иначе вызывает её
+        через ``asyncio.to_thread``.
 
         Перед критиком супервизор передаёт dry-run:
         ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``).
         В этом режиме валидатор только читает и ничего не меняет.
         Сигнатура и поля результата те же: ``name``, ``pass`` / ``passed``,
         ``details``, ``blocking``.
+
+        ``blocking=True`` и ``details.reason == "budget_exhausted"``
+        (``details`` может быть dict) — не ``failed``, а ``waiting_approval``
+        с ``ApprovalEvent.reason=budget_exhausted`` и чекпоинтом.
+        Остальной blocking прежний: live-проверка → ``failed``,
+        dry-run → ``validator_blocked``.
         """
 
 
@@ -614,6 +621,19 @@ def max_risk(*values: Any) -> Risk:
     if not values:
         return Risk.high
     return max((coerce_risk(item) for item in values), key=lambda item: _RISK_RANK[item])
+
+
+def validator_budget_exhausted(result: Any) -> bool:
+    """Блокирующий ответ валидатора из-за суб-бюджета, не обычный fail.
+
+    ``blocking`` истинно и ``details.reason == "budget_exhausted"``.
+    ``details`` — dict или объект с полем ``reason``.
+    """
+    if not bool(getattr(result, "blocking", False)):
+        return False
+    details = getattr(result, "details", None)
+    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
+    return reason == ApprovalReason.budget_exhausted.value
 
 
 def budget_exhausted_response(response: Any) -> bool:
