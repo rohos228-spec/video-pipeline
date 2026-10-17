@@ -20,7 +20,9 @@ from app.orchestrator.routing.wire import (
 
 
 class ProviderTimeout(Exception):
-    pass
+    def __init__(self, message: str = "", *, partial: CompletionResult | None = None) -> None:
+        super().__init__(message)
+        self.partial = partial
 
 
 class ProviderError(Exception):
@@ -30,10 +32,12 @@ class ProviderError(Exception):
         *,
         retryable: bool,
         status_code: int | None = None,
+        partial: CompletionResult | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
+        self.partial = partial
 
 
 @dataclass
@@ -98,6 +102,24 @@ def build_body(request: ProviderRequest, api: str) -> dict[str, Any]:
         # и ход выглядит бесплатным для лимита.
         body["stream_options"] = {"include_usage": True}
     return body
+
+
+def _remember_partial(exc: BaseException, partial: CompletionResult) -> None:
+    """Частичный стрим едет вместе с исключением, чтобы роутер списал его в finally."""
+    if getattr(exc, "partial", None) is None:
+        try:
+            exc.partial = partial  # type: ignore[attr-defined]
+        except Exception:
+            return
+
+
+def _raise_with_partial(exc: BaseException, partial: CompletionResult) -> None:
+    _remember_partial(exc, partial)
+    if isinstance(exc, httpx.TimeoutException):
+        raise ProviderTimeout(str(exc) or "timeout", partial=partial) from exc
+    if isinstance(exc, httpx.TransportError):
+        raise ProviderError(str(exc) or "transport", retryable=True, partial=partial) from exc
+    raise exc
 
 
 def _int(value: Any) -> int:
@@ -199,6 +221,9 @@ class _ChatStream:
             self.finish = finish
         return deltas
 
+    def snapshot(self) -> CompletionResult:
+        return self.result()
+
     def result(self) -> CompletionResult:
         return CompletionResult(
             text="".join(self.parts),
@@ -249,6 +274,21 @@ class _ResponsesStream:
             if isinstance(self.completed.get("usage"), dict):
                 self.usage = self.completed["usage"]
         return None
+
+    def snapshot(self) -> CompletionResult:
+        """Текст и usage, которые уже пришли. Пустой стрим не бросает ошибку."""
+        text = "".join(self.parts)
+        if len(self.done_text) > len(text):
+            text = self.done_text
+        details = self.usage.get("output_tokens_details") or {}
+        return CompletionResult(
+            text=text,
+            finish_reason=self.finish,
+            model=self.model,
+            prompt_tokens=_int(self.usage.get("input_tokens")),
+            completion_tokens=_int(self.usage.get("output_tokens")),
+            reasoning_tokens=_int(details.get("reasoning_tokens")),
+        )
 
     def result(self) -> CompletionResult:
         text = "".join(self.parts)
@@ -446,20 +486,24 @@ class HttpxTransport:
         request: ProviderRequest,
     ) -> CompletionResult:
         state = _ChatStream(model=request.model)
-        async with client.stream("POST", url, headers=headers, json=body) as response:
-            if response.status_code >= 400:
-                raise ProviderError(
-                    f"http {response.status_code}",
-                    retryable=response.status_code in _RETRY_STATUS,
-                    status_code=response.status_code,
-                )
-            async for line in response.aiter_lines():
-                payload = _json_data(line)
-                if payload is None:
-                    continue
-                for delta in state.feed(payload):
-                    await _emit_delta(request.on_delta, delta)
-        return state.result()
+        try:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if response.status_code >= 400:
+                    raise ProviderError(
+                        f"http {response.status_code}",
+                        retryable=response.status_code in _RETRY_STATUS,
+                        status_code=response.status_code,
+                    )
+                async for line in response.aiter_lines():
+                    payload = _json_data(line)
+                    if payload is None:
+                        continue
+                    for delta in state.feed(payload):
+                        await _emit_delta(request.on_delta, delta)
+            return state.result()
+        except BaseException as exc:
+            _raise_with_partial(exc, state.snapshot())
+            raise
 
     async def _stream_responses(
         self,
@@ -474,21 +518,25 @@ class HttpxTransport:
         Usage и finish копятся по событию. Полный текст SSE в память не кладётся.
         """
         state = _ResponsesStream(model=request.model)
-        async with client.stream("POST", url, headers=headers, json=body) as response:
-            if response.status_code >= 400:
-                raise ProviderError(
-                    f"http {response.status_code}",
-                    retryable=response.status_code in _RETRY_STATUS,
-                    status_code=response.status_code,
-                )
-            async for line in response.aiter_lines():
-                payload = _json_data(line)
-                if payload is None:
-                    continue
-                delta = state.feed(payload)
-                if delta:
-                    await _emit_delta(request.on_delta, delta)
-        result = state.result()
+        try:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if response.status_code >= 400:
+                    raise ProviderError(
+                        f"http {response.status_code}",
+                        retryable=response.status_code in _RETRY_STATUS,
+                        status_code=response.status_code,
+                    )
+                async for line in response.aiter_lines():
+                    payload = _json_data(line)
+                    if payload is None:
+                        continue
+                    delta = state.feed(payload)
+                    if delta:
+                        await _emit_delta(request.on_delta, delta)
+            result = state.result()
+        except BaseException as exc:
+            _raise_with_partial(exc, state.snapshot())
+            raise
         if not result.model:
             result.model = request.model
         return result

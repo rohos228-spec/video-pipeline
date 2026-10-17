@@ -178,6 +178,30 @@ def estimate_usage(
     )
 
 
+def _abort_should_bill(exc: BaseException) -> bool:
+    """Таймаут, обрыв, cancel и пустой completion — платные. Промах фикстуры — нет."""
+    if isinstance(exc, FixtureMiss):
+        return False
+    if isinstance(exc, RouterError):
+        return False
+    if isinstance(exc, ProviderError):
+        return bool(exc.retryable) or _is_empty_completion(exc)
+    return True
+
+
+def _partial_text(exc: BaseException) -> str:
+    partial = getattr(exc, "partial", None)
+    if partial is None:
+        return ""
+    return str(getattr(partial, "text", "") or "")
+
+
+def _partial_model(exc: BaseException, hop: Hop) -> str:
+    partial = getattr(exc, "partial", None)
+    model = "" if partial is None else str(getattr(partial, "model", "") or "")
+    return model or hop.model
+
+
 def _is_empty_completion(exc: BaseException) -> bool:
     """Пустой completion: провайдер мог взять деньги за промпт и reasoning."""
     if "empty" in str(exc).lower():
@@ -463,9 +487,39 @@ class ModelRouter:
                     return self._waiting_approval(ctx, hop, fallback_index)
                 call_id = str(uuid.uuid4())
                 started = time.perf_counter()
+                caught: BaseException | None = None
+                response: LLMResponse | None = None
+                abort_usage: LLMUsage | None = None
+                abort_cost = 0.0
+                abort_estimated = False
                 try:
                     result = await self._provider_complete(hop, ctx, timeout_s)
-                except FixtureMiss as exc:
+                except BaseException as exc:
+                    caught = exc
+                else:
+                    response = self._success(
+                        ctx,
+                        hop,
+                        result,
+                        call_id=call_id,
+                        attempt=attempt,
+                        fallback_index=fallback_index,
+                        started=started,
+                    )
+                finally:
+                    if response is None and caught is not None and _abort_should_bill(caught):
+                        abort_usage, abort_cost, abort_estimated = self._priced_usage(
+                            ctx,
+                            hop,
+                            text=_partial_text(caught),
+                            usage=_usage_from_partial(getattr(caught, "partial", None)),
+                            model=_partial_model(caught, hop),
+                        )
+                        self._charge(ctx, abort_cost)
+                if response is not None:
+                    return response
+                assert caught is not None
+                if isinstance(caught, FixtureMiss):
                     self._log(
                         ctx,
                         hop,
@@ -475,10 +529,10 @@ class ModelRouter:
                         status="fixture_miss",
                         error="fixture-miss",
                         latency_ms=_latency_ms(started),
-                        fixture_key=exc.fixture_key,
+                        fixture_key=caught.fixture_key,
                     )
-                    raise
-                except ProviderTimeout as exc:
+                    raise caught
+                if isinstance(caught, ProviderTimeout):
                     self._log(
                         ctx,
                         hop,
@@ -486,28 +540,18 @@ class ModelRouter:
                         attempt=attempt,
                         fallback_index=fallback_index,
                         status="timeout",
-                        error=str(exc) or "timeout",
+                        error=str(caught) or "timeout",
                         latency_ms=_latency_ms(started),
+                        usage=abort_usage,
+                        cost_usd=abort_cost,
+                        usage_estimated=abort_estimated,
                     )
                     if attempt <= self.config.retries:
                         await self._sleep(self.config.backoff_base_s * (2 ** (attempt - 1)))
                         continue
-                    last_error = str(exc) or "timeout"
+                    last_error = str(caught) or "timeout"
                     break
-                except ProviderError as exc:
-                    usage = None
-                    cost = 0.0
-                    estimated = False
-                    if _is_empty_completion(exc):
-                        partial = getattr(exc, "partial", None)
-                        usage, cost, estimated = self._priced_usage(
-                            ctx,
-                            hop,
-                            text="" if partial is None else partial.text,
-                            usage=_usage_from_partial(partial),
-                            model="" if partial is None else partial.model,
-                        )
-                        self._charge(ctx, cost)
+                if isinstance(caught, ProviderError):
                     self._log(
                         ctx,
                         hop,
@@ -515,27 +559,31 @@ class ModelRouter:
                         attempt=attempt,
                         fallback_index=fallback_index,
                         status="error",
-                        error=str(exc) or "error",
+                        error=str(caught) or "error",
                         latency_ms=_latency_ms(started),
-                        usage=usage,
-                        cost_usd=cost,
-                        usage_estimated=estimated,
+                        usage=abort_usage,
+                        cost_usd=abort_cost,
+                        usage_estimated=abort_estimated,
                     )
-                    if exc.retryable and attempt <= self.config.retries:
+                    if caught.retryable and attempt <= self.config.retries:
                         await self._sleep(self.config.backoff_base_s * (2 ** (attempt - 1)))
                         continue
-                    last_error = str(exc) or "error"
+                    last_error = str(caught) or "error"
                     break
-                else:
-                    return self._success(
-                        ctx,
-                        hop,
-                        result,
-                        call_id=call_id,
-                        attempt=attempt,
-                        fallback_index=fallback_index,
-                        started=started,
-                    )
+                self._log(
+                    ctx,
+                    hop,
+                    call_id=call_id,
+                    attempt=attempt,
+                    fallback_index=fallback_index,
+                    status="error",
+                    error=str(caught) or caught.__class__.__name__,
+                    latency_ms=_latency_ms(started),
+                    usage=abort_usage,
+                    cost_usd=abort_cost,
+                    usage_estimated=abort_estimated,
+                )
+                raise caught
         raise RouterExhausted(last_error)
 
     async def _provider_complete(

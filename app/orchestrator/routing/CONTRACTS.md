@@ -115,7 +115,9 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    без usage, и у пустого или пробельного текста: списываются промпт и
    `max_tokens` (плюс reasoning, если у хопа есть effort). Retryable-ошибка
    пустого completion (`empty …`) списывается до ретрая, каждая попытка
-   отдельно. Списание идёт в `SpendLedger`.
+   отдельно. Обрыв стрима (таймаут, обрыв соединения, ошибка `on_delta`,
+   `CancelledError`) списывается в `finally` по уже пришедшему тексту и
+   промпту, затем исключение пробрасывается. Списание идёт в `SpendLedger`.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие
@@ -317,8 +319,8 @@ CREATE INDEX ix_orch_llm_calls_fixture ON orch_llm_calls (fixture_key);
 | `deterministic_flag` | 1, если tier выбрали правила, а не классификатор |
 | `classifier_confidence` | NULL, если классификатор не участвовал |
 | `latency_ms` | длительность попытки |
-| `prompt_tokens`, `completion_tokens`, `reasoning_tokens` | usage попытки; у ошибки нули |
-| `cost_usd` | по прайсу `pay52_routes.yaml` (USD / 1M). У ошибки 0 |
+| `prompt_tokens`, `completion_tokens`, `reasoning_tokens` | usage попытки. У обрыва — оценка, если провайдер usage не прислал |
+| `cost_usd` | по прайсу `pay52_routes.yaml` (USD / 1M). Таймаут, обрыв, cancel и пустой ретрай списываются, не остаются нулём |
 | `budget_scope` | `internal` (суб-бюджет $10) или `pipeline` |
 | `router_impl` | `live` \| `replay` \| `scripted` |
 | `messages_sha256` | sha256 канонических messages, без текста |
