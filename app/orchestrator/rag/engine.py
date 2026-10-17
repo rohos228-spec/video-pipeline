@@ -24,6 +24,7 @@ from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
 _RRF_K = 60
 _AGGREGATES = ("none", "prompt_pool", "prompt_expand")
+_RERANK_FUSIONS = frozenset({"replace", "rrf"})
 
 
 def fts_match_query(text: str) -> str:
@@ -150,6 +151,9 @@ class RagEngine:
         rerank_pool: int = 30,
         bm25_scope: str = "full",
         aggregate: str = "none",
+        rerank_fusion: str = "replace",
+        rerank_fusion_weights: tuple[float, float] = (1.0, 1.0),
+        bm25_protect: float = 0.0,
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
@@ -158,6 +162,9 @@ class RagEngine:
         Эмбеддинги чанков и повторных запросов берутся из кэша процесса.
         ``aggregate=prompt_pool`` склеивает части одного промпта внутри пула.
         ``aggregate=prompt_expand`` поднимает все части такого промпта.
+        ``rerank_fusion=rrf`` не отдаёт порядок реранкеру: RRF с BM25.
+        ``bm25_protect`` — во сколько раз топ-1 BM25 должен обгонять топ-2,
+        чтобы остаться первым. 0 выключает защиту.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -174,6 +181,12 @@ class RagEngine:
             raise ValueError("aggregate должен быть none, prompt_pool или prompt_expand")
         if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
             raise ValueError("веса RRF должны быть > 0")
+        if rerank_fusion not in _RERANK_FUSIONS:
+            raise ValueError("rerank_fusion должен быть replace или rrf")
+        if bm25_protect < 0:
+            raise ValueError("bm25_protect должен быть >= 0")
+        if rerank_fusion_weights[0] <= 0 or rerank_fusion_weights[1] <= 0:
+            raise ValueError("веса слияния BM25 и реранкера должны быть > 0")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -224,13 +237,33 @@ class RagEngine:
             if len(raw_scores) != len(candidates):
                 raise RuntimeError("реранкер вернул не столько оценок, сколько пассажей")
             rerank_scores = dict(zip(candidates, raw_scores, strict=True))
-            ordered = [
+            rerank_ids = [
                 chunk_id
                 for chunk_id, _score in sorted(
                     rerank_scores.items(),
                     key=lambda item: (-item[1], item[0]),
                 )
             ]
+            if rerank_fusion == "rrf":
+                blended = _fuse_bm25_and_rerank(
+                    lexical_ids,
+                    rerank_ids,
+                    lexical_scores,
+                    k=rrf_k,
+                    weights=rerank_fusion_weights,
+                    protect=bm25_protect,
+                )
+                rerank_scores = blended
+                ordered = [
+                    chunk_id
+                    for chunk_id, _score in sorted(
+                        blended.items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )
+                    if chunk_id in by_id
+                ]
+            else:
+                ordered = rerank_ids
         rank_scores = rerank_scores if rerank_scores else fused
         ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
         result: list[Chunk] = []
@@ -404,6 +437,29 @@ def _aggregate_parts(
             seen.add(chunk_id)
             flat.append(chunk_id)
     return flat
+
+
+def _fuse_bm25_and_rerank(
+    bm25_ids: list[str],
+    rerank_ids: list[str],
+    bm25_scores: dict[str, float],
+    *,
+    k: int,
+    weights: tuple[float, float],
+    protect: float,
+) -> dict[str, float]:
+    """RRF порядка BM25 и реранкера. Сильный топ-1 BM25 остаётся первым."""
+    fused = rrf_merge([bm25_ids, rerank_ids], k=k, weights=[weights[0], weights[1]])
+    if protect <= 0 or not bm25_ids:
+        return fused
+    leader = bm25_ids[0]
+    leader_score = float(bm25_scores.get(leader, 0.0))
+    second = float(bm25_scores.get(bm25_ids[1], 0.0)) if len(bm25_ids) > 1 else 0.0
+    ratio = float("inf") if second <= 0 else leader_score / second
+    if ratio < protect:
+        return fused
+    fused[leader] = max(fused.values(), default=0.0) + 1.0
+    return fused
 
 
 def _rerank_passage(chunk: Chunk) -> str:
