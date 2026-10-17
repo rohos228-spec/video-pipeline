@@ -135,3 +135,200 @@ async def test_replace_all_frames_marks_without_renumber(session: AsyncSession) 
     )
     assert len(still) == 3
     assert any(fr.uuid == "old-keep-uuid" for fr in still)
+
+
+def _shots_with(shots: list, *, voice: str, description: str | None = None) -> list[dict]:
+    found = []
+    for shot in shots:
+        if not isinstance(shot, dict) or shot.get("закадр") != voice:
+            continue
+        if description is not None and shot.get("описание") != description:
+            continue
+        found.append(shot)
+    return found
+
+
+_MIDDLE = [
+    {"порядок": 1, "закадр": "альфа", "описание": "описание альфы"},
+    {"порядок": 2, "закадр": "бета", "описание": "описание беты"},
+    {"порядок": 3, "закадр": "гамма", "описание": "описание гаммы"},
+]
+
+
+async def _frame_with_kadry(
+    session: AsyncSession, project: Project, uuid: str, kadry: list, *, number: int
+) -> Frame:
+    fr = Frame(
+        project_id=project.id,
+        number=number,
+        uuid=uuid,
+        voiceover_text="закадр ячейки",
+        attrs={"кадры": [dict(shot) for shot in kadry]},
+    )
+    session.add(fr)
+    await session.flush()
+    return fr
+
+
+@pytest.mark.asyncio
+async def test_kadry_middle_insert_and_delete_without_id(session: AsyncSession) -> None:
+    """Сдвиг ``порядок`` без id не подменяет и не выбрасывает чужой шот.
+
+    Новый список после вставки не повторяет старое ``описание``: его можно
+    сохранить только если старый шот не признан «тем же» по номеру.
+    """
+    project = Project(slug="ws1-middle-noid", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    inserted = await _frame_with_kadry(session, project, "middle-insert", _MIDDLE, number=1)
+    deleted = await _frame_with_kadry(session, project, "middle-delete", _MIDDLE, number=2)
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": inserted.uuid,
+                "fields": {
+                    "кадры": [
+                        {"порядок": 1, "закадр": "альфа"},
+                        {"порядок": 2, "закадр": "вставка", "описание": "описание вставки"},
+                        {"порядок": 3, "закадр": "бета"},
+                        {"порядок": 4, "закадр": "гамма"},
+                    ]
+                },
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(inserted)
+    shots = list(inserted.attrs["кадры"])
+    assert _shots_with(shots, voice="бета", description="описание беты"), shots
+    assert _shots_with(shots, voice="гамма", description="описание гаммы"), shots
+    assert _shots_with(shots, voice="альфа", description="описание альфы"), shots
+    fresh = _shots_with(shots, voice="вставка")
+    assert len(fresh) == 1
+    assert fresh[0]["описание"] == "описание вставки"
+    assert shot_is_active(fresh[0]) is True
+    assert all(shot.get("описание") != "описание беты" for shot in fresh)
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": deleted.uuid,
+                "fields": {
+                    "кадры": [
+                        {"порядок": 1, "закадр": "альфа", "описание": "описание альфы"},
+                        {"порядок": 2, "закадр": "гамма", "описание": "описание гаммы"},
+                    ]
+                },
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(deleted)
+    shots = list(deleted.attrs["кадры"])
+    beta = _shots_with(shots, voice="бета", description="описание беты")
+    assert len(beta) == 1, shots
+    assert beta[0]["активен"] is False
+    assert shot_is_active(beta[0]) is False
+    gamma = _shots_with(shots, voice="гамма", description="описание гаммы")
+    assert gamma
+    assert any(shot_is_active(shot) for shot in gamma)
+    assert all(shot.get("закадр") != "бета" for shot in gamma)
+    active_gamma = [shot for shot in gamma if shot_is_active(shot)]
+    assert active_gamma[0]["описание"] == "описание гаммы"
+    assert not _shots_with(
+        [shot for shot in shots if shot_is_active(shot)],
+        voice="бета",
+    )
+
+
+@pytest.mark.asyncio
+async def test_kadry_middle_insert_and_delete_with_id(session: AsyncSession) -> None:
+    """Id не сдвигается вместе с ``порядок``: середина не переписывает чужой шот."""
+    project = Project(slug="ws1-middle-id", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    old = [
+        {"id": "K1", "порядок": 1, "закадр": "альфа", "описание": "описание альфы"},
+        {"id": "K2", "порядок": 2, "закадр": "бета", "описание": "описание беты"},
+        {"id": "K3", "порядок": 3, "закадр": "гамма", "описание": "описание гаммы"},
+    ]
+    inserted = await _frame_with_kadry(session, project, "middle-id-insert", old, number=1)
+    deleted = await _frame_with_kadry(session, project, "middle-id-delete", old, number=2)
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": inserted.uuid,
+                "fields": {
+                    "кадры": [
+                        {"id": "K1", "порядок": 1, "закадр": "альфа", "описание": "описание альфы"},
+                        {
+                            "id": "Knew",
+                            "порядок": 2,
+                            "закадр": "вставка",
+                            "описание": "описание вставки",
+                        },
+                        {
+                            "id": "K2",
+                            "порядок": 3,
+                            "закадр": "бета",
+                            "описание": "описание беты",
+                        },
+                        {
+                            "id": "K3",
+                            "порядок": 4,
+                            "закадр": "гамма",
+                            "описание": "описание гаммы",
+                        },
+                    ]
+                },
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(inserted)
+    by_id = {shot["id"]: shot for shot in inserted.attrs["кадры"]}
+    assert set(by_id) >= {"K1", "K2", "K3", "Knew"}
+    assert by_id["K2"]["закадр"] == "бета"
+    assert by_id["K2"]["описание"] == "описание беты"
+    assert by_id["Knew"]["закадр"] == "вставка"
+    assert by_id["Knew"]["описание"] == "описание вставки"
+    assert shot_is_active(by_id["Knew"]) is True
+    assert shot_is_active(by_id["K2"]) is True
+    assert by_id["K3"]["закадр"] == "гамма"
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": deleted.uuid,
+                "fields": {
+                    "кадры": [
+                        {"id": "K1", "порядок": 1, "закадр": "альфа", "описание": "описание альфы"},
+                        {"id": "K3", "порядок": 2, "закадр": "гамма", "описание": "описание гаммы"},
+                    ]
+                },
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(deleted)
+    by_id = {shot["id"]: shot for shot in deleted.attrs["кадры"]}
+    assert by_id["K2"]["закадр"] == "бета"
+    assert by_id["K2"]["описание"] == "описание беты"
+    assert by_id["K2"]["активен"] is False
+    assert shot_is_active(by_id["K2"]) is False
+    assert by_id["K3"]["закадр"] == "гамма"
+    assert by_id["K3"]["описание"] == "описание гаммы"
+    assert shot_is_active(by_id["K3"]) is True
+    assert by_id["K1"]["закадр"] == "альфа"

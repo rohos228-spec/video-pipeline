@@ -328,30 +328,44 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
-def _shot_stable_key(shot: dict[str, Any]) -> str | None:
-    """Устойчивый ключ шота: id лестницы, иначе номер ``порядок``."""
-    for key in ("id", "id_shot", "shot_id"):
+_SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
+_SHOT_CONTENT_KEYS = ("закадр", "описание", "описание_кадра", "description")
+
+
+def _shot_id(shot: dict[str, Any]) -> str | None:
+    for key in _SHOT_ID_KEYS:
         val = str(shot.get(key) or "").strip()
         if val:
-            return f"id:{val}"
-    for key in ("порядок", "номер", "number"):
-        raw = shot.get(key)
-        if raw not in (None, ""):
-            return f"n:{str(raw).strip()}"
+            return val
     return None
+
+
+def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Текст шота без ``порядок``/``номер``. Пустой текст не склеивает шоты."""
+    parts: list[tuple[str, str]] = []
+    for key in _SHOT_CONTENT_KEYS:
+        val = str(shot.get(key) or "").strip()
+        if val:
+            parts.append((key, val))
+    if not parts:
+        return None
+    return tuple(parts)
 
 
 def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     """Новый список ``кадры`` не выбрасывает старые шоты.
 
-    Совпавшие по id или номеру обновляются и остаются активными.
-    Шотов, которых в новом списке нет, остаются в хвосте с ``активен: False``
-    (так их видит ``shot_is_active``).
+    Шот с id совпадает только с тем же id. Шот без id не совпадает по
+    ``порядок``/``номер``: вставка или удаление в середине сдвигает номера,
+    и чужой шот получил бы ложное совпадение. Запасное совпадение без id —
+    уникальный текст (закадр/описание и соседние поля) среди шотов тоже без id.
+    Иначе старый шот остаётся в хвосте с ``активен: False``.
     """
     if not isinstance(new, list):
         return new
     incoming: list[Any] = []
-    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     for shot in new:
         if not isinstance(shot, dict):
             incoming.append(shot)
@@ -360,22 +374,44 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         if item.get("активен") is False:
             item.pop("активен", None)
         incoming.append(item)
-        key = _shot_stable_key(item)
-        if key:
-            seen.add(key)
+        sid = _shot_id(item)
+        if sid:
+            seen_ids.add(sid)
+            continue
+        ident = _shot_content_identity(item)
+        if ident is not None:
+            new_content_counts[ident] = new_content_counts.get(ident, 0) + 1
     if not isinstance(old, list):
         return incoming
+    old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for shot in old:
+        if isinstance(shot, dict) and _shot_id(shot) is None:
+            ident = _shot_content_identity(shot)
+            if ident is not None:
+                old_content_counts[ident] = old_content_counts.get(ident, 0) + 1
     kept: list[Any] = []
     for shot in old:
         if not isinstance(shot, dict):
             if shot not in incoming:
                 kept.append(shot)
             continue
-        key = _shot_stable_key(shot)
-        if key and key in seen:
-            continue
-        if key is None and any(isinstance(item, dict) and item == shot for item in incoming):
-            continue
+        sid = _shot_id(shot)
+        if sid:
+            if sid in seen_ids:
+                continue
+        else:
+            ident = _shot_content_identity(shot)
+            if (
+                ident is not None
+                and old_content_counts.get(ident) == 1
+                and new_content_counts.get(ident) == 1
+            ):
+                continue
+            if ident is None and any(
+                isinstance(item, dict) and _shot_id(item) is None and item == shot
+                for item in incoming
+            ):
+                continue
         marked = dict(shot)
         marked["активен"] = False
         kept.append(marked)
