@@ -308,12 +308,17 @@ async def run_boundaries(vo: str, trace_dir: Path) -> tuple[list[str], dict[str,
 
 
 def fragment_stats(frags: list[str]) -> dict[str, Any]:
+    """Сводка длин. Норма 200–300 — только через check_vo_lengths."""
+    from app.orchestrator.validators.vo_length import check_vo_lengths
+
+    violations = check_vo_lengths(frags)
     L = [len(f) for f in frags]
     return {
         "fragments": len(L),
         "avg_chars": round(sum(L) / max(len(L), 1), 1),
         "max_chars": max(L) if L else 0,
-        "over_300": sum(1 for x in L if x > 300),
+        "over_300": sum(1 for v in violations if v.kind == "too_long"),
+        "under_200": sum(1 for v in violations if v.kind == "too_short"),
         "over_350": sum(1 for x in L if x > 350),
     }
 

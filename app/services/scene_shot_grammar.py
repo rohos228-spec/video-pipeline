@@ -1729,10 +1729,16 @@ def merge_trivial_shots(shots):
         if chain < 2 and _can_merge_trivial(a, b, nxt):
             act = _shot_s(a, "действие").rstrip(".")
             a["действие"] = (act + "; " + _shot_s(b, "действие")).strip()
-            if _shot_s(b, "конец"):
+            if _shot_s(b, "конец") and not _shot_s(a, "конец"):
                 a["конец"] = b.get("конец")
-            if _shot_s(b, "закадр") and not _shot_s(a, "закадр"):
+            # Закадр склеенного кадра не выбрасывается: пустой сосед забирает
+            # текст, два непустых куска склеиваются (склейка = оба текста).
+            vo_a = _shot_s(a, "закадр")
+            vo_b = _shot_s(b, "закадр")
+            if vo_b and not vo_a:
                 a["закадр"] = b.get("закадр")
+            elif vo_a and vo_b and vo_b not in vo_a:
+                a["закадр"] = f"{vo_a} {vo_b}".strip()
             if _shot_s(b, "точность") == "старт/конец":
                 a["точность"] = "старт/конец"
             merged_into[str(b.get("id") or "")] = str(a.get("id") or "")
