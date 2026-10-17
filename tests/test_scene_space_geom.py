@@ -247,3 +247,19 @@ def test_facing_0_360_90_270():
         x2, y2 = facing_vector(deg + 360.0)
         assert math.isclose(x, x2, abs_tol=1e-9)
         assert math.isclose(y, y2, abs_tol=1e-9)
+
+
+def test_krupnost_skips_inactive_shot() -> None:
+    """Крупность сцены берётся с живого шота. кадры[] не режется."""
+    from types import SimpleNamespace
+
+    from app.services.scene_space.pipeline import _krupnost_text
+
+    kadry = [
+        {"id": "d", "план": "МЁРТВЫЙ", "активен": False},
+        {"id": "l", "план": "СРЕДНИЙ"},
+    ]
+    frame = SimpleNamespace(attrs={"кадры": kadry})
+    assert _krupnost_text(frame) == "СРЕДНИЙ"
+    assert len(kadry) == 2
+    assert kadry[0]["активен"] is False

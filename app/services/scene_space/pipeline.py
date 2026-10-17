@@ -111,11 +111,16 @@ def _krupnost_text(frame: Frame) -> str:
             if val:
                 return val
     kadry = attrs.get("кадры")
-    if isinstance(kadry, list) and kadry and isinstance(kadry[0], dict):
-        for key in ("план", "крупность"):
-            val = str(kadry[0].get(key) or "").strip()
-            if val:
-                return val
+    if isinstance(kadry, list):
+        from app.services.frame_tombstones import shot_is_active
+
+        for item in kadry:
+            if not isinstance(item, dict) or not shot_is_active(item):
+                continue
+            for key in ("план", "крупность"):
+                val = str(item.get(key) or "").strip()
+                if val:
+                    return val
     return ""
 
 
