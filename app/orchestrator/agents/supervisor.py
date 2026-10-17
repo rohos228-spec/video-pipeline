@@ -69,11 +69,14 @@ from app.orchestrator.contracts import (
     block_status,
     budget_exhausted_response,
     can_transition,
+    ceiling_blocks,
     forecast_unknown,
     grant_forbidden,
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
+    plan_without_client_money,
+    server_forecast_limit,
     step_is_deletion,
     step_is_readonly,
     usable_project_id,
@@ -627,7 +630,7 @@ class Supervisor:
         if not plan:
             await self._apply_block(task_id, session_id, "plan_sanity")
             return True
-        if forecast_unknown(plan):
+        if ceiling_blocks(server_forecast_limit()) or forecast_unknown(plan):
             await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
@@ -1128,7 +1131,7 @@ class Supervisor:
         payload = {
             VALIDATOR_CONTEXT_DRY_RUN: True,
             "project_id": project_id,
-            "plan": [step.model_dump() for step in plan],
+            "plan": plan_without_client_money(plan),
         }
         for name in _DRY_RUN:
             result = await run_validator(

@@ -17,15 +17,16 @@ from loguru import logger
 from app.orchestrator.agents.llm_call import router_call
 from app.orchestrator.agents.retrieve import retrieve
 from app.orchestrator.contracts import (
-    PIPELINE_FORECAST_LIMIT_USD,
     AgentRole,
     BudgetScope,
     Chunk,
     PlanStep,
+    ceiling_blocks,
     forecast_cost,
     forecast_unknown,
     plan_deletions,
     plan_missing_verify,
+    server_forecast_limit,
 )
 
 
@@ -54,9 +55,10 @@ class PlanCritic:
             return "reject"
         if plan_missing_verify(plan):
             return "revise"
-        if forecast_unknown(plan):
+        limit = server_forecast_limit()
+        if ceiling_blocks(limit) or forecast_unknown(plan):
             return "reject"
-        if forecast_cost(plan) > PIPELINE_FORECAST_LIMIT_USD:
+        if forecast_cost(plan) > limit:
             return "revise"
         if self.router is None:
             return "reject"

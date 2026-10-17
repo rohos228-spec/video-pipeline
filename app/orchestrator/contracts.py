@@ -832,7 +832,7 @@ def validator_missing_run_id(result: Any) -> bool:
 # plan_sanity, critic_reject, steer_not_approved и unknown_cost — waiting_approval.
 # Грант до approve критика не исполняет чекпоинт, а возвращает задачу в planning.
 # empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
-# unknown_cost — inf/NaN, bool или строка-число в прогнозе: не 0 и не исполнение.
+# unknown_cost — строка, bool, None, inf, NaN или отрицательное в прогнозе: не 0.
 BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
     ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
@@ -1082,22 +1082,13 @@ class UnknownForecast(ValueError):
 
 
 def cost_is_unknown(value: Any) -> bool:
-    """``inf`` / ``NaN``, bool и строка-число. Это не 0 и не сумма."""
-    if isinstance(value, bool):
+    """Строка, bool, None, inf, NaN, отрицательное. В 0 не превращается."""
+    if value is None or isinstance(value, (bool, str)):
         return True
     if isinstance(value, (int, float)):
         number = float(value)
-        return not math.isfinite(number)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return False
-        try:
-            float(text)
-        except ValueError:
-            return False
-        return True
-    return False
+        return (not math.isfinite(number)) or number < 0
+    return True
 
 
 def _json_safe_unknown(value: Any) -> Any:
@@ -1110,29 +1101,59 @@ def _json_safe_unknown(value: Any) -> Any:
 
 
 def nonneg_cost(value: Any) -> float:
-    """Нечисловое и пустое → 0. Отрицательное зажимается в 0.
-
-    ``inf`` / ``NaN``, bool и строка-число — ``UnknownForecast``, не 0.
-    """
+    """Конечное число ``>= 0``. Всё остальное — ``UnknownForecast``, не 0."""
     if cost_is_unknown(value):
         raise UnknownForecast("unknown spend")
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)):
-        number = float(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return 0.0
-        try:
-            number = float(text)
-        except ValueError:
-            return 0.0
-    else:
-        return 0.0
-    if number < 0:
-        return 0.0
-    return number
+    return float(value)
+
+
+def ceiling_blocks(limit: Any) -> bool:
+    """Потолок ``<= 0``, строка, bool, None, inf и NaN блокируют вызов.
+
+    Ноль не выключает проверку.
+    """
+    if isinstance(limit, bool) or limit is None or isinstance(limit, str):
+        return True
+    if isinstance(limit, (int, float)):
+        number = float(limit)
+        return (not math.isfinite(number)) or number <= 0
+    return True
+
+
+def server_forecast_limit() -> float:
+    """Потолок только из конфига ядра, не из плана, контекста и сообщения."""
+    return float(PIPELINE_FORECAST_LIMIT_USD)
+
+
+_CLIENT_MONEY_KEYS = frozenset(
+    {
+        "spent",
+        "spent_usd",
+        "spent_internal",
+        "spent_actions",
+        "limit",
+        "limit_usd",
+        "budget",
+        "budget_usd",
+        "ceiling",
+        "forecast_limit",
+        "budget_limit",
+    }
+)
+
+
+def plan_without_client_money(plan: list[PlanStep]) -> list[dict[str, Any]]:
+    """В контекст валидатора не кладём потраченное и потолок из плана."""
+    dumped: list[dict[str, Any]] = []
+    for step in plan:
+        raw = step.model_dump()
+        params = dict(raw.get("params") or {})
+        for key in list(params):
+            if str(key) in _CLIENT_MONEY_KEYS:
+                params.pop(key, None)
+        raw["params"] = params
+        dumped.append(raw)
+    return dumped
 
 
 def forecast_unknown(plan: list[PlanStep]) -> bool:
@@ -1149,20 +1170,22 @@ def _step_cost_unknown(step: PlanStep) -> bool:
 
 
 def forecast_cost(plan: list[PlanStep]) -> float:
-    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды.
+    """Прогноз spend. Поле и ``params.estimated_cost`` не суммируются дважды.
 
-    Отрицательные оценки зажимаются в 0, нечисловые отбрасываются: ими нельзя
-    увести сумму ниже порога. ``inf`` / ``NaN``, bool и строка-число — ошибка,
-    не 0: ``UnknownForecast``, супервизор ставит ``unknown_cost``.
+    Консервативно берётся большее из двух конечных чисел. Строка, bool, None,
+    inf, NaN и отрицательное — ``UnknownForecast``, не 0.
     """
     if forecast_unknown(plan):
         raise UnknownForecast("unknown spend")
     total = 0.0
     for step in plan:
+        present: list[float] = []
         if step.estimated_cost:
-            total += nonneg_cost(step.estimated_cost)
-        else:
-            total += nonneg_cost(step.params.get("estimated_cost"))
+            present.append(nonneg_cost(step.estimated_cost))
+        if "estimated_cost" in step.params and not step.params.get("_cost_unknown"):
+            present.append(nonneg_cost(step.params["estimated_cost"]))
+        if present:
+            total += max(present)
     return total
 
 

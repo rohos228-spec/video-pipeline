@@ -13,9 +13,12 @@ from app.orchestrator.contracts import (
     PlanStep,
     TaskStatus,
     UnknownForecast,
+    ceiling_blocks,
     cost_is_unknown,
     forecast_cost,
     nonneg_cost,
+    plan_without_client_money,
+    server_forecast_limit,
 )
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
@@ -36,17 +39,17 @@ def _step(raw: object, slot: str) -> PlanStep:
     return PlanStep(action="look", params={"estimated_cost": raw})
 
 
-def test_negative_and_non_numeric_estimates_do_not_lower_the_forecast() -> None:
-    clamped = PlanStep(action="charge", estimated_cost=-100)
-    assert clamped.estimated_cost == 0
-    noisy = PlanStep(action="charge", params={"estimated_cost": "abc"})
-    assert forecast_cost([noisy]) == 0
-    negative_param = PlanStep(action="charge", params={"estimated_cost": -100})
-    assert forecast_cost([negative_param]) == 0
+def test_negative_and_non_numeric_estimates_block_the_call() -> None:
+    for raw in (-100, "abc", None, ""):
+        step = PlanStep(action="charge", estimated_cost=raw)
+        with pytest.raises(UnknownForecast):
+            forecast_cost([step])
+        param = PlanStep(action="charge", params={"estimated_cost": raw})
+        with pytest.raises(UnknownForecast):
+            forecast_cost([param])
     honest = PlanStep(action="charge", estimated_cost=80)
-    total = forecast_cost([clamped, honest])
-    assert total == 80
-    assert total > PIPELINE_FORECAST_LIMIT_USD
+    assert forecast_cost([honest]) == 80
+    assert forecast_cost([honest]) > PIPELINE_FORECAST_LIMIT_USD
 
 
 @pytest.mark.asyncio
@@ -56,8 +59,9 @@ async def test_negative_estimate_cannot_sneak_past_the_forecast_limit() -> None:
         PlanStep(action="noop", estimated_cost=-100),
         PlanStep(action="noop", estimated_cost=80),
     ]
-    assert forecast_cost(plan) == 80
-    assert await critic.review(plan) == "revise"
+    with pytest.raises(UnknownForecast):
+        forecast_cost(plan)
+    assert await critic.review(plan) == "reject"
 
 
 @pytest.mark.parametrize("slot", ["field", "params"])
@@ -107,3 +111,37 @@ async def test_unknown_cost_blocks_instead_of_zero(
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
     finally:
         set_runtime(None)
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param("40", id="numeric-string"),
+        pytest.param("abc", id="string"),
+        pytest.param(None, id="none"),
+        pytest.param(True, id="bool"),
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_bad_ceiling_blocks_and_does_not_disable_the_check(limit: object) -> None:
+    assert ceiling_blocks(limit)
+    assert server_forecast_limit() == PIPELINE_FORECAST_LIMIT_USD
+    assert not ceiling_blocks(server_forecast_limit())
+
+
+def test_forecast_ignores_client_spent_and_limit_and_takes_the_larger_estimate() -> None:
+    sneaky = PlanStep(
+        action="look",
+        estimated_cost=10,
+        params={"estimated_cost": 50, "spent_usd": 0, "limit_usd": 0, "budget_usd": 1000},
+    )
+    assert forecast_cost([sneaky]) == 50
+    assert forecast_cost([sneaky]) > server_forecast_limit()
+    dumped = plan_without_client_money([sneaky])
+    assert "spent_usd" not in dumped[0]["params"]
+    assert "limit_usd" not in dumped[0]["params"]
+    assert "budget_usd" not in dumped[0]["params"]
+    assert dumped[0]["params"]["estimated_cost"] == 50
