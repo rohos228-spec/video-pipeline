@@ -323,25 +323,6 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
     _flag_attrs(frame)
 
 
-def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
-    sid = (shot_id or "").strip()
-    if not sid:
-        return
-    planned = [
-        item
-        for item in planned_shots_from_attrs(frame)
-        if str(item.get("id") or "").strip() != sid
-    ]
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    if planned:
-        attrs["кадры"] = planned
-    else:
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
-    frame.attrs = attrs
-    _flag_attrs(frame)
-
-
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")

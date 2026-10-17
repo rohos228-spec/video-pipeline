@@ -1551,3 +1551,10 @@ async def test_clear_shot_action_marks_shots_inactive(
     assert all(shot["активен"] is False for shot in shots)
     assert kadry[0]["действие"] == "первый лишний"
     assert any("extra-1" in line and "активен: False" in line for line in lines)
+
+
+def test_remove_kadry_id_is_gone() -> None:
+    """Снос шота по id убран: список кадры[] больше нечем вырезать."""
+    import app.services.montage_coverage_ops as ops
+
+    assert not hasattr(ops, "_remove_kadry_id")
