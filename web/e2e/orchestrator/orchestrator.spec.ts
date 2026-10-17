@@ -339,6 +339,16 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toHaveText("нет задачи");
   });
 
+  test("мусорный task_status не попадает в бейдж", async ({ page }) => {
+    await openWithToken(page, "badstatus", "bad-status");
+    await page.getByTestId("orch-composer").fill("статус");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("мусор отброшен");
+    await expect(page.getByTestId("orch-task-status").first()).toContainText("выполнение");
+    await expect(page.getByTestId("orch-task-status").first()).not.toContainText("not-a-status");
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("not-a-status");
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");
