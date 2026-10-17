@@ -556,7 +556,7 @@
   "acceptance": {
     "threshold": 0.65,
     "test_ndcg_at_8": 0.6767535900638271,
-    "experimental": false,
+    "experimental": true,
     "mark": ""
   },
   "prod_p95": {

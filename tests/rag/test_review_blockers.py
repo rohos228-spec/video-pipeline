@@ -249,7 +249,7 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
     assert payload["pass_count"] == 3
     assert payload["acceptance"]["threshold"] == 0.65
     assert payload["median"]["test"]["ndcg_at_8"] >= 0.65
-    assert payload["acceptance"]["experimental"] is False
+    assert payload["acceptance"]["experimental"] is CONTOUR_B_EXPERIMENTAL is True
     assert payload["acceptance"]["mark"] == ""
     assert payload["median"]["test"]["hit_at_5"] < 0.9
     assert payload["prod_p95"]["median_s"] <= P95_MAX_S
@@ -260,9 +260,24 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
         ndcgs = [item[name]["ndcg_at_8"] for item in payload["passes"]]
         assert hits[0] == hits[1] == hits[2]
         assert ndcgs[0] == ndcgs[1] == ndcgs[2]
-    assert CONTOUR_B_EXPERIMENTAL is True
-    assert CONTOUR_B_R5_NOTE == ""
     assert NDCG_AT_8_MIN == 0.65
+
+
+def test_experimental_flag_in_code_artifact_and_note_agree() -> None:
+    """Код, артефакт и заметка говорят одно: контур экспериментальный, R5 открыт."""
+    from app.orchestrator.rag.profile import CONTOUR_B_EXPERIMENTAL, CONTOUR_B_R5_NOTE
+
+    payload = json.loads(
+        (ROOT / "evals" / "orchestrator" / "datasets" / "precision_live_passes.json").read_text(encoding="utf-8")
+    )
+    note = CONTOUR_B_R5_NOTE.strip()
+    assert CONTOUR_B_EXPERIMENTAL is True
+    assert payload["acceptance"]["experimental"] is True
+    assert payload["acceptance"]["experimental"] is CONTOUR_B_EXPERIMENTAL
+    assert note
+    assert "не взят" in note
+    assert "0.88" in note and "0.9" in note
+    assert "0.96" in note and "0.80" in note and "1.00" in note and "0.75" in note
 
 
 def test_fusion_weights_stay_experimental_until_dev_selection() -> None:
