@@ -992,6 +992,8 @@ def read_resolved_project_prompt(
 
     text = apply_style_vars(text, path, meta, step_code, name)
     topic = str(getattr(project, "topic", None) or "")
+    if step_code in ENRICH_STEP_CODES:
+        text = _render_enrich_template(project, step_code, text, topic)
     return name, path, inject_topic_placeholders(text, topic), source
 
 
