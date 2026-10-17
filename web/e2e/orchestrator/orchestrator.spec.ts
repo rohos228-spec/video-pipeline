@@ -549,6 +549,37 @@ test.describe("orchestrator chat", () => {
     expect(approveUrls.some((url) => url.includes("/chat/"))).toBe(false);
   });
 
+  test("approval только с approval_id: кнопки активны, approval_decided закрывает карточку", async ({ page }) => {
+    const approveUrls: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/approve")) approveUrls.push(req.url());
+    });
+    await openWithToken(page, "approvallegacy", "approval-legacy");
+    await page.getByTestId("orch-composer").fill("старый approval");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    await expect(page.getByTestId("orch-reject")).toBeEnabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-task-summary")).toContainText("Одобрено");
+    expect(approveUrls.some((url) => url.includes("/approvals/appr-legacy/approve"))).toBe(true);
+
+    await emitBus(page, "approval-legacy", "approval_required", 2, {
+      approval_id: "appr-old",
+      title: "Старый формат",
+      reason: "risk",
+      action: "note",
+      risk: "low",
+    });
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
+    await emitBus(page, "approval-legacy", "approval_decided", 2, {
+      approval_id: "appr-old",
+      decision: "approve",
+    });
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+  });
+
   test("approve 404, 409 и 422 оставляют карточку", async ({ page }) => {
     const cases = [
       ["approve404", "approval not found"],

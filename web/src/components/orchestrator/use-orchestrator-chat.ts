@@ -224,7 +224,7 @@ export function useOrchestratorChat() {
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.changeId) {
+      if (!card?.serverId) {
         setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
         return;
       }

@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvallegacy | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid409transition | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
@@ -375,7 +375,9 @@ function runInterruptFollowup(session, taskId, echo) {
   }, 80);
 }
 
-async function runApproval(session, taskId) {
+async function runApproval(session, taskId, options = {}) {
+  const approvalId = options.approvalId || "appr-1";
+  const includeChangeId = options.changeId !== false;
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(30);
   emit(session, "classification", taskId, {
@@ -411,17 +413,18 @@ async function runApproval(session, taskId) {
     ok: true,
     node: NODE_STALE,
   });
-  emit(session, "approval_required", taskId, {
-    approval_id: "appr-1",
-    change_id: "appr-1",
+  const approval = {
+    approval_id: approvalId,
     title: "Запустить run_node",
     reason: "Платный шаг, риск high. Лимит прогона $50.",
     risk: "high",
     action: "run_node",
     cost_estimate: 4,
-  });
+  };
+  if (includeChangeId) approval.change_id = options.changeId || approvalId;
+  emit(session, "approval_required", taskId, approval);
   const decision = await new Promise((resolve) => {
-    session.approvalWait = { id: "appr-1", resolve };
+    session.approvalWait = { id: approvalId, resolve };
   });
   session.approvalWait = null;
   if (decision === "approve") {
@@ -779,6 +782,10 @@ function startScenario(session, scenario, text, mode) {
   session.interrupted = false;
   if (scenario === "interrupt") {
     void runInterruptStart(session, id);
+    return;
+  }
+  if (scenario === "approvallegacy") {
+    void runApproval(session, id, { approvalId: "appr-legacy", changeId: false });
     return;
   }
   if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409" || scenario === "approve422") {
