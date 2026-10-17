@@ -565,6 +565,12 @@ async def _run_four_node_markup_pass(
 
     _db_lock = asyncio.Lock()
 
+    async def _locked_progress(msg: str) -> None:
+        if on_progress is None:
+            return
+        async with _db_lock:
+            await on_progress(msg)
+
     async def _apply_batch(payload: dict) -> None:
         async with _db_lock:
             raw_ops = list(payload.get("ops") or [])
@@ -612,7 +618,7 @@ async def _run_four_node_markup_pass(
         stagger_sec=VO_STAGGER_SEC,
         chunk_by_vo_unit=False,
         footer_kind=footer_kind,
-        on_progress=on_progress,
+        on_progress=_locked_progress,
         allow_empty_ops=False,
     )
 
