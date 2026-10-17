@@ -390,6 +390,11 @@ async def _park_budget_exhausted(
         if isinstance(cur, PaidCallBlocked) and cur.code not in REFUSAL_CODES:
             reason = cur.code
             break
+        ctx = getattr(cur, "context", None)
+        gate = ctx.get("gate_code") if isinstance(ctx, dict) else None
+        if gate and gate not in REFUSAL_CODES:
+            reason = str(gate)
+            break
         if isinstance(cur, BudgetExhausted):
             break
         cur = cur.__cause__
@@ -433,10 +438,15 @@ async def record_step_failure(
 ) -> str:
     from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
 
-    blocked = error
-    if not isinstance(blocked, PaidCallBlocked):
-        blocked = getattr(error, "__cause__", None)
-    if is_budget_exhausted(error) or isinstance(error, PaidCallBlocked) or isinstance(blocked, PaidCallBlocked):
+    blocked = error if isinstance(error, PaidCallBlocked) else getattr(error, "__cause__", None)
+    ctx = getattr(error, "context", None)
+    paid_blocked = isinstance(ctx, dict) and bool(ctx.get("paid_gate_blocked"))
+    if (
+        is_budget_exhausted(error)
+        or isinstance(error, PaidCallBlocked)
+        or isinstance(blocked, PaidCallBlocked)
+        or paid_blocked
+    ):
         return await _park_budget_exhausted(session, project, error)
 
     if is_chrome_infra_error(error):

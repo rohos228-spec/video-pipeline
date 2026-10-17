@@ -246,7 +246,9 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
         except Exception as e:  # noqa: BLE001
             from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
 
-            if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked):
+            ctx = getattr(e, "context", None)
+            paid_blocked = isinstance(ctx, dict) and bool(ctx.get("paid_gate_blocked"))
+            if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked) or paid_blocked:
                 raise
             last = e
             msg = f"{type(e).__name__}: {e}"

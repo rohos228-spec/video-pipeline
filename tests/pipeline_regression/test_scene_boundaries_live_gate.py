@@ -175,9 +175,12 @@ async def _raise_live(
     seen = _block(monkeypatch, code, code)
     project, node, saved, before_rows = await _parked_project(session, tmp_path)
     before_file = saved.read_bytes()
-    with pytest.raises(spend_guard.PaidCallBlocked) as raised:
+    from app.services.gpt_api import GptApiError
+
+    with pytest.raises(GptApiError) as raised:
         await sb.run_boundaries(_VO, tmp_path / "trace")
-    assert raised.value.code == code
+    assert raised.value.context["gate_code"] == code
+    assert raised.value.context["paid_gate_blocked"] is True
     action = await record_step_failure(session, project, error=raised.value)
     assert action == "waiting_approval"
     assert seen["http"] == 0

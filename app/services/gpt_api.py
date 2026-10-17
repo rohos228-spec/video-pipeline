@@ -2875,7 +2875,7 @@ async def _chat_completions_stream(
                 provider=blocked.provider,
                 what=blocked.what,
             ) from blocked
-        raise
+        raise _blocked_as_gpt(blocked) from blocked
 
 
 @_gpt_seam
