@@ -709,7 +709,7 @@ Rebase #342, перенос кода в main, патчи `app/services/`, smoke 
 | `prompt.create_master` | modify | нет | Вердикт прежний: новый файл варианта промта в git. Детектор DELETE этого PUT не видит. |
 | `prompt.delete_master` | modify | http.delete путь не доказан (denied) | только через подтверждение и пометку (soft delete), без физического удаления, с восстановлением |
 | `prompt.get_master` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
-| `prompt.save_master` | modify | нет | Вердикт прежний: PUT мастер-промта в git. Ветка снимка для master_prompt мёртвая, DELETE нет. |
+| `prompt.save_master` | modify | нет | Вердикт прежний: PUT мастер-промта в git. Снимок пишет `_wrap_executor` (`builtin_wave5_history`, строки обёртки save_master). Откат сверяет текущий текст с `after` и отвечает 409, если после снимка текст уже меняли. DELETE нет. |
 | `publish.send` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `shot.add_cell` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
 | `shot.edit_cell_voiceover` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
