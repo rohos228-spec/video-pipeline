@@ -20,8 +20,20 @@ from app.orchestrator.routing.wire import (
 
 
 def _body_started(partial: CompletionResult | None) -> bool:
-    """Тело уже пошло: в снимке есть текст чанка."""
-    return bool(partial and str(partial.text or "").strip())
+    """Тело уже пошло: есть текст или ненулевая usage.
+
+    Reasoning- и role-чанки текста не дают. Их ловит флаг ``accepted``
+    на первом SSE-событии, а не эта функция.
+    """
+    if partial is None:
+        return False
+    if str(partial.text or "").strip():
+        return True
+    return (
+        int(partial.prompt_tokens or 0) > 0
+        or int(partial.completion_tokens or 0) > 0
+        or int(partial.reasoning_tokens or 0) > 0
+    )
 
 
 class ProviderTimeout(Exception):
@@ -51,13 +63,10 @@ class ProviderError(Exception):
         self.retryable = retryable
         self.status_code = status_code
         self.partial = partial
-        if billable is None:
-            if status_code is not None and status_code >= 400:
-                billable = False
-            elif "empty" in message.lower():
-                billable = True
-            else:
-                billable = _body_started(partial)
+        if status_code is not None and status_code >= 400:
+            billable = False
+        elif billable is None:
+            billable = _body_started(partial)
         self.billable = bool(billable)
 
 
@@ -134,10 +143,18 @@ def _remember_partial(exc: BaseException, partial: CompletionResult) -> None:
             return
 
 
-def _raise_with_partial(exc: BaseException, partial: CompletionResult) -> None:
-    """Списываем обрыв только если тело уже пошло. Статус >=400 и connect — нет."""
+def _raise_with_partial(
+    exc: BaseException,
+    partial: CompletionResult,
+    *,
+    accepted: bool = False,
+) -> None:
+    """Списываем обрыв, если уже было SSE-событие или ненулевая usage.
+
+    Статус >=400 и обрыв до первого события не списываются.
+    """
     _remember_partial(exc, partial)
-    started = _body_started(partial)
+    started = bool(accepted) or _body_started(partial)
     if isinstance(exc, httpx.TimeoutException):
         raise ProviderTimeout(str(exc) or "timeout", partial=partial, billable=started) from exc
     if isinstance(exc, httpx.TransportError):
@@ -171,7 +188,7 @@ def _int(value: Any) -> int:
 def parse_chat_payload(payload: dict[str, Any]) -> CompletionResult:
     choices = payload.get("choices") or []
     if not choices:
-        raise ProviderError("empty chat completion", retryable=True)
+        raise ProviderError("empty chat completion", retryable=True, billable=True)
     choice = choices[0] or {}
     message = choice.get("message") or {}
     content = message.get("content")
@@ -248,6 +265,7 @@ class _ChatStream:
     finish: str = ""
     model: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    accepted: bool = False
 
     def feed(self, payload: dict[str, Any]) -> list[str]:
         self.model = str(payload.get("model") or self.model)
@@ -294,6 +312,7 @@ class _ResponsesStream:
     finish: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     completed: dict[str, Any] | None = None
+    accepted: bool = False
 
     def feed(self, payload: dict[str, Any]) -> str | None:
         etype = str(payload.get("type") or "")
@@ -342,7 +361,7 @@ class _ResponsesStream:
         if parsed is not None and len(parsed.text) > len(text):
             text = parsed.text
         if not text:
-            raise ProviderError("empty responses stream", retryable=True)
+            raise ProviderError("empty responses stream", retryable=True, billable=True)
         if parsed is not None:
             return CompletionResult(
                 text=text,
@@ -400,7 +419,7 @@ def parse_responses_payload(payload: dict[str, Any]) -> CompletionResult:
     details = usage.get("output_tokens_details") or {}
     text = "".join(parts)
     if not text:
-        raise ProviderError("empty responses output", retryable=True)
+        raise ProviderError("empty responses output", retryable=True, billable=True)
     return CompletionResult(
         text=text,
         finish_reason=str(payload.get("status") or "completed"),
@@ -507,7 +526,10 @@ class HttpxTransport:
                 retryable=response.status_code in _RETRY_STATUS,
                 status_code=response.status_code,
             )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise ProviderError("non-json body", retryable=False, billable=True) from exc
         if cfg.api == "openai-responses":
             result = parse_responses_payload(payload)
         else:
@@ -537,11 +559,12 @@ class HttpxTransport:
                     payload = _json_data(line)
                     if payload is None:
                         continue
+                    state.accepted = True
                     for delta in state.feed(payload):
                         await _emit_delta(request.on_delta, delta)
             return state.result()
         except BaseException as exc:
-            _raise_with_partial(exc, state.snapshot())
+            _raise_with_partial(exc, state.snapshot(), accepted=state.accepted)
             raise
 
     async def _stream_responses(
@@ -569,12 +592,13 @@ class HttpxTransport:
                     payload = _json_data(line)
                     if payload is None:
                         continue
+                    state.accepted = True
                     delta = state.feed(payload)
                     if delta:
                         await _emit_delta(request.on_delta, delta)
             result = state.result()
         except BaseException as exc:
-            _raise_with_partial(exc, state.snapshot())
+            _raise_with_partial(exc, state.snapshot(), accepted=state.accepted)
             raise
         if not result.model:
             result.model = request.model
