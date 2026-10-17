@@ -389,3 +389,82 @@ async def test_r6_scene_word_makes_task(r6_api: httpx.AsyncClient) -> None:
     )
     assert started["payload"]["paid"] is False
     assert not any(item["event"] == "token" for item in events)
+
+
+def _classification(runtime, session: str) -> dict:
+    found = [event.payload for event in runtime.bus.replay(session, 0) if event.type == "classification"]
+    assert found, session
+    return found[-1]
+
+
+@pytest.mark.asyncio
+async def test_prod_ignores_x_orch_scenario(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Прод-роутер не смотрит ``X-Orch-Scenario`` и ``?scenario=``.
+
+    ``ORCH_TEST=1`` без ``ORCH_RUNTIME=r6-fixture`` сценарии testkit не включает.
+    Заголовок, которым WS4 выбирает мок, не меняет классификацию и не ставит
+    kill, approval или шаг ``test.medium_touch``.
+    """
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("ORCH_TEST", "1")
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    set_runtime(None)
+    text = "добрый день"
+    scenarios = (
+        ("kill", "prod-kill"),
+        ("interrupt", "prod-interrupt"),
+        ("approval", "prod-approval"),
+        ("killmsg", "prod-killmsg"),
+        ("budget", "prod-budget"),
+        ("medium", "prod-medium"),
+    )
+    try:
+        runtime = get_runtime()
+        assert isinstance(runtime.router, FallbackRouter)
+        assert not isinstance(runtime.router, R6Router)
+        assert isinstance(runtime.supervisor.actions, UnlinkedActions)
+        transport = httpx.ASGITransport(app=build_r6_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            plain = await client.post(
+                "/api/orchestrator/chat/prod-plain/message",
+                json={"text": text},
+                headers=_AUTH,
+            )
+            assert plain.status_code == 200
+            for scenario, session in scenarios:
+                response = await client.post(
+                    f"/api/orchestrator/chat/{session}/message",
+                    params={"scenario": scenario},
+                    json={"text": text},
+                    headers={**_AUTH, "X-Orch-Scenario": scenario},
+                )
+                assert response.status_code == 200, scenario
+            phrase = await client.post(
+                "/api/orchestrator/chat/prod-phrase/message",
+                params={"scenario": PHRASE_MEDIUM},
+                json={"text": PHRASE_MEDIUM},
+                headers={**_AUTH, "X-Orch-Scenario": "approval"},
+            )
+            assert phrase.status_code == 200
+        await runtime.queue.drain(timeout=3)
+        baseline = _classification(runtime, "prod-plain")
+        assert baseline["mode"] == "append"
+        assert baseline["kill_switch"] is False
+        for _scenario, session in scenarios:
+            assert _classification(runtime, session) == baseline
+            kinds = {event.type for event in runtime.bus.replay(session, 0)}
+            assert "kill_switch" not in kinds
+            assert "approval_required" not in kinds
+            assert "step_started" not in kinds
+        phrase_cls = _classification(runtime, "prod-phrase")
+        assert phrase_cls["mode"] == "append"
+        assert phrase_cls["kill_switch"] is False
+        phrase_kinds = {event.type for event in runtime.bus.replay("prod-phrase", 0)}
+        assert "approval_required" not in phrase_kinds
+        assert "step_started" not in phrase_kinds
+        assert MEDIUM_ACTION not in json.dumps(
+            [event.payload for event in runtime.bus.replay("prod-phrase", 0)],
+            ensure_ascii=False,
+        )
+    finally:
+        set_runtime(None)

@@ -25,7 +25,7 @@ async def router_call(
     reasoning_effort: str | None = None,
     on_delta: Any = None,
 ) -> Any:
-    scope = budget_scope or BudgetScope.internal.value
+    scope = BudgetScope.internal.value if budget_scope is None else budget_scope
     bound = None if run_id is None else str(run_id)
     require_internal_run_id(bound, scope)
     return await router.call(

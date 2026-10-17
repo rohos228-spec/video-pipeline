@@ -226,7 +226,7 @@ async def test_grant_clears_budget_stop_and_steer_replans(token: str) -> None:
         actions.release.set()
         await rt.supervisor.wait(task_id, timeout=5)
         assert planner.calls >= 2
-        assert "after" in [call["name"] for call in actions.calls]
+        assert [call["name"] for call in actions.calls] == ["after"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
     finally:
         set_runtime(None)
@@ -527,7 +527,7 @@ def test_deletion_markers_are_name_segments() -> None:
     assert is_deletion_action("shots.purge")
     assert is_deletion_action("scene.drop")
     assert not is_deletion_action("dropdown")
-    assert not is_deletion_action("remove_watermark")
+    assert is_deletion_action("remove_watermark")
 
 
 class _RecordingValidators:
@@ -935,7 +935,7 @@ async def test_unknown_action_without_metadata_is_destructive(token: str) -> Non
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
         assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
-        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
     finally:
         set_runtime(None)
 
@@ -956,7 +956,7 @@ async def test_plan_mutating_false_does_not_loosen_registry(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-tighten", "правка")
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
-        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
     finally:
         set_runtime(None)
 

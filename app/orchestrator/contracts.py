@@ -13,12 +13,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CONTRACT_VERSION = "ws3-r3.3"
 
@@ -370,13 +371,15 @@ def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) ->
 
 
 def require_internal_run_id(run_id: str | None, budget_scope: str | None = None) -> None:
-    """Платный вызов (``internal`` и ``pipeline``) требует непустой ``run_id``.
+    """Платный вызов требует scope ``internal|pipeline`` и непустой ``run_id``.
 
-    Пропуск scope считается internal. ``spent(None)`` нулём не считается и бакет
-    не подменяет: пустой id — ошибка, а не нулевой расход. ``pipeline`` без
+    Пропуск scope (``None``) считается internal. Явный неизвестный scope —
+    ``ValueError`` до проверки ``run_id`` и до вызова модели: набор тот же,
+    что у WS5. Пустой id — ошибка, а не нулевой расход. ``pipeline`` без
     атрибуции — та же ошибка, отдельного безымянного бакета нет.
     """
-    del budget_scope
+    if budget_scope is not None and budget_scope not in {BudgetScope.internal.value, BudgetScope.pipeline.value}:
+        raise ValueError("budget_scope must be internal|pipeline")
     if not isinstance(run_id, str) or not run_id.strip():
         raise ValueError("budget requires run_id")
 
@@ -563,6 +566,8 @@ class PlanStep(BaseModel):
     реестр. ``parallel_group`` — независимые read-only шаги с одним
     именем группы можно выполнять параллельно.
     ``estimated_cost`` — прогноз spend для критика, не фактическая оплата.
+    ``inf`` / ``NaN``, bool и строка-число сюда не кладутся как сумма: это
+    неизвестный расход (``params['_cost_unknown']``), вызов блокируется.
     """
 
     action: str
@@ -572,7 +577,42 @@ class PlanStep(BaseModel):
     mutating: bool = False
     risk: str = "none"
     parallel_group: str | None = None
-    estimated_cost: float = 0.0
+    estimated_cost: float = Field(default=0.0, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _keep_unknown_cost(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw_params = data.get("params")
+        if raw_params is None:
+            params: dict[str, Any] = {}
+        elif isinstance(raw_params, dict):
+            params = dict(raw_params)
+        else:
+            return data
+        data = dict(data)
+        unknown = False
+        if "estimated_cost" in data and cost_is_unknown(data.get("estimated_cost")):
+            unknown = True
+            raw = _json_safe_unknown(data.get("estimated_cost"))
+            if "estimated_cost" not in params:
+                params["estimated_cost"] = raw
+            data["estimated_cost"] = 0
+        if "estimated_cost" in params and cost_is_unknown(params.get("estimated_cost")):
+            unknown = True
+            params["estimated_cost"] = _json_safe_unknown(params.get("estimated_cost"))
+        if unknown:
+            params["_cost_unknown"] = True
+            data["params"] = params
+        return data
+
+    @field_validator("estimated_cost", mode="before")
+    @classmethod
+    def _clamp_estimated_cost(cls, value: Any) -> float:
+        if cost_is_unknown(value):
+            raise UnknownForecast("unknown spend")
+        return nonneg_cost(value)
 
 
 class SpendSnapshot(BaseModel):
@@ -779,6 +819,9 @@ DELETION_ACTIONS: frozenset[str] = frozenset(
         "montage.delete_image",
         "montage.delete_video",
         "montage.delete_manual_ref",
+        "group.delete",
+        "prompt.delete_master",
+        "delete_child_frame",
     }
 )
 APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
@@ -842,13 +885,20 @@ def validator_missing_run_id(result: Any) -> bool:
 
 # Причина → исход. Супервизор ставит статус блокировки только через block_status.
 # Строки revise_limit нет: лимит revise — critic_escalation.
-# risk, plan_sanity, critic_reject, steer_not_approved в таблицу не входят:
-# это запрос человека, не blocking валидатора, исход по-прежнему waiting_approval.
+# plan_sanity, critic_reject, steer_not_approved и unknown_cost — waiting_approval.
+# Грант до approve критика не исполняет чекпоинт, а возвращает задачу в planning.
 # empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
+# unknown_cost — строка, bool, None, inf, NaN или отрицательное в прогнозе: не 0.
 BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
     ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
     ApprovalReason.missing_project_id.value: TaskStatus.waiting_approval,
+    "paid_unknown_outcome": TaskStatus.waiting_approval,
+    "plan_sanity": TaskStatus.waiting_approval,
+    "critic_reject": TaskStatus.waiting_approval,
+    "steer_not_approved": TaskStatus.waiting_approval,
+    "unknown_cost": TaskStatus.waiting_approval,
+    "paid_outcome_unknown": TaskStatus.waiting_approval,
     "deletion_blocked": TaskStatus.failed,
     "missing_run_id": TaskStatus.failed,
     "empty_plan": TaskStatus.failed,
@@ -882,33 +932,142 @@ def budget_exhausted_response(response: Any) -> bool:
     )
 
 
-def _action_segments(action: str) -> set[str]:
-    return {part for part in re.split(r"[._]", (action or "").lower()) if part}
+# Сегмент, не подстрока: ``dropdown`` не содержит ``drop``.
+_DELETION_TOKENS = frozenset(
+    {
+        "delete",
+        "remove",
+        "drop",
+        "purge",
+        "clear",
+        "wipe",
+        "truncate",
+        "prune",
+        "reset",
+        "destroy",
+        "rename",
+        "replace",
+        "overwrite",
+    }
+)
+# Сцены, кадры, персонажи и VO не удаляются никогда.
+_PROTECTED_OBJECTS = frozenset(
+    {
+        "frame",
+        "frames",
+        "scene",
+        "scenes",
+        "shot",
+        "shots",
+        "kadr",
+        "kadry",
+        "kadrs",
+        "character",
+        "characters",
+        "hero",
+        "heroes",
+        "vo",
+        "voiceover",
+        "voiceovers",
+    }
+)
+
+
+def _text_tokens(value: str) -> set[str]:
+    return {part for part in re.split(r"[^a-z0-9]+", value.lower()) if part}
+
+
+def is_named_deletion(action: str) -> bool:
+    """Маркер удаления в имени. Метаданные реестра его не снимают.
+
+    Список системных вызовов не ведётся: срабатывает сегмент
+    (``delete``/``remove``/… и SQL/HTTP ``DELETE``/``DROP`` как слово).
+    """
+    return is_deletion_action(action)
+
+
+def is_deletion_verb(action: str) -> bool:
+    """Сегмент из списка запрета. ``dropdown`` сегмента ``drop`` не содержит."""
+    return bool(_text_tokens(action or "") & _DELETION_TOKENS)
 
 
 def is_deletion_action(action: str) -> bool:
-    """Удаление кадра или сцены по имени.
-
-    Точные имена реестра, подстроки ``delete_frame`` / ``delete_scene``,
-    и сегменты имени (разрыв по ``.`` и ``_``): ``purge``, ``drop``,
-    а ``remove`` только рядом с ``frame`` или ``scene``.
-    ``montage.remove_frame``, ``shots.purge``, ``scene.drop`` попадают.
-    ``dropdown`` и ``remove_watermark`` — нет.
-
-    Это эвристика по имени, пока нет ``metadata_of``. ``drop`` / ``purge``
-    заденут и ``drop_cache``. ``erase`` / ``wipe`` / ``truncate`` сюда не входят:
-    их закроет реестр WS2.
-    """
+    """Имя с маркером удаления или точное действие из ``DELETION_ACTIONS``."""
     name = (action or "").strip()
+    if not name:
+        return False
     if name in DELETION_ACTIONS:
         return True
-    lowered = name.lower()
-    if "delete_frame" in lowered or "delete_scene" in lowered:
+    return bool(_text_tokens(name) & _DELETION_TOKENS)
+
+
+_HTTP_PARAM_KEYS = frozenset({"method", "httpmethod", "httpverb", "verb"})
+_SQL_PARAM_KEYS = frozenset({"sql", "query", "statement", "statements"})
+_KNOWN_HTTP_METHODS = frozenset(
+    {"get", "head", "options", "post", "put", "patch", "delete", "trace", "connect"}
+)
+
+
+def _param_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+def _computed_text(value: str) -> bool:
+    """Шаблон или подстановка: литерал метода или SQL доказать нельзя."""
+    return any(mark in value for mark in ("{", "}", "${", "`"))
+
+
+def _http_method_unproven(value: Any) -> bool:
+    """Метод не литерал, вычисляется или не из известного списка."""
+    if isinstance(value, bool) or not isinstance(value, str):
         return True
-    parts = _action_segments(name)
-    if parts & {"purge", "drop"}:
+    if _computed_text(value):
         return True
-    return "remove" in parts and bool(parts & {"frame", "scene"})
+    method = value.strip().lower()
+    if method not in _KNOWN_HTTP_METHODS:
+        return True
+    return bool(_text_tokens(method) & _DELETION_TOKENS)
+
+
+def _sql_unproven(value: Any) -> bool:
+    """SQL не литерал, вычисляется, либо содержит удаление, ``TRUNCATE`` или ``executemany``."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        return True
+    if _computed_text(value):
+        return True
+    tokens = _text_tokens(value)
+    return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
+
+
+def params_request_deletion(value: Any) -> bool:
+    """Маркер удаления в параметрах.
+
+    HTTP-метод и SQL, которые нельзя доказать (не литерал, шаблон, неизвестный
+    метод), тоже ``deletion_blocked``. В литерале SQL ``TRUNCATE`` и
+    ``executemany`` достаточны сами по себе.
+    """
+    if isinstance(value, str):
+        tokens = _text_tokens(value)
+        return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
+    if isinstance(value, dict):
+        for key, item in value.items():
+            kind = _param_key(key)
+            if kind in _HTTP_PARAM_KEYS and _http_method_unproven(item):
+                return True
+            if kind in _SQL_PARAM_KEYS and _sql_unproven(item):
+                return True
+            if params_request_deletion(key) or params_request_deletion(item):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(params_request_deletion(item) for item in value)
+    return False
+
+
+def _protects_media(action: str) -> bool:
+    """Сцена, кадр, персонаж или VO вместе с глаголом удаления."""
+    parts = _text_tokens(action or "")
+    return bool(parts & _DELETION_TOKENS and parts & _PROTECTED_OBJECTS)
 
 
 _MISSING = object()
@@ -935,47 +1094,59 @@ def action_unknown(action: str, registry: Any | None) -> bool:
     return True
 
 
-def action_guard(action: str, registry: Any | None = None) -> str | None:
-    """``hard`` — destructive или неизвестное.
+def explicitly_safe(action: str, registry: Any | None) -> bool:
+    """В реестре есть явные ``read_only=True`` и ``destructive=False``.
 
-    ``name`` — запрет по имени (``deletion_blocked`` → failed, grant запрещён).
-    ``None`` — действие можно планировать.
-
-    Флаги плана (``mutating``, ``read_only``) сюда не входят: они не ослабляют
-    реестр. Удаление по имени блокируется даже если план сказал ``mutating=False``.
-    Пока нет ``metadata_of``, неизвестное имя — destructive.
+    Иначе запрет по умолчанию. Открытый мок (``risks is None``, нет
+    ``metadata_of``) не закрытый реестр: имя без маркера удаления живёт.
+    Закрытый словарь без ключа безопасным не считается.
     """
-    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
-    meta = metadata_of(action) if metadata_of is not None else None
-    if meta is not None and bool(getattr(meta, "destructive", False)):
-        return "hard"
-    if is_deletion_action(action):
-        return "name"
+    if registry is None:
+        return False
+    metadata_of = getattr(registry, "metadata_of", None)
     if metadata_of is not None:
-        if meta is None or getattr(meta, "read_only", None) is not True:
-            return "hard"
-        return None
-    if action_unknown(action, registry):
-        return "hard"
+        meta = metadata_of(action)
+        return (
+            meta is not None
+            and getattr(meta, "read_only", None) is True
+            and not bool(getattr(meta, "destructive", False))
+        )
+    risks = getattr(registry, "risks", _MISSING)
+    if risks is None:
+        return True
+    if isinstance(risks, dict):
+        return action in risks
+    return False
+
+
+def action_guard(action: str, registry: Any | None = None) -> str | None:
+    """``name`` — ``deletion_blocked``. ``None`` — действие можно планировать.
+
+    Запрет по умолчанию: нет явных ``read_only`` и не-destructive, либо в имени
+    маркер удаления. Флаги плана это не ослабляют. Сцены, кадры, персонажи и
+    VO с глаголом удаления не оправдываются метаданными.
+    """
+    if is_deletion_action(action) or _protects_media(action) or not explicitly_safe(action, registry):
+        return "name"
     return None
+
+
+def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
+    """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен."""
+    if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params):
+        return True
+    return not explicitly_safe(step.action, registry)
 
 
 def registry_is_readonly(action: str, registry: Any | None) -> bool:
     """Read-only решает реестр, не план.
 
-    Удаление и неизвестное имя — не read-only. Явный ``metadata.read_only``
-    нужен, когда ``metadata_of`` есть. Риск реестра из ``APPROVAL_RISKS`` тоже
-    не read-only. Открытый мок без метаданных и с ``Risk.none`` — read-only.
+    Удаление и имя без явного ``read_only`` — не read-only. Риск реестра из
+    ``APPROVAL_RISKS`` тоже не read-only. Открытый мок без метаданных и с
+    ``Risk.none`` — read-only, если в имени нет маркера удаления.
     """
-    if is_deletion_action(action) or action_unknown(action, registry):
+    if is_deletion_action(action) or _protects_media(action) or not explicitly_safe(action, registry):
         return False
-    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
-    if metadata_of is not None:
-        meta = metadata_of(action)
-        if meta is None or bool(getattr(meta, "destructive", False)):
-            return False
-        if getattr(meta, "read_only", None) is not True:
-            return False
     risk_of = getattr(registry, "risk_of", None) if registry is not None else None
     if risk_of is None:
         return True
@@ -992,7 +1163,12 @@ def step_is_readonly(step: PlanStep, registry: Any | None) -> bool:
 
 
 def plan_deletions(plan: list[PlanStep]) -> list[str]:
-    return [step.action for step in plan if is_deletion_action(step.action)]
+    """Маркеры в имени и параметрах. Запрет по реестру смотрит супервизор."""
+    return [
+        step.action
+        for step in plan
+        if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params)
+    ]
 
 
 def plan_missing_verify(plan: list[PlanStep]) -> bool:
@@ -1010,14 +1186,115 @@ def plan_missing_verify(plan: list[PlanStep]) -> bool:
     return False
 
 
+class UnknownForecast(ValueError):
+    """Прогноз шага — неизвестный расход. В 0 не превращается, вызов блокируется."""
+
+
+def cost_is_unknown(value: Any) -> bool:
+    """Строка, bool, None, inf, NaN, отрицательное. В 0 не превращается."""
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return (not math.isfinite(number)) or number < 0
+    return True
+
+
+def _json_safe_unknown(value: Any) -> Any:
+    """Нефинитный float нельзя класть в JSON чекпоинта. Смысл «не число» сохраняется."""
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "nan"
+        return "inf" if value > 0 else "-inf"
+    return value
+
+
+def nonneg_cost(value: Any) -> float:
+    """Конечное число ``>= 0``. Всё остальное — ``UnknownForecast``, не 0."""
+    if cost_is_unknown(value):
+        raise UnknownForecast("unknown spend")
+    return float(value)
+
+
+def ceiling_blocks(limit: Any) -> bool:
+    """Потолок ``<= 0``, строка, bool, None, inf и NaN блокируют вызов.
+
+    Ноль не выключает проверку.
+    """
+    if isinstance(limit, bool) or limit is None or isinstance(limit, str):
+        return True
+    if isinstance(limit, (int, float)):
+        number = float(limit)
+        return (not math.isfinite(number)) or number <= 0
+    return True
+
+
+def server_forecast_limit() -> float:
+    """Потолок только из конфига ядра, не из плана, контекста и сообщения."""
+    return float(PIPELINE_FORECAST_LIMIT_USD)
+
+
+_CLIENT_MONEY_KEYS = frozenset(
+    {
+        "spent",
+        "spent_usd",
+        "spent_internal",
+        "spent_actions",
+        "limit",
+        "limit_usd",
+        "budget",
+        "budget_usd",
+        "ceiling",
+        "forecast_limit",
+        "budget_limit",
+    }
+)
+
+
+def plan_without_client_money(plan: list[PlanStep]) -> list[dict[str, Any]]:
+    """В контекст валидатора не кладём потраченное и потолок из плана."""
+    dumped: list[dict[str, Any]] = []
+    for step in plan:
+        raw = step.model_dump()
+        params = dict(raw.get("params") or {})
+        for key in list(params):
+            if str(key) in _CLIENT_MONEY_KEYS:
+                params.pop(key, None)
+        raw["params"] = params
+        dumped.append(raw)
+    return dumped
+
+
+def forecast_unknown(plan: list[PlanStep]) -> bool:
+    """В плане есть неизвестный расход: прогноз нельзя подменить нулём."""
+    return any(_step_cost_unknown(step) for step in plan)
+
+
+def _step_cost_unknown(step: PlanStep) -> bool:
+    if step.params.get("_cost_unknown"):
+        return True
+    if isinstance(step.estimated_cost, float) and not math.isfinite(step.estimated_cost):
+        return True
+    return "estimated_cost" in step.params and cost_is_unknown(step.params.get("estimated_cost"))
+
+
 def forecast_cost(plan: list[PlanStep]) -> float:
-    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды."""
+    """Прогноз spend. Поле и ``params.estimated_cost`` не суммируются дважды.
+
+    Консервативно берётся большее из двух конечных чисел. Строка, bool, None,
+    inf, NaN и отрицательное — ``UnknownForecast``, не 0.
+    """
+    if forecast_unknown(plan):
+        raise UnknownForecast("unknown spend")
     total = 0.0
     for step in plan:
+        present: list[float] = []
         if step.estimated_cost:
-            total += float(step.estimated_cost)
-        else:
-            total += float(step.params.get("estimated_cost") or 0)
+            present.append(nonneg_cost(step.estimated_cost))
+        if "estimated_cost" in step.params and not step.params.get("_cost_unknown"):
+            present.append(nonneg_cost(step.params["estimated_cost"]))
+        if present:
+            total += max(present)
     return total
 
 

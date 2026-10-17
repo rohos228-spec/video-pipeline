@@ -73,16 +73,20 @@ from app.orchestrator.contracts import (
     SpendSnapshot,
     TaskStatus,
     ValidatorResult,
-    action_guard,
     approval_decision_choices,
     block_status,
     budget_exhausted_response,
     can_transition,
+    ceiling_blocks,
     forecast_cost,
+    forecast_unknown,
     grant_forbidden,
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
+    plan_without_client_money,
+    server_forecast_limit,
+    step_is_deletion,
     step_is_readonly,
     usable_project_id,
     validator_budget_exhausted,
@@ -146,10 +150,14 @@ class Supervisor:
         self._budget_stop: set[int] = set()
         self._shield_orphaned: set[int] = set()
         self._paid_open: set[int] = set()
+        self._paid_outcome_hold: set[int] = set()
+        self._pending_paid_unknown: list[tuple[str, int]] = []
         self._step_recorded: set[int] = set()
         self._shield_jobs: set[asyncio.Task[Any]] = set()
         self._block_reason: dict[int, str] = {}
         self._pending_kill_publish: list[tuple[str, int | None]] = []
+        self._pending_queue_cancel: list[tuple[str, int]] = []
+        self._approved: dict[int, str] = {}
 
     async def start_task(
         self,
@@ -179,6 +187,42 @@ class Supervisor:
         )
         return task_id
 
+    async def recover_after_restart(self) -> list[int]:
+        """Продолжить задачи, которые остались ``executing`` после падения процесса.
+
+        Платная строка ``running`` не исполняется снова: ``waiting_approval``
+        с причиной ``paid_unknown_outcome``.
+        """
+        rows = self.tasks.list_open()
+        recovered: list[int] = []
+        for row in rows:
+            if str(row.get("status")) != TaskStatus.executing.value:
+                continue
+            task_id = int(row["id"])
+            if task_id in self._runs and not self._runs[task_id].done():
+                continue
+            session_id = str(row["session_id"])
+            data = self.checkpoints.load_latest(task_id)
+            if data is None or not data.plan:
+                self._session_task[session_id] = task_id
+                await self._fail_closed(task_id, session_id, "empty_plan")
+                recovered.append(task_id)
+                continue
+            self._arm_resume(session_id, task_id, data)
+            self._session_task[session_id] = task_id
+            self._runs[task_id] = asyncio.create_task(
+                self._execute_plan(
+                    task_id,
+                    session_id,
+                    list(data.plan),
+                    int(data.position),
+                    str(row.get("goal") or ""),
+                ),
+                name=f"orch-recover-{task_id}",
+            )
+            recovered.append(task_id)
+        return recovered
+
     async def wait(self, task_id: int, timeout: float | None = None) -> None:
         await asyncio.wait_for(self._runs[task_id], timeout)
 
@@ -191,7 +235,8 @@ class Supervisor:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         session_id = str(row["session_id"])
         self._arm_resume(session_id, task_id, data)
-        await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        if self._status(task_id) is not TaskStatus.executing:
+            await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         await self._flush_kill_publishes()
         if not data.plan:
             await self._apply_block(task_id, session_id, "empty_plan")
@@ -254,9 +299,10 @@ class Supervisor:
         if decided in {ApprovalDecision.retry_step, ApprovalDecision.deny}:
             raise InvalidTransition("retry_step и deny только для paid_outcome_unknown")
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
-        if data is None:
-            raise LookupError(f"нет чекпоинта для задачи {task_id}")
         self._budget_stop.discard(task_id)
+        if data is None:
+            await self._replan_from_grant(task_id, session_id)
+            return
         self._arm_resume(session_id, task_id, data)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         await self._flush_kill_publishes()
@@ -266,14 +312,35 @@ class Supervisor:
             return
         if await self._screen_plan(task_id, session_id, plan):
             return
+        if not self._plan_was_approved(task_id, plan):
+            await self._replan_from_grant(task_id, session_id)
+            return
         position = int(data.position)
         if position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
-            self._execute_plan(task_id, session_id, plan, int(data.position), goal),
+            self._execute_plan(task_id, session_id, plan, position, goal),
             name=f"orch-approve-{task_id}",
         )
+
+    async def _replan_from_grant(self, task_id: int, session_id: str) -> None:
+        """Эскалация случилась до approve: цикл planner → critic заново, с позиции 0."""
+        self._approved.pop(task_id, None)
+        self._cancel.discard(session_id)
+        self._pause.discard(session_id)
+        self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
+        self._session_task[session_id] = task_id
+        goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
+        self._runs[task_id] = asyncio.create_task(
+            self._drive(task_id, session_id, goal),
+            name=f"orch-replan-{task_id}",
+        )
+
+    def _plan_was_approved(self, task_id: int, plan: list[PlanStep]) -> bool:
+        mark = self._approved.get(task_id)
+        return mark is not None and mark == _plan_fingerprint(plan)
 
     def _arm_resume(self, session_id: str, task_id: int, data: CheckpointData) -> None:
         self._cancel.discard(session_id)
@@ -286,11 +353,24 @@ class Supervisor:
         self._remember_paid(task_id)
 
     def request_cancel(self, session_id: str) -> None:
-        """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть."""
+        """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
+
+        Платный шаг уже в полёте не откатывается: задача уходит в
+        ``waiting_approval`` с причиной ``paid_outcome_unknown``.
+        """
         self._cancel.add(session_id)
         task_id = self._session_task.get(session_id)
         if task_id is not None:
             self.tasks.set_flag(task_id, cancel_requested=1)
+        if task_id is not None and task_id in self._paid_open:
+            self._paid_outcome_hold.add(task_id)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                self._pending_paid_unknown.append((session_id, task_id))
+                return
+            self._spawn(self._mark_paid_outcome_unknown(session_id, task_id))
+            return
         inflight = self._unpaid.get(session_id)
         if inflight is not None and not inflight.done():
             inflight.cancel()
@@ -298,7 +378,8 @@ class Supervisor:
     def request_kill(self, session_id: str) -> asyncio.Task[Any] | None:
         """Kill switch: неплатное — сразу, новые действия запрещены.
 
-        Платный шаг этим вызовом не обрывается: пауза на его границе.
+        Платный шаг уже в полёте не откатывается: задача уходит в
+        ``waiting_approval`` с причиной ``paid_outcome_unknown``.
         Стоп-ключ узла здесь не ставится. Событие несёт ``stop_key_set=false``
         и ``stop_key=pending``. Возвращает задачу публикации, если цикл уже
         есть: очередь её дожидается, иначе запись sqlite могла бы отстать
@@ -306,14 +387,23 @@ class Supervisor:
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
+        queued = list(self._queued.pop(session_id, []))
         task_id = self._session_task.get(session_id)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("kill_switch for {} queued: no running loop", session_id)
             self._pending_kill_publish.append((session_id, task_id))
+            self._pending_queue_cancel.extend((session_id, queued_id) for queued_id, _goal in queued)
             return None
+        for queued_id, _goal in queued:
+            self._spawn(self._cancel_queued(session_id, queued_id))
         return self._spawn(self._publish_kill(session_id, task_id))
+
+    async def _cancel_queued(self, session_id: str, task_id: int) -> None:
+        """Задача, стоявшая в очереди на момент kill, не должна стартовать позже."""
+        if self._status(task_id) is TaskStatus.queued:
+            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
 
     def request_pause(self, session_id: str) -> None:
         self._pause.add(session_id)
@@ -668,6 +758,14 @@ class Supervisor:
         self._pending_kill_publish.clear()
         for session_id, task_id in pending:
             self._spawn(self._publish_kill(session_id, task_id))
+        queued = list(self._pending_queue_cancel)
+        self._pending_queue_cancel.clear()
+        for session_id, task_id in queued:
+            self._spawn(self._cancel_queued(session_id, task_id))
+        pending_paid = list(self._pending_paid_unknown)
+        self._pending_paid_unknown.clear()
+        for session_id, task_id in pending_paid:
+            self._spawn(self._mark_paid_outcome_unknown(session_id, task_id))
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
         await self.bus.publish(
@@ -731,9 +829,11 @@ class Supervisor:
             if verdict is None:
                 return None
             if verdict == "approve":
+                self._approved[task_id] = _plan_fingerprint(plan)
                 return plan
             if verdict == "reject":
-                await self._escalate(task_id, session_id, "critic_reject")
+                await self._checkpoint(task_id, session_id, plan, 0)
+                await self._apply_block(task_id, session_id, "critic_reject")
                 return None
             revises += 1
             if revises > 2:
@@ -834,10 +934,16 @@ class Supervisor:
             self._context[task_id] = (self._context.get(task_id, "") + "\n" + text).strip()
             plan = self._stored_plan(task_id)
             existing = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
-            if position is None:
-                position = int(existing.position) if existing is not None else 0
             if existing is not None and not plan:
                 plan = list(existing.plan)
+            if (
+                existing is not None
+                and plan
+                and _plan_fingerprint(list(existing.plan)) != _plan_fingerprint(plan)
+            ):
+                position = 0
+            elif position is None:
+                position = int(existing.position) if existing is not None else 0
             await self.bus.publish(
                 session_id,
                 "message",
@@ -878,18 +984,18 @@ class Supervisor:
         Пустой чекпоинт на grant/resume сюда не попадает: это ``empty_plan``.
         """
         if not plan:
-            await self._escalate(task_id, session_id, "plan_sanity")
+            await self._apply_block(task_id, session_id, "plan_sanity")
+            return True
+        if ceiling_blocks(server_forecast_limit()) or forecast_unknown(plan):
+            await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
-            kind = action_guard(step.action, self.actions)
-            if kind == "hard":
-                await self._apply_block(task_id, session_id, "destructive_blocked")
-                return True
-            if kind == "name":
+            if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
         if plan_missing_verify(plan):
-            await self._escalate(task_id, session_id, "plan_sanity")
+            await self._checkpoint(task_id, session_id, plan, 0)
+            await self._apply_block(task_id, session_id, "plan_sanity")
             return True
         if self._task_project_id(task_id) is None and _plan_requires_project(plan, self.actions):
             await self._apply_block(task_id, session_id, ApprovalReason.missing_project_id.value)
@@ -909,8 +1015,9 @@ class Supervisor:
         return (task_id, index, paid_step_identity(step.action, step.params))
 
     def _save_plan(self, task_id: int, plan: list[PlanStep], position: int | None = None) -> None:
-        """Новый план сбрасывает гранты риска этой задачи."""
+        """Новый план сбрасывает гранты риска и отметку approve этой задачи."""
         self._forget_risk_grants(task_id)
+        self._approved.pop(task_id, None)
         if position is None:
             self.tasks.save_plan(task_id, plan)
             return
@@ -951,6 +1058,9 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        if forecast_unknown(plan):
+            await self._apply_block(task_id, session_id, "unknown_cost")
+            return
         index = start
         while index < len(plan):
             if await self._stop_if_budget(task_id, session_id, plan, index):
@@ -988,6 +1098,10 @@ class Supervisor:
                     "risk",
                     extra={"action": step.action, "risk": risk.value, "plan_risk": step.risk},
                 )
+                return
+
+            if len(batch) == 1 and step.paid and self._running_paid_row(task_id, step) is not None:
+                await self._hold_paid_unknown(task_id, session_id, step)
                 return
 
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None
@@ -1040,7 +1154,8 @@ class Supervisor:
             ctx = {
                 "task_id": task_id,
                 "session_id": session_id,
-                **self._llm_kwargs(task_id, AgentRole.executor.value),
+                "run_id": orch_run_id(task_id=task_id),
+                "budget_scope": BudgetScope.pipeline.value,
             }
             started: list[tuple[PlanStep, int]] = []
             db_pos = self._next_step_position(task_id)
@@ -1107,6 +1222,11 @@ class Supervisor:
                     {"error": "step_failed", "action": step.action},
                     task_id=task_id,
                 )
+                return
+
+            if task_id in self._paid_outcome_hold and any(item.paid for item, _ in started):
+                if self._status(task_id) is TaskStatus.executing:
+                    await self._mark_paid_outcome_unknown(session_id, task_id)
                 return
 
             paid_in_batch = False
@@ -1217,8 +1337,10 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         if verdict != "approve":
-            await self._escalate(task_id, session_id, "steer_not_approved")
+            await self._checkpoint(task_id, session_id, revised, 0)
+            await self._apply_block(task_id, session_id, "steer_not_approved")
             return None
+        self._approved[task_id] = _plan_fingerprint(revised)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         return revised, 0
 
@@ -1279,13 +1401,25 @@ class Supervisor:
         index: int,
     ) -> None:
         """Сторож: платный шаг дожил после отмены внешней задачи — записать результат."""
-        if done.cancelled() or task_id not in self._shield_orphaned:
+        if done.cancelled() or task_id not in self._shield_orphaned or task_id in self._paid_outcome_hold:
             return
         try:
             exc = done.exception()
         except asyncio.CancelledError:
             return
-        if exc is not None or not self._claim_step(step_id):
+        if exc is not None:
+            if self._claim_step(step_id):
+                self.tasks.finish_step(step_id, "failed", None, 0.0)
+            self._shield_orphaned.discard(task_id)
+            loop = asyncio.get_running_loop()
+            job = loop.create_task(
+                self._fail_closed(task_id, session_id, "paid_step_failed"),
+                name=f"orch-shield-fail-{task_id}",
+            )
+            self._shield_jobs.add(job)
+            job.add_done_callback(self._shield_jobs.discard)
+            return
+        if not self._claim_step(step_id):
             return
         self._write_step_done(task_id, step, step_id, done.result())
         loop = asyncio.get_running_loop()
@@ -1375,7 +1509,7 @@ class Supervisor:
         payload = {
             VALIDATOR_CONTEXT_DRY_RUN: True,
             "project_id": project_id,
-            "plan": [step.model_dump() for step in plan],
+            "plan": plan_without_client_money(plan),
         }
         for name in _DRY_RUN:
             result = await run_validator(
@@ -1562,6 +1696,51 @@ class Supervisor:
             return 0
         return max(int(row["position"]) for row in rows) + 1
 
+    def _running_paid_row(self, task_id: int, step: PlanStep) -> dict[str, Any] | None:
+        """Платная строка ``running`` с тем же действием и публичными params."""
+        if not step.paid:
+            return None
+        ident = _public_params(step.params)
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "running" or not row.get("paid"):
+                continue
+            if str(row.get("action_name") or "") != step.action:
+                continue
+            try:
+                stored = json.loads(row.get("params_json") or "{}")
+            except json.JSONDecodeError:
+                stored = {}
+            if isinstance(stored, dict) and _public_params(stored) == ident:
+                return row
+        return None
+
+    async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
+        """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
+        if task_id not in self._paid_outcome_hold:
+            return
+        status = self._status(task_id)
+        if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+            return
+        action = ""
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) == "running" and row.get("paid"):
+                action = str(row.get("action_name") or "")
+                break
+        await self._apply_block(
+            task_id,
+            session_id,
+            "paid_outcome_unknown",
+            extra={"action": action} if action else None,
+        )
+
+    async def _hold_paid_unknown(self, task_id: int, session_id: str, step: PlanStep) -> None:
+        await self._apply_block(
+            task_id,
+            session_id,
+            "paid_unknown_outcome",
+            extra={"action": step.action},
+        )
+
     def _remember_paid(self, task_id: int) -> None:
         found = self._paid_done.setdefault(task_id, set())
         for row in self.tasks.list_steps(task_id):
@@ -1697,6 +1876,11 @@ class Supervisor:
             internal=float(row.get("spend_internal") or 0),
             actions=float(row.get("spend_actions") or 0),
         )
+
+
+def _plan_fingerprint(plan: list[PlanStep]) -> str:
+    payload = [step.model_dump() for step in plan]
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:
