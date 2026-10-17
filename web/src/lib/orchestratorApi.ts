@@ -31,12 +31,14 @@ import {
   type OrchKillResult,
   type OrchMessageAckHttp,
   type OrchOutboundMessage,
+  type OrchProjectBindRequest,
+  type OrchProjectBindResult,
   type OrchReportsRow,
   type OrchReportVersionsRow,
 } from "./orchestratorTypes";
 
-/** #358: ws3-r3.3.1 добавляет approval_decided и не ломает провод r3.3. */
-const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1"] as const;
+/** #358/#367: r3.3, r3.3.1 и флаг r3.4. Чужая версия предупреждает один раз. */
+const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1", "ws3-r3.4"] as const;
 
 export function acceptsOrchContractVersion(version: string): boolean {
   return (ACCEPTED_ORCH_CONTRACT_VERSIONS as readonly string[]).includes(version);
@@ -49,7 +51,7 @@ export function noteOrchContractVersion(version: string): void {
   if (!version || acceptsOrchContractVersion(version)) return;
   if (contractVersionWarned) return;
   contractVersionWarned = true;
-  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1: ${version}`);
+  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1 / ws3-r3.4: ${version}`);
 }
 
 noteOrchContractVersion(ORCH_CONTRACT_VERSION);
@@ -95,6 +97,103 @@ export function writeOrchToken(token: string): void {
 export function orchTaskModeEnabled(): boolean {
   const raw = process.env.NEXT_PUBLIC_ORCH_TASK_MODE;
   return raw === "1" || raw === "true";
+}
+
+/** Контракт, в котором поле MessageIn.kill_switch реально останавливает задачу. */
+export const ORCH_CONTRACT_R34 = "ws3-r3.4";
+
+/**
+ * Кнопка kill шлёт `{text, kill_switch:true}` только здесь.
+ * Иначе остаётся POST /api/orchestrator/kill: сервер r3.3 лишнее поле молча игнорирует.
+ * Включается `NEXT_PUBLIC_ORCH_CONTRACT=ws3-r3.4` или `?orchContract=ws3-r3.4`.
+ */
+export function orchKillUsesMessageField(search?: string): boolean {
+  if (process.env.NEXT_PUBLIC_ORCH_CONTRACT === ORCH_CONTRACT_R34) return true;
+  const source = search ?? (typeof window !== "undefined" ? window.location.search : "");
+  if (!source) return false;
+  const query = new URLSearchParams(source.startsWith("?") ? source.slice(1) : source);
+  return query.get("orchContract") === ORCH_CONTRACT_R34;
+}
+
+/** Тело кнопки kill на r3.4. Фразу «kill switch» не подмешиваем: стоп делает поле. */
+export function orchKillMessageBody(): OrchOutboundMessage {
+  return { text: "останови генерацию", kill_switch: true };
+}
+
+/** Тот же признак контракта, что и у поля kill: форма project_id только на ws3-r3.4. */
+export function orchContractIsR34(search?: string): boolean {
+  return orchKillUsesMessageField(search);
+}
+
+/** Целое ≥ 1. Ноль, минус, дробь и пустая строка не уходят на сервер. */
+export function parseOrchProjectId(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^[1-9]\d*$/.test(text)) return null;
+  const id = Number(text);
+  if (!Number.isSafeInteger(id) || id < 1) return null;
+  return id;
+}
+
+export function projectBindWireBody(projectId: number, taskId: number | null): OrchProjectBindRequest {
+  if (!Number.isInteger(projectId) || projectId < 1) {
+    throw new Error(PROJECT_BIND_INVALID);
+  }
+  const body: OrchProjectBindRequest = { project_id: projectId };
+  if (taskId == null) return body;
+  if (!Number.isInteger(taskId) || taskId < 1) {
+    throw new Error(PROJECT_BIND_INVALID);
+  }
+  body.task_id = taskId;
+  return body;
+}
+
+export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
+export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
+export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";
+export const PROJECT_BIND_FOREIGN = "Это не активная задача";
+
+function readProjectBind(value: unknown): OrchProjectBindResult {
+  if (!value || typeof value !== "object") {
+    throw new OrchApiError(200, "пустой ответ project");
+  }
+  const row = value as Record<string, unknown>;
+  const projectId = row.project_id;
+  const taskId = row.task_id;
+  if (
+    row.ok !== true ||
+    typeof row.session !== "string" ||
+    !row.session ||
+    typeof taskId !== "number" ||
+    !Number.isInteger(taskId) ||
+    typeof projectId !== "number" ||
+    !Number.isInteger(projectId) ||
+    projectId < 1 ||
+    typeof row.status !== "string" ||
+    !row.status
+  ) {
+    throw new OrchApiError(200, "ответ project неполный");
+  }
+  return {
+    ok: true,
+    session: row.session,
+    task_id: taskId,
+    project_id: projectId,
+    status: row.status,
+  };
+}
+
+export async function postOrchProject(
+  cfg: OrchClientConfig,
+  body: OrchProjectBindRequest,
+  signal?: AbortSignal,
+): Promise<OrchProjectBindResult> {
+  const raw = await postJson<unknown>(
+    cfg,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+    body,
+    signal,
+  );
+  return readProjectBind(raw);
 }
 
 /**

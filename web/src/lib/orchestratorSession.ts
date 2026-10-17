@@ -66,6 +66,15 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   taskId: string | null;
+  /**
+   * r3.4: id реплики (`message_start` / `token` / `message_end`).
+   * Нет поля — склейка r3.3 по последнему пузырю ассистента той же задачи.
+   */
+  messageId?: number | null;
+  /** `message_end` закрыл буфер. Итог ещё может прийти событием `message`. */
+  closed?: boolean;
+  /** Событие `message` уже подставило канонический текст. Повторно не дописываем. */
+  finalized?: boolean;
 }
 
 export interface AgentView {
@@ -547,12 +556,28 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
   return task;
 }
 
+function readMessageId(payload: Record<string, unknown>): number | null {
+  const raw = payload.message_id;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  return raw;
+}
+
+function messageRole(payload: Record<string, unknown>): "user" | "assistant" {
+  return str(payload.role) === "user" ? "user" : "assistant";
+}
+
+/** Пузырь r3.3: без message_id, последняя реплика ассистента той же задачи. */
 function appendToken(state: OrchScreenState, taskId: string | null, text: string): void {
   if (!text) return;
   const messages = state.messages;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (message && message.role === "assistant" && message.taskId === taskId) {
+    if (
+      message &&
+      message.role === "assistant" &&
+      message.taskId === taskId &&
+      (message.messageId == null)
+    ) {
       message.text += text;
       return;
     }
@@ -563,6 +588,66 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
     text,
     taskId,
   });
+}
+
+function bubbleByMessageId(state: OrchScreenState, messageId: number): ChatMessage | undefined {
+  return state.messages.find((message) => message.messageId === messageId);
+}
+
+/** Открывает пустой пузырь. Повторный start с тем же id второй пузырь не создаёт. */
+function openMessageBubble(
+  state: OrchScreenState,
+  taskId: string | null,
+  messageId: number,
+  role: "user" | "assistant",
+): ChatMessage {
+  const existing = bubbleByMessageId(state, messageId);
+  if (existing) return existing;
+  const created: ChatMessage = {
+    id: `asst-mid-${messageId}`,
+    role,
+    text: "",
+    taskId,
+    messageId,
+    closed: false,
+    finalized: false,
+  };
+  state.messages.push(created);
+  return created;
+}
+
+function appendTokenForMessage(
+  state: OrchScreenState,
+  taskId: string | null,
+  messageId: number,
+  text: string,
+): void {
+  if (!text) return;
+  const bubble = openMessageBubble(state, taskId, messageId, "assistant");
+  if (bubble.finalized) return;
+  bubble.text += text;
+}
+
+/** Самый ранний незакрытый итогом буфер. Два id подряд не делят один текст. */
+function pendingBoundedMessage(state: OrchScreenState): ChatMessage | undefined {
+  return state.messages.find(
+    (message) => message.role === "assistant" && message.messageId != null && message.finalized !== true,
+  );
+}
+
+function applyFinalMessage(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>): void {
+  const text = str(payload.text);
+  if (!text || str(payload.role) === "user") return;
+  const explicit = readMessageId(payload);
+  const pending = explicit != null ? bubbleByMessageId(state, explicit) : pendingBoundedMessage(state);
+  if (pending && pending.finalized !== true) {
+    pending.text = text;
+    pending.closed = true;
+    pending.finalized = true;
+    return;
+  }
+  if (pending?.finalized === true) return;
+  appendToken(state, taskId, text);
 }
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
@@ -663,15 +748,32 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     return next;
   }
 
+  if (event.type === "message_start") {
+    const messageId = readMessageId(payload);
+    if (messageId != null) openMessageBubble(next, taskId, messageId, messageRole(payload));
+    return next;
+  }
+
+  if (event.type === "message_end") {
+    const messageId = readMessageId(payload);
+    if (messageId != null) {
+      const bubble = openMessageBubble(next, taskId, messageId, messageRole(payload));
+      bubble.closed = true;
+    }
+    return next;
+  }
+
   if (event.type === "message") {
-    const text = str(payload.text);
-    if (text && str(payload.role) !== "user") appendToken(next, taskId, text);
+    applyFinalMessage(next, taskId, payload);
     absorbLlmSignal(next, taskId, payload, event.seq, event.session_id || null);
     return next;
   }
 
   if (event.type === "token") {
-    appendToken(next, taskId, str(payload.text));
+    const messageId = readMessageId(payload);
+    const text = str(payload.text);
+    if (messageId != null) appendTokenForMessage(next, taskId, messageId, text);
+    else appendToken(next, taskId, text);
     return next;
   }
 

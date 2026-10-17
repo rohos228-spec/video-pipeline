@@ -596,6 +596,29 @@ export interface OrchOutboundMessage {
   mode?: MessageMode;
   /** Проект студии. Нет поля — то же, что null. Ноль не шлём. */
   project_id?: number;
+  /**
+   * r3.4: true форсирует mode=interrupt и событие kill_switch.
+   * Сервер r3.3 поле игнорирует, поэтому кнопка шлёт его только при контракте ws3-r3.4.
+   */
+  kill_switch?: boolean;
+}
+
+/**
+ * POST /api/orchestrator/chat/{session}/project (ws3-r3.4).
+ * `project_id` — целое ≥ 1. `task_id` необязателен: нет поля — активная задача.
+ */
+export interface OrchProjectBindRequest {
+  project_id: number;
+  task_id?: number;
+}
+
+/** 200 bind project. Задачу выполненной по одному HTTP не считаем. */
+export interface OrchProjectBindResult {
+  ok: true;
+  session: string;
+  task_id: number;
+  project_id: number;
+  status: string;
 }
 
 /** Ответ post_message: ack уходит в шину, HTTP его не ждёт. */

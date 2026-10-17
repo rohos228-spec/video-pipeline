@@ -5,7 +5,9 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget | boundary | boundaryreplay
+ *   | killfield | killfieldfalse | killfieldlate | killfieldhang | killfield401
+ *   | project422 | project409 | project401
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid409transition | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
@@ -152,7 +154,7 @@ function noteDecided(session, changeId) {
   if (typeof changeId === "string" && changeId) session.decided.add(changeId);
 }
 
-function emit(session, type, taskId, payload, sessionId = session.id) {
+function emit(session, type, taskId, payload, sessionId = session.id, options = {}) {
   touchSession(session);
   if (type === "approval_required" && payload && typeof payload.change_id === "string") {
     noteIssued(session, payload.change_id);
@@ -164,7 +166,8 @@ function emit(session, type, taskId, payload, sessionId = session.id) {
     seq: ++session.seq,
     session_id: sessionId,
   };
-  session.events.push(event);
+  // token r3.4 эфемерный: живым клиентам уходит, в журнал replay не пишется.
+  if (options.persist !== false) session.events.push(event);
   for (const client of session.clients) {
     try {
       writeEvent(client, event);
@@ -498,6 +501,50 @@ async function runKillScenario(session, taskId) {
   }
 }
 
+function splitReply(text) {
+  const mid = Math.max(1, Math.ceil(text.length / 2));
+  return [text.slice(0, mid), text.slice(mid)];
+}
+
+/**
+ * r3.4: message_start → token{message_id} (не в журнал) → message_end → message.
+ * dropBeforeTokens: клиент успевает увидеть start, токены уходят в пустоту,
+ * replay по Last-Event-ID отдаёт start/end/message без token.
+ */
+async function emitBoundedReply(session, taskId, messageId, text, dropBeforeTokens = false) {
+  emit(session, "message_start", taskId, { message_id: messageId, role: "assistant" });
+  if (dropBeforeTokens) {
+    await sleep(80);
+    if (!session.boundaryDropped) {
+      session.boundaryDropped = true;
+      dropClients(session);
+    }
+  }
+  const chunks = dropBeforeTokens ? ["СКРЫТЫЙ-", "ТОКЕН"] : splitReply(text);
+  for (const part of chunks) {
+    emit(session, "token", taskId, { text: part, message_id: messageId }, session.id, { persist: false });
+  }
+  emit(session, "message_end", taskId, { message_id: messageId, role: "assistant" });
+  emit(session, "message", taskId, { role: "assistant", text });
+}
+
+async function runBoundary(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "две реплики"));
+  await emitBoundedReply(session, taskId, 41, "Альфа один");
+  await sleep(30);
+  await emitBoundedReply(session, taskId, 42, "Бета два");
+}
+
+async function runBoundaryReplay(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "replay границ"));
+  await emitBoundedReply(session, taskId, 41, "Итог replay", true);
+  await emitBoundedReply(session, taskId, 42, "Второй replay");
+}
+
 async function runReconnect(session, taskId) {
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(40);
@@ -791,6 +838,14 @@ function startScenario(session, scenario, text, mode) {
     void runReconnect(session, id);
     return;
   }
+  if (scenario === "boundary") {
+    void runBoundary(session, id);
+    return;
+  }
+  if (scenario === "boundaryreplay") {
+    void runBoundaryReplay(session, id);
+    return;
+  }
   if (scenario === "plan") {
     void runPlan(session, id);
     return;
@@ -815,7 +870,14 @@ function startScenario(session, scenario, text, mode) {
     emit(session, "ack", id, ackPayload(session));
     return;
   }
-  if (scenario === "missingproject") {
+  if (
+    scenario === "missingproject" ||
+    scenario === "project422" ||
+    scenario === "project409" ||
+    scenario === "project401" ||
+    scenario === "projectnext" ||
+    scenario === "project409task"
+  ) {
     void runMissingProject(session, id);
     return;
   }
@@ -1556,6 +1618,62 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "project") {
+    const body = await readBody(req);
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const scenario = scenarioOf(req, url);
+    if (scenario === "project401") {
+      sendJson(res, 401, { detail: "unauthorized" });
+      return;
+    }
+    const extra = Object.keys(body).filter((key) => key !== "project_id" && key !== "task_id");
+    const projectId = body.project_id;
+    const taskRaw = body.task_id;
+    const projectOk = typeof projectId === "number" && Number.isInteger(projectId) && projectId >= 1;
+    const taskOk = taskRaw == null || (typeof taskRaw === "number" && Number.isInteger(taskRaw) && taskRaw >= 1);
+    if (extra.length > 0 || !projectOk || !taskOk || scenario === "project422") {
+      sendJson(res, 422, { detail: "project unprocessable" });
+      return;
+    }
+    if (scenario === "project409") {
+      sendJson(res, 409, { detail: "not missing_project_id" });
+      return;
+    }
+    if (scenario === "project409task") {
+      sendJson(res, 409, { detail: "not the active task" });
+      return;
+    }
+    const taskId = taskRaw == null ? session.currentTaskId : taskRaw;
+    sendJson(res, 200, {
+      ok: true,
+      session: session.id,
+      task_id: taskId,
+      project_id: projectId,
+      status: "executing",
+    });
+    if (scenario === "projectnext" && taskId != null) {
+      emit(session, "approval_required", taskId, {
+        change_id: "orch-appr-1-2",
+        approval_id: "ap-risk-after-project",
+        title: "Шаг с риском после проекта",
+        reason: "risk",
+        risk: "high",
+        action: "run_node",
+      });
+      return;
+    }
+    if (taskId != null) {
+      emit(session, "agent_status", taskId, {
+        agent: "supervisor",
+        status: "running",
+        task_status: "executing",
+        title: "Платный шаг",
+        detail: "project bound",
+      });
+    }
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "message") {
     const body = await readBody(req);
     const text = String(body.text || "").trim();
@@ -1565,6 +1683,45 @@ const server = http.createServer(async (req, res) => {
     }
     const session = sessionOf(decodeURIComponent(parts[3]));
     const scenario = scenarioOf(req, url);
+    if (body.kill_switch === true) {
+      if (scenario === "killfield401") {
+        sendJson(res, 401, { detail: "unauthorized" });
+        return;
+      }
+      const taskId = session.currentTaskId;
+      emit(session, "ack", taskId, ackPayload(session));
+      emit(session, "classification", taskId, {
+        mode: "interrupt",
+        tier: "fast",
+        deterministic: true,
+        confidence: 1,
+        kill_switch: true,
+        detail: "поле kill_switch",
+      });
+      if (scenario !== "killfieldhang") {
+        const stopKey = scenario !== "killfieldfalse";
+        emit(session, "kill_switch", taskId, {
+          stop_key_set: stopKey,
+          stop_key: "pending",
+          only_node: true,
+          task_id: taskId,
+          detail: stopKey ? "" : "стоп-ключ не встал",
+        });
+        if (scenario === "killfieldlate") {
+          setTimeout(() => {
+            emit(session, "kill_switch", taskId, {
+              stop_key_set: false,
+              stop_key: "pending",
+              only_node: true,
+              task_id: taskId,
+              detail: "поздний отказ ключа",
+            });
+          }, 40);
+        }
+      }
+      sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
+      return;
+    }
     startScenario(session, scenario, text, body.mode);
     sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
     return;

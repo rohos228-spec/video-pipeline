@@ -9,6 +9,15 @@ import {
   isSameOriginApiBase,
   noteOrchContractVersion,
   orchAuthHeaders,
+  orchKillMessageBody,
+  orchKillUsesMessageField,
+  orchContractIsR34,
+  parseOrchProjectId,
+  projectBindWireBody,
+  PROJECT_BIND_CONFLICT,
+  PROJECT_BIND_FOREIGN,
+  PROJECT_BIND_INVALID,
+  PROJECT_BIND_VALIDATION,
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
@@ -36,7 +45,7 @@ test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупрежд�
   expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
   expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);
   expect(acceptsOrchContractVersion(ORCH_CONTRACT_VERSION)).toBe(true);
-  expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(false);
+  expect(acceptsOrchContractVersion("ws3-r3.4.1")).toBe(false);
   expect(ORCH_EVENT_TYPES).toContain("approval_decided");
   const warnings: string[] = [];
   const original = console.warn;
@@ -232,6 +241,130 @@ test("подтверждение перезапуска требует retry_arm
   expect(paidOutcomeRetryReady({ retry_armed: true })).toBe(false);
 });
 
+function screenFrom(events: { type: string; seq: number; payload: Record<string, unknown> }[]) {
+  return events.reduce(
+    (state, event) =>
+      reduceOrchScreen(state, {
+        type: "event",
+        event: { ...event, task_id: 1, session_id: "boundary" },
+      }),
+    initialOrchScreen(),
+  );
+}
+
+test("токены с message_id не склеивают две реплики, без id клеятся по-старому", () => {
+  const bounded = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "token", seq: 2, payload: { text: "Альфа ", message_id: 41 } },
+    { type: "token", seq: 3, payload: { text: "один", message_id: 41 } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Альфа один" } },
+    { type: "message_start", seq: 6, payload: { message_id: 42, role: "assistant" } },
+    { type: "token", seq: 7, payload: { text: "Бета ", message_id: 42 } },
+    { type: "token", seq: 8, payload: { text: "два", message_id: 42 } },
+    { type: "message_end", seq: 9, payload: { message_id: 42, role: "assistant" } },
+    { type: "message", seq: 10, payload: { role: "assistant", text: "Бета два" } },
+  ]);
+  expect(bounded.messages.map((item) => item.text)).toEqual(["Альфа один", "Бета два"]);
+  expect(bounded.messages.map((item) => item.messageId)).toEqual([41, 42]);
+  expect(bounded.messages.every((item) => item.finalized)).toBe(true);
+
+  const legacy = screenFrom([
+    { type: "token", seq: 1, payload: { text: "до обрыва " } },
+    { type: "token", seq: 2, payload: { text: "REPLAY_OK" } },
+  ]);
+  expect(legacy.messages).toHaveLength(1);
+  expect(legacy.messages[0]?.text).toBe("до обрыва REPLAY_OK");
+  expect(legacy.messages[0]?.messageId ?? null).toBeNull();
+});
+
+test("replay без токенов собирает пузырь из message и не дублирует текст", () => {
+  const replayed = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Итог replay" } },
+    { type: "message_start", seq: 6, payload: { message_id: 42, role: "assistant" } },
+    { type: "message_end", seq: 7, payload: { message_id: 42, role: "assistant" } },
+    { type: "message", seq: 8, payload: { role: "assistant", text: "Второй replay" } },
+  ]);
+  expect(replayed.messages.map((item) => item.text)).toEqual(["Итог replay", "Второй replay"]);
+
+  const live = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "token", seq: 2, payload: { text: "Альфа ", message_id: 41 } },
+    { type: "token", seq: 3, payload: { text: "один", message_id: 41 } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Альфа один" } },
+  ]);
+  expect(live.messages).toHaveLength(1);
+  expect(live.messages[0]?.text).toBe("Альфа один");
+});
+
+test("kill_switch уходит полем только на контракте ws3-r3.4", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    expect(orchKillUsesMessageField("")).toBe(false);
+    expect(orchKillUsesMessageField("?scenario=idle")).toBe(false);
+    expect(orchKillUsesMessageField("?orchContract=ws3-r3.4&scenario=killfield")).toBe(true);
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+  }
+  expect(orchKillMessageBody()).toEqual({ text: "останови генерацию", kill_switch: true });
+  expect(Object.keys(orchKillMessageBody())).toEqual(["text", "kill_switch"]);
+});
+
+test("флаг r3.4 принимает ws3-r3.4 и не предупреждает", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    expect(orchContractIsR34("?orchContract=ws3-r3.4")).toBe(true);
+    expect(orchContractIsR34("?orchContract=ws3-r3.4.1")).toBe(false);
+    expect(orchContractIsR34("?orchContract=ws3-r3.3.1")).toBe(false);
+    process.env.NEXT_PUBLIC_ORCH_CONTRACT = "ws3-r3.4";
+    expect(orchContractIsR34("")).toBe(true);
+    expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(true);
+    noteOrchContractVersion("ws3-r3.4");
+    expect(warnings).toEqual([]);
+  } finally {
+    console.warn = original;
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+  }
+});
+
+test("project_id клиента — целое от 1", () => {
+  expect(parseOrchProjectId("13")).toBe(13);
+  expect(parseOrchProjectId("1")).toBe(1);
+  expect(parseOrchProjectId("0")).toBeNull();
+  expect(parseOrchProjectId("-1")).toBeNull();
+  expect(parseOrchProjectId("1.5")).toBeNull();
+  expect(parseOrchProjectId("")).toBeNull();
+  expect(parseOrchProjectId("01")).toBeNull();
+  expect(parseOrchProjectId("13.0")).toBeNull();
+  expect(parseOrchProjectId("true")).toBeNull();
+});
+
+test("project bind шлёт строго целые project_id и task_id", () => {
+  const body = projectBindWireBody(13, 1);
+  expect(body).toEqual({ project_id: 13, task_id: 1 });
+  expect(typeof body.project_id).toBe("number");
+  expect(typeof body.task_id).toBe("number");
+  const json = JSON.stringify(body);
+  expect(json).toBe('{"project_id":13,"task_id":1}');
+  expect(json).not.toContain('"13"');
+  expect(json).not.toContain('"1"');
+  expect(projectBindWireBody(13, null)).toEqual({ project_id: 13 });
+  expect(() => projectBindWireBody(13.5, 1)).toThrow();
+  expect(() => projectBindWireBody(13, 1.5)).toThrow();
+});
+
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
   const cfg = {
@@ -396,6 +529,17 @@ async function openWithToken(page: Page, scenario: string, session = "studio", p
   await expect(page.getByTestId("orch-composer")).toBeVisible();
 }
 
+async function openWithContract(page: Page, scenario: string, session: string) {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  await page.goto(`${orchUrl(scenario, session)}&orchContract=ws3-r3.4`);
+  await expect(page.getByTestId("orch-composer")).toBeVisible();
+}
+
 test("?orchApi чужого origin не получает Bearer", async ({ page }) => {
   await page.addInitScript(
     ([token]) => {
@@ -460,6 +604,32 @@ test.describe("orchestrator chat", () => {
     await saveShot(page, "orch-streaming");
     await expect(page.getByTestId("orch-agent-supervisor")).toContainText("done");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+  });
+
+  test("два ответа подряд не склеиваются по message_id", async ({ page }) => {
+    await openWithToken(page, "boundary", "boundary-1");
+    await page.getByTestId("orch-composer").fill("две реплики");
+    await page.getByTestId("orch-send").click();
+    const bubbles = page.getByTestId("orch-assistant");
+    await expect(bubbles).toHaveCount(2);
+    await expect(bubbles.nth(0)).toHaveText("Альфа один");
+    await expect(bubbles.nth(1)).toHaveText("Бета два");
+    await expect(bubbles.nth(0)).toHaveAttribute("data-message-id", "41");
+    await expect(bubbles.nth(1)).toHaveAttribute("data-message-id", "42");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("Альфа одинБета");
+  });
+
+  test("replay Last-Event-ID собирает пузырь из message без токенов", async ({ page }) => {
+    await openWithToken(page, "boundaryreplay", "boundary-replay-1");
+    await page.getByTestId("orch-composer").fill("replay границ");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-reconnect")).toContainText("восстановлено");
+    const bubbles = page.getByTestId("orch-assistant");
+    await expect(bubbles).toHaveCount(2);
+    await expect(bubbles.nth(0)).toHaveText("Итог replay");
+    await expect(bubbles.nth(1)).toHaveText("Второй replay");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("СКРЫТЫЙ");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("Итог replayИтог");
   });
 
   test("обрыв SSE и replay по Last-Event-ID", async ({ page }) => {
@@ -870,6 +1040,71 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status").first()).toContainText("подтверждения");
   });
 
+  test("kill_switch: кнопка шлёт поле, Остановлено только при stop_key_set", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> | null }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/api/orchestrator/")) return;
+      posts.push({ url: req.url(), body: req.postDataJSON() });
+    });
+    await page.route("**/api/orchestrator/chat/**/message", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await route.continue();
+    });
+    await openWithContract(page, "killfield", "kill-field-1");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).toContainText("Останавливаю…");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
+    const message = posts.find((item) => item.url.includes("/chat/") && item.url.includes("/message"));
+    expect(message?.body).toEqual({ text: "останови генерацию", kill_switch: true });
+    expect(posts.some((item) => item.url.includes("/api/orchestrator/kill"))).toBe(false);
+  });
+
+  test("kill_switch: false, поздний false, таймаут и 401 оставляют Повторить", async ({ page }) => {
+    await openWithContract(page, "killfieldfalse", "kill-field-false");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfieldlate", "kill-field-late");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const late = page.getByTestId("orch-kill-status");
+    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(late).toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
+    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfield401", "kill-field-401");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const denied = page.getByTestId("orch-kill-status");
+    await expect(denied).toHaveAttribute("data-kill-phase", "error");
+    await expect(denied).toContainText("401");
+    await expect(denied).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfieldhang", "kill-field-hang");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const hung = page.getByTestId("orch-kill-status");
+    await expect(hung).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(hung).toContainText("Останавливаю…");
+    await expect(hung).toHaveAttribute("data-kill-phase", "error", { timeout: 20_000 });
+    await expect(hung).toContainText("Нет подтверждения остановки");
+    await expect(hung).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+  });
+
   test("kill switch из сообщения classification.kill_switch", async ({ page }) => {
     await openWithToken(page, "killmsg", "killmsg-1");
     await page.getByTestId("orch-composer").fill("останови всё");
@@ -955,7 +1190,87 @@ test.describe("orchestrator chat", () => {
     );
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-project-bind")).toHaveCount(0);
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("missing_project_id: project_id ≥ 1 закрывает карточку, 0 не уходит", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/project(?:\?|$)/.test(req.url())) {
+        posts.push({ url: req.url(), body: req.postDataJSON() });
+      }
+    });
+    await openWithContract(page, "missingproject", "project-bind-1");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-project-bind")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    const field = page.getByTestId("orch-project-id");
+    await field.fill("0");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_INVALID);
+    await field.fill("-3");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_INVALID);
+    expect(posts).toEqual([]);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await field.fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-missing-project")).toHaveCount(0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.url).toContain("/api/orchestrator/chat/project-bind-1/project");
+    expect(posts[0]?.body).toEqual({ project_id: 13, task_id: 1 });
+  });
+
+  test("после project 200 новый approval_required показывает новую карточку", async ({ page }) => {
+    await openWithContract(page, "projectnext", "project-next");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-missing-project")).toHaveCount(0);
+    await expect(page.getByTestId("orch-risk")).toBeVisible();
+    await expect(page.getByTestId("orch-approval")).toContainText("Шаг с риском");
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+  });
+
+  test("409 чужой задачи пишет сообщение на карточке проекта", async ({ page }) => {
+    await openWithContract(page, "project409task", "project-409-task");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toHaveText(PROJECT_BIND_FOREIGN);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+  });
+
+  test("missing_project_id: 422 и 409 остаются на карточке, 401 — авторизация", async ({ page }) => {
+    await openWithContract(page, "project422", "project-422");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText(PROJECT_BIND_VALIDATION);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+
+    await openWithContract(page, "project409", "project-409");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toHaveText(PROJECT_BIND_CONFLICT);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+
+    await openWithContract(page, "project401", "project-401");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-token-gate")).toBeVisible();
+    await expect(page.getByTestId("orch-token-error")).toContainText("401");
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
   });
 
   test("deletion_blocked: нет кнопки одобрить и grant не уходит", async ({ page }) => {

@@ -4,7 +4,17 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import {
   consumeOrchStream,
   isAbortError,
+  orchContractIsR34,
+  orchKillMessageBody,
+  orchKillUsesMessageField,
   orchTaskModeEnabled,
+  parseOrchProjectId,
+  projectBindWireBody,
+  postOrchProject,
+  PROJECT_BIND_CONFLICT,
+  PROJECT_BIND_FOREIGN,
+  PROJECT_BIND_INVALID,
+  PROJECT_BIND_VALIDATION,
   OrchApiError,
   postOrchApprove,
   postOrchKill,
@@ -60,6 +70,7 @@ export function useOrchestratorChat() {
   const boot = useMemo(() => readOrchBoot(), []);
   const [token, setToken] = useState("");
   const [ready, setReady] = useState(false);
+  const [contractR34, setContractR34] = useState(false);
   const [authError, setAuthError] = useState("");
   const [blocked, setBlocked] = useState(false);
   const [conn, setConn] = useState<ConnPhase>("idle");
@@ -76,6 +87,7 @@ export function useOrchestratorChat() {
 
   useEffect(() => {
     setToken(readOrchToken());
+    setContractR34(orchContractIsR34());
     setReady(true);
   }, []);
 
@@ -374,6 +386,49 @@ export function useOrchestratorChat() {
     return () => window.clearTimeout(timer);
   }, [killPhase, killSessionId, killTaskId]);
 
+  const bindProject = useCallback(
+    async (approvalId: string, taskId: string | null, raw: string) => {
+      const projectId = parseOrchProjectId(raw);
+      if (projectId == null) {
+        setDecisionError({ id: approvalId, message: PROJECT_BIND_INVALID });
+        return;
+      }
+      if (decisionLock.current) return;
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      const taskNum = taskId != null && /^[1-9]\d*$/.test(taskId) ? Number(taskId) : null;
+      try {
+        await postOrchProject(cfg, projectBindWireBody(projectId, taskNum));
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
+        setSendError("");
+      } catch (error) {
+        if (error instanceof OrchApiError && error.status === 409) {
+          const foreign = error.message === "not the active task";
+          setDecisionError({
+            id: approvalId,
+            message: foreign ? PROJECT_BIND_FOREIGN : PROJECT_BIND_CONFLICT,
+          });
+          return;
+        }
+        if (error instanceof OrchApiError && error.status === 422) {
+          setDecisionError({ id: approvalId, message: PROJECT_BIND_VALIDATION });
+          return;
+        }
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "проект не записался",
+          });
+        }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
+  );
+
   const kill = useCallback(async () => {
     const taskId = state.tasks.at(-1)?.id ?? null;
     const sessionId = boot.session;
@@ -385,6 +440,12 @@ export function useOrchestratorChat() {
       dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
     };
     try {
+      if (orchKillUsesMessageField()) {
+        await postOrchMessage(cfg, orchKillMessageBody(), ac.signal);
+        // Ack {ok, session, ack_seq} без stop_key_set. Фазу решает событие kill_switch.
+        setSendError("");
+        return;
+      }
       const result = (await postOrchKill(
         cfg,
         { session_id: boot.session, reason: "kill switch из чата" },
@@ -420,6 +481,7 @@ export function useOrchestratorChat() {
   return {
     boot,
     ready,
+    contractR34,
     token,
     authError,
     needsToken: !ready || !token || blocked,
@@ -435,6 +497,7 @@ export function useOrchestratorChat() {
     decide,
     decidePaidOutcome,
     confirmPaidRestart,
+    bindProject,
     dismissBlock,
     kill,
   };
