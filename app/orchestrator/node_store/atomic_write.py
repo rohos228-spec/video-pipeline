@@ -14,11 +14,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-
-class VersionConflict(Exception):
-    """Ожидаемая версия не совпала с версией файла."""
-
-    status_code = 409
+from app.orchestrator.node_store.errors import VersionConflict
 
 
 def _stored_version(target: Path) -> int:

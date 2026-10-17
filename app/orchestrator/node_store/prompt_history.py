@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from app.orchestrator.node_store.meta_book import VersionConflict
+from app.orchestrator.node_store.errors import VersionConflict
 
 
 class PromptHistory:
