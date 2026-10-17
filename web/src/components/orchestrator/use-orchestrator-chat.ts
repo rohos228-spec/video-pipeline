@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import {
   consumeOrchStream,
   isAbortError,
+  orchKillMessageBody,
+  orchKillUsesMessageField,
   orchTaskModeEnabled,
   OrchApiError,
   postOrchApprove,
@@ -385,6 +387,12 @@ export function useOrchestratorChat() {
       dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
     };
     try {
+      if (orchKillUsesMessageField()) {
+        await postOrchMessage(cfg, orchKillMessageBody(), ac.signal);
+        // Ack {ok, session, ack_seq} без stop_key_set. Фазу решает событие kill_switch.
+        setSendError("");
+        return;
+      }
       const result = (await postOrchKill(
         cfg,
         { session_id: boot.session, reason: "kill switch из чата" },

@@ -77,6 +77,27 @@ export function orchTaskModeEnabled(): boolean {
   return raw === "1" || raw === "true";
 }
 
+/** Контракт, в котором поле MessageIn.kill_switch реально останавливает задачу. */
+export const ORCH_CONTRACT_R34 = "ws3-r3.4";
+
+/**
+ * Кнопка kill шлёт `{text, kill_switch:true}` только здесь.
+ * Иначе остаётся POST /api/orchestrator/kill: сервер r3.3 лишнее поле молча игнорирует.
+ * Включается `NEXT_PUBLIC_ORCH_CONTRACT=ws3-r3.4` или `?orchContract=ws3-r3.4`.
+ */
+export function orchKillUsesMessageField(search?: string): boolean {
+  if (process.env.NEXT_PUBLIC_ORCH_CONTRACT === ORCH_CONTRACT_R34) return true;
+  const source = search ?? (typeof window !== "undefined" ? window.location.search : "");
+  if (!source) return false;
+  const query = new URLSearchParams(source.startsWith("?") ? source.slice(1) : source);
+  return query.get("orchContract") === ORCH_CONTRACT_R34;
+}
+
+/** Тело кнопки kill на r3.4. Фразу «kill switch» не подмешиваем: стоп делает поле. */
+export function orchKillMessageBody(): OrchOutboundMessage {
+  return { text: "останови генерацию", kill_switch: true };
+}
+
 /**
  * Тестовый режим сборки, аналог ORCH_TEST=1.
  * Без флага прод-клиент не шлёт X-Orch-Scenario.

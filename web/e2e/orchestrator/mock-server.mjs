@@ -6,6 +6,7 @@
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget | boundary | boundaryreplay
+ *   | killfield | killfieldfalse | killfieldlate | killfieldhang | killfield401
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
@@ -1613,6 +1614,45 @@ const server = http.createServer(async (req, res) => {
     }
     const session = sessionOf(decodeURIComponent(parts[3]));
     const scenario = scenarioOf(req, url);
+    if (body.kill_switch === true) {
+      if (scenario === "killfield401") {
+        sendJson(res, 401, { detail: "unauthorized" });
+        return;
+      }
+      const taskId = session.currentTaskId;
+      emit(session, "ack", taskId, ackPayload(session));
+      emit(session, "classification", taskId, {
+        mode: "interrupt",
+        tier: "fast",
+        deterministic: true,
+        confidence: 1,
+        kill_switch: true,
+        detail: "поле kill_switch",
+      });
+      if (scenario !== "killfieldhang") {
+        const stopKey = scenario !== "killfieldfalse";
+        emit(session, "kill_switch", taskId, {
+          stop_key_set: stopKey,
+          stop_key: "pending",
+          only_node: true,
+          task_id: taskId,
+          detail: stopKey ? "" : "стоп-ключ не встал",
+        });
+        if (scenario === "killfieldlate") {
+          setTimeout(() => {
+            emit(session, "kill_switch", taskId, {
+              stop_key_set: false,
+              stop_key: "pending",
+              only_node: true,
+              task_id: taskId,
+              detail: "поздний отказ ключа",
+            });
+          }, 40);
+        }
+      }
+      sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
+      return;
+    }
     startScenario(session, scenario, text, body.mode);
     sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
     return;

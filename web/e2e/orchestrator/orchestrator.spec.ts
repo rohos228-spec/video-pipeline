@@ -7,6 +7,8 @@ import {
   envOrchApiBase,
   isSameOriginApiBase,
   orchAuthHeaders,
+  orchKillMessageBody,
+  orchKillUsesMessageField,
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
@@ -174,6 +176,21 @@ test("replay без токенов собирает пузырь из message и
   expect(live.messages[0]?.text).toBe("Альфа один");
 });
 
+test("kill_switch уходит полем только на контракте ws3-r3.4", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    expect(orchKillUsesMessageField("")).toBe(false);
+    expect(orchKillUsesMessageField("?scenario=idle")).toBe(false);
+    expect(orchKillUsesMessageField("?orchContract=ws3-r3.4&scenario=killfield")).toBe(true);
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+  }
+  expect(orchKillMessageBody()).toEqual({ text: "останови генерацию", kill_switch: true });
+  expect(Object.keys(orchKillMessageBody())).toEqual(["text", "kill_switch"]);
+});
+
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
   const cfg = {
@@ -335,6 +352,17 @@ async function openWithToken(page: Page, scenario: string, session = "studio", p
     [TOKEN],
   );
   await page.goto(orchUrl(scenario, session, project));
+  await expect(page.getByTestId("orch-composer")).toBeVisible();
+}
+
+async function openWithContract(page: Page, scenario: string, session: string) {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  await page.goto(`${orchUrl(scenario, session)}&orchContract=ws3-r3.4`);
   await expect(page.getByTestId("orch-composer")).toBeVisible();
 }
 
@@ -836,6 +864,71 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-critic")).toHaveText("Критик не одобрил план после 2 правок");
     await expect(page.getByTestId("orch-task-status").first()).toContainText("подтверждения");
+  });
+
+  test("kill_switch: кнопка шлёт поле, Остановлено только при stop_key_set", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> | null }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/api/orchestrator/")) return;
+      posts.push({ url: req.url(), body: req.postDataJSON() });
+    });
+    await page.route("**/api/orchestrator/chat/**/message", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await route.continue();
+    });
+    await openWithContract(page, "killfield", "kill-field-1");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).toContainText("Останавливаю…");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
+    const message = posts.find((item) => item.url.includes("/chat/") && item.url.includes("/message"));
+    expect(message?.body).toEqual({ text: "останови генерацию", kill_switch: true });
+    expect(posts.some((item) => item.url.includes("/api/orchestrator/kill"))).toBe(false);
+  });
+
+  test("kill_switch: false, поздний false, таймаут и 401 оставляют Повторить", async ({ page }) => {
+    await openWithContract(page, "killfieldfalse", "kill-field-false");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfieldlate", "kill-field-late");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const late = page.getByTestId("orch-kill-status");
+    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(late).toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
+    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfield401", "kill-field-401");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const denied = page.getByTestId("orch-kill-status");
+    await expect(denied).toHaveAttribute("data-kill-phase", "error");
+    await expect(denied).toContainText("401");
+    await expect(denied).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+
+    await openWithContract(page, "killfieldhang", "kill-field-hang");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const hung = page.getByTestId("orch-kill-status");
+    await expect(hung).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(hung).toContainText("Останавливаю…");
+    await expect(hung).toHaveAttribute("data-kill-phase", "error", { timeout: 20_000 });
+    await expect(hung).toContainText("Нет подтверждения остановки");
+    await expect(hung).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
   test("kill switch из сообщения classification.kill_switch", async ({ page }) => {
