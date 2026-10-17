@@ -691,8 +691,14 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
         except Exception as exc:  # noqa: BLE001
             logger.debug("style_agent: progress not saved: {}", exc)
 
-    ov = _pipeline_text_override(model)
     try:
+        ov, sub_line = _resolve_style_text_override(
+            model, project_id=project_id, node_key=node_key
+        )
+        if sub_line:
+            from app.services.model_substitution import style_job_substitution_patch
+
+            await _set_meta_retry(project_id, style_job_substitution_patch(sub_line))
         if ov is None:
             raise RuntimeError("нет маршрута 52pay для разбора стиля")
         if not videos:
