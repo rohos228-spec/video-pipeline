@@ -108,6 +108,27 @@ def test_repair_shot_vo_marks_empty_shell_and_keeps_it(warn_log) -> None:
     assert any("WARN repair_shot_vo_lengths" in line for line in warn_log)
 
 
+def test_repair_shot_vo_keeps_replica_speaker_and_items() -> None:
+    from app.services.scene_shot_grammar import repair_shot_vo_lengths
+
+    shots = [
+        {"id": "reply-only", "реплика": "Где вы были в десять?"},
+        {"id": "speaker-only", "говорит": "Следователь"},
+        {"id": "items-only", "предметы": ["папка"]},
+        {"id": "shell"},
+    ]
+    repair_shot_vo_lengths(shots, "")
+    assert _ids(shots) == ["reply-only", "speaker-only", "items-only", "shell"]
+    for shot in shots[:3]:
+        assert shot.get("карантин") is not True
+        assert "пометка" not in shot
+    assert shots[0]["реплика"] == "Где вы были в десять?"
+    assert shots[1]["говорит"] == "Следователь"
+    assert shots[2]["предметы"] == ["папка"]
+    assert shots[3]["карантин"] is True
+    assert "пустая оболочка" in shots[3]["пометка"]
+
+
 def test_spread_vo_sentences_keeps_shot_ids() -> None:
     """L1793 в ревью — spread_vo_sentences: кадры не выкидывает."""
     from app.services.scene_shot_grammar import spread_vo_sentences
