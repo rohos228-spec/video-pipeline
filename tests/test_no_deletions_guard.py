@@ -155,6 +155,51 @@ def test_scene_and_character_still_reject_in_soft_mode() -> None:
     assert any(item.code == "character_deleted" and item.id == "c1" for item in char_exc.value.violations)
 
 
+def test_coalesce_soft_keeps_frame_shot_and_inactive_vo() -> None:
+    from app.services.apply_ops_batches import coalesce_cell_shot_ops
+
+    uid = "cell-1"
+    frames = [
+        {
+            "uuid": uid,
+            "number": 6,
+            "кадры": [
+                {"id": "a", "закадр": "первый"},
+                {"id": "b", "закадр": "фраза на месте"},
+            ],
+        }
+    ]
+    merged = coalesce_cell_shot_ops(
+        [{"frame_uuid": uid, "fields": {"кадры": [{"id": "a", "закадр": "первый"}]}}],
+        frames,
+        patch=False,
+    )
+    rows = merged[0]["fields"]["кадры"]
+    assert [row["id"] for row in rows] == ["a", "b"]
+    assert rows[1]["активен"] is False
+    assert rows[1]["закадр"] == "фраза на месте"
+
+    soft = coalesce_cell_shot_ops(
+        [
+            {
+                "frame_uuid": uid,
+                "fields": {
+                    "кадры": [
+                        {"id": "a", "закадр": "первый"},
+                        {"id": "b", "закадр": "фраза на месте", "активен": False},
+                    ]
+                },
+            }
+        ],
+        frames,
+        patch=False,
+    )[0]["fields"]["кадры"]
+    assert [row["id"] for row in soft] == ["a", "b"]
+    assert soft[1]["активен"] is False
+    assert soft[1]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in soft[1]
+
+
 def test_fill_catalog_keeps_shot_builder_dropped_and_inactive_vo(monkeypatch) -> None:
     from app.services import shot_templates as templates
 

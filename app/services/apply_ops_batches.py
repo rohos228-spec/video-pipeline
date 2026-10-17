@@ -2276,7 +2276,19 @@ def coalesce_cell_shot_ops(
         slot = merged[uid]
         fields = dict(slot["fields"])
         if slot["shots"]:
-            fields["кадры"] = slot["shots"]
+            from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+            number = 0
+            for fr in frames or []:
+                if str(fr.get("uuid") or "").strip() == uid:
+                    number = fr.get("number") if fr.get("number") is not None else fr.get("номер") or 0
+                    break
+            fields["кадры"] = keep_soft_kadry(
+                existing.get(uid) or [],
+                slot["shots"],
+                scene_id=uid,
+                number=number,
+            )
         out.append({"frame_uuid": uid, "fields": fields})
     return out
 
