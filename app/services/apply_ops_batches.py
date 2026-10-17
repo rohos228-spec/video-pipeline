@@ -3537,9 +3537,9 @@ async def run_apply_ops_batched(
                 node_key,
                 exc,
             )
-            # QC-контракт и отмена должны дойти до вызывающего.
-            # Обычная пачка excel по-прежнему не валит шаг.
-            if allow_empty_ops or isinstance(exc, PassStopError):
+            # Стоп правил доходит до вызывающего.
+            # Обрыв GPT при allow_empty_ops пачку не дробит и шаг не валит.
+            if isinstance(exc, PassStopError):
                 raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)
