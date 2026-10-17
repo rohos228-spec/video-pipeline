@@ -1,0 +1,338 @@
+{
+  "set": "dev-70",
+  "config": "none-rrf-0.5-1.5",
+  "queries": [
+    {
+      "id": "live-01",
+      "family": "camera",
+      "text": "Какими крупностями снимать и когда камера едет, а не стоит на месте?",
+      "hit5": true,
+      "ndcg": 1.0000000000000002,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-02",
+      "family": "camera",
+      "text": "Нужны оба описания постановки кадра: спокойный агент и вариант, где на фазу действия свой шот.",
+      "hit5": true,
+      "ndcg": 0.2722658375434138,
+      "first_relevant_rank": 5,
+      "ahead": [
+        {
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s1",
+          "corpus": "prompts",
+          "title": "GPT: действие · промпт",
+          "owner": "action",
+          "channel": "vector"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "corpus": "prompts",
+          "title": "GPT: сборка сцен · промпт",
+          "owner": "assemble",
+          "channel": "vector"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "corpus": "prompts",
+          "title": "GPT: сборка сцен · промпт",
+          "owner": "assemble",
+          "channel": "fusion_or_rerank"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s2",
+          "corpus": "prompts",
+          "title": "GPT: действие · промпт",
+          "owner": "action",
+          "channel": "vector"
+        }
+      ]
+    },
+    {
+      "id": "live-03",
+      "family": "camera",
+      "text": "Где расписаны общий, средний и крупный план плюс панорама?",
+      "hit5": true,
+      "ndcg": 0.5570601873490943,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-04",
+      "family": "camera",
+      "text": "Хочу инструкцию оператору: композиция, наезд, отъезд, не телепорт.",
+      "hit5": true,
+      "ndcg": 0.6193198671454698,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-05",
+      "family": "camera",
+      "text": "Как выбирать план кадра, если сцена только открывается и если уже идёт действие?",
+      "hit5": true,
+      "ndcg": 0.15958907712489637,
+      "first_relevant_rank": 2,
+      "ahead": [
+        {
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s2",
+          "corpus": "prompts",
+          "title": "GPT: сцены → кадры · промпт",
+          "owner": "shots",
+          "channel": "fusion_or_rerank"
+        }
+      ]
+    },
+    {
+      "id": "live-06",
+      "family": "camera",
+      "text": "Покажи материалы по съёмке: и обычный срез камеры, и динамический по фазам.",
+      "hit5": true,
+      "ndcg": 0.8223538668023915,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-19",
+      "family": "action",
+      "text": "Кто режет закадр на сцены и цепь поступков, не трогая камеру?",
+      "hit5": true,
+      "ndcg": 0.3507942974028176,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-20",
+      "family": "action",
+      "text": "Как понять, где сцена начинается и кончается по озвучке, а не по ячейке таблицы?",
+      "hit5": true,
+      "ndcg": 0.6958825154185629,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-21",
+      "family": "action",
+      "text": "Нужны оба промпта про действие: базовый и тот, где у сцены есть фазы.",
+      "hit5": true,
+      "ndcg": 0.6802779217425299,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-22",
+      "family": "action",
+      "text": "Где сказано, что одна ячейка текста не равна одной сцене и не равна одному кадру?",
+      "hit5": true,
+      "ndcg": 0.15958907712489637,
+      "first_relevant_rank": 2,
+      "ahead": [
+        {
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s2",
+          "corpus": "prompts",
+          "title": "GPT: сцены → кадры · промпт",
+          "owner": "shots",
+          "channel": "fusion_or_rerank"
+        }
+      ]
+    },
+    {
+      "id": "live-23",
+      "family": "action",
+      "text": "Как строить шаги действия внутри сцены, если кадров потом будет несколько?",
+      "hit5": true,
+      "ndcg": 0.34304271142002485,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-24",
+      "family": "action",
+      "text": "Покажи материалы режиссёра постановки: границы сцен и что в них происходит.",
+      "hit5": true,
+      "ndcg": 0.7457912185292984,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-37",
+      "family": "script",
+      "text": "Кто дробит закадр на смысловые биты, и кто потом собирает из них главное действие?",
+      "hit5": true,
+      "ndcg": 0.9156857657441143,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-38",
+      "family": "script",
+      "text": "Как решить, сколько изменений в ячейке, а не ставить один бит на всё?",
+      "hit5": true,
+      "ndcg": 0.8358912271816662,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-39",
+      "family": "script",
+      "text": "Нужны оба шага сценария: разметка битов и цепь действий по ним.",
+      "hit5": true,
+      "ndcg": 0.7834286399638039,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-40",
+      "family": "script",
+      "text": "Где сказано не склеивать ячейки озвучки и не терять куски текста?",
+      "hit5": true,
+      "ndcg": 0.2529427027676571,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-41",
+      "family": "script",
+      "text": "Покажи промпт про биты и промпт, который превращает их в поступки сцены.",
+      "hit5": true,
+      "ndcg": 0.8009634987298765,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "live-42",
+      "family": "script",
+      "text": "Как из текста за кадром получить сцены с действием, не придумывая новую озвучку?",
+      "hit5": true,
+      "ndcg": 0.15958907712489637,
+      "first_relevant_rank": 2,
+      "ahead": [
+        {
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s3",
+          "corpus": "prompts",
+          "title": "GPT: действие · промпт",
+          "owner": "action",
+          "channel": "fusion_or_rerank"
+        }
+      ]
+    },
+    {
+      "id": "hold-11",
+      "family": "camera",
+      "text": "Какие шесть условий Боуэна проверяют на стыке, чтобы склейка не стала красивым повтором?",
+      "hit5": true,
+      "ndcg": 0.2529427027676571,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "hold-12",
+      "family": "camera",
+      "text": "Когда уместен dissolve, а когда реплики диалога нельзя растворять и нужен cut?",
+      "hit5": false,
+      "ndcg": 0.0,
+      "first_relevant_rank": null,
+      "ahead": [
+        {
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s5",
+          "corpus": "prompts",
+          "title": "GPT: действие · промпт",
+          "owner": "action",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "docs/fable/user_rules.md",
+          "part_key": "rule-6",
+          "corpus": "rules",
+          "title": "Правило 6. Общий план перед диалогом",
+          "owner": "rules",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "docs/fable/user_rules.md",
+          "part_key": "rule-3",
+          "corpus": "rules",
+          "title": "Правило 3. Не удалять сцены и кадры",
+          "owner": "rules",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s3",
+          "corpus": "prompts",
+          "title": "GPT: действие · chrono_dyn · промпт",
+          "owner": "action",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_cd_skeleton",
+          "part_key": "s4",
+          "corpus": "prompts",
+          "title": "GPT: скелет · нити · промпт",
+          "owner": "outside",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s2",
+          "corpus": "prompts",
+          "title": "GPT: действие · chrono_dyn · промпт",
+          "owner": "action",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "n_excel_gpt_sd_cd_skeleton",
+          "part_key": "s3",
+          "corpus": "prompts",
+          "title": "GPT: скелет · нити · промпт",
+          "owner": "outside",
+          "channel": "no_relevant_in_top"
+        },
+        {
+          "source_id": "docs/fable/user_rules.md",
+          "part_key": "rule-12",
+          "corpus": "rules",
+          "title": "Правило 12. Коротко, по-русски, без лишних вопросов",
+          "owner": "rules",
+          "channel": "no_relevant_in_top"
+        }
+      ]
+    },
+    {
+      "id": "hold-15",
+      "family": "action",
+      "text": "Фаза «подъезд встречает» или «камера вводит» годится в цепь, или каждая фаза обязана быть видимым движением тела и предмета?",
+      "hit5": true,
+      "ndcg": 0.34304271142002485,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "hold-16",
+      "family": "action",
+      "text": "Диалог берёт continuity и cut, а сжатие дня — associative и dissolve?",
+      "hit5": true,
+      "ndcg": 0.417051475585991,
+      "first_relevant_rank": 1,
+      "ahead": []
+    },
+    {
+      "id": "hold-19",
+      "family": "script",
+      "text": "Если склеить скобки под сценами и убрать только переносы строк, получится вся ячейка, включая запятые и имя в начале?",
+      "hit5": true,
+      "ndcg": 0.417051475585991,
+      "first_relevant_rank": 1,
+      "ahead": []
+    }
+  ]
+}
