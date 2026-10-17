@@ -90,9 +90,9 @@ class SpendLedger:
         return self._pipeline_of(run_id)
 
     def _pipeline_of(self, run_id: str | None) -> float:
-        if run_id is None or str(run_id).strip() == "":
+        key = self._named_run(run_id)
+        if key is None:
             return 0.0
-        key = run_id if isinstance(run_id, str) else str(run_id)
         with self._lock:
             return float(self._pipeline.get(key, 0.0))
 
@@ -138,9 +138,9 @@ class SpendLedger:
         остаётся, ``budget_exhausted`` ложь). Pipeline в лимит $10 не входит.
         """
         limit = float(self.internal_budget_usd)
-        if run_id is None or str(run_id).strip() == "":
+        key = self._named_run(run_id)
+        if key is None:
             return _zero_totals(limit)
-        key = run_id if isinstance(run_id, str) else str(run_id)
         with self._lock:
             internal = float(self._internal.get(key, 0.0))
             pipeline = float(self._pipeline.get(key, 0.0))
@@ -195,17 +195,27 @@ def _zero_totals(limit: float) -> dict[str, float | bool]:
 
 
 def get_spend_ledger() -> SpendLedger:
-    """Процессный леджер. Роутер без своего экземпляра пишет сюда."""
+    """Процессный леджер. Роутер без своего экземпляра пишет сюда.
+
+    Потолки читаются один раз, из ``load_config()`` (с env). Следующий
+    роутер их не переписывает, в том числе собранный с ``apply_env=False``.
+    """
     global _PROCESS
     with _PROCESS_LOCK:
         if _PROCESS is None:
-            _PROCESS = SpendLedger()
+            from app.orchestrator.routing.config import load_config
+
+            cfg = load_config()
+            _PROCESS = SpendLedger(cfg.internal_budget_usd, cfg.pipeline_budget_usd)
         return _PROCESS
 
 
-def reset_spend_ledger(internal_budget_usd: float = 10.0) -> SpendLedger:
+def reset_spend_ledger(
+    internal_budget_usd: float = 10.0,
+    pipeline_budget_usd: float = 40.0,
+) -> SpendLedger:
     """Подмена процессного леджера. Нужна тестам, не бою."""
     global _PROCESS
     with _PROCESS_LOCK:
-        _PROCESS = SpendLedger(internal_budget_usd)
+        _PROCESS = SpendLedger(internal_budget_usd, pipeline_budget_usd)
         return _PROCESS

@@ -4,9 +4,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from app.orchestrator.routing.config import load_config
+from app.orchestrator.routing.config import default_config_path, load_config
 from app.orchestrator.routing.model_router import LiveRouter
 from tests.routing.fakes import FakeTransport, ok
+
+
+def test_yaml_does_not_load_stagger():
+    config = load_config(apply_env=False)
+    assert not hasattr(config, "stagger_min_s")
+    assert not hasattr(config, "stagger_max_s")
+    text = default_config_path().read_text(encoding="utf-8")
+    assert "stagger_min_s" not in text
+    assert "stagger_max_s" not in text
+    assert "stagger_s:" not in text
 
 
 def test_yaml_defaults_are_unconfirmed():

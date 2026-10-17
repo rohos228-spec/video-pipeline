@@ -112,6 +112,14 @@ def primary_key_fields(
     }
 
 
+def _batch_scope(spec: dict) -> str:
+    raw = spec.get("budget_scope")
+    scope = "internal" if raw is None else raw
+    if scope not in _SCOPES:
+        raise ValueError("budget_scope must be internal|pipeline")
+    return scope
+
+
 def _require_run_id(run_id: str | None, *, scope: str) -> str:
     """Internal (и pipeline) без ``run_id`` не пишутся в общий бакет."""
     if run_id is None or str(run_id).strip() == "":
@@ -240,10 +248,7 @@ class ModelRouter:
         self.config = config or load_config()
         self.transport = transport
         if ledger is None:
-            shared = get_spend_ledger()
-            shared.internal_budget_usd = float(self.config.internal_budget_usd)
-            shared.pipeline_budget_usd = float(self.config.pipeline_budget_usd)
-            self.ledger = shared
+            self.ledger = get_spend_ledger()
         else:
             self.ledger = ledger
         self.sink = sink or NullLlmCallSink()
@@ -399,6 +404,8 @@ class ModelRouter:
         """
         if not items:
             return []
+        for spec in items:
+            _require_run_id(spec.get("run_id"), scope=_batch_scope(spec))
         delay = 0.0 if gap is None else float(gap)
         prepared = [await self._prepare_batch_item(spec) for spec in items]
 
@@ -761,8 +768,8 @@ class ModelRouter:
         return LLMResponse(
             text="",
             call_id=str(uuid.uuid4()),
-            model=hop.model,
-            provider=hop.provider,
+            model="",
+            provider="",
             tier=ctx.effective_tier,
             finish_reason="",
             usage=LLMUsage(),

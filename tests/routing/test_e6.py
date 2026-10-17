@@ -31,6 +31,13 @@ async def test_e6_splits_deterministic_and_classifier_accuracy(tmp_path):
     assert missed == []
 
 
+def test_e6_fixtures_end_with_newline():
+    paths = sorted(FIXTURES.glob("*.json"))
+    assert paths
+    for path in paths:
+        assert path.read_bytes().endswith(b"\n"), path.name
+
+
 async def test_e6_classifier_fixture_miss_is_fixture_miss(tmp_path):
     with pytest.raises(FixtureMiss, match="fixture-miss"):
         await evaluate(tmp_path)

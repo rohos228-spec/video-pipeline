@@ -1,0 +1,34 @@
+"""Страховка: живой TCP из тестов роутера не открывается."""
+
+from __future__ import annotations
+
+import socket
+
+import pytest
+
+
+def test_socket_connect_is_blocked():
+    sock = socket.socket()
+    try:
+        with pytest.raises(AssertionError, match="must not open TCP"):
+            sock.connect(("203.0.113.1", 9))
+    finally:
+        sock.close()
+
+
+def test_socket_connect_ex_is_blocked():
+    sock = socket.socket()
+    try:
+        with pytest.raises(AssertionError, match="must not open TCP"):
+            sock.connect_ex(("203.0.113.1", 9))
+    finally:
+        sock.close()
+
+
+def test_loopback_connect_is_not_the_guard():
+    sock = socket.socket()
+    try:
+        with pytest.raises(OSError):
+            sock.connect(("127.0.0.1", 9))
+    finally:
+        sock.close()

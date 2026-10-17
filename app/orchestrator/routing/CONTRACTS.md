@@ -65,7 +65,7 @@ interrupt с `kill_switch=false`. Классификатор для аварий
 | `text` | str |
 | `call_id` | str, uuid попытки, которая вернула ответ |
 | `model` | str |
-| `provider` | `52pay` \| `kie` |
+| `provider` | `52pay` \| `kie`. Пустая строка, если хоп не вызывали (бюджет уже исчерпан) |
 | `tier` | фактический fast\|strong (после D6) |
 | `finish_reason` | str, как вернула модель. Пустой, если модель не звали |
 | `usage` | `{prompt_tokens, completion_tokens, reasoning_tokens}` |
@@ -94,7 +94,8 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    и после исчерпания блокировались бы навсегда. `spent(None)` для #351
    возвращает `0.0` и ничего не блокирует. `budget_scope=pipeline` в
    счётчик $10 не входит, тоже требует `run_id` и ограничен своим
-   потолком `pipeline_sub_budget_usd` (по умолчанию $40). Другое
+   потолком `pipeline_sub_budget_usd` (по умолчанию $40;
+   `ORCH_PIPELINE_BUDGET_USD` перекрывает файл). Другое
    значение `budget_scope` — `ValueError("budget_scope must be
    internal|pipeline")` до вызова и до записи в леджер.
 2. Ход, после которого `spent >= 10`, всё равно возвращает текст модели.
@@ -105,7 +106,8 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    В `orch_llm_calls` у этой попытки `status=ok`.
 3. Следующий internal-вызов того же `run_id` транспорт не трогает,
    и со `stream=True` тоже: проверка стоит до `_provider_complete`.
-   `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
+   `text == ""`, `model` и `provider` тоже пустые (попытки хопа не было),
+   те же `task_status` и `approval`. Строку вызова не пишем.
    Стриминговый chat-запрос 52pay несёт `stream_options.include_usage=true`.
    Если usage пустой, а текст есть, стоимость не ноль. Оценка сверху:
    промпт и ответ по `ceil(len/2)` (кириллица ≈ 2 символа на токен),
@@ -144,8 +146,8 @@ $40 (`pipeline_budget_usd` / `pipeline_sub_budget_usd`). Сигнал тот ж�
 модели, `task_status=waiting_approval` и `approval.reason=budget_exhausted`.
 В `payload.budget_usd` лежит потолок pipeline, не $10. Следующий
 pipeline-вызов того же `run_id` транспорт не трогает, в том числе
-`stream=True`. Internal на том же прогоне от pipeline-расхода не
-блокируется. `totals()["budget_exhausted"]` по-прежнему только про
+`stream=True`: `text`, `model` и `provider` пустые. Internal на том же
+прогоне от pipeline-расхода не блокируется. `totals()["budget_exhausted"]` по-прежнему только про
 internal (`internal_spent >= $10`). Enum статуса вызова остаётся
 `ok|timeout|error|fixture_miss`.
 
@@ -352,6 +354,13 @@ ledger.hydrate(
 
 Флаги `flags.d1_confirmed` / `flags.d6_confirmed`, по умолчанию false.
 Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
+`ORCH_PIPELINE_BUDGET_USD` перекрывает потолок pipeline. В файле 40;
+если ключа `pipeline_sub_budget_usd` нет, тоже 40. Нечисло, пустая строка,
+`true`, NaN/inf, ноль и отрицательное — `ValueError`, без подстановки 40.
+`""` здесь не «выключено», в отличие от `ORCH_D1_CONFIRMED`. Очень большое
+конечное число принимается как есть. Внутренний суб-бюджет $10 эта
+переменная не меняет. Кривой env падает в `load_config`, когда леджер
+или роутер создаётся, а не подменяется дефолтом посреди хода.
 
 | | D выключен (дефолт) | D включен |
 |---|---|---|
@@ -366,8 +375,10 @@ Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
 Сдвиг по умолчанию 0. Необязательный `call_batch(..., gap=секунды)`
 сдвигает старт i-го элемента на `i * gap` от общего t0. Диапазон [2, 5]
 не требуется и в main не переносится. `tier="auto"` классифицируется
-до сборки батча, по одному вызову на элемент; внутри задачи
-классификаторного хода нет.
+до сборки батча, по одному вызову на элемент, последовательно. Внутри
+задачи классификаторного хода нет. `run_id` и `budget_scope` проверяются
+у всех элементов до классификации: нет `run_id` или неизвестный scope —
+`ValueError`, `gather` не стартует, платных ходов нет.
 
 `classify` при уже исчерпанном internal-бюджете модель не зовёт.
 `Classification.task_status=waiting_approval` и

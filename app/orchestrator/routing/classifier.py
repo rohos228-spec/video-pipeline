@@ -56,7 +56,7 @@ _KILL_RE = re.compile(
     r")(?![\w])"
 )
 _STEER_RE = re.compile(
-    r"(?iu)(?<![\w])(?:измени|поправь|вместо|скорректируй|steer)(?![\w])|не\s+так"
+    r"(?iu)(?<![\w])(?:измени|поправь|вместо|скорректируй|steer|не\s+так)(?![\w])"
 )
 _QUESTION_RE = re.compile(r"\?\s*$")
 _TASK_RE = re.compile(
