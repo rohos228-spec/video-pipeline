@@ -2680,7 +2680,7 @@ async def _chat_completions_nostream(
 
 @_gpt_seam
 @observe_model
-async def _chat_completions_stream(
+async def _chat_completions_stream_http(
     *,
     url: str,
     headers: dict[str, str],
@@ -2841,6 +2841,41 @@ async def _chat_completions_stream(
         raw=raw,
         response_id=str(last.get("id") or ""),
     )
+
+
+async def _chat_completions_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+    on_delta: Any | None = None,
+) -> GptChatResult:
+    """Живой путь scene_boundaries: проверка бюджета до HTTP."""
+    try:
+        async with spend_guard.paid_call(
+            "vibecode",
+            "chat completions stream",
+            estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+        ):
+            return await _chat_completions_stream_http(
+                url=url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+                use_model=use_model,
+                on_delta=on_delta,
+            )
+    except spend_guard.PaidCallBlocked as blocked:
+        if blocked.code in spend_guard.REFUSAL_CODES:
+            raise spend_guard.BudgetExhausted(
+                blocked.code,
+                blocked.message_ru,
+                provider=blocked.provider,
+                what=blocked.what,
+            ) from blocked
+        raise
 
 
 @_gpt_seam
