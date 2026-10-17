@@ -328,6 +328,112 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
+_SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
+_SHOT_CONTENT_KEYS = ("закадр", "описание", "описание_кадра", "description")
+
+
+def _shot_id(shot: dict[str, Any]) -> str | None:
+    for key in _SHOT_ID_KEYS:
+        val = str(shot.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Текст шота без ``порядок``/``номер``. Пустой текст не склеивает шоты."""
+    parts: list[tuple[str, str]] = []
+    for key in _SHOT_CONTENT_KEYS:
+        val = str(shot.get(key) or "").strip()
+        if val:
+            parts.append((key, val))
+    if not parts:
+        return None
+    return tuple(parts)
+
+
+def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
+    """Новый список ``кадры`` не выбрасывает старые шоты.
+
+    Шот с id совпадает только с тем же id. Шот без id не совпадает по
+    ``порядок``/``номер``: вставка или удаление в середине сдвигает номера,
+    и чужой шот получил бы ложное совпадение. Запасное совпадение без id —
+    уникальный текст (закадр/описание и соседние поля) среди шотов тоже без id.
+    Иначе старый шот остаётся в хвосте с ``активен: False``.
+    Входящий ``активен: False`` не снимается. Старый неактивный шот не
+    оживает: ни если его нет в новом списке, ни если новый пришёл без флага.
+    """
+    if not isinstance(new, list):
+        from loguru import logger
+
+        logger.warning(
+            "WARN apply-ops кадры: новое значение не список ({}) — старые шоты остаются, как при null",
+            type(new).__name__,
+        )
+        new = []
+    incoming: list[Any] = []
+    seen_ids: set[str] = set()
+    incoming_by_id: dict[str, dict[str, Any]] = {}
+    new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    incoming_by_content: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
+    for shot in new:
+        if not isinstance(shot, dict):
+            incoming.append(shot)
+            continue
+        item = dict(shot)
+        incoming.append(item)
+        sid = _shot_id(item)
+        if sid:
+            seen_ids.add(sid)
+            incoming_by_id[sid] = item
+            continue
+        ident = _shot_content_identity(item)
+        if ident is not None:
+            new_content_counts[ident] = new_content_counts.get(ident, 0) + 1
+            incoming_by_content.setdefault(ident, []).append(item)
+    if not isinstance(old, list):
+        return incoming
+    old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for shot in old:
+        if isinstance(shot, dict) and _shot_id(shot) is None:
+            ident = _shot_content_identity(shot)
+            if ident is not None:
+                old_content_counts[ident] = old_content_counts.get(ident, 0) + 1
+    kept: list[Any] = []
+    for shot in old:
+        if not isinstance(shot, dict):
+            if shot not in incoming:
+                kept.append(shot)
+            continue
+        sid = _shot_id(shot)
+        if sid:
+            if sid in seen_ids:
+                if shot.get("активен") is False:
+                    incoming_by_id[sid]["активен"] = False
+                continue
+        else:
+            ident = _shot_content_identity(shot)
+            if (
+                ident is not None
+                and old_content_counts.get(ident) == 1
+                and new_content_counts.get(ident) == 1
+            ):
+                if shot.get("активен") is False:
+                    matched = incoming_by_content.get(ident) or []
+                    if len(matched) == 1:
+                        matched[0]["активен"] = False
+                continue
+            if ident is None and any(
+                isinstance(item, dict) and _shot_id(item) is None and item == shot
+                for item in incoming
+            ):
+                continue
+        marked = dict(shot)
+        marked["активен"] = False
+        kept.append(marked)
+    return [*incoming, *kept]
+
+
 def _coerce_structured_attr(value: Any) -> Any:
     """Биты/кадры — JSON-массив или объект, не строка Excel."""
     if value is None:
@@ -1587,7 +1693,10 @@ async def apply_ops(
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            value = _coerce_structured_attr(fields[attr_key])
+            if attr_key == "кадры":
+                value = _merge_kadry_keep_missing(attrs.get("кадры"), value)
+            attrs[attr_key] = value
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
