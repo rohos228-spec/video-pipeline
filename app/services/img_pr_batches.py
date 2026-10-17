@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
+from loguru import logger
+
 from app.services.db_apply import extract_apply_ops_json
 from app.services.volume_batches import (
     MIN_CONTINUE_SIZE,
@@ -247,7 +249,9 @@ _SHOT2_PROMPT_KEYS = (
 _PROMPT_FIELD_KEYS = _SHOT1_PROMPT_KEYS + _SHOT2_PROMPT_KEYS
 
 
-_FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
+_FRAME_UUID_RE = re.compile(
+    r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[a-fA-F0-9]{3,64})$"
+)
 _PLACEHOLDER_PROMPT = frozenset({"", "…", "...", "—", "-"})
 # Запись в DB: короче — заглушка (портрет 1 строка / «…»), не сцена+STYLE.
 IMG_PR_MIN_WRITE_CHARS = 200
@@ -332,6 +336,13 @@ def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
             len(shot1) < IMG_PR_MIN_WRITE_CHARS
             and len(shot2) < IMG_PR_MIN_WRITE_CHARS
         ):
+            logger.warning(
+                "img_pr: промт короче {} симв., кадр {} не записан (shot1={} shot2={})",
+                IMG_PR_MIN_WRITE_CHARS,
+                op.get("frame_uuid") or op.get("uuid") or "?",
+                len(shot1),
+                len(shot2),
+            )
             continue
         kept.append(op)
     return kept
