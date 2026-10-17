@@ -1657,26 +1657,28 @@ class Supervisor:
         async def _call() -> Any:
             return await self.executor.run(step, ctx)
 
-        if step.paid:
+        if step.paid or step.mutating:
             inner: asyncio.Task[Any] = asyncio.create_task(_call())
-            self._paid_open.add(task_id)
-            inner.add_done_callback(
-                lambda done, _task=task_id, _session=session_id, _step=step, _sid=step_id, _plan=plan, _index=index: (
-                    self._on_shield_done(
-                        done,
-                        task_id=_task,
-                        session_id=_session,
-                        step=_step,
-                        step_id=_sid,
-                        plan=_plan,
-                        index=_index,
+            if step.paid:
+                self._paid_open.add(task_id)
+                inner.add_done_callback(
+                    lambda done, _task=task_id, _session=session_id, _step=step, _sid=step_id, _plan=plan, _index=index: (
+                        self._on_shield_done(
+                            done,
+                            task_id=_task,
+                            session_id=_session,
+                            step=_step,
+                            step_id=_sid,
+                            plan=_plan,
+                            index=_index,
+                        )
                     )
                 )
-            )
             try:
                 return await asyncio.shield(inner)
             finally:
-                self._paid_open.discard(task_id)
+                if step.paid:
+                    self._paid_open.discard(task_id)
         return await self._cancellable(session_id, _call())
 
     def _on_shield_done(
