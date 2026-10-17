@@ -273,7 +273,11 @@ def _aggregate_workflow_run_status(
     any_pending = False
     any_failed = False
     for nr in run.node_runs:
-        if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
+        if nr.status in (
+            NodeRunStatus.running,
+            NodeRunStatus.queued,
+            NodeRunStatus.waiting_approval,
+        ):
             any_running = True
         elif nr.status == NodeRunStatus.pending:
             any_pending = True

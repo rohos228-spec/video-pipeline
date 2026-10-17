@@ -178,3 +178,19 @@ async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None
         assert fresh.status is NodeRunStatus.running
 
 
+def test_aggregate_waiting_approval_is_not_done() -> None:
+    run = SimpleNamespace(
+        node_runs=[
+            SimpleNamespace(status=NodeRunStatus.done),
+            SimpleNamespace(status=NodeRunStatus.waiting_approval),
+        ],
+        status=WorkflowRunStatus.running,
+        started_at=None,
+        finished_at=None,
+    )
+    project = SimpleNamespace(status=ProjectStatus.planning)
+    _aggregate_workflow_run_status(run, project)
+    assert run.status is not WorkflowRunStatus.done
+    assert run.finished_at is None
+
+
