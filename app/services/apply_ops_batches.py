@@ -2151,32 +2151,51 @@ def coalesce_cell_shot_ops(
                 for i, s in enumerate(slot["shots"])
                 if str(s.get("id") or "")
             }
+            incoming_ids = {
+                str(shot.get("id") or "")
+                for shot in incoming
+                if str(shot.get("id") or "")
+            }
+            unknown: list[str] = []
             for shot in incoming:
                 sid = str(shot.get("id") or "")
                 if sid and sid in index:
                     slot["shots"][index[sid]] = shot
-            # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
-            if incoming:
-                from app.services.scene_shot_grammar import is_cutaway_shot
-
-                existing_empty = sum(
-                    1
-                    for s in slot["shots"]
-                    if isinstance(s, dict)
-                    and not str(s.get("закадр") or "").strip()
-                    and not is_cutaway_shot(s)
+                elif sid:
+                    unknown.append(sid)
+                    extra = dict(shot)
+                    extra["карантин"] = True
+                    extra["пометка"] = (
+                        "QC-кадр не было в ячейке — добавлен в хвост, список не подменён"
+                    )
+                    slot["shots"].append(extra)
+                    index[sid] = len(slot["shots"]) - 1
+            if unknown:
+                logger.warning(
+                    "WARN coalesce_cell_shot_ops: QC-кадры {} нет в ячейке — "
+                    "добавлены в хвост с пометкой, список не подменён",
+                    ", ".join(unknown),
                 )
-                if existing_empty and len(incoming) < len(slot["shots"]):
-                    # REPLACE: QC-список — источник истины
-                    slot["shots"] = [dict(s) for s in incoming]
-                else:
-                    slot["shots"] = [
-                        s
-                        for s in slot["shots"]
-                        if not isinstance(s, dict)
-                        or str(s.get("закадр") or "").strip()
-                        or is_cutaway_shot(s)
-                    ]
+            # QC правит по id. Пустой закадр — норма, свежий результат QC
+            # из-за него не карантиним. Кадры, которые REPLACE выкинул бы
+            # (их нет в более коротком списке), остаются с явной причиной.
+            if incoming:
+                original_count = len(slot["shots"]) - len(unknown)
+                shorter = len(incoming) < original_count
+                for shot in slot["shots"]:
+                    if not isinstance(shot, dict) or shot.get("карантин"):
+                        continue
+                    sid = str(shot.get("id") or "")
+                    if not (shorter and sid not in incoming_ids):
+                        continue
+                    reason = "QC-список короче — кадр сохранён, список не подменён"
+                    shot["карантин"] = True
+                    shot["пометка"] = reason
+                    logger.warning(
+                        "WARN coalesce_cell_shot_ops: кадр {} помечен, не удалён: {}",
+                        sid or "?",
+                        reason,
+                    )
         else:
             slot["shots"].extend(incoming)
     out: list[dict[str, Any]] = []
