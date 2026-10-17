@@ -10,6 +10,7 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
+import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -19,6 +20,37 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("чужая сессия не съедает переход статуса своей задачи", () => {
+  let seq = 0;
+  let state = initialOrchScreen();
+  const push = (type: string, session: string, payload: Record<string, unknown>) => {
+    seq += 1;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: { type, task_id: 1, seq, session_id: session, payload },
+    });
+  };
+  push("agent_status", "own", { agent: "supervisor", status: "running", task_status: "planning" });
+  push("approval_required", "own", { reason: "budget_exhausted", approval_id: "ap-budget" });
+  expect(state.approvals).toHaveLength(1);
+  expect(state.approvals[0]?.resolved).toBeNull();
+  expect(state.tasks[0]?.status).toBe("waiting_approval");
+
+  push("agent_status", "foreign", {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+  });
+  expect(state.approvals[0]?.resolved).toBeNull();
+  expect(state.tasks[0]?.status).toBe("waiting_approval");
+  expect(state.tasks[0]?.statusBySession.own).toBe("waiting_approval");
+  expect(state.tasks[0]?.statusBySession.foreign).toBe("executing");
+
+  push("agent_status", "own", { agent: "supervisor", status: "running", task_status: "executing" });
+  expect(state.approvals[0]?.resolved).toBe("closed");
+  expect(state.tasks[0]?.status).toBe("executing");
+});
 
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
