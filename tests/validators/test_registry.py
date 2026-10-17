@@ -17,6 +17,7 @@ from app.orchestrator.validators import (
     vo_length_available,
 )
 from app.orchestrator.validators import result as result_mod
+from app.orchestrator.validators.spend_guard import set_spend_reader
 
 
 def test_package_import_does_not_require_vo_length() -> None:
@@ -34,7 +35,22 @@ def test_vo_length_by_name_is_unavailable_not_an_import_error() -> None:
 
 
 def test_all_ignores_missing_vo_length() -> None:
-    result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True, "run_id": "all-dry"})
+    class _QuietSpend:
+        def read_totals(self, *, project_id: int, run_id: str | None = None) -> dict[str, float]:
+            del project_id, run_id
+            return {
+                "daily_spent_usd": 0.0,
+                "project_spent_usd": 0.0,
+                "run_spent_usd": 0.0,
+                "internal_spent_usd": 0.0,
+                "actions_spent_usd": 0.0,
+            }
+
+    set_spend_reader(_QuietSpend())
+    try:
+        result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True, "run_id": "all-dry"})
+    finally:
+        set_spend_reader(None)
     assert result.name == "all"
     assert result.passed is True
     assert result.blocking is False

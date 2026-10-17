@@ -35,6 +35,9 @@ $50 запуск / $10 internal / $40 действия. Явный потоло�
 Нечисло, inf, NaN, отрицательное, явный ``None`` и любая строка в трате
 или потолке — не 0, а ``blocking`` с ``reason=invalid_amount``.
 Конечные числа ``>= 0`` в тратах остаются как были.
+Есть ``run_id``, но нет серверного снимка и нет сигнала
+``budget_exhausted`` — ``blocking`` с ``reason=spend_source_missing``.
+Исключение из ``get_spend_ledger()`` — ``spend_unreadable``.
 
 ``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
 или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
@@ -176,15 +179,8 @@ def _checked(project_id: int, context: dict[str, Any]) -> Any:
     signal = _budget_signal(context)
     view = _load_view(project_id, context)
     view = _apply_pipeline_scope(project_id, context, view)
-    if view is None and signal is None and _context_claims_spend_source(context):
-        return _spend_source_missing()
     if view is None and signal is None:
-        return make_result(
-            name=_NAME,
-            passed=True,
-            blocking=False,
-            details={"checked": False, "reason": "no_spend_snapshot"},
-        )
+        return _spend_source_missing()
     forecast = _forecast(context.get("forecast_usd"))
     violations: list[dict[str, Any]] = []
     if signal is not None:
@@ -396,19 +392,6 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
     return view
 
 
-_UNTRUSTED_SPEND_KEYS = (
-    "spend",
-    "spend_ledger",
-    "ledger",
-    "spend_reader",
-    "read_pipeline_spent",
-)
-
-
-def _context_claims_spend_source(context: dict[str, Any]) -> bool:
-    return any(key in context for key in _UNTRUSTED_SPEND_KEYS)
-
-
 def _action_totals(
     project_id: int,
     context: dict[str, Any],
@@ -527,8 +510,8 @@ def _process_spend_ledger() -> Any:
         return None
     try:
         return get_spend_ledger()
-    except Exception:  # noqa: BLE001 — процессный леджер не обязан подниматься
-        return None
+    except Exception as exc:  # noqa: BLE001 — сломанный леджер не открывает вызов
+        raise _SpendReadError("spend_ledger") from exc
 
 
 def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:

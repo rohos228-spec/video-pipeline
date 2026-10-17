@@ -281,9 +281,12 @@ def test_callable_reader_and_injected_reader() -> None:
 
 
 def test_missing_snapshot_does_not_invent_spend() -> None:
+    """Перевёрнут: run_id без источника блокирует, нули не подставляются."""
+
     result = run("spend_guard", 1, {"run_id": "empty"})
-    assert result.passed is True
-    assert result.details["reason"] == "no_spend_snapshot"
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "spend_source_missing"
     assert get_spend_reader() is None
 
 
@@ -412,8 +415,9 @@ def test_router_response_blocks_even_when_ledger_still_has_room() -> None:
 def test_other_approval_reason_is_not_budget_exhausted() -> None:
     response = {"task_status": "waiting_approval", "approval": {"reason": "risk"}}
     result = run("spend_guard", 1, {"response": response, "run_id": "run-1"})
-    assert result.passed is True
-    assert result.details["reason"] == "no_spend_snapshot"
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "spend_source_missing"
 
 
 def test_contracts_predicate_accepts_router_response(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -534,7 +538,9 @@ def test_unreadable_sources_are_ignored() -> None:
         bad_reader = run("spend_guard", 1, {"run_id": "run-1"})
     finally:
         set_spend_reader(None)
-    assert bad_reader.details["reason"] == "no_spend_snapshot"
+    assert bad_reader.passed is False
+    assert bad_reader.blocking is True
+    assert bad_reader.details["reason"] == "spend_source_missing"
 
 
 def test_private_pipeline_field_is_not_read() -> None:
@@ -878,6 +884,36 @@ def test_type_error_does_not_recall_without_arguments() -> None:
     assert result.blocking is True
     assert result.details["reason"] == "spend_unreadable"
     assert validator_budget_exhausted(result) is False
+
+
+def test_run_id_without_spend_source_blocks() -> None:
+    """run_id без серверного источника — blocked. Без run_id остаётся missing_run_id."""
+
+    bare = run("spend_guard", 1, {"run_id": "r"})
+    assert bare.passed is False
+    assert bare.blocking is True
+    assert bare.details["reason"] == "spend_source_missing"
+    assert validator_budget_exhausted(bare) is False
+
+    dry = run("spend_guard", 1, {"run_id": "r", VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert dry.details["reason"] == "spend_source_missing"
+    assert dry.blocking is True
+
+    missing = run("spend_guard", 1, {})
+    assert missing.details == {"reason": "missing_run_id"}
+
+    def broken() -> object:
+        raise RuntimeError("ledger down")
+
+    saved = _push_ledger(object())
+    sys.modules["app.orchestrator.routing.ledger"].get_spend_ledger = broken  # type: ignore[attr-defined]
+    try:
+        failed = run("spend_guard", 1, {"run_id": "r"})
+    finally:
+        _pop_ledger(saved)
+    assert failed.passed is False
+    assert failed.blocking is True
+    assert failed.details["reason"] == "spend_unreadable"
 
 
 def test_missing_run_id_blocks_without_calling_ledger() -> None:
