@@ -75,8 +75,20 @@ def test_revert_node_to_git_has_medium_risk() -> None:
     meta = metadata_of("revert_node_to_git")
     assert meta.risk == "medium"
     assert meta.paid is False
-    assert meta.destructive is False
-    assert meta.needs_approval is False
+    assert meta.destructive is True
+    assert meta.needs_approval is True
+
+
+def test_unversioned_edit_actions_need_approval() -> None:
+    for name in (
+        "edit_node_prompt",
+        "edit_node_params",
+        "update_report",
+        "revert_node_to_git",
+    ):
+        meta = metadata_of(name)
+        assert meta.destructive is True
+        assert meta.needs_approval is True
 
 
 def test_prompt_create_master_is_destructive() -> None:

@@ -30,7 +30,7 @@
 
 Особые строки, не как сырая ячейка таблицы #344:
 
-- `revert_node_to_git` — риск `medium` (раздел аудита «Новые действия R2»). Не платное и не деструктивное: деактивирует версию в БД, историю не стирает, git-файл не пишет.
+- `revert_node_to_git` — риск `medium`, ярус `destructive` (раздел аудита «Новые действия R2»). Деактивирует версию в БД, историю не стирает, git-файл не пишет. Подтверждение нужно.
 - `prompt.create_master` — в таблице ярус `local_safe`, в контракте `destructive=true`: действие пишет общий файл промта.
 - `montage.suggest_scene_variants` — в коде ярус `paid`. В таблице #344 опечатка `paid+paid`. Контракт хранит `paid=true`, `destructive=false` и документ аудита не переписывает.
 
@@ -84,9 +84,9 @@ DOM отчёта на месте не правится.
 | `estimate` | оценка расхода, число ≥ 0 |
 
 Риск `medium` сам по себе этот статус не включает.
-`create_node`, `edit_node_prompt`, `edit_node_params`, `create_report`,
-`update_report`, `revert_node_to_git` не платные и не деструктивные:
-конверт сразу `ok`.
+`create_node` и `create_report` не платные и не деструктивные: конверт сразу `ok`.
+`edit_node_prompt`, `edit_node_params`, `update_report`, `revert_node_to_git`
+деструктивные: сначала `approval_required`.
 
 ### `SoftDeleteResult`
 
@@ -148,12 +148,12 @@ DOM отчёта на месте не правится.
 | `stop_node` | medium | false | false | false |
 | `resume_node` | medium | false | false | true |
 | `create_node` | medium | false | false | false |
-| `edit_node_prompt` | medium | false | false | false |
-| `edit_node_params` | medium | false | false | false |
+| `edit_node_prompt` | medium | false | true | false |
+| `edit_node_params` | medium | false | true | false |
 | `create_report` | low | false | false | false |
-| `update_report` | low | false | false | false |
+| `update_report` | low | false | true | false |
 | `export_nodes_snapshot` | low | true | false | false |
-| `revert_node_to_git` | medium | false | false | false |
+| `revert_node_to_git` | medium | false | true | false |
 | `frame.restore` | high | false | true | false |
 | `group.restore` | high | false | true | false |
 | `prompt.restore_master` | high | false | true | false |
@@ -277,7 +277,7 @@ DOM отчёта на месте не правится.
 
 ## `revert_node_to_git`
 
-Риск `medium`. Подтверждение не требуется: действие не платное и не деструктивное.
+Риск `medium`, ярус `destructive`. Сначала подтверждение.
 Следующий `resolve_node` видит `source=git`. Откат — снова активировать ту же версию в БД.
 
 ```json
