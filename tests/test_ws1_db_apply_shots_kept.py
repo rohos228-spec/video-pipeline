@@ -388,3 +388,53 @@ async def test_incoming_inactive_shot_stays_inactive(session: AsyncSession) -> N
     assert shot_is_active(by_id["d"]) is False
     assert by_id["e"]["закадр"] == "эпсилон обновлён"
     assert shot_is_active(by_id["e"]) is True
+
+
+@pytest.mark.asyncio
+async def test_non_list_kadry_keeps_old_shots(session: AsyncSession) -> None:
+    """``{}``, не-JSON и прочий не-список не затирают кадры, как ``null``."""
+    project = Project(slug="ws1-nonspec", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    stored = [
+        {"id": "a", "закадр": "альфа", "порядок": 1},
+        {"id": "b", "закадр": "бета", "порядок": 2, "активен": False},
+    ]
+
+    async def _frame(uuid: str, number: int) -> Frame:
+        fr = Frame(
+            project_id=project.id,
+            number=number,
+            uuid=uuid,
+            voiceover_text="ячейка",
+            attrs={"кадры": [dict(shot) for shot in stored]},
+        )
+        session.add(fr)
+        return fr
+
+    as_null = await _frame("kadry-null", 1)
+    as_obj = await _frame("kadry-obj", 2)
+    as_text = await _frame("kadry-text", 3)
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {"frame_uuid": as_null.uuid, "fields": {"кадры": None}},
+            {"frame_uuid": as_obj.uuid, "fields": {"кадры": {}}},
+            {"frame_uuid": as_text.uuid, "fields": {"кадры": "не json"}},
+        ],
+        export_xlsx=False,
+    )
+    for fr in (as_null, as_obj, as_text):
+        await session.refresh(fr)
+        shots = fr.attrs["кадры"]
+        assert isinstance(shots, list), shots
+        by_id = {shot["id"]: shot for shot in shots}
+        assert set(by_id) == {"a", "b"}
+        assert by_id["a"]["закадр"] == "альфа"
+        assert by_id["b"]["закадр"] == "бета"
+        assert by_id["b"]["активен"] is False
+        assert shot_is_active(by_id["a"]) is False
+        assert shot_is_active(by_id["b"]) is False
