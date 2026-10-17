@@ -442,6 +442,104 @@ def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyP
     assert budget_exhausted_fallback(numeric) is True
 
 
+class _ContractLedger:
+    """Форма SpendLedger #345 ``6d4d34cc``. Приватное поле и charge недоступны."""
+
+    def __init__(self, *, internal: float, pipeline: float, exhausted: bool) -> None:
+        self.internal_budget_usd = 10.0
+        self._internal = internal
+        self._pipe = pipeline
+        self._exhausted = exhausted
+        self.charge_calls = 0
+        self.totals_runs: list[str | None] = []
+
+    @property
+    def _pipeline(self) -> dict[str, float]:
+        raise AssertionError("приватное поле")
+
+    def spent(self, run_id: str | None) -> float:
+        return self._internal
+
+    def pipeline_spent(self, run_id: str | None) -> float:
+        return self._pipe
+
+    def read_pipeline_spent(
+        self,
+        *,
+        project_id: int | None = None,
+        run_id: str | None = None,
+    ) -> float:
+        del project_id, run_id
+        return self._pipe
+
+    def totals(self, run_id: str | None = None) -> dict[str, float | bool]:
+        self.totals_runs.append(run_id)
+        remaining = self.internal_budget_usd - self._internal
+        return {
+            "internal_spent_usd": self._internal,
+            "pipeline_spent_usd": self._pipe,
+            "internal_limit_usd": self.internal_budget_usd,
+            "internal_remaining_usd": remaining,
+            "budget_exhausted": self._exhausted,
+        }
+
+    def charge(self, *_args: object, **_kwargs: object) -> None:
+        self.charge_calls += 1
+
+
+def test_contract_ledger_budget_exhausted_flag_blocks() -> None:
+    ledger = _ContractLedger(internal=1.0, pipeline=80.0, exhausted=True)
+    result = run("spend_guard", 4, {"spend_ledger": ledger, "run_id": "run-x"})
+    assert ledger.charge_calls == 0
+    assert ledger.totals_runs == ["run-x"]
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "budget_exhausted"
+    assert result.details["internal"]["spent_usd"] == 1.0
+    assert result.details["internal"]["remaining_usd"] == 9.0
+    assert result.details["pipeline_scope_spent_usd"] == 80.0
+    assert validator_budget_exhausted(result) is True
+
+
+def test_contract_ledger_pipeline_is_outside_internal_limit() -> None:
+    ledger = _ContractLedger(internal=1.0, pipeline=80.0, exhausted=False)
+    result = run("spend_guard", 4, {"ledger": ledger, "run_id": "run-x"})
+    assert result.details["reason"] != "budget_exhausted"
+    assert "budget_exhausted" not in result.details["reasons"]
+    assert result.details["internal"]["spent_usd"] == 1.0
+    assert result.details["internal"]["remaining_usd"] == 9.0
+    assert result.details["reason"] == "actions_sub_budget"
+    assert result.blocking is True
+
+
+def test_real_spend_ledger_is_read_via_get_spend_ledger() -> None:
+    """Настоящий модуль #345. Пока его нет в main, тест пропускается."""
+
+    pytest.importorskip("app.orchestrator.routing.ledger")
+    from app.orchestrator.routing.ledger import SpendLedger, get_spend_ledger, reset_spend_ledger
+
+    ledger = reset_spend_ledger(10.0)
+    assert isinstance(ledger, SpendLedger)
+    assert get_spend_ledger() is ledger
+    try:
+        ledger.charge("ws1-run", 10.0, scope="internal")
+        ledger.charge("ws1-run", 80.0, scope="pipeline")
+        exhausted = run("spend_guard", 1, {"run_id": "ws1-run"})
+        assert exhausted.passed is False
+        assert exhausted.blocking is True
+        assert exhausted.details["reason"] == "budget_exhausted"
+        assert exhausted.details["internal"]["spent_usd"] == 10.0
+        assert exhausted.details["pipeline_scope_spent_usd"] == 80.0
+
+        only_pipeline = reset_spend_ledger(10.0)
+        only_pipeline.charge("pipe-only", 80.0, scope="pipeline")
+        quiet = run("spend_guard", 1, {"run_id": "pipe-only"})
+        assert quiet.details["internal"]["spent_usd"] == 0.0
+        assert quiet.details["reason"] != "budget_exhausted"
+    finally:
+        reset_spend_ledger(10.0)
+
+
 def test_pipeline_reader_without_arguments() -> None:
     class Ledger:
         internal_budget_usd = 10.0

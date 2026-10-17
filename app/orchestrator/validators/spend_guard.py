@@ -2,14 +2,16 @@
 
 Суммы уже посчитаны снаружи. Валидатор только читает:
 
-- ``SpendLedger`` роутера (#345, ``a8450918``): ``spent(run_id)`` и
-  ``internal_budget_usd``. Остаток = бюджет − потраченное. Списание
-  (``charge``) не вызывается. В счётчик $10 попадают только ходы с
-  ``budget_scope=internal``. Pipeline-scope лежит в ``SpendLedger._pipeline``;
-  публичный геттер сделает WS5. До этого приватное поле не читается.
-  Необязательное чтение — ``read_pipeline_spent`` (метод читателя, публичный
-  метод ledger или ``context["read_pipeline_spent"]``). Нет функции — суммы
-  pipeline-scope нет.
+- ``SpendLedger`` роутера (#345, ``6d4d34cc``): ``spent(run_id)`` — только
+  internal, ``internal_budget_usd``, ``pipeline_spent(run_id)``,
+  ``read_pipeline_spent(*, project_id=None, run_id=None)``,
+  ``totals(run_id=None)`` с ключами ``internal_spent_usd``,
+  ``pipeline_spent_usd``, ``internal_limit_usd``, ``internal_remaining_usd``,
+  ``budget_exhausted``. Списание (``charge``) не вызывается. Pipeline-scope
+  в лимит $10 не входит и приватный ``_pipeline`` не читается. Если модуль
+  ``app.orchestrator.routing.ledger`` импортируется, берём
+  ``get_spend_ledger()``; явный ledger в context его перекрывает. Пока модуля
+  нет, остаётся чтение переданного объекта (``spent`` / ``totals``).
 - spend action layer (#342) через ``SpendReader.read_totals`` или снимок
   ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
@@ -91,12 +93,26 @@ class SpendReader(Protocol):
 
 
 class RouterLedgerReader(Protocol):
-    """Узкий срез ``SpendLedger`` (#345). Только чтение, без ``charge``."""
+    """Публичный срез ``SpendLedger`` (#345 ``6d4d34cc``). Без ``charge``."""
 
     internal_budget_usd: float
 
     def spent(self, run_id: str | None) -> float:
-        """Потраченное internal по ``run_id``. Pipeline scope сюда не входит."""
+        """Internal по ``run_id``. Pipeline scope сюда не входит."""
+
+    def pipeline_spent(self, run_id: str | None) -> float:
+        """Pipeline-scope. В лимит $10 не входит."""
+
+    def read_pipeline_spent(
+        self,
+        *,
+        project_id: int | None = None,
+        run_id: str | None = None,
+    ) -> float:
+        """То же, что ``pipeline_spent``. ``project_id`` леджер не фильтрует."""
+
+    def totals(self, run_id: str | None = None) -> Mapping[str, Any]:
+        """internal/pipeline spent, limit, remaining и флаг ``budget_exhausted``."""
 
 
 def set_spend_reader(reader: SpendReader | None) -> None:
@@ -129,7 +145,8 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
         internal_cap = view["caps"]["internal_cap_usd"]
         internal_spent = view["spent"]["internal_spent_usd"]
         internal_forecast = forecast["internal"]
-        if internal_cap > 0 and internal_spent + internal_forecast >= internal_cap - 1e-9:
+        over_internal = internal_cap > 0 and internal_spent + internal_forecast >= internal_cap - 1e-9
+        if over_internal or view.get("ledger_budget_exhausted"):
             violations.append(
                 _violation(
                     _BUDGET_EXHAUSTED,
@@ -259,11 +276,14 @@ def _public(view: dict[str, Any] | None) -> dict[str, Any]:
     if "internal_spent_usd" in view["known"]:
         cap = view["caps"]["internal_cap_usd"]
         spent = view["spent"]["internal_spent_usd"]
+        remaining = view.get("internal_remaining_usd")
+        if remaining is None:
+            remaining = None if cap <= 0 else cap - spent
         internal = {
             "run_id": view["run_id"],
             "spent_usd": spent,
             "budget_usd": cap,
-            "remaining_usd": None if cap <= 0 else cap - spent,
+            "remaining_usd": remaining,
             "source": view["internal_source"],
         }
     return {"totals": totals, "internal": internal, "sources": list(view["sources"])}
@@ -292,13 +312,28 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
                 caps[key] = default
         sources.append(action_source)
         internal_source = action_source
+    pipeline_from_totals = False
+    pipeline_spent_usd = None
+    ledger_budget_exhausted = False
+    internal_remaining = None
     if ledger is not None:
         spent["internal_spent_usd"] = ledger["spent_usd"]
         caps["internal_cap_usd"] = ledger["budget_usd"]
         known.add("internal_spent_usd")
         sources.append("spend_ledger")
         internal_source = "spend_ledger"
-    return {
+        ledger_budget_exhausted = bool(ledger.get("budget_exhausted"))
+        if "remaining_usd" in ledger:
+            internal_remaining = ledger.get("remaining_usd")
+        if "pipeline_spent_usd" in ledger:
+            pipeline_from_totals = True
+            pipeline_spent_usd = ledger["pipeline_spent_usd"]
+            if "actions_spent_usd" not in known:
+                spent["actions_spent_usd"] = pipeline_spent_usd
+                known.add("actions_spent_usd")
+                action_source = "pipeline_scope"
+                sources.append("pipeline_scope")
+    view = {
         "spent": spent,
         "caps": caps,
         "known": known,
@@ -306,7 +341,15 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
         "action_source": action_source,
         "internal_source": internal_source,
         "run_id": _run_id(context),
+        "ledger_budget_exhausted": ledger_budget_exhausted,
+        "internal_remaining_usd": internal_remaining,
+        "pipeline_from_totals": pipeline_from_totals,
     }
+    if pipeline_from_totals:
+        view["pipeline_scope_spent_usd"] = pipeline_spent_usd
+        if "actions_spent_usd" in known and action_source != "pipeline_scope":
+            view["pipeline_separate"] = True
+    return view
 
 
 def _action_totals(
@@ -379,6 +422,8 @@ def _apply_pipeline_scope(
     context: dict[str, Any],
     view: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    if view is not None and view.get("pipeline_from_totals"):
+        return view
     amount = _pipeline_amount(project_id, context)
     if amount is None:
         if view is not None:
@@ -425,10 +470,35 @@ def _pipeline_amount(project_id: int, context: dict[str, Any]) -> float | None:
     return read_pipeline_spent(ledger, project_id=project_id, run_id=run_id)
 
 
-def _ledger_totals(context: dict[str, Any]) -> dict[str, float] | None:
-    ledger = context.get("spend_ledger")
-    if ledger is None and "ledger" in context:
-        ledger = context.get("ledger")
+def _resolve_ledger(context: dict[str, Any]) -> Any:
+    for key in ("spend_ledger", "ledger"):
+        if key in context and context.get(key) is not None:
+            return context.get(key)
+    return _process_spend_ledger()
+
+
+def _process_spend_ledger() -> Any:
+    """``get_spend_ledger()``, если #345 уже в дереве. Иначе None."""
+
+    try:
+        from app.orchestrator.routing.ledger import get_spend_ledger
+    except Exception:  # noqa: BLE001 — роутер ещё не в main
+        return None
+    if not callable(get_spend_ledger):
+        return None
+    try:
+        return get_spend_ledger()
+    except Exception:  # noqa: BLE001 — процессный леджер не обязан подниматься
+        return None
+
+
+def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:
+    ledger = _resolve_ledger(context)
+    if ledger is None:
+        return None
+    snapshot = _read_ledger_totals(ledger, _run_id(context))
+    if snapshot is not None:
+        return snapshot
     spent_fn = getattr(ledger, "spent", None)
     if not callable(spent_fn):
         return None
@@ -438,7 +508,48 @@ def _ledger_totals(context: dict[str, Any]) -> dict[str, float] | None:
         spent = _num(spent_fn())
     budget_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
     budget = CAP_INTERNAL_USD if budget_raw is None else _num(budget_raw)
-    return {"spent_usd": spent, "budget_usd": budget}
+    return {"spent_usd": spent, "budget_usd": budget, "budget_exhausted": False}
+
+
+def _read_ledger_totals(ledger: Any, run_id: str | None) -> dict[str, Any] | None:
+    """Снимок ``SpendLedger.totals`` (#345 ``6d4d34cc``). Pipeline в $10 не входит."""
+
+    totals_fn = getattr(ledger, "totals", None)
+    if not callable(totals_fn):
+        return None
+    try:
+        raw = totals_fn(run_id)
+    except TypeError:
+        raw = totals_fn()
+    if not isinstance(raw, Mapping):
+        return None
+    limit_raw = raw.get("internal_limit_usd", getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD))
+    limit = CAP_INTERNAL_USD if limit_raw is None else _num(limit_raw)
+    out: dict[str, Any] = {
+        "spent_usd": _num(raw.get("internal_spent_usd")),
+        "budget_usd": limit,
+        "budget_exhausted": raw.get("budget_exhausted") is True,
+        "from_totals": True,
+    }
+    if "internal_remaining_usd" in raw and not isinstance(raw.get("internal_remaining_usd"), bool):
+        remaining = _signed_num(raw.get("internal_remaining_usd"))
+        if remaining is not None:
+            out["remaining_usd"] = remaining
+    if "pipeline_spent_usd" in raw and not isinstance(raw.get("pipeline_spent_usd"), bool):
+        out["pipeline_spent_usd"] = _num(raw.get("pipeline_spent_usd"))
+    return out
+
+
+def _signed_num(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
 
 
 def _budget_signal(context: dict[str, Any]) -> dict[str, Any] | None:
