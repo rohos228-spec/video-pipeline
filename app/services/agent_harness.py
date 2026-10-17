@@ -305,7 +305,7 @@ def _load_frame_prompt_rows(
     data_dir: Path | None = None,
 ) -> tuple[list[tuple[int, str, str, str, str, str]], str]:
     """Кадры: (number, vo, image_prompt, animation_prompt, attrs, uuid) + ошибка или ''."""
-    db_file = _frames_db_path(data_dir)
+    db_file = _db_path(data_dir=data_dir, project_id=project_id)
     if not db_file.is_file():
         return [], ""
     try:
