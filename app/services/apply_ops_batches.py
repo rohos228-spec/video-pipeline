@@ -1438,8 +1438,10 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
+        from app.services.frame_tombstones import shot_is_active
+
         for shot in shots:
-            if not isinstance(shot, dict):
+            if not isinstance(shot, dict) or not shot_is_active(shot):
                 continue
             chunk = _shot_vo_chunk(shot)
             if vo_chunk_is_dangling(chunk):

@@ -1515,6 +1515,48 @@ def test_shots_vo_rejects_dangling_preposition() -> None:
     assert "обрубок" in reason or "закадр" in reason
 
 
+def test_shots_coverage_ignores_inactive_dangling_chunk() -> None:
+    """Обрубок неактивного шота не валит проверку. Шот остаётся в списке."""
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Его записывали как «душу», продавали вместе с"
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                        "действие": "читает имена",
+                        "закадр": "Его записывали как «душу»,",
+                    },
+                    {
+                        "id": "1-K0",
+                        "действие": "старый шаг",
+                        "закадр": "продавали вместе с",
+                        "активен": False,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert "обрубок" not in (reason or "")
+    assert "1-K0" not in (reason or "")
+    stored = ops[0]["fields"]["кадры"]
+    dead = next(s for s in stored if s.get("id") == "1-K0")
+    assert dead["активен"] is False
+    assert len(stored) == 2
+
+
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
