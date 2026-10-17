@@ -307,10 +307,9 @@ def test_d6_auto_approve_of_final_is_guarded_by_final_verified() -> None:
 def test_d8_get_project_and_get_run_do_not_recompute_status() -> None:
     src = (ROOT / "app/web/routers/projects.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
-    run_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "get_project_run")
-    assert "recompute_status" not in ast.get_source_segment(src, run_fn)
+    for name in ("get_project", "get_project_run"):
+        fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+        text = ast.get_source_segment(src, fn)
+        assert "recompute_status" not in text, f"{name}: пересчёт статуса на GET был причиной N-5"
     get_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "get_project")
-    get_text = ast.get_source_segment(src, get_fn)
-    # R0a: GET карточки пересчитывает статус; список проектов — нет (см. list_projects).
-    assert "recompute_status" in get_text
-    assert "rollback" in get_text
+    assert "rollback" in ast.get_source_segment(src, get_fn)

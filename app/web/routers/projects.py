@@ -234,32 +234,12 @@ async def get_project(
     if p is None:
         raise HTTPException(status_code=404, detail="Проект не найден")
     await session.refresh(p)
-    # GET не пишет canvas_graph. Poll каждые ~2с делал upgrade
-    # 20↔18 нод, commit stale snapshot и выжигал сокеты (GPT errno=8).
-    # commit_with_retry — #313 (database is locked). Upgrade на GET не возвращаем.
-    pulled = False
     try:
-        pulled = await _heal_get_runtime_from_master(session, p)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "get_project: #{} pull parked runtime failed",
-            project_id,
-            exc_info=True,
-        )
-    _old, _new, recomputed = await recompute_status(
-        session, p, log_prefix="recompute(web_get)"
-    )
-    if recomputed or pulled:
-        await commit_with_retry(session)
-        await session.refresh(p)
-    else:
-        # Poll GET не должен commit'ить stale snapshot: иначе ▶
-        # (enriching_*) затирается обратно в *_ready, воркер не берёт ноду.
+        await _sync_project_state(session, p)
+        detail = project_to_detail(p)
+    finally:
         await session.rollback()
-        p = await session.get(Project, project_id)
-        if p is None:
-            raise HTTPException(status_code=404, detail="project not found")
-    return project_to_detail(p)
+    return detail
 
 
 @router.post("/{project_id}/sync", response_model=ProjectDetail)
@@ -671,9 +651,10 @@ async def patch_project(
     await commit_with_retry(session)
     await session.refresh(p)
     try:
-        from app.project_db import sync_runtime_both_ways
+        from app.project_db import push_display_fields_to_master, sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, p)
+        await push_display_fields_to_master(session, p, payload.keys())
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "patch_project #{}: runtime sync master↔project.db failed: {}",

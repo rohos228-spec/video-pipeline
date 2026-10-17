@@ -101,19 +101,18 @@ async def test_get_project_does_not_write(stand):
     c, pid, _f, db_path = stand
     before = _row(db_path, pid)
     assert before[0] == "new"
-    # R0a: GET карточки коммитит статус, если recompute его изменил.
     for _ in range(3):
         r = await c.get(f"/api/projects/{pid}")
         assert r.status_code == 200
         assert r.json()["status"] == "script_ready"
-    assert _row(db_path, pid)[0] == "script_ready"
+    assert _row(db_path, pid) == before
 
 
 @pytest.mark.asyncio
 async def test_sync_endpoint_is_the_explicit_writer(stand):
     c, pid, _f, db_path = stand
     shown = (await c.get(f"/api/projects/{pid}")).json()["status"]
-    assert shown == "script_ready" and _row(db_path, pid)[0] == "script_ready"
+    assert shown == "script_ready" and _row(db_path, pid)[0] == "new"
     r = await c.post(f"/api/projects/{pid}/sync")
     assert r.status_code == 200
     assert r.json()["status"] == shown
