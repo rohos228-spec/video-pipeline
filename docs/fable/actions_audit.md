@@ -1,3 +1,15 @@
+<!--
+actions-audit-header
+source: #342
+sha: 3ec7c9579716a53ab119cabb340af562cba76b31
+date: 2026-10-17
+actions: 102
+keep: 93
+modify: 9
+remove: 0
+fs_breach: montage.upload_voice,montage.upload_music,history.rollback
+-->
+
 # Аудит действий Action Layer (заготовка R0b)
 
 Статус: заготовка WS2 до merge R0b. Код оркестратора в этот PR не входит.
@@ -63,6 +75,8 @@
 7. `montage.upload_voice`
 8. `montage.upload_music`
 9. `history.rollback`
+
+Поле шапки `fs_breach` — действия из этого списка, чей исполнитель на #342 доходит до `shutil.copy2` в `builtin_wave5_history._backup_file` (каталог `data/action_layer_snapshots/`, это не `data/reports/` и не `data/node_overrides/`). Тест сверяет фактический разрыв с этим полем. Любой другой путь или другое действие роняют тест. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
 
 ## Таблица действий
 
@@ -206,7 +220,67 @@
 
 Строка 10 — один патч функции `load_prompt`. Вызывающие (`scene_design/runner.py`, `skeleton.py`) файл сами не открывают и в перечень не входят.
 
-В перечень не вошли строки инвентаризации **10, 11–14, 16–25, 31**: бэкап `style_agent.apply._write`, чтения `prompts/<шаг>` и hero, `shot_menu`, `shot_templates`, JSON пользовательских групп, `prompt_composer`, хеш дерева в `revisions._tree_hash`.
+В перечень не вошли строки инвентаризации **10, 11–14, 16–25, 31**. Строки **15 и 26–30** в перечне есть: это шесть загрузчиков в LLM (строки границы 10–15). Сопоставление номера инвентаризации с файлом:
+
+| инв. | граница | файл | функция |
+|---|---|---|---|
+| 1 | да, №1 | `app/services/prompt_library.py` | `read_prompt` (ветка excel / node_groups) |
+| 2 | да, №2 | `app/services/montage_action_gpt.py` | `load_action_prompt` |
+| 3 | да, №3 | `app/services/montage_scene_improve.py` | `load_group_prompt` |
+| 4 | да, №4 | `app/services/change_control/targets.py` | `PromptHandler._effective` |
+| 5 | да, №5 | `app/services/change_control/targets.py` | `PromptHandler.describe` |
+| 6 | да, №6 | `app/services/change_control/targets.py` | `PromptHandler._variant_text` |
+| 7 | да, №7 | `app/services/revisions.py` | `_file_entry` |
+| 8 | да, №8 | `app/services/action_layer/builtin_wave3.py` | `_load_basis` |
+| 9 | да, №9 | `app/services/frame_style.py` | `load_style_text` |
+| 10 | нет | `app/services/style_agent/apply.py` | `_write` (бэкап `shutil.copyfile`) |
+| 11 | нет | `app/services/prompt_library.py` | `read_prompt` (ветка не-excel, `prompts/<шаг>`) |
+| 12 | нет | `app/services/prompt_library.py` | `_excel_gpt_local_is_stale` |
+| 13 | нет | `app/services/prompt_library.py` | `_coerce_hero_sheet_variant` |
+| 14 | нет | `app/services/prompt_library.py` | `_hero_style_file_ok` |
+| 15 | да, №10 | `app/services/scene_design/agents.py` | `load_prompt` |
+| 16 | нет | `app/services/shot_menu.py` | `_set_catalog` |
+| 17 | нет | `app/services/shot_templates.py` | `load_shot_templates` |
+| 18 | нет | `app/services/node_groups.py` | `load_custom_groups` |
+| 19 | нет | `app/services/node_groups.py` | `update_custom_group` |
+| 20 | нет | `app/services/prompt_composer.py` | `list_block_catalog` |
+| 21 | нет | `app/services/prompt_composer.py` | `write_step_template_blocks` |
+| 22 | нет | `app/services/prompt_composer.py` | `list_style_presets` |
+| 23 | нет | `app/services/prompt_composer.py` | `load_style_preset` |
+| 24 | нет | `app/services/prompt_composer.py` | `_read_block` |
+| 25 | нет | `app/services/prompt_composer.py` | `_read_template` |
+| 26 | да, №11 | `app/services/scene_boundaries.py` | `load_prompt` |
+| 27 | да, №12 | `app/services/scene_skeleton_batches.py` | `run_registry_prepass` |
+| 28 | да, №13 | `app/services/nii67_agent.py` | `load_template` |
+| 29 | да, №14 | `app/services/nii67_scenario.py` | `_read` |
+| 30 | да, №15 | `app/services/style_agent/agents.py` | `load_prompt` |
+| 31 | нет | `app/services/revisions.py` | `_tree_hash` |
+
+### Дельта закрытого перечня против PLAN
+
+PLAN §2.2.3 и §3.6 оценивали **2–4** call-site (`apply_ops_batches.py`, `scene_skeleton_batches.py`, общий prompt-loader). Утверждённый перечень — **15** мест. Это расширение исключения из freeze: не «2–4 файла», а 15 патчей, каждый не длиннее 20 строк. `apply_ops_batches.py` шаблоны не читает и в перечень не входит.
+
+Номера строк — с пробного переноса PR #353 (ветка `cursor/ws2-r0b-dryrun-af2a`, tip `4cad50d2`). В тексте описания #353 таблицы строк нет; промежуточный коммит в том описании был `bf8e1d7a`. Ниже строки def и чтения `read_text` / `read_bytes` на tip пробного переноса.
+
+| # | Файл | Функция | def | чтение | патч |
+|---|---|---|---|---|---|
+| 1 | `app/services/prompt_library.py` | `read_prompt` | 573 | 587, 599, 601 | ≤ 20 |
+| 2 | `app/services/montage_action_gpt.py` | `load_action_prompt` | 169 | 173 | ≤ 20 |
+| 3 | `app/services/montage_scene_improve.py` | `load_group_prompt` | 212 | 216 | ≤ 20 |
+| 4 | `app/services/change_control/targets.py` | `PromptHandler._effective` | 112 | 115 | ≤ 20 |
+| 5 | `app/services/change_control/targets.py` | `PromptHandler.describe` | 123 | 128 | ≤ 20 |
+| 6 | `app/services/change_control/targets.py` | `PromptHandler._variant_text` | 159 | 170 | ≤ 20 |
+| 7 | `app/services/revisions.py` | `_file_entry` | 246 | 250 | ≤ 20 |
+| 8 | `app/services/action_layer/builtin_wave3.py` | `_load_basis` | 336 | 355 | ≤ 20 |
+| 9 | `app/services/frame_style.py` | `load_style_text` | 111 | 115 | ≤ 20 |
+| 10 | `app/services/scene_design/agents.py` | `load_prompt` | 243 | 257, 261, 266, 275 | ≤ 20 |
+| 11 | `app/services/scene_boundaries.py` | `load_prompt` | 51 | 53 | ≤ 20 |
+| 12 | `app/services/scene_skeleton_batches.py` | `run_registry_prepass` | 448 | 451 | ≤ 20 |
+| 13 | `app/services/nii67_agent.py` | `load_template` | 23 | 24 | ≤ 20 |
+| 14 | `app/services/nii67_scenario.py` | `_read` | 71 | 72 | ≤ 20 |
+| 15 | `app/services/style_agent/agents.py` | `load_prompt` | 49 | 53 | ≤ 20 |
+
+У `read_prompt` на пробном переносе к чтению R0a (`:587`) добавлены запасные чтения #342 (`:599`, `:601`). Один патч на функцию, не три.
 
 ### Снимок против main (история, не граница)
 
