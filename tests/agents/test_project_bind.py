@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.agents.supervisor import _plan_fingerprint
 from app.orchestrator.auth import OrchestratorAuthMiddleware
-from app.orchestrator.contracts import PlanStep, TaskStatus
+from app.orchestrator.contracts import CheckpointData, PlanStep, SpendSnapshot, TaskStatus
 from app.web.routers.orchestrator_chat import router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
@@ -137,6 +138,77 @@ async def test_project_route_rejects_task_that_is_not_active(token: str) -> None
         assert actions.calls == []
         assert float(runtime.tasks.get(risk_id)["spend_actions"] or 0) == 0
         assert TEST_TOKEN not in response.text
+    finally:
+        set_runtime(None)
+
+
+def _approval_ids(runtime, session: str, task_id: int) -> list[str]:
+    return [
+        str(event.payload.get("change_id"))
+        for event in runtime.bus.replay(session, 0)
+        if event.type == "approval_required" and event.task_id == task_id and event.payload.get("change_id")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_bind_holds_risky_paid_step_for_a_new_approval(token: str) -> None:
+    """Привязка снимает только missing_project_id.
+
+    Одобренный чекпоинт платного шага не получает грант риска: после
+    POST /project задача снова ждёт, вызов и spend не начинаются, change_id новый.
+    """
+    del token
+    actions = MockActions(risks={"charge": "high", "edit": "none"})
+    charge = PlanStep(
+        action="charge",
+        risk="low",
+        paid=True,
+        mutating=True,
+        estimated_cost=1.0,
+        params={"_cost": 1},
+    )
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([charge]),
+    )
+    set_runtime(runtime)
+    session = "bind-paid"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "без проекта")
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.supervisor._block_reason.get(task_id) == "missing_project_id"
+        before_ids = _approval_ids(runtime, session, task_id)
+        assert before_ids
+        runtime.checkpoints.save(
+            task_id,
+            session,
+            CheckpointData(plan=[charge], position=0, spend=SpendSnapshot()),
+        )
+        runtime.supervisor._approved[task_id] = _plan_fingerprint([charge])
+        transport = ASGITransport(app=_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            bound = await client.post(
+                f"/api/orchestrator/chat/{session}/project",
+                json={"project_id": 13},
+                headers=_headers(),
+            )
+        assert bound.status_code == 200
+        assert bound.json()["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["project_id"] == 13
+        assert runtime.supervisor._block_reason.get(task_id) == "risk"
+        assert actions.calls == []
+        assert float(runtime.tasks.get(task_id)["spend_actions"] or 0) == 0
+        assert runtime.supervisor._risk_granted == set()
+        after_ids = _approval_ids(runtime, session, task_id)
+        assert after_ids[0] == before_ids[0]
+        assert len(after_ids) == len(before_ids) + 1
+        fresh = after_ids[-1]
+        assert fresh != before_ids[-1]
+        assert fresh.startswith(f"orch-appr-{task_id}-")
+        assert TEST_TOKEN not in bound.text
     finally:
         set_runtime(None)
 

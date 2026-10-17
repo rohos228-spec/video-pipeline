@@ -266,8 +266,8 @@ class Supervisor:
     ) -> dict[str, Any]:
         """Записать project_id и снять только ``missing_project_id``.
 
-        Id не пишется внутри ``grant_approval``. После записи идёт тот же
-        путь: экран и продолжение с чекпоинта (или replan, если чекпоинта нет).
+        Id не пишется внутри ``grant_approval``. Продолжение не выдаёт грант
+        риска: платный или рискованный шаг снова ждёт отдельного approve.
         """
         resolved = self._resolve_project_task(session_id, task_id)
         if resolved is None:
@@ -280,7 +280,7 @@ class Supervisor:
             raise ProjectBindError(409, "not missing_project_id")
         self.tasks.set_project_id(resolved, int(project_id))
         self._block_reason.pop(resolved, None)
-        await self.grant_approval(session_id)
+        await self._resume_after_project_bind(session_id, resolved)
         status = self._status(resolved)
         return {
             "ok": True,
@@ -289,6 +289,52 @@ class Supervisor:
             "project_id": int(project_id),
             "status": status.value if status is not None else "",
         }
+
+    def _step_needs_separate_approval(self, step: PlanStep) -> bool:
+        """Привязка проекта не заменяет approve риска и платного шага."""
+        if step.paid:
+            return True
+        return effective_risk(self.actions, step) in APPROVAL_RISKS
+
+    async def _resume_after_project_bind(self, session_id: str, task_id: int) -> None:
+        """Продолжить после снятия ``missing_project_id``, без ``_risk_granted``.
+
+        Чекпоинт (или сохранённый план) снова проходит экран. Платный или
+        рискованный шаг остаётся в ``waiting_approval`` с новой причиной и
+        новым серверным ``change_id``.
+        """
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
+        if data is None:
+            data = self._checkpoint_from_row(self.tasks.get(task_id) or {})
+        self._budget_stop.discard(task_id)
+        if data is None or not data.plan:
+            await self._replan_from_grant(task_id, session_id)
+            return
+        self._arm_resume(session_id, task_id, data)
+        await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        await self._flush_kill_publishes()
+        plan = list(data.plan)
+        if await self._screen_plan(task_id, session_id, plan):
+            return
+        position = int(data.position)
+        if position < len(plan) and self._step_needs_separate_approval(plan[position]):
+            step = plan[position]
+            risk = effective_risk(self.actions, step)
+            reason = "risk" if risk in APPROVAL_RISKS else "paid"
+            self._block_reason[task_id] = reason
+            await self._checkpoint(task_id, session_id, plan, position)
+            await self._escalate(
+                task_id,
+                session_id,
+                reason,
+                extra={"action": step.action, "risk": risk.value, "plan_risk": step.risk},
+            )
+            return
+        goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
+        self._runs[task_id] = asyncio.create_task(
+            self._execute_plan(task_id, session_id, plan, position, goal),
+            name=f"orch-bind-{task_id}",
+        )
 
     async def grant_approval(
         self,
