@@ -669,6 +669,8 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const dirtyRef = useRef(false);
   const cardRef = useRef(card);
   const editGen = useRef(0);
+  const projectRef = useRef(projectId);
+  projectRef.current = projectId;
   const previewsRef = useRef(previews);
   cardRef.current = card;
   previewsRef.current = previews;
@@ -681,7 +683,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
 
   useEffect(() => {
     dirtyRef.current = false;
-    editGen.current = 0;
+    editGen.current += 1;
     setDirty(false);
     setCard(defaultCard());
     setPreviewText(null);
@@ -717,8 +719,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     applyName: (name: string) => void,
   ) {
     setUploading(slot);
+    const pid = projectId;
+    const gen = editGen.current;
     try {
-      const res = await api.uploadNii67(projectId, slot, file);
+      const res = await api.uploadNii67(pid, slot, file);
+      if (pid !== projectRef.current || gen !== editGen.current) return;
       applyName(res.name);
       toast.success("Файл сохранён в проект");
     } catch (error) {
@@ -740,10 +745,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const save = useMutation({
     mutationFn: async (mode: "draft" | "save") => {
       const gen = editGen.current;
-      const res = await api.putNii67(projectId, cardRef.current, mode);
-      return { res, gen, mode };
+      const pid = projectId;
+      const res = await api.putNii67(pid, cardRef.current, mode);
+      return { res, gen, mode, pid };
     },
-    onSuccess: ({ res, gen, mode }) => {
+    onSuccess: ({ res, gen, mode, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
@@ -773,10 +780,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const makePlan = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
-      const res = await api.planNii67(projectId, cardRef.current);
-      return { res, gen };
+      const pid = projectId;
+      const res = await api.planNii67(pid, cardRef.current);
+      return { res, gen, pid };
     },
-    onSuccess: ({ res, gen }) => {
+    onSuccess: ({ res, gen, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
@@ -794,10 +803,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const generate = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
-      const res = await api.storyboardNii67(projectId, cardRef.current);
-      return { res, gen };
+      const pid = projectId;
+      const res = await api.storyboardNii67(pid, cardRef.current);
+      return { res, gen, pid };
     },
-    onSuccess: ({ res, gen }) => {
+    onSuccess: ({ res, gen, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
