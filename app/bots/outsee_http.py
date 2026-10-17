@@ -440,7 +440,7 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
             continue
         except (httpx.HTTPError, OSError) as e:
             detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
-            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException)):
+            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError)):
                 try:
                     via_curl = await _post_generate_via_curl(path, body)
                 except OutseeApiError as curl_err:
