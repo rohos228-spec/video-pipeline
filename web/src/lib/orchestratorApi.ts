@@ -121,10 +121,32 @@ export function isAllowedOrchEnvApi(value: string): boolean {
   return false;
 }
 
+/** В лог — только origin. Userinfo, query и неразобранная строка не печатаются. */
+function discardedOrchApiLabel(raw: string): string {
+  try {
+    const url = new URL(raw.trim());
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.origin;
+  } catch {
+    return "некорректный адрес";
+  }
+}
+
+function warnDiscardedOrchApi(raw: string): void {
+  console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
+}
+
 /** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
   const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
-  if (!raw || !isAllowedOrchEnvApi(raw)) return "";
+  if (!raw) return "";
+  if (!isAllowedOrchEnvApi(raw)) {
+    warnDiscardedOrchApi(raw);
+    return "";
+  }
   return raw;
 }
 

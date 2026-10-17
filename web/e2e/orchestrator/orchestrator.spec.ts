@@ -68,6 +68,37 @@ test("isSameOriginApiBase отвергает //evil, userinfo и javascript", ()
   expect(isSameOriginApiBase("https://host/api", pageOrigin)).toBe(true);
 });
 
+test("отброшенный NEXT_PUBLIC_ORCH_API пишет warn без секрета", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((item) => String(item)).join(" "));
+  };
+  const secret = "super-secret-token";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = `http://user:${secret}@evil.com/api?token=${secret}`;
+    expect(envOrchApiBase()).toBe("");
+    const text = warnings.join("\n");
+    expect(text).toContain("NEXT_PUBLIC_ORCH_API отброшен");
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("user:");
+
+    warnings.length = 0;
+    process.env.NEXT_PUBLIC_ORCH_API = "";
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toEqual([]);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    expect(envOrchApiBase()).toBe("https://api.example.com");
+    expect(warnings).toEqual([]);
+  } finally {
+    console.warn = original;
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
 test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_API;
   const pageOrigin = "http://127.0.0.1:3100";
