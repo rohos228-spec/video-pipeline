@@ -1,4 +1,8 @@
-"""Неактивный шот не участвует в закадре, QC и рендере.
+"""Неактивный шот не участвует в QC и рендере.
+
+Закадр на неактивном шоте остаётся на месте: в ``закадр_архив`` его не
+переносим и сам текст не трогаем. Потребители отфильтровывают такие шоты
+через ``shot_is_active`` / ``shots_of``. Это не ``vo_on_inactive``.
 
 Кто живой, решает ``shots_of`` (#371). Этот модуль только читает.
 """
@@ -67,8 +71,6 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
                 continue
             fid = frame_id(shot) or ""
             path = _shot_path(entity, fid)
-            if _shot_text(shot):
-                _add(violations, seen, "vo_on_inactive", path, fid)
             if _marked_qc(shot) or _ops_target(operations, fid):
                 _add(violations, seen, "inactive_shot_used", path, fid)
         for shot in raw:

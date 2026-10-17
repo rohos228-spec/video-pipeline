@@ -53,8 +53,8 @@ def test_collect_reports_stable_codes() -> None:
     assert ("frame_deleted", "error", "k1") in codes
     assert ("frame_deleted", "error", "k9") in codes
     assert ("character_deleted", "error", "c02") in codes
-    assert ("vo_on_inactive", "error", "dead") in codes
     assert ("inactive_shot_used", "error", "dead") in codes
+    assert ("vo_on_inactive", "error", "dead") not in codes
     for item in violations:
         assert item.severity in {"error", "warn"}
         assert item.path

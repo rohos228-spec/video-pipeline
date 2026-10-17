@@ -7,6 +7,7 @@ import copy
 import pytest
 
 from app.orchestrator.validators.grammar import shots_of
+from app.orchestrator.validators.preservation import run_preservation_validators
 from app.orchestrator.validators.shot_activity import check_active_shots
 
 
@@ -49,7 +50,7 @@ def test_voiceover_qc_and_render_skip_inactive_shot() -> None:
     ]
     project = _project(shots, "Первая фраза.")
     voiced = check_active_shots(project, copy.deepcopy(project))
-    assert ("vo_on_inactive", "error", "dead") in _codes(voiced)
+    assert ("vo_on_inactive", "error", "dead") not in _codes(voiced)
     assert ("inactive_shot_used", "error", "dead") in _codes(voiced)
 
     quiet = [
@@ -138,6 +139,40 @@ def test_op_cannot_drop_the_last_active_shot_while_vo_remains() -> None:
     ) == []
 
 
+def test_mark_inactive_keeps_vo_text_passes_reject() -> None:
+    """Неактивный шот оставляет закадр на месте. reject это не ошибка."""
+
+    def scene(shots: list[dict]) -> dict:
+        return {"сцены": [{"id": "s1", "номер": 1, "кадры": shots}]}
+
+    active = {"id": "a", "закадр": "Первая фраза."}
+    parked = {"id": "b", "закадр": "Хвост на месте."}
+    before = scene([active, parked])
+    marked = scene([active, {**parked, "активен": False}])
+    violations = run_preservation_validators(before, marked, mode="reject")
+    assert all(item.code != "vo_on_inactive" for item in violations)
+    kept = marked["сцены"][0]["кадры"][1]
+    assert kept["закадр"] == "Хвост на месте."
+    assert "закадр_архив" not in kept
+
+    again = copy.deepcopy(marked)
+    repeated = run_preservation_validators(
+        marked,
+        again,
+        ops=[{"op": "deactivate", "shot_id": "b", "fields": {"активен": False}}],
+        mode="reject",
+    )
+    assert all(item.code != "vo_on_inactive" for item in repeated)
+    assert again["сцены"][0]["кадры"][1]["закадр"] == "Хвост на месте."
+
+    tail = run_preservation_validators(
+        scene([{**parked, "активен": False}, active]),
+        scene([active, {**parked, "активен": False}]),
+        mode="reject",
+    )
+    assert all(item.code != "vo_on_inactive" for item in tail)
+
+
 def test_participation_follows_shots_of(monkeypatch: pytest.MonkeyPatch) -> None:
     def only_first(context: dict) -> list:
         shots = context["shots"]
@@ -155,4 +190,5 @@ def test_participation_follows_shots_of(monkeypatch: pytest.MonkeyPatch) -> None
         "Первая фраза. Вторая фраза.",
     )
     violations = check_active_shots(project, copy.deepcopy(project))
-    assert ("vo_on_inactive", "error", "b") in _codes(violations)
+    assert ("vo_on_inactive", "error", "s1") in _codes(violations)
+    assert ("vo_on_inactive", "error", "b") not in _codes(violations)
