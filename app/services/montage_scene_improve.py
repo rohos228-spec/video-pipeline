@@ -1684,26 +1684,26 @@ def qc_reasons(
     shots: list[dict[str, Any]], units: list[dict[str, Any]]
 ) -> tuple[list[str], list[str]]:
     """(брак, замечания) по разделу режиссуры и shots_qc_ru."""
+    from app.services.frame_tombstones import shot_is_active
+
     hard: list[str] = []
     soft: list[str] = []
-    if not shots:
+    live_shots = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+    if not live_shots:
         return ["пустые кадры"], soft
-    if not anchors_grouped(shots, len(units)):
+    if not anchors_grouped(live_shots, len(units)):
         hard.append("кадры не разложены по якорям подряд")
     for unit in units:
-        group = _group(shots, unit["n"])
-        live = [s for s in group if not s.get("карантин")] or group
-        if live and _glue(live) != _norm(unit["закадр"]):
+        group = _group(live_shots, unit["n"])
+        if group and _glue(group) != _norm(unit["закадр"]):
             hard.append(f"якорь {unit['n']}: склейка закадра кадров ≠ куску якоря")
-        if len(_norm(unit["закадр"]).split()) >= len(live):
-            for shot in live:
+        if len(_norm(unit["закадр"]).split()) >= len(group):
+            for shot in group:
                 if not _norm(shot.get("закадр")):
                     hard.append(f"кадр {shot.get('порядок')}: пустой закадр")
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
-    for shot in shots:
-        if shot.get("карантин"):
-            continue
+    for shot in live_shots:
         n = shot.get("порядок")
         step = str(shot.get("действие") or "")
         if _COGNITIVE_ONLY_RE.search(step):
@@ -1757,10 +1757,12 @@ def build_improve_qc_prompt(
         "Кадры не добавляй и не убирай. Сюжет и число кадров не меняй. "
         "Якорей и закадра как сюжета нет."
     )
+    from app.services.frame_tombstones import shot_is_active
+
     payload = {
         "frame_uuid": str(parent.uuid or ""),
         "frame_number": int(parent.number),
-        "кадры": shots,
+        "кадры": [s for s in shots if isinstance(s, dict) and shot_is_active(s)],
     }
     _ = vo, units
     return _compose(load_group_prompt("shots_qc_ru"), "", task, payload)
