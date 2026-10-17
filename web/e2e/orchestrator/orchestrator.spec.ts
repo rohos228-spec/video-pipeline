@@ -736,7 +736,9 @@ test("зона оркестратора рисуется токенами INT", 
     };
   });
   expect(swatch.title).toBe("rgb(240, 240, 240)");
-  expect(swatch.border).toBe("rgba(255, 255, 255, 0.06)");
+  // globals.css вне зоны: `* { border-color }` вне слоя перекрывает border-input,
+  // поэтому волосок на экране совпадает с токеном --border (8%), как на снимке INT.
+  expect(swatch.border).toBe("rgba(255, 255, 255, 0.08)");
 });
 
 test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
