@@ -117,21 +117,23 @@ class OnnxMultilingualE5:
     из репозитория intfloat, чтобы CI по-прежнему не импортировал fastembed.
     """
 
-    def __init__(self, repo: str, embedder_id: str) -> None:
+    def __init__(self, repo: str, embedder_id: str, *, eval_mode: bool = False) -> None:
         import numpy as np
         import onnxruntime as ort
         from huggingface_hub import hf_hub_download
         from tokenizers import Tokenizer
 
+        from app.orchestrator.rag.onnx_session import make_session_options
+
         self.embedder_id = embedder_id
+        self.eval_mode = eval_mode
         cache = weight_cache_dir()
         model_path = hf_hub_download(repo, "onnx/model.onnx", cache_dir=str(cache))
         tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
         tokenizer = Tokenizer.from_file(tokenizer_path)
         tokenizer.enable_padding(pad_id=1, pad_token="<pad>")
         tokenizer.enable_truncation(max_length=512)
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = max(1, os.cpu_count() or 1)
+        options = make_session_options(eval_mode=eval_mode, production_inter_op=None)
         self._np = np
         self._tokenizer = tokenizer
         self._session = ort.InferenceSession(
@@ -172,15 +174,23 @@ class OnnxMultilingualE5:
 class OnnxMultilingualE5Small(OnnxMultilingualE5):
     """``intfloat/multilingual-e5-small``."""
 
-    def __init__(self) -> None:
-        super().__init__("intfloat/multilingual-e5-small", "onnx-intfloat-multilingual-e5-small")
+    def __init__(self, *, eval_mode: bool = False) -> None:
+        super().__init__(
+            "intfloat/multilingual-e5-small",
+            "onnx-intfloat-multilingual-e5-small",
+            eval_mode=eval_mode,
+        )
 
 
 class OnnxMultilingualE5Large(OnnxMultilingualE5):
     """``intfloat/multilingual-e5-large``."""
 
-    def __init__(self) -> None:
-        super().__init__("intfloat/multilingual-e5-large", "onnx-intfloat-multilingual-e5-large")
+    def __init__(self, *, eval_mode: bool = False) -> None:
+        super().__init__(
+            "intfloat/multilingual-e5-large",
+            "onnx-intfloat-multilingual-e5-large",
+            eval_mode=eval_mode,
+        )
 
 
 class FastEmbedE5:
@@ -203,17 +213,18 @@ class FastEmbedE5:
         return [list(map(float, vec)) for vec in self._model.embed(texts)]
 
 
-def build_embedder(kind: str = "hashing") -> E5PrefixEmbedder:
+def build_embedder(kind: str = "hashing", *, eval_mode: bool = False) -> E5PrefixEmbedder:
     """``hashing`` (по умолчанию, офлайн), ``e5-small``, ``e5-large`` или ``fastembed``.
 
     Живые модели CI не вызывает и веса не качает.
+    ``eval_mode=True`` — сессия ONNX с одним потоком и фиксированным сидом.
     """
     if kind == "fastembed":
         return E5PrefixEmbedder(FastEmbedE5())
     if kind == "e5-small":
-        return E5PrefixEmbedder(OnnxMultilingualE5Small())
+        return E5PrefixEmbedder(OnnxMultilingualE5Small(eval_mode=eval_mode))
     if kind == "e5-large":
-        return E5PrefixEmbedder(OnnxMultilingualE5Large())
+        return E5PrefixEmbedder(OnnxMultilingualE5Large(eval_mode=eval_mode))
     if kind != "hashing":
         raise ValueError(f"неизвестный эмбеддер: {kind}")
     return E5PrefixEmbedder(HashingEmbedder())

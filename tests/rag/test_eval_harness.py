@@ -36,7 +36,11 @@ def test_contour_a_passes_and_e8b_is_deferred() -> None:
         assert report["by_id"][eval_id]["passed"] is None
     assert report["by_id"]["E6"]["details"]["labeled_by"] == "rule-derived-placeholder"
     e8 = report["by_id"]["E8"]["details"]["checks"]
+    assert "kill_unpaid_within_2s" not in e8
     assert all(e8.values())
+    deferred = report["by_id"]["E8"]["details"]["deferred_checks"]["kill_unpaid_within_2s"]
+    assert deferred["passed"] is None
+    assert deferred["status"] == "deferred"
 
 
 def test_contour_b_does_not_pretend_live_success() -> None:

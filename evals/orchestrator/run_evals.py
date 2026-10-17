@@ -326,7 +326,6 @@ def _e8() -> dict[str, Any]:
         "missing_token_401": anonymous == 401,
         "wrong_token_401": wrong == 401,
         "valid_token_200": ok_token == 200,
-        "kill_unpaid_within_2s": kill["cancel_unpaid_s"] <= 2,
         "kill_stop_key": kill["stop_key"] is True,
         "kill_blocks_new": kill["new_action_ok"] is False,
         "kill_no_paid_retry": kill["paid_retries"] == 0,
@@ -338,7 +337,22 @@ def _e8() -> dict[str, Any]:
             and paid.spend_usd == 1.0
         ),
     }
-    return _result("E8", all(checks.values()), checks=checks)
+    deferred_checks = {
+        "kill_unpaid_within_2s": {
+            "passed": None,
+            "status": "deferred",
+            "reason": (
+                "kill_unpaid_within_2s отложен: нет замера настоящего времени "
+                "отмены неоплаченного run_node. Литералы часов за прохождение не считаются."
+            ),
+        }
+    }
+    return _result(
+        "E8",
+        all(checks.values()),
+        checks=checks,
+        deferred_checks=deferred_checks,
+    )
 
 
 def _auth_status(token: str | None, expected: str) -> int:
@@ -354,14 +368,11 @@ def _auth_status(token: str | None, expected: str) -> int:
 def _kill_switch() -> dict[str, Any]:
     backend = MockActionBackend()
     started = backend.execute("run_node", {"project_id": 65, "node_key": "n_excel_gpt_fw_shots"})
-    t_kill = 0.0
-    t_cancel = 0.5
     backend.stop_key = True
     backend.allow_new_actions = False
     blocked = backend.execute("run_validators", {"project_id": 65})
     retry = backend.execute("run_node", {"project_id": 65, "node_key": "n_excel_gpt_fw_shots"})
     return {
-        "cancel_unpaid_s": t_cancel - t_kill,
         "stop_key": backend.stop_key,
         "new_action_ok": blocked.ok,
         "paid_retries": 0 if (started.ok and not retry.ok and retry.cost == 0.0) else 1,

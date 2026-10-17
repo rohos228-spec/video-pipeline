@@ -1,13 +1,12 @@
 {
   "version": 1,
-  "expected_macro_precision_at_8": 1.0,
-  "description": "50 запросов, у каждого 8 релевантных чанков. На закрытом наборе CI считает macro precision@8. Порог релиза precision@8 снят: приёмка живых перефраз — hit@5 и nDCG@8 в контуре B. Якоря размечены явно, эмбеддер в CI — детерминированный фейк.",
+  "description": "50 запросов, у каждого 8 релевантных чанков. На закрытом наборе CI считает macro precision@8 как регрессию hashing-фейка. Якоря размечены явно, эмбеддер в CI — детерминированный фейк.",
   "documents": [
     {
       "corpus": "history",
       "source_id": "stagger-history-01",
       "title": "Разнос параллельных батчей #1",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 1, корпус history.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 1, корпус history.",
       "metadata": {
         "node_key": null,
         "version": null,
@@ -19,7 +18,7 @@
       "corpus": "history",
       "source_id": "stagger-history-02",
       "title": "Разнос параллельных батчей #2",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 2, корпус history.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 2, корпус history.",
       "metadata": {
         "node_key": null,
         "version": null,
@@ -31,7 +30,7 @@
       "corpus": "history",
       "source_id": "stagger-history-03",
       "title": "Разнос параллельных батчей #3",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 3, корпус history.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 3, корпус history.",
       "metadata": {
         "node_key": null,
         "version": null,
@@ -43,7 +42,7 @@
       "corpus": "nodes",
       "source_id": "stagger-nodes-04",
       "title": "Разнос параллельных батчей #4",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 4, корпус nodes.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 4, корпус nodes.",
       "metadata": {
         "node_key": null,
         "version": null,
@@ -55,7 +54,7 @@
       "corpus": "nodes",
       "source_id": "stagger-nodes-05",
       "title": "Разнос параллельных батчей #5",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 5, корпус nodes.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 5, корпус nodes.",
       "metadata": {
         "node_key": null,
         "version": null,
@@ -67,7 +66,7 @@
       "corpus": "prompts",
       "source_id": "stagger-prompts-06",
       "title": "Разнос параллельных батчей #6",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 6, корпус prompts.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 6, корпус prompts.",
       "metadata": {
         "node_key": null,
         "version": 1,
@@ -79,7 +78,7 @@
       "corpus": "prompts",
       "source_id": "stagger-prompts-07",
       "title": "Разнос параллельных батчей #7",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 7, корпус prompts.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 7, корпус prompts.",
       "metadata": {
         "node_key": null,
         "version": 1,
@@ -91,7 +90,7 @@
       "corpus": "prompts",
       "source_id": "stagger-prompts-08",
       "title": "Разнос параллельных батчей #8",
-      "text": "Разнос параллельных батчей. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. Якорь staggersec4rule. Пример 8, корпус prompts.",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 8, корпус prompts.",
       "metadata": {
         "node_key": null,
         "version": 1,
@@ -1159,7 +1158,7 @@
   "queries": [
     {
       "id": "stagger-01",
-      "query": "staggersec4rule Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды.",
+      "query": "staggersec4rule Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
       "corpora": [
         "rules",
         "history",
@@ -1179,7 +1178,7 @@
     },
     {
       "id": "stagger-02",
-      "query": "Разнос параллельных батчей. staggersec4rule Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды.",
+      "query": "Разнос параллельных батчей. staggersec4rule Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
       "corpora": [
         "rules",
         "history",
@@ -1199,7 +1198,7 @@
     },
     {
       "id": "stagger-03",
-      "query": "Якорь staggersec4rule. Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды.",
+      "query": "Якорь staggersec4rule. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
       "corpora": [
         "rules",
         "history",
@@ -1219,7 +1218,7 @@
     },
     {
       "id": "stagger-04",
-      "query": "Параллельные LLM-батчи разносятся на 2–5 секунд, stagger_sec четыре секунды. staggersec4rule Разнос параллельных батчей",
+      "query": "Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. staggersec4rule Разнос параллельных батчей",
       "corpora": [
         "rules",
         "history",
@@ -2157,5 +2156,6 @@
         "p65-prompts-08"
       ]
     }
-  ]
+  ],
+  "expected_macro_precision_at_8": 1.0
 }

@@ -10,7 +10,6 @@ CI остаётся на hashing и не вызывает живые виды: �
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Protocol
 
@@ -54,32 +53,40 @@ class OnnxPairReranker:
     """Cross-encoder ONNX. Выше логит — релевантнее.
 
     Пара обрезается токенайзером до ``max_length`` (256–384 на контуре B).
-    Батч идёт одним прогоном onnxruntime, ``intra_op`` равен числу ядер.
+    Батч идёт одним прогоном onnxruntime. Вне эвалов ``intra_op`` равен числу ядер.
+    В режиме эвалов оба числа потоков равны 1 и сид фиксирован.
     Холодная загрузка весов — в конструкторе, не в ``score``.
     """
 
-    def __init__(self, *, repo: str, filename: str, reranker_id: str, max_length: int = 384) -> None:
+    def __init__(
+        self,
+        *,
+        repo: str,
+        filename: str,
+        reranker_id: str,
+        max_length: int = 384,
+        eval_mode: bool = False,
+    ) -> None:
         import numpy as np
         import onnxruntime as ort
         from huggingface_hub import hf_hub_download
         from tokenizers import Tokenizer
 
         from app.orchestrator.rag.embedder import weight_cache_dir
+        from app.orchestrator.rag.onnx_session import make_session_options
 
         if max_length < 32:
             raise ValueError("max_length слишком мал")
         self.reranker_id = reranker_id
         self.max_length = max_length
+        self.eval_mode = eval_mode
         cache = weight_cache_dir()
         model_path = hf_hub_download(repo, filename, cache_dir=str(cache))
         tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
         tokenizer = Tokenizer.from_file(tokenizer_path)
         tokenizer.enable_padding(pad_id=1, pad_token="<pad>")
         tokenizer.enable_truncation(max_length=max_length)
-        threads = max(1, os.cpu_count() or 1)
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = threads
-        options.inter_op_num_threads = 1
+        options = make_session_options(eval_mode=eval_mode, production_inter_op=1)
         self._np = np
         self._tokenizer = tokenizer
         self._session = ort.InferenceSession(
@@ -116,52 +123,61 @@ class OnnxPairReranker:
 class OnnxBgeReranker(OnnxPairReranker):
     """Прежний ``bge-reranker-base``. На русских корпусах nDCG не поднимает."""
 
-    def __init__(self, *, max_length: int = 384) -> None:
+    def __init__(self, *, max_length: int = 384, eval_mode: bool = False) -> None:
         super().__init__(
             repo=BGE_REPO,
             filename=BGE_FILE,
             reranker_id="onnx-bge-reranker-base",
             max_length=max_length,
+            eval_mode=eval_mode,
         )
 
 
 class OnnxJinaReranker(OnnxPairReranker):
     """``jina-reranker-v2-base-multilingual``, квантованный ONNX."""
 
-    def __init__(self, *, max_length: int = 384) -> None:
+    def __init__(self, *, max_length: int = 384, eval_mode: bool = False) -> None:
         super().__init__(
             repo=JINA_REPO,
             filename=JINA_FILE,
             reranker_id="onnx-jina-reranker-v2-base-multilingual",
             max_length=max_length,
+            eval_mode=eval_mode,
         )
 
 
 class OnnxBgeM3Reranker(OnnxPairReranker):
     """``bge-reranker-v2-m3``, квантованный ONNX."""
 
-    def __init__(self, *, max_length: int = 384) -> None:
+    def __init__(self, *, max_length: int = 384, eval_mode: bool = False) -> None:
         super().__init__(
             repo=BGE_M3_REPO,
             filename=BGE_M3_FILE,
             reranker_id="onnx-bge-reranker-v2-m3",
             max_length=max_length,
+            eval_mode=eval_mode,
         )
 
 
-def build_reranker(kind: str = "none", *, max_length: int = 384) -> Reranker | None:
+def build_reranker(
+    kind: str = "none",
+    *,
+    max_length: int = 384,
+    eval_mode: bool = False,
+) -> Reranker | None:
     """``none`` — реранкера нет (дефолт CI). ``stub`` — без весов.
 
     ``jina`` и ``bge-m3`` — мультиязычные cross-encoder. ``bge`` — английский base.
+    ``eval_mode=True`` — один поток и фиксированный сид.
     """
     if kind in {"none", "off", ""}:
         return None
     if kind == "stub":
         return StubReranker()
     if kind == "bge":
-        return OnnxBgeReranker(max_length=max_length)
+        return OnnxBgeReranker(max_length=max_length, eval_mode=eval_mode)
     if kind == "jina":
-        return OnnxJinaReranker(max_length=max_length)
+        return OnnxJinaReranker(max_length=max_length, eval_mode=eval_mode)
     if kind == "bge-m3":
-        return OnnxBgeM3Reranker(max_length=max_length)
+        return OnnxBgeM3Reranker(max_length=max_length, eval_mode=eval_mode)
     raise ValueError(f"неизвестный реранкер: {kind}")

@@ -157,8 +157,8 @@ def test_contour_b_profile_records_the_measured_default() -> None:
     led = choose_default(
         [
             ("e5-large+k20+w0.5/1.5+full", "large", {"ndcg_at_8": 0.60, "hit_at_5": 0.88, "p95_s": 0.06}),
-            ("e5-large+bge-m3+p20+t256", "m3", {"ndcg_at_8": 0.65, "hit_at_5": 0.96, "p95_s": 1.4}),
-            ("e5-large+bge-m3+p20+t384", "slow", {"ndcg_at_8": 0.70, "hit_at_5": 0.98, "p95_s": 2.8}),
+            ("e5-large+bge-m3+p20+t256", "m3", {"ndcg_at_8": 0.65, "hit_at_5": 0.96, "p95_s": 1.2}),
+            ("e5-large+bge-m3+p20+t384", "slow", {"ndcg_at_8": 0.70, "hit_at_5": 0.98, "p95_s": 1.3}),
         ]
     )
     assert led[0] == "e5-large+bge-m3+p20+t256"
@@ -178,7 +178,7 @@ def test_contour_b_profile_records_the_measured_default() -> None:
         ]
     )
     assert transferred_pair[0] == ""
-    # Вариант C: гибрид не проходит hit@5, bge-m3 проходит hit@5 и p95.
+    # Вариант C при p95 1.49 выше лимита 1.2 с: дефолта нет.
     variant_c = choose_default(
         [
             (
@@ -193,7 +193,7 @@ def test_contour_b_profile_records_the_measured_default() -> None:
             ),
         ]
     )
-    assert variant_c[0] == "e5-large+bge-m3+p20+t256"
+    assert variant_c[0] == ""
 
 
 def test_rerank_flag_is_optional_and_reorders_hybrid(tmp_path: Path) -> None:

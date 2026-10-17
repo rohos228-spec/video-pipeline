@@ -36,11 +36,13 @@ from app.orchestrator.rag.rerank import Reranker, build_reranker
 HIT_AT_5_MIN = 0.9
 # временный, пересмотр на R5
 NDCG_AT_8_MIN = 0.65
-P95_MAX_S = 1.5
+P95_MAX_S = 1.2
 
 ROOT = Path(__file__).resolve().parents[2]
 QUERY_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_queries.json"
 REPORT_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_report.md"
+PASSES_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_passes.json"
+PASS_COUNT = 3
 
 _FAMILIES: dict[str, tuple[str, str]] = {
     "camera": ("n_excel_gpt_sd_camera", "n_excel_gpt_sd_cd_camera"),
@@ -392,7 +394,7 @@ def _is_rerank_key(key: str) -> bool:
 
 
 def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, str]:
-    """По новой разметке: hit@5 ≥ 0.9, p95 ≤ 1.5 с, максимальный чанковый nDCG@8.
+    """По новой разметке: hit@5 ≥ 0.9, p95 ≤ 1.2 с, максимальный чанковый nDCG@8.
 
     Порог nDCG@8 0.65 здесь не отбор, а приёмка: его не снижаем.
     Если никто не уложился в hit@5 и p95, ключ пустой и текст говорит «нет дефолта».
@@ -426,7 +428,7 @@ def render_report(
     lines = [
         "# Контур B: hit@5 и nDCG@8 на живых корпусах",
         "",
-        "Порог precision@8 ≥ 0.8 снят. Приёмка на этих 50 перефразах: "
+        "Закрытый набор precision@8 остаётся регрессионным тестом. Приёмка на этих 50 перефразах: "
         f"**hit@5 ≥ {HIT_AT_5_MIN}** и **nDCG@8 ≥ {NDCG_AT_8_MIN}**. "
         "Порог nDCG@8 не снижался.",
         "",
@@ -856,7 +858,8 @@ def render_abc(
         "# Контур B: три нарезки",
         "",
         "Порог nDCG@8 **0.65 не снижался**. Приёмка и выбор дефолта в `profile.py` — "
-        "только вариант C (8 частей, метки s0–s7): hit@5 ≥ 0.9, p95 ≤ 1.5 с, "
+        "только вариант C (8 частей, метки s0–s7): hit@5 ≥ 0.9, "
+        f"p95 ≤ {P95_MAX_S:.1f} с, "
         "максимальный nDCG@8. Варианты A и B в отбор не входят.",
         "",
         f"Индекс A и C: `split_prompt(max_parts=8)`, чанков {index_chunks}. "
@@ -1104,13 +1107,304 @@ def run_tune() -> dict[str, Any]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def contour_c_acceptance(test_ndcg: float) -> dict[str, Any]:
+    """Порог 0.65 не снижается. Ниже — конфиг C экспериментальный, «R5 не достигнут»."""
+    met = test_ndcg >= NDCG_AT_8_MIN
+    return {
+        "threshold": NDCG_AT_8_MIN,
+        "test_ndcg_at_8": test_ndcg,
+        "experimental": not met,
+        "mark": "" if met else "R5 не достигнут",
+    }
+
+
+def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
+    if not rows:
+        return {"hit_at_5": 0.0, "ndcg_at_8": 0.0, "ndcg_doc": 0.0, "p95_s": 0.0, "n": 0}
+    count = len(rows)
+    return {
+        "hit_at_5": sum(1 for row in rows if row["hit5"]) / count,
+        "ndcg_at_8": sum(row["ndcg"] for row in rows) / count,
+        "ndcg_doc": sum(row["ndcg_doc"] for row in rows) / count,
+        "p95_s": _percentile([row["latency_s"] for row in rows], 95),
+        "n": count,
+    }
+
+
+def group_slices(
+    rows: list[dict[str, Any]],
+    dev_ids: list[str],
+    test_ids: list[str],
+) -> dict[str, dict[str, float]]:
+    by_id = {row["id"]: row for row in rows}
+    slices: dict[str, dict[str, float]] = {
+        "dev": summarize_rows([by_id[query_id] for query_id in dev_ids]),
+        "test": summarize_rows([by_id[query_id] for query_id in test_ids]),
+        "all": summarize_rows(rows),
+    }
+    families: list[str] = []
+    for row in rows:
+        family = str(row["family"])
+        if family not in families:
+            families.append(family)
+    for family in families:
+        slices[family] = summarize_rows([row for row in rows if row["family"] == family])
+    return slices
+
+
+def aggregate_pass_slices(passes: list[dict[str, dict[str, float]]]) -> dict[str, Any]:
+    """Медиана hit@5 и nDCG по проходам. Совпадение — по этим двум, не по часам p95."""
+    if len(passes) != PASS_COUNT:
+        raise ValueError(f"ожидалось {PASS_COUNT} прохода, получено {len(passes)}")
+    names = list(passes[0])
+    identical = True
+    median: dict[str, dict[str, float]] = {}
+    for name in names:
+        hits = [item[name]["hit_at_5"] for item in passes]
+        ndcgs = [item[name]["ndcg_at_8"] for item in passes]
+        docs = [item[name]["ndcg_doc"] for item in passes]
+        latencies = [item[name]["p95_s"] for item in passes]
+        if len(set(hits)) != 1 or len(set(ndcgs)) != 1:
+            identical = False
+        median[name] = {
+            "hit_at_5": _median(hits),
+            "ndcg_at_8": _median(ndcgs),
+            "ndcg_doc": _median(docs),
+            "p95_s": _median(latencies),
+            "n": passes[0][name]["n"],
+        }
+    return {
+        "pass_count": PASS_COUNT,
+        "identical": identical,
+        "passes": passes,
+        "median": median,
+    }
+
+
+def write_pass_artifact(artifact: Path, payload: dict[str, Any]) -> None:
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def measure_chunk_rows(
+    engine: RagEngine,
+    queries: list[dict[str, Any]],
+    *,
+    rerank: bool,
+    rrf_k: int,
+    rrf_weights: tuple[float, float],
+    bm25_scope: str,
+    rerank_pool: int,
+    aggregate: str,
+) -> list[dict[str, Any]]:
+    """Один проход. Прогрев не входит в задержку. Метки — chunk_id варианта C."""
+    indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
+    for chunk in indexed:
+        chunk.metadata.pop("_embedding", None)
+    counts = [sum(1 for chunk in indexed if _is_relevant_transferred(chunk, query)) for query in queries]
+    indexed_source_ids = {chunk.source_id for chunk in indexed}
+    rule_source_ids = {chunk.source_id for chunk in indexed if chunk.corpus == "rules"}
+    kwargs = {
+        "rerank": rerank,
+        "rrf_k": rrf_k,
+        "rrf_weights": rrf_weights,
+        "bm25_scope": bm25_scope,
+        "rerank_pool": rerank_pool,
+        "aggregate": aggregate,
+    }
+    engine.retrieve(queries[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+    rows: list[dict[str, Any]] = []
+    for query, count in zip(queries, counts, strict=True):
+        started = time.perf_counter()
+        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+        elapsed = time.perf_counter() - started
+        flags = [_is_relevant_transferred(chunk, query) for chunk in found]
+        if query.get("family") == "rules":
+            sources = set(rule_source_ids)
+        else:
+            sources = _relevant_source_ids(query, literal=True)
+        rows.append(
+            {
+                "id": query["id"],
+                "family": query.get("family"),
+                "hit5": any(flags[:5]),
+                "ndcg": _ndcg_at_8(flags, count),
+                "ndcg_doc": _doc_ndcg(found, sources, indexed_source_ids),
+                "latency_s": elapsed,
+            }
+        )
+    return rows
+
+
+def render_locked_report(payload: dict[str, Any]) -> str:
+    median = payload["median"]
+    acceptance = payload["acceptance"]
+    identical = payload["identical"]
+    lines = [
+        "# Контур B: детерминированный перемер",
+        "",
+        "Конфиг не подбирался заново: bge-m3 топ-12, `prompt_pool`, веса 0.5/1.5, "
+        "RRF k=20, BM25 full, e5-large, 256 токенов.",
+        "Сессии ONNX в режиме эвалов: `intra_op_num_threads=1`, `inter_op_num_threads=1`, "
+        "фиксированный сид.",
+        "Сплит прежний: нечётный `query_id` — dev, чётный — test.",
+        "Текст правила 1 в индексе — новый. Метки `rule-1` не менялись.",
+        "",
+        f"Три прохода дали одинаковые hit@5 и nDCG@8: **{'да' if identical else 'нет'}**.",
+        "В таблицу попала медиана. Сырые метрики каждого прохода — "
+        "`precision_live_passes.json`.",
+        "",
+        "| Срез | hit@5 | nDCG@8 | nDCG@8 док | p95, с |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    order = ["dev", "test", "all", "camera", "characters", "world", "action", "assemble", "shots", "script", "rules"]
+    labels = {
+        "dev": "dev",
+        "test": "test",
+        "all": "все запросы",
+    }
+    for key in order:
+        if key not in median:
+            continue
+        row = median[key]
+        title = labels.get(key, key)
+        lines.append(
+            f"| {title} | {row['hit_at_5']:.4f} | {row['ndcg_at_8']:.4f} | "
+            f"{row['ndcg_doc']:.4f} | {row['p95_s']:.3f} |"
+        )
+    lines.extend(["", "Сырые проходы (hit@5 / nDCG@8):", ""])
+    for index, item in enumerate(payload["passes"]):
+        bits = [
+            f"{name} {item[name]['hit_at_5']:.4f}/{item[name]['ndcg_at_8']:.4f}"
+            for name in ("dev", "test", "all")
+            if name in item
+        ]
+        lines.append(f"- Проход {index + 1}: " + "; ".join(bits))
+    if acceptance["experimental"]:
+        lines.extend(
+            [
+                "",
+                f"Порог nDCG@8 {NDCG_AT_8_MIN} на test не взят "
+                f"({acceptance['test_ndcg_at_8']:.4f}) и не снижался. "
+                "Конфиг C экспериментальный: **R5 не достигнут**.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                f"Порог nDCG@8 {NDCG_AT_8_MIN} на test взят "
+                f"({acceptance['test_ndcg_at_8']:.4f}).",
+            ]
+        )
+    p95 = median["test"]["p95_s"]
+    if p95 > P95_MAX_S:
+        lines.append(f"p95 test {p95:.3f} с выше лимита {P95_MAX_S:.1f} с.")
+    else:
+        lines.append(f"p95 test {p95:.3f} с, лимит {P95_MAX_S:.1f} с.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict[str, Any]:
+    """Три прохода зафиксированного конфига C. Сетки нет."""
+    from app.orchestrator.rag.profile import (
+        CONTOUR_B_AGGREGATE,
+        CONTOUR_B_BM25_SCOPE,
+        CONTOUR_B_RERANK_MAX_LENGTH,
+        CONTOUR_B_RERANK_POOL,
+        CONTOUR_B_RRF_K,
+        CONTOUR_B_RRF_LEXICAL,
+        CONTOUR_B_RRF_VECTOR,
+    )
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.query_split import SPLIT_PATH
+
+    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
+    dev_ids = list(split["dev"])
+    test_ids = list(split["test"])
+    report_path = out or REPORT_PATH
+    artifact_path = artifact or PASSES_PATH
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-det-"))
+    config = {
+        "embedder": "e5-large",
+        "reranker": "bge-m3",
+        "max_length": CONTOUR_B_RERANK_MAX_LENGTH,
+        "rrf_k": CONTOUR_B_RRF_K,
+        "lexical": CONTOUR_B_RRF_LEXICAL,
+        "vector": CONTOUR_B_RRF_VECTOR,
+        "bm25_scope": CONTOUR_B_BM25_SCOPE,
+        "rerank_pool": CONTOUR_B_RERANK_POOL,
+        "aggregate": CONTOUR_B_AGGREGATE,
+        "eval_intra_op": 1,
+        "eval_inter_op": 1,
+        "eval_seed": 0,
+    }
+    try:
+        embedder = build_embedder("e5-large", eval_mode=True)
+        reranker = build_reranker("bge-m3", max_length=CONTOUR_B_RERANK_MAX_LENGTH, eval_mode=True)
+        engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        try:
+            engine.reindex(["rules", "nodes", "prompts"])
+            print("index chunks", len(_index_catalog(engine)), flush=True)
+            passes: list[dict[str, dict[str, float]]] = []
+            for index in range(PASS_COUNT):
+                engine._query_vectors.clear()
+                rows = measure_chunk_rows(
+                    engine,
+                    expanded,
+                    rerank=True,
+                    rrf_k=CONTOUR_B_RRF_K,
+                    rrf_weights=(CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR),
+                    bm25_scope=CONTOUR_B_BM25_SCOPE,
+                    rerank_pool=CONTOUR_B_RERANK_POOL,
+                    aggregate=CONTOUR_B_AGGREGATE,
+                )
+                slices = group_slices(rows, dev_ids, test_ids)
+                passes.append(slices)
+                print(
+                    "PASS",
+                    index,
+                    {
+                        name: {
+                            key: round(slices[name][key], 4)
+                            for key in ("hit_at_5", "ndcg_at_8", "ndcg_doc", "p95_s")
+                        }
+                        for name in ("dev", "test", "all")
+                    },
+                    flush=True,
+                )
+        finally:
+            engine.close()
+        packed = aggregate_pass_slices(passes)
+        acceptance = contour_c_acceptance(packed["median"]["test"]["ndcg_at_8"])
+        payload = {**packed, "config": config, "acceptance": acceptance}
+        write_pass_artifact(artifact_path, payload)
+        text = render_locked_report(payload)
+        report_path.write_text(text, encoding="utf-8")
+        print(text, flush=True)
+        print(json.dumps({"identical": packed["identical"], "acceptance": acceptance}, ensure_ascii=False), flush=True)
+        return payload
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
     parser.add_argument("--pair", action="store_true", help="только дефолт bge-m3 и гибрид без реранкера")
     parser.add_argument("--abc", action="store_true", help="варианты A и C на 8 частях, B из прошлого прогона")
     parser.add_argument("--tune", action="store_true", help="подбор на dev, затем один замер test")
+    parser.add_argument(
+        "--remeasure",
+        action="store_true",
+        help="три детерминированных прохода зафиксированного конфига C",
+    )
     args = parser.parse_args()
+    if args.remeasure:
+        run_remeasure(args.out)
+        return
     if args.tune:
         run_tune()
         return
