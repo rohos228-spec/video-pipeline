@@ -3393,14 +3393,10 @@ async def chat(
             use_model,
         )
 
-    from app.services.spend_guard import release as _spend_release
-    from app.services.spend_guard import reserve as _spend_reserve
-
     attempt = 0
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
-        await _spend_reserve(1.0)
         t0 = time.perf_counter()
         try:
             await _ensure_url_host_resolves(url)
@@ -3794,8 +3790,6 @@ async def chat(
                 continue
             last_exc = e
             logger.warning("gpt_api.chat retryable: {}", e)
-        finally:
-            await _spend_release(1.0)
 
         if attempt <= retries:
             backoff = _gpt_retry_backoff_s(attempt, last_exc)
