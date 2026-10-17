@@ -172,6 +172,34 @@ async def post_approve(session_id: str, body: ApproveIn) -> dict[str, object]:
     return _approval_result(runtime.supervisor, session_id, body, result)
 
 
+@router.post("/{session}/resume")
+async def post_resume(session: str) -> dict[str, object]:
+    """Продолжить с чекпоинта.
+
+    ``cancelled`` → ``executing`` — 409. Нет задачи или чекпоинта — 404.
+    """
+    _check_session(session)
+    runtime = get_runtime()
+    task_id = runtime.supervisor.active_task(session)
+    if task_id is None:
+        task_id = runtime.supervisor._session_task.get(session)
+    if task_id is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        await runtime.supervisor.resume(task_id)
+    except InvalidTransition:
+        raise HTTPException(status_code=409, detail="invalid transition") from None
+    except LookupError:
+        raise HTTPException(status_code=404, detail="not found") from None
+    status = runtime.supervisor._status(task_id)
+    return {
+        "ok": True,
+        "session": session,
+        "task_id": task_id,
+        "status": status.value if status is not None else "",
+    }
+
+
 @router.get("/{session}/stream")
 async def stream_session(session: str, request: Request) -> EventSourceResponse:
     """SSE. ``Last-Event-ID`` — последний увиденный seq, replay строго после него."""
