@@ -27,7 +27,6 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
         reason,
     )
 
-
 SHOT_VO_MIN = 26
 SHOT_VO_MAX = 80
 SHOT_VO_IDEAL = 45
@@ -692,14 +691,16 @@ def merge_gpt_shots_with_action(
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # убрать наследие авто-«общий вид …»
-    cleaned = [
-        s
-        for s in dict_shots
-        if not str(s.get("действие") or "").casefold().startswith("общий вид")
-    ]
-    if not cleaned:
-        cleaned = dict_shots
+    # Наследие авто-«общий вид …» помечаем, но не выкидываем.
+    cleaned: list[dict[str, Any]] = []
+    for shot in dict_shots:
+        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
+            _mark_shot_kept(
+                shot,
+                "наследие авто-«общий вид» — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+        cleaned.append(shot)
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
@@ -735,6 +736,7 @@ def merge_gpt_shots_with_action(
             by_stem[stem] = s
     out: list[dict[str, Any]] = []
     missing: list[str] = []
+    matched_sources: set[int] = set()
     for i, can in enumerate(canonical):
         stem = action_stem(str(can.get("действие") or ""))
         gpt = by_stem.get(stem)
@@ -772,6 +774,7 @@ def merge_gpt_shots_with_action(
             if gpt.get(key) not in (None, ""):
                 row[key] = gpt[key]
         out.append(row)
+        matched_sources.add(id(gpt))
     if missing:
         # Mild: почти все шаги покрыты (≤2 дырки и ≥70% canonical) → WARN.
         # Severe → PassStop на retry, без silent invent и без принятия 1/N.
@@ -797,28 +800,39 @@ def merge_gpt_shots_with_action(
             + "; ".join(missing[:5])
             + " — нужен добор GPT"
         )
-    # если GPT дал больше кадров (осознанные вставки) — дописать хвост GPT
-    if len(cleaned) > len(out):
-        seen_ids = {str(r.get("id") or "") for r in out}
-        for s in cleaned[len(out) :]:
-            sid = str(s.get("id") or "")
-            if sid and sid in seen_ids:
-                continue
-            out.append(s)
-    # VO-cap / expected: не держим десятки кадров на короткий закадр.
+    # Кадры GPT, которые не попали в склейку (в том числе помеченный
+    # «общий вид»), дописываем. Идентификаторы не теряем.
+    seen_ids = {str(r.get("id") or "") for r in out if str(r.get("id") or "")}
+    for shot in cleaned:
+        if id(shot) in matched_sources:
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid in seen_ids:
+            continue
+        if any(shot is row for row in out):
+            continue
+        out.append(shot)
+        if sid:
+            seen_ids.add(sid)
+    # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
     limit = expected if expected > 0 else cap
     if limit > 0 and len(out) > limit:
-        kept: list[dict[str, Any]] = []
         normal_n = 0
-        for s in out:
-            if is_cutaway_shot(s) and normal_n >= limit:
-                kept.append(s)
-                continue
-            if normal_n < limit:
-                kept.append(s)
-                if not is_cutaway_shot(s):
+        for shot in out:
+            over = False
+            if is_cutaway_shot(shot) and normal_n >= limit:
+                over = False
+            elif normal_n < limit:
+                if not is_cutaway_shot(shot):
                     normal_n += 1
-        out = kept or out[:limit]
+            else:
+                over = True
+            if over and not shot.get("карантин"):
+                _mark_shot_kept(
+                    shot,
+                    f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
+                    where="merge_gpt_shots_with_action",
+                )
     return out, None
 
 
@@ -1058,7 +1072,15 @@ def align_shots_to_action_chain(
             scene_place = places.get(n) or ""
             shot_place = str(shot.get("место") or "").strip()
             if scene_place and shot_place and not _same_place(shot_place, scene_place):
-                removed += 1
+                reason = (
+                    f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён"
+                )
+                if not shot.get("карантин"):
+                    _mark_shot_kept(
+                        shot, reason, where="align_shots_to_action_chain"
+                    )
+                    removed += 1
+                kept.append(shot)
                 continue
             kept.append(shot)
         if len(kept) != len(shots):
@@ -1330,6 +1352,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
 
 # ---- R-VO-SENTENCE (c61): закадр режется ТОЛЬКО по концу предложения ----
 import re as _re
+
 _SENT_END = _re.compile(r'(?<=[.!?…])["»)]*\s+(?=["«(]?[A-ZА-ЯЁ0-9—–-])')
 _END_OK = _re.compile(r'[.!?…]["»)]*\s*$')
 

@@ -6,17 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Artifact,
     Frame,
-    FrameEdge,
     FrameStatus,
-    FrameText,
     Project,
-    PromptVersion,
 )
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
@@ -1036,41 +1032,87 @@ def apply_coverage_kind(
     _refresh_shots_in_beat(frames, vo_head)
 
 
+def _stamp_matching_shot(host: Frame, shot_id: str, fields: dict[str, Any]) -> bool:
+    """Пометить элемент ``кадры[]`` с этим id. Список не укорачивается."""
+    sid = (shot_id or "").strip()
+    if not sid:
+        return False
+    planned = planned_shots_from_attrs(host)
+    hit = False
+    for item in planned:
+        if str(item.get("id") or "").strip() == sid:
+            item.update(fields)
+            hit = True
+    if not hit:
+        return False
+    attrs = dict(getattr(host, "attrs", None) or {})
+    attrs["кадры"] = planned
+    host.attrs = attrs
+    _flag_attrs(host)
+    return True
+
+
+def _stamp_deleted_shot(frames: list[Frame], frame: Frame, reason: str) -> None:
+    """Пометить шот в собственных «кадрах» и в лестнице родителя.
+
+    Совпадение только по id шота: индексный fallback не используется,
+    чтобы не пометить чужой K1. Элементы из списка не выкидываются.
+    """
+    fields: dict[str, Any] = {
+        "карантин": True,
+        "пометка": reason,
+        "удалён": True,
+        "активен": False,
+    }
+    sid = coverage_shot_id(frame)
+    own = planned_shots_from_attrs(frame)
+    if own:
+        for item in own:
+            item_id = str(item.get("id") or "").strip()
+            if not sid or item_id == sid:
+                item.update(fields)
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs["кадры"] = own
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    parent = _vo_parent_frame(frames, frame)
+    if not sid or parent is None:
+        return
+    seen: set[int] = set()
+    for host in _vo_members(frames, parent):
+        if host is frame:
+            continue
+        key = int(getattr(host, "id", 0) or 0) or int(host.number)
+        if key in seen:
+            continue
+        seen.add(key)
+        _stamp_matching_shot(host, sid, fields)
+
+
 async def delete_coverage_child(
     session: AsyncSession,
     project: Project,
     frame: Frame,
     frames: list[Frame],
 ) -> None:
+    """Мягкая пометка дочернего кадра. Строка Frame и тексты остаются."""
     parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):
         raise RuntimeError("удалять можно только дочерний кадр")
     from app.services.ensure_frames_from_disk import quarantine_frame_media
+    from app.services.frame_tombstones import mark_frame_deleted
 
+    reason = "delete_coverage_child: дочерний кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, int(frame.number))
-    drop_id = int(frame.id)
-    sid = coverage_shot_id(frame)
-    await session.execute(
-        update(Artifact).where(Artifact.frame_id == drop_id).values(frame_id=None)
-    )
-    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id == drop_id))
-    await session.execute(delete(FrameText).where(FrameText.frame_id == drop_id))
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            or_(
-                FrameEdge.from_frame_id == drop_id,
-                FrameEdge.to_frame_id == drop_id,
-            ),
-        )
-    )
-    await session.delete(frame)
+    mark_frame_deleted(frame, project, reason)
+    _stamp_deleted_shot(frames, frame, reason)
     await session.flush()
-    if parent is not None:
-        remaining = [fr for fr in frames if int(fr.id) != drop_id]
-        _remove_kadry_id(parent, sid)
-        _refresh_shots_in_beat(remaining, parent)
+    logger.warning(
+        "WARN delete_coverage_child: кадр #{} id={} помечен, PromptVersion/FrameText на месте",
+        frame.number,
+        frame.id,
+    )
 
 
 def _clear_child_scene_chain(frame: Frame) -> None:
@@ -1373,7 +1415,34 @@ async def apply_coverage_op(
             parent_number=parent_number,
         )
     elif op_type == "coverage_delete":
-        await delete_coverage_child(session, project, frame, frames)
+        from app.services.ensure_frames_from_disk import quarantine_frame_media
+        from app.services.frame_tombstones import mark_frame_deleted
+
+        parent = _vo_parent_frame(frames, frame)
+        is_child = parent is not None and int(parent.number) != int(frame.number)
+        if not (is_shot_child(frame) or is_child):
+            logger.warning(
+                "WARN coverage_delete: кадр #{} не дочерний — отказ, без пометки и без отвязки",
+                frame.number,
+            )
+            return {
+                "ok": False,
+                "refused": "not_child",
+                "highlight": slot_key_from_op(op),
+                "frame_number": frame_number,
+                "op": op,
+                "regen_image": False,
+            }
+        reason = (
+            "coverage_delete в авто-очереди: кадр помечен, не удалён; медиа в карантине"
+        )
+        logger.warning(
+            "WARN coverage_delete: кадр #{} помечен «удалён», не удалён; медиа в карантине",
+            frame.number,
+        )
+        quarantine_frame_media(project, int(frame.number))
+        mark_frame_deleted(frame, project, reason)
+        _stamp_deleted_shot(frames, frame, reason)
 
     await session.flush()
     highlight = slot_key_from_op(op)
