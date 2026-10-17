@@ -2688,7 +2688,6 @@ async def _chat_completions_nostream(
     )
 
 
-@_gpt_seam
 @observe_model
 async def _chat_completions_stream_http(
     *,

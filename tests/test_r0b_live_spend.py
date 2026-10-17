@@ -115,3 +115,15 @@ async def test_live_stream_calls_overlap_without_queue(
 
 
 @pytest.mark.asyncio
+async def test_one_live_call_reserves_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
+    _quiet_gate(monkeypatch, run_cap=estimate * 1.5)
+    _install_live(monkeypatch)
+    text = await sb.call_opus("user", "system", "one", tmp_path / "one", tries=1)
+    assert text.strip()
+    assert _Stream.seen == [1]
+
+
+@pytest.mark.asyncio
