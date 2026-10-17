@@ -714,10 +714,24 @@ def _kind_compare(node: ast.AST) -> str | None:
     return None
 
 
-def _if_proved_false(test: ast.AST, file_kind: str | None, file_kinds: frozenset[str]) -> bool:
-    if file_kind is None:
+def _top_level_kind_compares(test: ast.AST) -> list[ast.Compare] | None:
+    """Сравнение на самом test или на верхнем уровне And. Вложенные not/or не доказываем."""
+    if isinstance(test, ast.Compare):
+        return [test]
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        return [item for item in test.values if isinstance(item, ast.Compare)]
+    return None
+
+
+def _if_proved_false(
+    test: ast.AST, file_kind: str | None, file_kinds: frozenset[str] | None
+) -> bool:
+    if file_kind is None or file_kinds is None:
         return False
-    for node in ast.walk(test):
+    compares = _top_level_kind_compares(test)
+    if compares is None:
+        return False
+    for node in compares:
         gate = _kind_compare(node)
         if gate == "in" and file_kind not in file_kinds:
             return True
@@ -726,8 +740,10 @@ def _if_proved_false(test: ast.AST, file_kind: str | None, file_kinds: frozenset
     return False
 
 
-def _if_proved_true(test: ast.AST, file_kind: str | None, file_kinds: frozenset[str]) -> bool:
-    if file_kind is None:
+def _if_proved_true(
+    test: ast.AST, file_kind: str | None, file_kinds: frozenset[str] | None
+) -> bool:
+    if file_kind is None or file_kinds is None:
         return False
     gate = _kind_compare(test)
     if gate == "in" and file_kind in file_kinds:
@@ -741,7 +757,7 @@ def _live_calls(
     fn_node: ast.AST,
     *,
     file_kind: str | None,
-    file_kinds: frozenset[str],
+    file_kinds: frozenset[str] | None,
 ) -> list[ast.Call]:
     found: list[ast.Call] = []
 
@@ -961,11 +977,11 @@ def _handler_kind(fn: Callable) -> str | None:
     return None
 
 
-def _file_kinds_of(fn: Callable) -> frozenset[str]:
+def _file_kinds_of(fn: Callable) -> frozenset[str] | None:
     value = getattr(fn, "__globals__", {}).get("_FILE_KINDS")
     if isinstance(value, frozenset) and all(isinstance(item, str) for item in value):
         return value
-    return frozenset({"file_voice", "file_music"})
+    return None
 
 
 def _callee(owner: Callable, call: ast.Call):
@@ -1568,6 +1584,64 @@ def test_snapshot_dir_only_for_three_actions_and_they_do_not_delete() -> None:
         hits = analyze_module_source(deleting, action_id)
         assert all(hit.snapshot_delete for hit in hits)
         assert hits[0].allowed is False
+
+
+def _open_targets(source: str, *, file_kind: str, file_kinds: frozenset[str] | None) -> list[str]:
+    fn_node = ast.parse(textwrap.dedent(source)).body[0]
+    found: list[str] = []
+    for call in _live_calls(fn_node, file_kind=file_kind, file_kinds=file_kinds):
+        func = call.func
+        if not isinstance(func, ast.Name) or func.id != "open" or not call.args:
+            continue
+        arg = call.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            found.append(arg.value)
+    return found
+
+
+def test_negated_and_or_file_kind_gates_are_not_pruned() -> None:
+    kinds = frozenset({"file_voice", "file_music"})
+    negated = (
+        "def executor(h):\n"
+        "    if not (h.kind in _FILE_KINDS):\n"
+        "        open('templates/secret.txt', 'w')\n"
+    )
+    disjunction = (
+        "def executor(h, force):\n"
+        "    if h.kind in _FILE_KINDS or force:\n"
+        "        open('templates/also.txt', 'w')\n"
+    )
+    assert _open_targets(negated, file_kind="master_prompt", file_kinds=kinds) == [
+        "templates/secret.txt"
+    ]
+    assert _open_targets(disjunction, file_kind="master_prompt", file_kinds=kinds) == [
+        "templates/also.txt"
+    ]
+
+
+def test_and_file_kind_gate_still_prunes_unreachable_body() -> None:
+    source = (
+        "def executor(h):\n"
+        "    if h.kind in _FILE_KINDS and isinstance(h, dict):\n"
+        "        open('templates/secret.txt', 'w')\n"
+    )
+    kinds = frozenset({"file_voice", "file_music"})
+    assert _open_targets(source, file_kind="master_prompt", file_kinds=kinds) == []
+    assert _open_targets(source, file_kind="file_voice", file_kinds=kinds) == [
+        "templates/secret.txt"
+    ]
+
+
+def test_missing_file_kinds_does_not_prune() -> None:
+    def executor(h):
+        if h.kind in _FILE_KINDS:
+            open("templates/secret.txt", "w")
+
+    assert _file_kinds_of(executor) is None
+    source = inspect.getsource(executor)
+    assert _open_targets(source, file_kind="master_prompt", file_kinds=None) == [
+        "templates/secret.txt"
+    ]
 
 
 def test_whitelist_has_no_code_exec_tools() -> None:
