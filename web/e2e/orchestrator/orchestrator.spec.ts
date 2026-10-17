@@ -99,6 +99,29 @@ test("отброшенный NEXT_PUBLIC_ORCH_API пишет warn без сек�
   }
 });
 
+test("валидатор NEXT_PUBLIC_ORCH_API возвращает нормализованный URL", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const pageOrigin = "http://127.0.0.1:3100";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799?x=1#frag";
+    expect(envOrchApiBase()).toBe("http://127.0.0.1:8799");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("http://127.0.0.1:8799");
+    expect(bearerTargetAllowed(envOrchApiBase(), pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "HTTP://LOCALHOST:8799/";
+    expect(envOrchApiBase()).toBe("http://localhost:8799");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("http://localhost:8799");
+
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com/orch/?q=1";
+    expect(envOrchApiBase()).toBe("https://api.example.com/orch");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("https://api.example.com/orch");
+    expect(bearerTargetAllowed("https://api.example.com/orch", pageOrigin)).toBe(true);
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
 test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_API;
   const pageOrigin = "http://127.0.0.1:3100";

@@ -104,21 +104,23 @@ function isLoopbackHost(hostname: string): boolean {
 
 /**
  * `NEXT_PUBLIC_ORCH_API`: https на любом хосте, http только на localhost / 127.0.0.1 / [::1].
- * Userinfo, протокол-относительный адрес и прочие схемы — нет.
+ * Возвращает origin + pathname без query, hash и хвостового слэша.
+ * Userinfo, протокол-относительный адрес и прочие схемы — null.
  */
-export function isAllowedOrchEnvApi(value: string): boolean {
+export function normalizedOrchEnvApi(value: string): string | null {
   const raw = value.trim();
-  if (!raw || raw.startsWith("//")) return false;
+  if (!raw || raw.startsWith("//")) return null;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return false;
+    return null;
   }
-  if (url.username || url.password) return false;
-  if (url.protocol === "https:") return true;
-  if (url.protocol === "http:") return isLoopbackHost(url.hostname);
-  return false;
+  if (url.username || url.password) return null;
+  const loopback = url.protocol === "http:" && isLoopbackHost(url.hostname);
+  if (url.protocol !== "https:" && !loopback) return null;
+  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  return `${url.origin}${path}`;
 }
 
 /** В лог — только origin. Userinfo, query и неразобранная строка не печатаются. */
@@ -141,13 +143,14 @@ function warnDiscardedOrchApi(raw: string): void {
 
 /** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim();
   if (!raw) return "";
-  if (!isAllowedOrchEnvApi(raw)) {
+  const normalized = normalizedOrchEnvApi(raw);
+  if (!normalized) {
     warnDiscardedOrchApi(raw);
     return "";
   }
-  return raw;
+  return normalized;
 }
 
 function queryApiOverrideEnabled(): boolean {
