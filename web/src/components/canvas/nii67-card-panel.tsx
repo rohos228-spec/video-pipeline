@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
+import { clearNii67ProjectViews } from "@/lib/nii67-project-state";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
   BLOCK_KINDS,
@@ -684,6 +685,9 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     setDirty(false);
     setCard(defaultCard());
     setPreviewText(null);
+    const cleared = clearNii67ProjectViews(previewsRef.current);
+    setFrames(cleared.frames);
+    setPreviews(cleared.previews);
   }, [projectId]);
 
   useEffect(() => {
@@ -816,10 +820,8 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
       setDirty(false);
       setCard(cardFromUnknown(res.card));
       setPreviewText(null);
-      setPreviews((prev) => {
-        Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
-        return {};
-      });
+      setFrames([]);
+      setPreviews((prev) => clearNii67ProjectViews(prev).previews);
       toast.success("Карточка сброшена");
       void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
     },

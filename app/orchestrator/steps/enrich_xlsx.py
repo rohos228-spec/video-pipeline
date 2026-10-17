@@ -563,26 +563,29 @@ async def _run_four_node_markup_pass(
         encoding="utf-8",
     )
 
+    _db_lock = asyncio.Lock()
+
     async def _apply_batch(payload: dict) -> None:
-        raw_ops = list(payload.get("ops") or [])
-        ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
-        if not ops:
-            logger.warning(
-                "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
-                project.id,
-                footer_kind,
-                apply_kind,
+        async with _db_lock:
+            raw_ops = list(payload.get("ops") or [])
+            ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
+            if not ops:
+                logger.warning(
+                    "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
+                    project.id,
+                    footer_kind,
+                    apply_kind,
+                )
+                return
+            await _db_apply.apply_ops(
+                session,
+                project,
+                ops,
+                export_xlsx=False,
+                node_kind=apply_kind,
             )
-            return
-        await _db_apply.apply_ops(
-            session,
-            project,
-            ops,
-            export_xlsx=False,
-            node_kind=apply_kind,
-        )
-        await session.commit()
-        await session.refresh(project)
+            await session.commit()
+            await session.refresh(project)
 
     logger.info(
         "[#{}] four-node markup {} via {} frames={}",
@@ -2390,22 +2393,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,
+                    is_coverage_leftover,
                 )
 
                 collapsed = await collapse_flattened_coverage_cells(
                     session, project
                 )
-                if collapsed.get("deleted"):
+                if collapsed.get("deleted") or collapsed.get("archived"):
                     await session.flush()
-                    frames_for_map = list(
-                        (
+                    frames_for_map = [
+                        fr
+                        for fr in (
                             await session.execute(
                                 _select(Frame)
                                 .where(Frame.project_id == project.id)
                                 .order_by(Frame.sort_key, Frame.number)
                             )
                         ).scalars().all()
-                    )
+                        if not is_coverage_leftover(fr)
+                    ]
                     logger.info(
                         "[#{}] {} collapse flattened coverage {}",
                         project.id,

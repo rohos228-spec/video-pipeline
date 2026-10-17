@@ -10,12 +10,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.settings import settings
+from app.web.auth_sessions import require_web_user
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -24,6 +25,7 @@ _PROFILE = _DATA / "profile.json"
 _AVATAR_DIR = _DATA / "profile"
 _REPO = Path(__file__).resolve().parents[3]
 _ENV = _REPO / ".env"
+_BACKUP_DIR = _DATA / "profile-env-backups"
 
 _DEFAULT = {
     "name": "Admin",
@@ -271,7 +273,8 @@ class KeyUpdate(BaseModel):
 
 
 @router.put("/keys/{key_id}")
-async def put_key(key_id: str, body: KeyUpdate) -> dict[str, Any]:
+async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
+    await require_web_user(request)
     match = next((k for k in _KEYS if k[0] == key_id), None)
     if match is None:
         raise HTTPException(404, "Неизвестный ключ")
@@ -281,7 +284,8 @@ async def put_key(key_id: str, body: KeyUpdate) -> dict[str, Any]:
         raise HTTPException(400, "Некорректное значение")
     lines: list[str] = []
     if _ENV.is_file():
-        shutil.copy2(_ENV, _ENV.with_name(f".env.bak-profile-{datetime.now():%Y%m%d-%H%M%S}"))
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_ENV, _BACKUP_DIR / f"env-{datetime.now():%Y%m%d-%H%M%S}")
         lines = _ENV.read_text(encoding="utf-8").splitlines()
     done = False
     for i, line in enumerate(lines):

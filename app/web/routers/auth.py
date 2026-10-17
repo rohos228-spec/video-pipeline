@@ -60,7 +60,10 @@ class DeleteBody(BaseModel):
 def _send_verify(req: Request, u) -> dict:
     code = ua.issue_token(u["id"], "verify")
     sent = ua.send_mail(u["email"], "VIA — код подтверждения", f"Ваш код подтверждения VIA: {code} (действует 24 ч)")
-    return {"mail_sent": sent, "dev_note": None if sent else "Почта не настроена — код записан в лог сервера", "dev_code": None if sent else code}
+    return {
+        "mail_sent": sent,
+        "dev_note": None if sent else "Почта не настроена — код записан в лог сервера",
+    }
 
 
 def _me(req: Request):
@@ -137,13 +140,13 @@ async def verify_resend(request: Request) -> dict:
 @router.post("/forgot")
 async def forgot(body: EmailBody, request: Request) -> dict:
     u = ua.get_by_login(body.email.strip())
-    out = {"ok": True, "mail_sent": False, "dev_note": None, "dev_link": None}
+    out = {"ok": True, "mail_sent": False, "dev_note": None}
     if u:  # same answer whether or not the user exists
         link = f"{_origin(request)}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
         sent = ua.send_mail(u["email"], "VIA — восстановление пароля", f"Ссылка для смены пароля (1 ч): {link}")
         out.update(mail_sent=sent)
         if not sent:
-            out.update(dev_note="Почта не настроена — ссылка записана в лог сервера", dev_link=link)
+            out["dev_note"] = "Почта не настроена — ссылка записана в лог сервера"
     elif not ua.mail_configured():
         out["dev_note"] = "Почта не настроена — ссылка записана в лог сервера (если аккаунт существует)"
     return out

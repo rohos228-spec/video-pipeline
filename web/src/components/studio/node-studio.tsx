@@ -821,7 +821,7 @@ export function NodeStudio({
                 description={ds.description || spec.description || ""}
               />
             ) : null}
-            {showFilesPanel && promptStepCode && !canCatalog && !promptStepCode.startsWith("") ? (
+            {showFilesPanel && promptStepCode && !canCatalog ? (
               <div className="rounded-[10px] border border-white/[0.06] bg-black/35 p-1 [&_section]:!rounded-[10px] [&_section]:!border-0 [&_section]:!bg-transparent">
                 <PromptFilesPanel
                   key={`inline-files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
@@ -836,8 +836,6 @@ export function NodeStudio({
                   activating={activateVariant.isPending}
                 />
               </div>
-            ) : promptStepCode && !canCatalog ? (
-              <p className="px-1 text-[13px] text-white/45">У ноды нет файловых промтов.</p>
             ) : null}
           </div>
         ) : inTab === "results" ? (

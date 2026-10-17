@@ -592,9 +592,9 @@ async def collapse_flattened_coverage_cells(
 
     Иначе GPT видит 44 самостоятельных ячейки и пишет покрытие на покрытие.
     """
-    from sqlalchemy import delete, or_, select as sel, update
+    from sqlalchemy import select as sel
 
-    from app.models import Artifact, Frame, FrameEdge, FrameText, PromptVersion
+    from app.models import Frame
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
 
     frames = list(
@@ -618,39 +618,21 @@ async def collapse_flattened_coverage_cells(
         _parent, drop = merge_flattened_coverage_members(members)
         extra.extend(drop)
         merged += 1
-    drop_ids = [int(fr.id) for fr in extra if getattr(fr, "id", None)]
-    if drop_ids:
-        await session.execute(
-            update(Artifact)
-            .where(Artifact.frame_id.in_(drop_ids))
-            .values(frame_id=None)
-        )
-        await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(drop_ids)))
-        await session.execute(delete(FrameText).where(FrameText.frame_id.in_(drop_ids)))
-        await session.execute(
-            delete(FrameEdge).where(
-                FrameEdge.project_id == project.id,
-                or_(
-                    FrameEdge.from_frame_id.in_(drop_ids),
-                    FrameEdge.to_frame_id.in_(drop_ids),
-                ),
-            )
-        )
-        for fr in extra:
-            if getattr(fr, "id", None):
-                await session.delete(fr)
+    archived = _archive_frames_as_leftover(extra)
+    if archived:
         await session.flush()
         await renumber_frames_by_sort_key(session, project)
     report = {
         "groups": merged,
-        "deleted": len(drop_ids),
+        "deleted": 0,
+        "archived": archived,
     }
-    if merged or drop_ids:
+    if merged or archived:
         logger.info(
-            "[#{}] collapse flattened coverage: groups={} deleted={}",
+            "[#{}] collapse flattened coverage: groups={} archived={}",
             project.id,
             merged,
-            len(drop_ids),
+            archived,
         )
     return report
 
@@ -883,10 +865,25 @@ def vo_duration_sec(text: str, *, shots: int = 1) -> float:
 def _is_pipeline_frame(frame: Any) -> bool:
     if not str(getattr(frame, "uuid", "") or "").strip():
         return False
+    if is_coverage_leftover(frame):
+        return False
     attrs = getattr(frame, "attrs", None)
     if isinstance(attrs, dict) and attrs.get("from_disk_media"):
         return False
     return True
+
+
+def _archive_frames_as_leftover(frames: list[Any]) -> int:
+    """Пометить кадры leftover. Строки Frame / промты / тексты не удаляются."""
+    n = 0
+    for fr in frames:
+        if getattr(fr, "id", None) is None:
+            continue
+        if is_coverage_leftover(fr):
+            continue
+        _set_cs(fr, leftover=True)
+        n += 1
+    return n
 
 
 def _cs(frame: Any) -> dict[str, Any]:
@@ -2305,10 +2302,10 @@ async def rebuild_vo_cells_from_shots(
     project: Project,
     frames: list[Any],
 ) -> tuple[list[Any], dict[str, Any]]:
-    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame удалить."""
-    from sqlalchemy import delete, or_, update
+    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete."""
+    from sqlalchemy import delete, select
 
-    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
+    from app.models import FrameEdge, FrameText
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
 
     n_cells, extra = promote_shots_to_vo_cells(frames)
@@ -2348,26 +2345,8 @@ async def rebuild_vo_cells_from_shots(
         )
         _pid = {id(fr) for fr in _protected}
         drop = [fr for fr in drop if id(fr) not in _pid]
-    drop_ids = [int(fr.id) for fr in drop]
-    if drop_ids:
-        await session.execute(
-            update(Artifact)
-            .where(Artifact.frame_id.in_(drop_ids))
-            .values(frame_id=None)
-        )
-        await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(drop_ids)))
-        await session.execute(delete(FrameText).where(FrameText.frame_id.in_(drop_ids)))
-        await session.execute(
-            delete(FrameEdge).where(
-                FrameEdge.project_id == project.id,
-                or_(
-                    FrameEdge.from_frame_id.in_(drop_ids),
-                    FrameEdge.to_frame_id.in_(drop_ids),
-                ),
-            )
-        )
-        for fr in drop:
-            await session.delete(fr)
+    archived = _archive_frames_as_leftover(drop)
+    if archived:
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     work = [f for f in ordered if _is_pipeline_frame(f)]
@@ -2387,36 +2366,49 @@ async def rebuild_vo_cells_from_shots(
             )
         )
     await session.flush()
-    await session.execute(
-        delete(FrameText).where(
-            FrameText.project_id == project.id,
-            FrameText.kind == "voiceover",
-        )
-    )
+    work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
+    existing_vo: dict[int, Any] = {}
+    if work_ids:
+        rows = (
+            await session.execute(
+                select(FrameText).where(
+                    FrameText.project_id == project.id,
+                    FrameText.kind == "voiceover",
+                    FrameText.frame_id.in_(work_ids),
+                )
+            )
+        ).scalars()
+        for row in rows:
+            existing_vo.setdefault(int(row.frame_id), row)
     for fr in work:
         vo = (getattr(fr, "voiceover_text", None) or "").strip()
-        if not vo:
+        if not vo or getattr(fr, "id", None) is None:
             continue
-        session.add(
-            FrameText(
-                project_id=project.id,
-                frame_id=fr.id,
-                kind="voiceover",
-                text=vo,
-                sort_key=1.0,
+        row = existing_vo.get(int(fr.id))
+        if row is None:
+            session.add(
+                FrameText(
+                    project_id=project.id,
+                    frame_id=fr.id,
+                    kind="voiceover",
+                    text=vo,
+                    sort_key=1.0,
+                )
             )
-        )
+        elif (row.text or "") != vo:
+            row.text = vo
     await session.flush()
     report = {
         "cells": n_cells,
-        "deleted": len(drop_ids),
+        "deleted": 0,
+        "archived": archived,
         "pipeline": len(work),
     }
     logger.info(
-        "[#{}] rebuild VO cells from shots: cells={} deleted={} pipeline={}",
+        "[#{}] rebuild VO cells from shots: cells={} archived={} pipeline={}",
         project.id,
         n_cells,
-        len(drop_ids),
+        archived,
         len(work),
     )
     return ordered, report
@@ -2502,9 +2494,6 @@ async def adopt_full_kadry_ladder(
     QC пишет все шоты на первый кадр. Старые vo_parent прошлого promote
     иначе остаются, expand не восстанавливает недостающие строки.
     """
-    from sqlalchemy import delete, or_, update
-
-    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
 
     work = [fr for fr in frames if _is_pipeline_frame(fr)]
@@ -2518,27 +2507,8 @@ async def adopt_full_kadry_ladder(
     if len(planned) <= len(work) or len(planned) <= rest_n:
         return 0
     extra = [fr for fr in work if fr is not owner]
-    drop_ids = [int(fr.id) for fr in extra if getattr(fr, "id", None)]
-    if drop_ids:
-        await session.execute(
-            update(Artifact)
-            .where(Artifact.frame_id.in_(drop_ids))
-            .values(frame_id=None)
-        )
-        await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(drop_ids)))
-        await session.execute(delete(FrameText).where(FrameText.frame_id.in_(drop_ids)))
-        await session.execute(
-            delete(FrameEdge).where(
-                FrameEdge.project_id == project.id,
-                or_(
-                    FrameEdge.from_frame_id.in_(drop_ids),
-                    FrameEdge.to_frame_id.in_(drop_ids),
-                ),
-            )
-        )
-        for fr in extra:
-            if getattr(fr, "id", None):
-                await session.delete(fr)
+    archived = _archive_frames_as_leftover(extra)
+    if archived:
         await session.flush()
         await renumber_frames_by_sort_key(session, project)
     attrs = dict(getattr(owner, "attrs", None) or {})
@@ -2556,9 +2526,9 @@ async def adopt_full_kadry_ladder(
         project.id,
         str(getattr(owner, "uuid", "") or ""),
         len(planned),
-        len(drop_ids),
+        archived,
     )
-    return len(drop_ids)
+    return archived
 
 
 

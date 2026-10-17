@@ -253,6 +253,9 @@ FIELD_ALIASES: dict[str, str] = {
     "set": "набор",
     "shot_set": "набор",
     "camera_subdivide": "camera_subdivide",
+    "child_prompts": "child_prompts",
+    "промты_детей": "child_prompts",
+    "промпты_детей": "child_prompts",
 }
 
 # Поля, которые живут в Frame.attrs (не колонки Frame.*).
@@ -1542,6 +1545,11 @@ async def apply_ops(
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
+        if "child_prompts" in fields:
+            raw_children = fields["child_prompts"]
+            children = list(raw_children) if isinstance(raw_children, list) else []
+            attrs["child_prompts"] = children
+            attrs["промты_детей"] = children
         if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
             attrs = _merge_camera_subdivide(attrs, fields)
         for attr_key in _STRUCTURED_ATTR_KEYS:

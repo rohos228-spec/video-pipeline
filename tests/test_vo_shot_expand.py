@@ -1987,7 +1987,7 @@ async def test_apply_shot_coverage_keeps_all_kadry_when_vo_is_short(mem_db) -> N
 
 
 async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> None:
-    """Повторный fw_shots: не плодить сцену, удалить хвост 1-K7."""
+    """Повторный fw_shots: не плодить сцену, хвост 1-K7 остаётся leftover."""
     import uuid as _uuid
 
     from sqlalchemy import select
@@ -1996,6 +1996,7 @@ async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> Non
     from app.services.vo_shot_expand import (
         apply_shot_coverage_to_vo_cells,
         coverage_shot_id,
+        is_coverage_leftover,
         is_shot_child,
         planned_shots_from_attrs,
     )
@@ -2158,12 +2159,16 @@ async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> Non
                 )
             ).scalars().all()
         )
-        ids = [coverage_shot_id(f) for f in frames2]
+        live = [f for f in frames2 if not is_coverage_leftover(f)]
+        ids = [coverage_shot_id(f) for f in live]
         assert "1-K7" not in ids
         assert "1-K8" not in ids
+        archived_ids = [coverage_shot_id(f) for f in frames2 if is_coverage_leftover(f)]
+        assert "1-K7" in archived_ids
+        assert "1-K8" in archived_ids
         assert sum(1 for sid in ids if str(sid).endswith("-S2-K1")) == 1
-        assert len([f for f in frames2 if is_shot_child(f)]) == 2
-        assert len([f for f in frames2 if not is_shot_child(f)]) == 2
+        assert len([f for f in live if is_shot_child(f)]) == 2
+        assert len([f for f in live if not is_shot_child(f)]) == 2
 
 
 def _kadry_frame(number: int, shot_id: str, **extra):
