@@ -28,6 +28,7 @@ FORBIDDEN_IDS = frozenset(
         "exec",
         "shell",
         "write_file",
+        "fix_bugs",
     }
 )
 
@@ -68,14 +69,16 @@ _ASYNCIO_FUNCS = frozenset(
 _OS_EXACT = frozenset({"system", "popen", "posix_spawn", "posix_spawnp"})
 _PTY_FUNCS = frozenset({"spawn"})
 
-_SHUTIL_DEST = {
-    "copy": 1,
-    "copy2": 1,
-    "copyfile": 1,
-    "copytree": 1,
-    "move": 1,
-    "rmtree": 0,
+# copy* пишут только назначение. move удаляет источник. rmtree запрещён всегда.
+_SHUTIL_WRITE = {
+    "copy": (None, 1),
+    "copy2": (None, 1),
+    "copyfile": (None, 1),
+    "copytree": (None, 1),
+    "move": (0, 1),
 }
+_OS_RENAME = frozenset({"rename", "replace"})
+_DYN = "<dyn>"
 
 _ALLOW_MARKERS = (
     "data/reports",
@@ -86,6 +89,14 @@ _ALLOW_MARKERS = (
 _RAG_ID = "rag.reindex"
 _RAG_SUFFIXES = ("orch_rag.db", "orch_rag.db-wal", "orch_rag.db-shm")
 _SNAPSHOT_DIR = "action_layer_snapshots"
+# Решение куратора: каталог снимков разрешён только этим трём id.
+_SNAPSHOT_ALLOW = frozenset(
+    {
+        "montage.upload_voice",
+        "montage.upload_music",
+        "history.rollback",
+    }
+)
 
 _HEADER_RE = re.compile(
     r"<!--\s*actions-audit-header\s*(.*?)\s*-->",
@@ -99,17 +110,28 @@ _MODIFY_ITEM_RE = re.compile(r"^\d+\.\s+`([^`]+)`", re.MULTILINE)
 
 
 class WriteHit:
-    def __init__(self, kind: str, sketch: str | None, function: str, *, snapshot: bool, allowed: bool):
+    def __init__(
+        self,
+        kind: str,
+        sketch: str | None,
+        function: str,
+        *,
+        source: str | None,
+        allowed: bool,
+        snapshot_delete: bool,
+    ):
         self.kind = kind
         self.sketch = sketch
         self.function = function
-        self.snapshot = snapshot
+        self.source = source
         self.allowed = allowed
+        self.snapshot_delete = snapshot_delete
 
     def __str__(self) -> str:
         where = self.sketch if self.sketch is not None else "<путь не доказан>"
-        mark = "снимок" if self.snapshot else self.kind
-        return f"{self.function}: {mark} → {where}"
+        extra = f" из {self.source}" if self.source is not None else ""
+        mark = "удаление снимка" if self.snapshot_delete else self.kind
+        return f"{self.function}: {mark}{extra} → {where}"
 
 
 def _audit_text() -> str:
@@ -134,7 +156,17 @@ def load_audit_header(text: str | None = None) -> dict:
             continue
         key, value = line.split(":", 1)
         fields[key.strip()] = value.strip()
-    required = ("source", "sha", "date", "actions", "keep", "modify", "remove", "fs_breach")
+    required = (
+        "source",
+        "sha",
+        "date",
+        "actions",
+        "keep",
+        "modify",
+        "remove",
+        "fs_breach",
+        "snapshot_allow",
+    )
     missing = [key for key in required if key not in fields]
     if missing:
         pytest.fail("в шапке аудита нет полей: " + ", ".join(missing))
@@ -146,9 +178,9 @@ def load_audit_header(text: str | None = None) -> dict:
             counts[key] = int(fields[key])
         except ValueError:
             pytest.fail(f"счётчик {key} не число: {fields[key]!r}")
-    breach = tuple(
-        part.strip() for part in fields["fs_breach"].split(",") if part.strip()
-    )
+    def _id_list(raw: str) -> tuple[str, ...]:
+        return tuple(part.strip() for part in raw.split(",") if part.strip())
+
     return {
         "source": fields["source"],
         "sha": fields["sha"],
@@ -157,8 +189,13 @@ def load_audit_header(text: str | None = None) -> dict:
         "keep": counts["keep"],
         "modify": counts["modify"],
         "remove": counts["remove"],
-        "fs_breach": breach,
+        "fs_breach": _id_list(fields["fs_breach"]),
+        "snapshot_allow": _id_list(fields["snapshot_allow"]),
     }
+
+
+def is_forbidden_action_id(action_id: str) -> bool:
+    return action_id in FORBIDDEN_IDS or action_id.split(".")[-1] in FORBIDDEN_IDS
 
 
 def modify_ids_from_audit(text: str | None = None) -> list[str]:
@@ -442,9 +479,9 @@ def _shutil_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
         elif isinstance(node, ast.ImportFrom) and node.module == "shutil":
             for alias in node.names:
                 if alias.name == "*":
-                    for fname in _SHUTIL_DEST:
+                    for fname in (*_SHUTIL_WRITE, "rmtree"):
                         funcs[fname] = fname
-                elif alias.name in _SHUTIL_DEST:
+                elif alias.name in _SHUTIL_WRITE or alias.name == "rmtree":
                     funcs[alias.asname or alias.name] = alias.name
     return modules, funcs
 
@@ -470,10 +507,10 @@ def _sketch(node: ast.AST | None, env: dict[str, str]) -> str | None:
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
         left = _sketch(node.left, env)
         right = _sketch(node.right, env)
-        if left is None or right is None:
+        if left is None and right is None:
             return None
         sep = "/" if isinstance(node.op, ast.Div) else ""
-        return f"{left}{sep}{right}"
+        return f"{left if left is not None else _DYN}{sep}{right if right is not None else _DYN}"
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for part in node.values:
@@ -496,25 +533,38 @@ def _sketch(node: ast.AST | None, env: dict[str, str]) -> str | None:
 
 
 def _bind_env(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
+    """Имя с несколькими разными присваиваниями становится неизвестным (denied)."""
     bound = dict(env)
+    seen: dict[str, str | None] = {}
+
+    def note(name: str, sketch: str | None) -> None:
+        if name not in seen:
+            seen[name] = sketch
+        elif seen[name] != sketch:
+            seen[name] = None
+        if seen[name] is None:
+            bound.pop(name, None)
+        else:
+            bound[name] = seen[name]
 
     def walk(node: ast.AST) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not fn_node:
             return
         if isinstance(node, ast.Assign):
             sketch = _sketch(node.value, bound)
-            if sketch is not None:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        bound[target.id] = sketch
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    note(target.id, sketch)
         elif (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.value is not None
         ):
-            sketch = _sketch(node.value, bound)
-            if sketch is not None:
-                bound[node.target.id] = sketch
+            note(node.target.id, _sketch(node.value, bound))
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            note(node.target.id, _sketch(node.value, bound))
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            note(node.target.id, None)
         for child in ast.iter_child_nodes(node):
             walk(child)
 
@@ -541,6 +591,51 @@ def _mode_is_write(mode: str | None) -> bool:
     if mode is None:
         return True
     return any(ch in mode for ch in "wax+")
+
+
+def _path_segments(sketch: str) -> list[str]:
+    return [part for part in sketch.replace("\\", "/").split("/") if part]
+
+
+def _has_dotdot(sketch: str) -> bool:
+    """Сегмент `..` и в исходной строке, и после нормализации `.` / `..`."""
+    if any(part == ".." for part in _path_segments(sketch)):
+        return True
+    normalized: list[str] = []
+    for part in sketch.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if normalized:
+                normalized.pop()
+            else:
+                normalized.append("..")
+        else:
+            normalized.append(part)
+    return any(part == ".." for part in normalized)
+
+
+def _under_snapshot(sketch: str) -> bool:
+    if _has_dotdot(sketch):
+        return False
+    segments = _path_segments(sketch)
+    roots = (
+        ["data", _SNAPSHOT_DIR],
+        ["{settings.data_dir}", _SNAPSHOT_DIR],
+    )
+    return any(segments[: len(root)] == root for root in roots)
+
+
+def _path_permitted(sketch: str, action_id: str) -> bool:
+    if _has_dotdot(sketch):
+        return False
+    if _under_snapshot(sketch):
+        return action_id in _SNAPSHOT_ALLOW
+    if _DYN in sketch:
+        return False
+    if _is_allow_path(sketch):
+        return True
+    return action_id == _RAG_ID and _is_rag_path(sketch)
 
 
 def _is_allow_path(sketch: str) -> bool:
@@ -641,6 +736,33 @@ def _live_calls(
     return found
 
 
+def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    modules: set[str] = set()
+    funcs: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    modules.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] == "os":
+            for alias in node.names:
+                if alias.name == "*":
+                    for fname in _OS_RENAME:
+                        funcs[fname] = fname
+                elif alias.name in _OS_RENAME:
+                    funcs[alias.asname or alias.name] = alias.name
+    return modules, funcs
+
+
+def _call_arg(call: ast.Call, index: int, *keywords: str) -> ast.AST | None:
+    if len(call.args) > index:
+        return call.args[index]
+    for kw in call.keywords:
+        if kw.arg in keywords:
+            return kw.value
+    return None
+
+
 def _write_hit(
     call: ast.Call,
     env: dict[str, str],
@@ -648,20 +770,32 @@ def _write_hit(
     action_id: str,
     shutil_modules: set[str],
     shutil_funcs: dict[str, str],
-    snapshot_dir: str | None,
+    os_modules: set[str],
+    os_funcs: dict[str, str],
 ) -> WriteHit | None:
     func = call.func
     kind: str | None = None
     dest: ast.AST | None = None
+    src: ast.AST | None = None
     if isinstance(func, ast.Name) and func.id == "open":
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
-            dest = call.args[0] if call.args else None
+            dest = _call_arg(call, 0, "file")
     elif isinstance(func, ast.Name) and func.id in shutil_funcs:
         attr = shutil_funcs[func.id]
         kind = f"shutil.{attr}"
-        index = _SHUTIL_DEST[attr]
-        dest = call.args[index] if len(call.args) > index else None
+        if attr == "rmtree":
+            dest = _call_arg(call, 0, "path")
+        else:
+            src_i, dst_i = _SHUTIL_WRITE[attr]
+            if src_i is not None:
+                src = _call_arg(call, src_i, "src")
+            dest = _call_arg(call, dst_i, "dst")
+    elif isinstance(func, ast.Name) and func.id in os_funcs:
+        attr = os_funcs[func.id]
+        kind = f"os.{attr}"
+        src = _call_arg(call, 0, "src")
+        dest = _call_arg(call, 1, "dst")
     elif isinstance(func, ast.Attribute):
         attr = func.attr
         if attr == "open":
@@ -671,26 +805,56 @@ def _write_hit(
         elif attr in {"write_text", "write_bytes"}:
             kind = attr
             dest = func.value
+        elif isinstance(func.value, ast.Name) and func.value.id in shutil_modules:
+            if attr == "rmtree":
+                kind = "shutil.rmtree"
+                dest = _call_arg(call, 0, "path")
+            elif attr in _SHUTIL_WRITE:
+                kind = f"shutil.{attr}"
+                src_i, dst_i = _SHUTIL_WRITE[attr]
+                if src_i is not None:
+                    src = _call_arg(call, src_i, "src")
+                dest = _call_arg(call, dst_i, "dst")
         elif (
-            attr in _SHUTIL_DEST
+            attr in _OS_RENAME
             and isinstance(func.value, ast.Name)
-            and func.value.id in shutil_modules
+            and func.value.id in os_modules
         ):
-            kind = f"shutil.{attr}"
-            index = _SHUTIL_DEST[attr]
-            dest = call.args[index] if len(call.args) > index else None
+            kind = f"os.{attr}"
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
     if kind is None:
         return None
     sketch = _sketch(dest, env)
-    snapshot = (
-        kind == "shutil.copy2"
-        and function == "_backup_file"
-        and snapshot_dir == _SNAPSHOT_DIR
+    source = _sketch(src, env) if src is not None else None
+    if kind == "shutil.rmtree":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=False,
+            snapshot_delete=sketch is None or _under_snapshot(sketch),
+        )
+    if kind in {"shutil.move", "os.rename", "os.replace"}:
+        dest_ok = bool(sketch) and _path_permitted(sketch, action_id)
+        src_ok = bool(source) and _path_permitted(source, action_id)
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=source,
+            allowed=dest_ok and src_ok,
+            snapshot_delete=source is None or _under_snapshot(source),
+        )
+    return WriteHit(
+        kind,
+        sketch,
+        function,
+        source=None,
+        allowed=bool(sketch) and _path_permitted(sketch, action_id),
+        snapshot_delete=False,
     )
-    allowed = bool(sketch) and (
-        _is_allow_path(sketch) or (action_id == _RAG_ID and _is_rag_path(sketch))
-    )
-    return WriteHit(kind, sketch, function, snapshot=snapshot, allowed=allowed)
 
 
 def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
@@ -698,6 +862,7 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
     tree = ast.parse(textwrap.dedent(source))
     consts = _module_string_constants(tree)
     shutil_modules, shutil_funcs = _shutil_bindings(tree)
+    os_modules, os_funcs = _os_move_bindings(tree)
     hits: list[WriteHit] = []
     for fn_node in tree.body:
         if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -711,7 +876,8 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
                 action_id,
                 shutil_modules,
                 shutil_funcs,
-                consts.get("SNAPSHOT_DIR"),
+                os_modules,
+                os_funcs,
             )
             if hit is not None:
                 hits.append(hit)
@@ -788,6 +954,7 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
         consts = _module_string_constants(module)
         env = _bind_env(fn_node, consts)
         shutil_modules, shutil_funcs = _shutil_bindings(module)
+        os_modules, os_funcs = _os_move_bindings(module)
         for call in _live_calls(fn_node, file_kind=file_kind, file_kinds=file_kinds):
             hit = _write_hit(
                 call,
@@ -796,7 +963,8 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
                 action_id,
                 shutil_modules,
                 shutil_funcs,
-                consts.get("SNAPSHOT_DIR"),
+                os_modules,
+                os_funcs,
             )
             if hit is not None:
                 hits.append(hit)
@@ -833,11 +1001,8 @@ def test_audit_header_counters() -> None:
         "history.rollback",
     ]
     assert len(modify_ids) == header["modify"]
-    assert set(header["fs_breach"]) == {
-        "montage.upload_voice",
-        "montage.upload_music",
-        "history.rollback",
-    }
+    assert header["fs_breach"] == ()
+    assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
 
 
 def test_empty_registry_is_not_green() -> None:
@@ -973,7 +1138,7 @@ def test_fs_allowlist_reports_and_node_overrides() -> None:
     assert denied[0].kind == "write_text"
 
 
-def test_fs_rejects_templates_snapshots_and_unknown() -> None:
+def test_fs_rejects_templates_and_foreign_snapshots() -> None:
     source = (
         "import shutil\n"
         "SNAPSHOT_DIR = 'action_layer_snapshots'\n"
@@ -985,12 +1150,11 @@ def test_fs_rejects_templates_snapshots_and_unknown() -> None:
         "    dst = folder / 'f'\n"
         "    shutil.copy2(src, dst)\n"
     )
-    hits = analyze_module_source(source, "history.rollback")
-    assert hits and all(not hit.allowed for hit in hits)
-    snapshots = [hit for hit in hits if hit.snapshot]
-    assert len(snapshots) == 1
-    assert snapshots[0].kind == "shutil.copy2"
-    assert snapshots[0].function == "_backup_file"
+    foreign = analyze_module_source(source, "prompt.save_master")
+    assert foreign and all(not hit.allowed for hit in foreign)
+    own = [hit for hit in analyze_module_source(source, "history.rollback") if hit.function == "_backup_file"]
+    assert len(own) == 1 and own[0].allowed and own[0].kind == "shutil.copy2"
+    assert not own[0].snapshot_delete
 
 
 def test_rag_reindex_allows_only_its_db_files() -> None:
@@ -1026,6 +1190,121 @@ def test_path_open_wb_is_a_write_and_rb_is_not() -> None:
     assert hits[0].allowed is False
 
 
+def test_fix_bugs_is_forbidden() -> None:
+    assert "fix_bugs" in FORBIDDEN_IDS
+    assert is_forbidden_action_id("fix_bugs")
+    assert is_forbidden_action_id("browser.fix_bugs")
+    assert not is_forbidden_action_id("project.pause")
+
+
+def test_rmtree_is_always_denied() -> None:
+    source = (
+        "import shutil\n"
+        "def wipe():\n"
+        "    shutil.rmtree('data/reports/old')\n"
+        "    shutil.rmtree('data/node_overrides/old')\n"
+        "    shutil.rmtree('data/action_layer_snapshots')\n"
+        "    shutil.rmtree('templates/node_groups')\n"
+    )
+    for action_id in (*_SNAPSHOT_ALLOW, "prompt.save_master"):
+        hits = analyze_module_source(source, action_id)
+        assert len(hits) == 4
+        assert all(hit.kind == "shutil.rmtree" and not hit.allowed for hit in hits)
+        assert hits[2].snapshot_delete
+
+
+def test_move_and_rename_check_source_and_dest() -> None:
+    source = (
+        "import shutil, os\n"
+        "from os import rename as rn, replace as rp\n"
+        "def save(src):\n"
+        "    shutil.move('data/reports/a', 'data/reports/b')\n"
+        "    shutil.move('templates/a', 'data/reports/a')\n"
+        "    shutil.move('data/reports/a', 'templates/b')\n"
+        "    os.rename('data/node_overrides/a', 'data/reports/a')\n"
+        "    os.replace('templates/a', 'data/node_overrides/a')\n"
+        "    rn('data/reports/a', 'secrets/a')\n"
+        "    rp('data/action_layer_snapshots/a', 'data/reports/a')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.allowed for hit in hits] == [True, False, False, True, False, False, True]
+    assert [hit.snapshot_delete for hit in hits] == [False, False, False, False, False, False, True]
+    foreign = analyze_module_source(source, "group.delete")
+    assert foreign[-1].allowed is False
+    assert foreign[-1].snapshot_delete
+
+
+def test_reassigned_name_is_unknown_and_denied() -> None:
+    changed = (
+        "def save():\n"
+        "    path = 'data/reports/a.txt'\n"
+        "    path = 'templates/secret.txt'\n"
+        "    open(path, 'w')\n"
+    )
+    same = (
+        "def save():\n"
+        "    path = 'data/reports/a.txt'\n"
+        "    path = 'data/reports/a.txt'\n"
+        "    open(path, 'w')\n"
+    )
+    unknown = (
+        "def save(other):\n"
+        "    path = 'data/reports/a.txt'\n"
+        "    path = other\n"
+        "    open(path, 'w')\n"
+    )
+    changed_hits = analyze_module_source(changed, "prompt.save_master")
+    same_hits = analyze_module_source(same, "prompt.save_master")
+    unknown_hits = analyze_module_source(unknown, "prompt.save_master")
+    assert len(changed_hits) == 1 and changed_hits[0].allowed is False
+    assert changed_hits[0].sketch is None
+    assert len(same_hits) == 1 and same_hits[0].allowed is True
+    assert len(unknown_hits) == 1 and unknown_hits[0].allowed is False
+
+
+def test_dotdot_segment_is_rejected() -> None:
+    source = (
+        "def save():\n"
+        "    open('data/reports/../secrets.txt', 'w')\n"
+        "    open('data/reports/a/../../node_overrides/b.txt', 'w')\n"
+        "    open('../data/reports/a.txt', 'w')\n"
+        "    open('data/reports/./ok.txt', 'w')\n"
+        "    open('data/node_overrides/../reports/c.txt', 'w')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in hits] == [False, False, False, True, False]
+
+
+def test_snapshot_dir_only_for_three_actions_and_they_do_not_delete() -> None:
+    backup = (
+        "import shutil\n"
+        "SNAPSHOT_DIR = 'action_layer_snapshots'\n"
+        "def _backup_file(state):\n"
+        "    src = Path(state['real_path'])\n"
+        "    folder = _data_root() / SNAPSHOT_DIR / uuid.uuid4().hex\n"
+        "    dst = folder / src.name\n"
+        "    shutil.copy2(src, dst)\n"
+    )
+    for action_id in _SNAPSHOT_ALLOW:
+        hits = analyze_module_source(backup, action_id)
+        assert len(hits) == 1
+        assert hits[0].allowed
+        assert hits[0].snapshot_delete is False
+    other = analyze_module_source(backup, "prompt.save_master")
+    assert len(other) == 1 and other[0].allowed is False
+    deleting = (
+        "import shutil, os\n"
+        "def save():\n"
+        "    shutil.rmtree('data/action_layer_snapshots/x')\n"
+        "    shutil.move('data/action_layer_snapshots/a', 'data/reports/a')\n"
+        "    os.rename('data/action_layer_snapshots/b', 'data/reports/b')\n"
+    )
+    for action_id in _SNAPSHOT_ALLOW:
+        hits = analyze_module_source(deleting, action_id)
+        assert all(hit.snapshot_delete for hit in hits)
+        assert hits[0].allowed is False
+
+
 def test_whitelist_has_no_code_exec_tools() -> None:
     assert sys.version_info >= _MIN_PY, (
         "zip(strict=True) требует Python 3.10+; CI этого репозитория — 3.12"
@@ -1033,18 +1312,16 @@ def test_whitelist_has_no_code_exec_tools() -> None:
     header = load_audit_header()
     modify_ids = modify_ids_from_audit()
     assert len(modify_ids) == header["modify"]
-    assert set(header["fs_breach"]) <= set(modify_ids)
+    assert header["fs_breach"] == ()
+    assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
+    assert set(header["snapshot_allow"]) <= set(modify_ids)
 
     module = _load_registry_module()
     specs = _specs(module)
     ids = [_action_id(spec) for spec in specs]
     _assert_registry_counts(ids, header)
 
-    forbidden_hits = sorted(
-        action_id
-        for action_id in ids
-        if action_id in FORBIDDEN_IDS or action_id.split(".")[-1] in FORBIDDEN_IDS
-    )
+    forbidden_hits = sorted(action_id for action_id in ids if is_forbidden_action_id(action_id))
     assert not forbidden_hits, (
         "в реестре есть запрещённые инструменты правки кода/исполнения: "
         + ", ".join(forbidden_hits)
@@ -1058,31 +1335,30 @@ def test_whitelist_has_no_code_exec_tools() -> None:
     assert not missing, "в реестре нет действий modify из аудита: " + ", ".join(missing)
 
     offenders: list[str] = []
-    breaches: set[str] = set()
     unexpected: list[str] = []
+    watched = set(modify_ids) | set(header["snapshot_allow"])
     for action_id, spec in zip(ids, specs, strict=True):
         fn = _executor(spec)
         if fn is None:
             continue
         if exec_calls_of(fn, label=action_id):
             offenders.append(action_id)
-        if action_id not in modify_ids:
+        if action_id not in watched:
             continue
         hits = reachable_write_hits(fn, action_id)
-        bad = [hit for hit in hits if not hit.allowed and not hit.snapshot]
-        snapshots = [hit for hit in hits if hit.snapshot and not hit.allowed]
+        bad = [hit for hit in hits if not hit.allowed]
         if bad:
             unexpected.append(action_id + ": " + "; ".join(str(hit) for hit in bad))
-        if snapshots:
-            breaches.add(action_id)
+        if action_id in header["snapshot_allow"]:
+            deletes = [hit for hit in hits if hit.snapshot_delete]
+            if deletes:
+                unexpected.append(
+                    action_id + " удаляет снимок: " + "; ".join(str(hit) for hit in deletes)
+                )
     assert not offenders, (
         "исполнители выглядят как обёртки subprocess/eval/exec/compile: "
         + ", ".join(sorted(offenders))
     )
     assert not unexpected, (
-        "запись в ФС вне data/reports и data/node_overrides:\n" + "\n".join(unexpected)
-    )
-    assert breaches == set(header["fs_breach"]), (
-        f"разрывы снимков {sorted(breaches)} не совпали с fs_breach шапки "
-        f"{list(header['fs_breach'])}"
+        "запись в ФС вне allowlist либо удаление снимка:\n" + "\n".join(unexpected)
     )

@@ -7,7 +7,8 @@ actions: 102
 keep: 93
 modify: 9
 remove: 0
-fs_breach: montage.upload_voice,montage.upload_music,history.rollback
+fs_breach:
+snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 -->
 
 # Аудит действий Action Layer (заготовка R0b)
@@ -62,7 +63,7 @@ fs_breach: montage.upload_voice,montage.upload_music,history.rollback
 
 ### remove
 
-Пусто. В реестре нет `edit_files`, `run_tests`, `exec`, `shell`, `write_file` и нет обёрток subprocess. Эти инструменты живут в легаси `db_browser.py` (см. ниже), не в Action Layer.
+Пусто. В реестре нет `edit_files`, `run_tests`, `exec`, `shell`, `write_file`, `fix_bugs` и нет обёрток subprocess. Эти инструменты живут в легаси `db_browser.py` (см. ниже), не в Action Layer.
 
 ### modify
 
@@ -76,7 +77,7 @@ fs_breach: montage.upload_voice,montage.upload_music,history.rollback
 8. `montage.upload_music`
 9. `history.rollback`
 
-Поле шапки `fs_breach` — действия из этого списка, чей исполнитель на #342 доходит до `shutil.copy2` в `builtin_wave5_history._backup_file` (каталог `data/action_layer_snapshots/`, это не `data/reports/` и не `data/node_overrides/`). Тест сверяет фактический разрыв с этим полем. Любой другой путь или другое действие роняют тест. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
+`fs_breach` пуст: вердикты не пересматривались (keep 93, modify 9, remove 0). Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
 
 ## Таблица действий
 
@@ -146,8 +147,8 @@ fs_breach: montage.upload_voice,montage.upload_music,history.rollback
 | 62 | `montage.align_audio` | app/services/action_layer/builtin_montage_more.py:_align_audio (спека L1058) | Разбор аудио (таймкоды кадров) | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 63 | `montage.set_assemble_params` | app/services/action_layer/builtin_montage_more.py:_set_assemble_params (спека L1068) | Хвост после озвучки, громкость музыки, субтитры, пропуск первых секунд. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 64 | `montage.get_cost_basis` | app/services/action_layer/builtin_montage_more.py:_get_cost_basis (спека L1080) | Текущие генераторы и разрешения, как их берёт регенерация панели, их цена по каталогу Kie (или признак «цена неизвестна») и число операций в очереди. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
-| 65 | `montage.upload_voice` | app/services/action_layer/builtin_wave3.py:_upload_voice (спека L470); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как audio/voice_full.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: обёртка history (_backup_file) копирует прежний файл в data/action_layer_snapshots/, это вне data/reports/ и data/node_overrides/ | modify | Сам аплоад идёт внутренним API. Каталог снимка перенести в allowlist (вопрос куратору) либо в data/reports/. Действие загрузки не удалять. |
-| 66 | `montage.upload_music` | app/services/action_layer/builtin_wave3.py:_upload_music (спека L483); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как music/bgm.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: та же обёртка _backup_file пишет копию музыки в data/action_layer_snapshots/ | modify | Как montage.upload_voice: сузить путь снимка, загрузку через внутренний API оставить. |
+| 65 | `montage.upload_voice` | app/services/action_layer/builtin_wave3.py:_upload_voice (спека L470); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как audio/voice_full.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: обёртка history (_backup_file) копирует прежний файл в data/action_layer_snapshots/. Каталог разрешён только этому id, upload_music и history.rollback | modify | Сам аплоад идёт внутренним API. Снимок не удаляется. Вердикт modify оставлен: путь вне data/reports/ и data/node_overrides/, но каталог именной. |
+| 66 | `montage.upload_music` | app/services/action_layer/builtin_wave3.py:_upload_music (спека L483); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как music/bgm.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: та же обёртка _backup_file пишет копию музыки в data/action_layer_snapshots/ (allowlist только этого id и двух соседних) | modify | Как montage.upload_voice: загрузка через внутренний API, снимок не удаляется, вердикт modify сохранён. |
 | 67 | `montage.upload_image` | app/services/action_layer/builtin_wave3.py:_upload_image (спека L493) | Кладёт PNG в слот кадра (shot 1/2, slot=parent для still родителя): прежняя картинка слота архивируется в old/, видео кадра помечается устаревшим. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 68 | `montage.upload_video` | app/services/action_layer/builtin_wave3.py:_upload_video (спека L504) | Кладёт MP4 в слот видео кадра: прежний клип архивируется в old/, пометка «устарело» снимается. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 69 | `montage.upload_ref` | app/services/action_layer/builtin_wave3.py:_upload_ref (спека L515) | Новый ручной референс кадра (картинка и имя): новый файл, прежние рефы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
@@ -182,13 +183,13 @@ fs_breach: montage.upload_voice,montage.upload_music,history.rollback
 | 98 | `storage.upload_file` | app/services/action_layer/builtin_wave5.py:_storage_upload (спека L505) | Добавляет файл в хранилище ноды проекта под новым именем с отметкой времени; существующие файлы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 99 | `storage.clear_files` | app/services/action_layer/builtin_wave5.py:_storage_clear (спека L512) | Удаляет все файлы из хранилища ноды проекта. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 100 | `history.list_snapshots` | app/services/action_layer/builtin_wave5_history.py:_list_snapshots (спека L428) | Список снимков, которые слой сохранил перед правками закадра, покрытия, полей шота, файлов озвучки и музыки, мастер-промтов: что было, что стало и можно ли откатить. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
-| 101 | `history.rollback` | app/services/action_layer/builtin_wave5_history.py:_rollback (спека L437) | Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла правка. | high | destructive | (а) прямо: при откате file_voice/file_music снова вызывает _backup_file в data/action_layer_snapshots/ | modify | Откат нужен. Меняется только каталог копии, не семантика отката через тот же внутренний эндпоинт. |
+| 101 | `history.rollback` | app/services/action_layer/builtin_wave5_history.py:_rollback (спека L437) | Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла правка. | high | destructive | (а) прямо: при откате file_voice/file_music снова вызывает _backup_file в data/action_layer_snapshots/ (тот же именной allowlist) | modify | Откат нужен. Копия остаётся в каталоге снимков, файлы снимков не удаляются. Вердикт modify сохранён. |
 | 102 | `publish.send` | app/services/action_layer/publish_action.py:_publish_send (спека L194) | Публикует готовый ролик проекта на площадки через профиль MoreLogin с подписью из темы проекта. | high | destructive | (в) косвенно: шаг publish ходит на площадки через MoreLogin; обработчик — только POST внутреннего API | keep | Штатная публикация студии под destructive и подтверждением человека. Обработчик не открывает сокет сам. Вопрос куратору — оставлять ли в whitelist оркестратора. |
 
 
 ## Инструменты правки кода и исполнения
 
-В реестре 102 действий их нет. Проверены точные id: `edit_files`, `run_tests`, `exec`, `shell`, `write_file`, а также вызовы `subprocess`, `eval`, `compile`, `exec`, `os.system` в телах исполнителей `app/services/action_layer/builtin_*.py` и `publish_action.py`.
+В реестре 102 действий их нет. Проверены точные id: `edit_files`, `run_tests`, `exec`, `shell`, `write_file`, `fix_bugs`, а также вызовы `subprocess`, `eval`, `compile`, `exec`, `os.system` в телах исполнителей `app/services/action_layer/builtin_*.py` и `publish_action.py`.
 
 Запрет оркестратору на правку кода студии (правило 8 плана) этим реестром не нарушается. Дыра — старый чат, не Action Layer.
 
@@ -412,7 +413,7 @@ PLAN §2.2.3 и §3.6 оценивали **2–4** call-site (`apply_ops_batches
 3. План §6.2 говорит, что `run_node` уже есть в реестре #342 (`POST .../steps/excel_gpt/run?node_key=&only_node=true&mode=resume`). Имени `run_node` нет. Роль выполняют `node.run_step` (excel_gpt, платно, destructive) и `step.run_step` (шаг конвейера). `stop_node` / `resume_node` тоже нет: стоп ближе к `project.stop` и `kill_switch.engage`, продолжение — к `project.resume` / `project.continue_pipeline` / `node.run_step` с resume. Подтвердить, что 11 новых действий плана садятся рядом, а не переименовывают эти id.
 4. Закрыто Heil. В границу вошли строки инвентаризации 1–9 и загрузчики в LLM: `scene_design/agents.load_prompt` (один патч), `scene_boundaries.load_prompt`, `scene_skeleton_batches.run_registry_prepass`, `nii67_agent.load_template`, `nii67_scenario._read`, `style_agent/agents.load_prompt`. Не вошли composer, `shot_templates`, `shot_menu`, пользовательские `node_groups/*.json`, бэкап стиля, зонд hero и `_tree_hash`. `apply_ops_batches.py` по-прежнему не читает шаблоны.
 5. Закрыто вместе с контрактом UI. `write_prompt` в перечень чтений не входит. Если у ноды есть версия в БД, сохранение промта из студии не зовёт `write_prompt`, а пишет новую версию через `node_store/writer.py` (раздел «Контракт NodeDef»). Пока версии в БД нет, файл git остаётся базой только для чтения.
-6. Каталог снимков `data/action_layer_snapshots/` (modify у `montage.upload_voice`, `montage.upload_music`, `history.rollback`): переносить в `data/reports/` или явно дописать третьим allowlist-каталогом? Сейчас это единственная прямая запись ФС внутри обработчиков реестра.
+6. Закрыто. `data/action_layer_snapshots/` — allowlist только для `montage.upload_voice`, `montage.upload_music`, `history.rollback` (поле шапки `snapshot_allow`). Другие действия туда не пишут. Эти три копируют файл и не удаляют снимки. Вердикт modify у них сохранён: запись вне `data/reports/` и `data/node_overrides/`, каталог именной. `shutil.rmtree` запрещён на любом пути.
 7. `publish.send` оставлен keep: обработчик не ходит в сеть сам, но шаг публикует ролик на площадки. Оставлять в whitelist оркестратора?
 8. `media.release_unknown` оставлен keep (признаков exec нет), но снимает блокировку неизвестного исхода платной отправки. Не забрать ли его у оркестратора отдельно от критерия §2.2.2?
 9. В `db_browser.py` рядом с `edit_files` / `run_tests` исполняются `git_commit_push`, `delete_projects`, `remove_node`. План называет только `fix_bugs` и два ключа. Удалять ли весь набор кодовых ключей одним коммитом R2?
