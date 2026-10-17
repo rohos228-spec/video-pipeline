@@ -1552,8 +1552,8 @@ async def apply_ops(
         from app.services.node_write_contract import filter_ops_for_node
 
         ops = filter_ops_for_node(ops, node_kind=str(node_kind))
-    touches_preservation = bool(characters) or any(
-        (op.get("target") or "frame") in {"frame", "replace_frames"}
+    touches_preservation = bool(characters) or bool(scenes) or any(
+        (op.get("target") or "frame") in {"frame", "replace_frames", "project"}
         for op in ops
         if isinstance(op, dict)
     )
@@ -1784,13 +1784,6 @@ async def apply_ops(
             project.meta = meta
             updated += 1
 
-        if preservation_before is not None:
-            _raise_if_new_preservation(
-                preservation_before,
-                await _project_preservation_view(session, project),
-                _ops_with_shot_address(ops),
-            )
-
         await session.flush()
 
         # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
@@ -1811,6 +1804,13 @@ async def apply_ops(
         )
         if expanded:
             await session.flush()
+
+        if preservation_before is not None:
+            _raise_if_new_preservation(
+                preservation_before,
+                await _project_preservation_view(session, project),
+                _ops_with_shot_address(ops),
+            )
 
         exported = None
         if export_xlsx:

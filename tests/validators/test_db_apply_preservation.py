@@ -263,19 +263,26 @@ async def test_db_apply_preservation_view_includes_texts_edges_characters(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "branch",
+    ["frame", "replace_frames", "characters", "scenes", "meta"],
+)
 async def test_db_apply_preservation_covers_all_mutating_ops(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, branch: str
 ) -> None:
     seen: list[str] = []
+    shot_action: list[str | None] = []
     real = run_preservation_validators
 
     def _spy(before, after, ops=None, *, mode="reject"):
         seen.append(mode)
+        attrs = left.attrs if isinstance(left.attrs, dict) else {}
+        shot_action.append(attrs.get("shot01_action"))
         return real(before, after, ops, mode=mode)
 
     monkeypatch.setattr(db_apply, "run_preservation_validators", _spy)
 
-    project = Project(slug="allops", topic="тест", status=None)  # type: ignore[arg-type]
+    project = Project(slug=f"allops-{branch}", topic="тест", status=None)  # type: ignore[arg-type]
     session.add(project)
     await session.flush()
     left = Frame(
@@ -305,13 +312,57 @@ async def test_db_apply_preservation_covers_all_mutating_ops(
     session.add_all([text, edge, person])
     await session.commit()
 
-    await db_apply.apply_ops(
-        session,
-        project,
-        None,
-        characters=[{"id": "c01", "имя": "Анна Петровна"}],
-    )
+    if branch == "frame":
+        await db_apply.apply_ops(
+            session,
+            project,
+            [{"frame_uuid": left.uuid, "fields": {"закадр": "стало"}}],
+        )
+    elif branch == "replace_frames":
+        await db_apply.apply_ops(
+            session,
+            project,
+            [
+                {
+                    "target": "replace_frames",
+                    "frames": [{"закадр": "новый один"}, {"закадр": "новый два"}],
+                }
+            ],
+        )
+    elif branch == "characters":
+        await db_apply.apply_ops(
+            session,
+            project,
+            None,
+            characters=[{"id": "c01", "имя": "Анна Петровна"}],
+        )
+    elif branch == "scenes":
+        await db_apply.apply_ops(
+            session,
+            project,
+            None,
+            scenes=[
+                {
+                    "id_scene": "sc1",
+                    "start_words": "было",
+                    "end_words": "было",
+                    "shots": [{"id_shot": "sh1", "действие": "смотрит"}],
+                }
+            ],
+        )
+    elif branch == "meta":
+        await db_apply.apply_ops(
+            session,
+            project,
+            [{"target": "project", "fields": {"general_plan": "план на мета"}}],
+        )
     assert seen == ["reject"]
+    if branch == "scenes":
+        assert shot_action == ["смотрит"]
+
+    if branch != "characters":
+        return
+
     await session.refresh(person)
     assert person.name == "Анна Петровна"
     await session.refresh(text)
@@ -321,7 +372,6 @@ async def test_db_apply_preservation_covers_all_mutating_ops(
 
     async def _wipe(session, project, characters, *, replace=False):
         await real_upsert(session, project, characters, replace=replace)
-        await session.execute(select(FrameText).where(FrameText.project_id == project.id))
         for row in (
             await session.execute(select(FrameText).where(FrameText.project_id == project.id))
         ).scalars():
