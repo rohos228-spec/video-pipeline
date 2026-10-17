@@ -1862,3 +1862,111 @@ async def test_delete_merge_and_restore_keep_frame_rows(
     ).scalars().all()
     assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
     assert sorted(fr.number for fr in rows) == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_collapse_and_apply_keep_frames_and_report_deleted_zero(
+    session: AsyncSession, project: Project, warn_log
+) -> None:
+    """Ключ deleted не означает стирание: лишние кадры archived и остаются в БД."""
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.vo_shot_expand import (
+        apply_shot_coverage_to_vo_cells,
+        collapse_flattened_coverage_cells,
+        is_coverage_leftover,
+    )
+
+    session.add(project)
+    await session.flush()
+    k1 = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="k1" * 12,
+        voiceover_text="двор целиком",
+        status=FrameStatus.planned,
+        sort_key=10.0,
+        attrs={
+            "кадры": [{"id": "5-K1", "порядок": 1, "закадр": "двор целиком"}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "5-K1", "parent_uuid": "k1" * 12},
+        },
+    )
+    k2 = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="k2" * 12,
+        voiceover_text="жест рук",
+        status=FrameStatus.planned,
+        sort_key=20.0,
+        image_prompt="промт второго",
+        attrs={
+            "кадры": [{"id": "5-K2", "порядок": 1, "закадр": "жест рук"}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "5-K2", "parent_uuid": "k2" * 12},
+        },
+    )
+    session.add_all([k1, k2])
+    await session.flush()
+    k2_id = int(k2.id)
+
+    report = await collapse_flattened_coverage_cells(session, project)
+    await session.flush()
+    assert report["deleted"] == 0
+    assert report["archived"] >= 1
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.id)
+        )
+    ).scalars().all()
+    assert {fr.uuid for fr in rows} >= {"k1" * 12, "k2" * 12}
+    archived = next(fr for fr in rows if fr.uuid == "k2" * 12)
+    assert is_coverage_leftover(archived)
+    assert archived.attrs.get("активен") is False
+    assert frame_is_active(archived) is False
+    assert archived.image_prompt == "промт второго"
+    assert any("WARN archive leftover" in line for line in warn_log)
+    assert any("WARN collapse_flattened_coverage_cells" in line for line in warn_log)
+
+    seed = Frame(
+        project_id=project.id,
+        number=10,
+        uuid="sd" * 12,
+        voiceover_text="Михаил идёт к зданию полиции.",
+        status=FrameStatus.planned,
+        sort_key=100.0,
+        attrs={
+            "кадры": [{
+                "id": "9-K1",
+                "сцена": 1,
+                "шаблон": "T8",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "улица",
+                "действие": "идёт к зданию",
+                "закадр": "Михаил идёт к зданию полиции.",
+            }],
+            "vo_cell_full": "Михаил идёт к зданию полиции.",
+            "главное_действие": "1. улица — идёт к зданию\n(Михаил идёт к зданию полиции.)",
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": "sd" * 12},
+        },
+    )
+    empty = Frame(
+        project_id=project.id,
+        number=11,
+        uuid="em" * 12,
+        voiceover_text="",
+        status=FrameStatus.planned,
+        sort_key=110.0,
+        image_prompt="пустой кадр",
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "em" * 12}},
+    )
+    session.add_all([seed, empty])
+    await session.flush()
+    out = await apply_shot_coverage_to_vo_cells(session, project)
+    await session.flush()
+    assert out.get("deleted") == 0
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    uuids = {fr.uuid for fr in rows}
+    assert "sd" * 12 in uuids
+    assert "em" * 12 in uuids
+    assert k2_id in {int(fr.id) for fr in rows}

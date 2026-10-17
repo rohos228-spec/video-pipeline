@@ -628,9 +628,8 @@ async def collapse_flattened_coverage_cells(
         "archived": archived,
     }
     if merged or archived:
-        logger.info(
-            "[#{}] collapse flattened coverage: groups={} archived={}",
-            project.id,
+        logger.warning(
+            "WARN collapse_flattened_coverage_cells: groups={} archived={} deleted=0, строки на месте",
             merged,
             archived,
         )
@@ -882,6 +881,17 @@ def _archive_frames_as_leftover(frames: list[Any]) -> int:
         if is_coverage_leftover(fr):
             continue
         _set_cs(fr, leftover=True)
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs["активен"] = False
+        attrs["карантин"] = True
+        attrs["пометка"] = "archived leftover — кадр сохранён"
+        fr.attrs = attrs
+        _flag_attrs(fr)
+        logger.warning(
+            "WARN archive leftover: кадр #{} id={} помечен archived, строка сохранена",
+            getattr(fr, "number", None),
+            getattr(fr, "id", None),
+        )
         n += 1
     return n
 
@@ -2702,13 +2712,22 @@ async def apply_shot_coverage_to_vo_cells(
         "dist": n_dist,
         "xlsx": xlsx,
     }
-    logger.info(
-        "[#{}] shot coverage → VO cells: pipeline={} deleted={} expand={}",
-        project.id,
-        out.get("pipeline"),
-        out.get("deleted"),
-        exp,
-    )
+    if out.get("archived") or out.get("deleted"):
+        logger.warning(
+            "WARN apply_shot_coverage_to_vo_cells: pipeline={} deleted={} archived={} expand={}, строки на месте",
+            out.get("pipeline"),
+            out.get("deleted"),
+            out.get("archived"),
+            exp,
+        )
+    else:
+        logger.info(
+            "[#{}] shot coverage → VO cells: pipeline={} deleted={} expand={}",
+            project.id,
+            out.get("pipeline"),
+            out.get("deleted"),
+            exp,
+        )
     return out
 
 
