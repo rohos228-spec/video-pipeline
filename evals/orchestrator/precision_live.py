@@ -1299,6 +1299,11 @@ def render_locked_report(payload: dict[str, Any]) -> str:
                 f"({acceptance['test_ndcg_at_8']:.4f}).",
             ]
         )
+    hit = median["test"]["hit_at_5"]
+    if hit < HIT_AT_5_MIN:
+        lines.append(f"hit@5 test {hit:.4f} ниже порога {HIT_AT_5_MIN}.")
+    else:
+        lines.append(f"hit@5 test {hit:.4f}, порог {HIT_AT_5_MIN}.")
     p95 = median["test"]["p95_s"]
     if p95 > P95_MAX_S:
         lines.append(f"p95 test {p95:.3f} с выше лимита {P95_MAX_S:.1f} с.")
