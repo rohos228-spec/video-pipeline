@@ -870,6 +870,7 @@ function handleKill(session) {
   return {
     ok: true,
     status: "cancelled",
+    stop_key_set: true,
     detail: "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
   };
 }

@@ -242,20 +242,40 @@ export function useOrchestratorChat() {
   }, []);
 
   const kill = useCallback(async () => {
+    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, phase: "stopping" });
     try {
-      const result = await postOrchKill(cfg, {
+      const result = (await postOrchKill(cfg, {
         session_id: boot.session,
         reason: "kill switch из чата",
-      });
-      dispatch({
-        type: "kill-notice",
-        detail: result.detail || "Платный шаг остановится на границе.",
-        paidBoundary: true,
-      });
+      })) as { ok?: boolean; detail?: string; stop_key_set?: boolean };
+      if (result.stop_key_set === true && result.ok !== false) {
+        dispatch({
+          type: "kill-notice",
+          detail: result.detail || "",
+          paidBoundary: true,
+          phase: "stopped",
+        });
+        setSendError("");
+        return;
+      }
+      if (result.stop_key_set === false || result.ok === false) {
+        dispatch({
+          type: "kill-notice",
+          detail: result.detail || (result.stop_key_set === false ? "Стоп-ключ не установлен" : "остановка не подтверждена"),
+          paidBoundary: false,
+          phase: "error",
+        });
+        return;
+      }
       setSendError("");
     } catch (error) {
       if (!noteAuth(error)) {
-        setSendError(error instanceof Error ? error.message : "kill switch не прошёл");
+        dispatch({
+          type: "kill-notice",
+          detail: error instanceof Error ? error.message : "kill switch не прошёл",
+          paidBoundary: false,
+          phase: "error",
+        });
       }
     }
   }, [boot.session, cfg, noteAuth]);

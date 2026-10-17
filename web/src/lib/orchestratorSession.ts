@@ -198,10 +198,14 @@ export interface ClassificationView {
   killSwitch: boolean;
 }
 
+export type KillPhase = "stopping" | "stopped" | "error";
+
 export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
   paidBoundary: boolean;
+  /** stopping — запрос ушёл; stopped — сервер подтвердил; error — отказ или stop_key_set=false. */
+  phase: KillPhase;
 }
 
 export interface OrchScreenState {
@@ -217,7 +221,7 @@ export interface OrchScreenState {
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
-  | { type: "kill-notice"; detail: string; paidBoundary: boolean }
+  | { type: "kill-notice"; detail: string; paidBoundary: boolean; phase: KillPhase }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
 
@@ -312,6 +316,50 @@ function closeServerApproval(state: OrchScreenState, id: string, decision: "appr
   item.resolved = decision;
 }
 
+function isTerminalKillStatus(value: string): boolean {
+  return value === "cancelled" || value === "killed";
+}
+
+function readStopKey(payload: Record<string, unknown>): boolean | null {
+  if (payload.stop_key_set === true) return true;
+  if (payload.stop_key_set === false) return false;
+  return null;
+}
+
+function markKill(next: OrchScreenState, phase: KillPhase, text: string, paidBoundary: boolean): void {
+  if (phase === "error" && next.killNotice?.phase === "stopped") return;
+  next.killNotice = { phase, text, paidBoundary };
+}
+
+/** Запрос остановки или событие kill_switch. «Остановлено» — только после подтверждения. */
+function noteKillRequested(next: OrchScreenState, payload: Record<string, unknown>): void {
+  const stopKey = readStopKey(payload);
+  const detail = str(payload.detail);
+  const status = str(payload.status) || str(payload.task_status);
+  if (stopKey === true) {
+    markKill(next, "stopped", detail, true);
+    return;
+  }
+  if (stopKey === false) {
+    markKill(next, "error", detail || "Стоп-ключ не установлен", false);
+    return;
+  }
+  if (isTerminalKillStatus(status)) {
+    markKill(next, "stopped", detail || next.killNotice?.text || "", next.killNotice?.paidBoundary ?? true);
+    return;
+  }
+  if (next.killNotice?.phase === "stopped") return;
+  markKill(next, "stopping", "", true);
+}
+
+/** SSE cancelled/killed подтверждает уже запрошенную остановку. */
+function promoteKillIfTerminal(next: OrchScreenState, status: string): void {
+  if (!isTerminalKillStatus(status)) return;
+  const phase = next.killNotice?.phase;
+  if (phase !== "stopping" && phase !== "error") return;
+  markKill(next, "stopped", next.killNotice?.text ?? "", next.killNotice?.paidBoundary ?? true);
+}
+
 function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
   const status = asTaskStatus(str(payload.task_status));
   if (taskId && status) {
@@ -397,7 +445,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     };
   }
   if (action.type === "kill-notice") {
-    return { ...state, killNotice: { text: action.detail, paidBoundary: action.paidBoundary } };
+    if (state.killNotice?.phase === "stopped" && action.phase === "error") return state;
+    return {
+      ...state,
+      killNotice: { text: action.detail, paidBoundary: action.paidBoundary, phase: action.phase },
+    };
   }
   if (action.type === "approval-resolved") {
     return {
@@ -457,12 +509,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         seq: event.seq,
         killSwitch,
       };
-      if (killSwitch) {
-        next.killNotice = {
-          text: "Сработал из сообщения.",
-          paidBoundary: true,
-        };
-      }
+      if (killSwitch) noteKillRequested(next, payload);
     }
     absorbLlmSignal(next, taskId, payload, event.seq);
     return next;
@@ -480,17 +527,26 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     return next;
   }
 
+  if (event.type === "kill_switch") {
+    noteKillRequested(next, payload);
+    return next;
+  }
+
   if (event.type === "agent_status") {
     const agent = str(payload.agent) as AgentStatusPayload["agent"];
     const found = next.agents.find((item) => item.role === agent);
     if (found) {
       found.status = str(payload.status, found.status);
       found.detail = str(payload.detail);
+      promoteKillIfTerminal(next, found.status);
     }
     if (!taskId) return next;
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(str(payload.task_status));
-    if (taskStatus) task.status = taskStatus;
+    if (taskStatus) {
+      task.status = taskStatus;
+      promoteKillIfTerminal(next, taskStatus);
+    }
     return next;
   }
 

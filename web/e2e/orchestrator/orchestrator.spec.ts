@@ -211,6 +211,7 @@ test.describe("orchestrator chat", () => {
         body: JSON.stringify({
           ok: true,
           status: "cancelled",
+          stop_key_set: true,
           detail: "произвольный текст сервера",
         }),
       });
@@ -226,6 +227,46 @@ test.describe("orchestrator chat", () => {
     expect(text.indexOf("Платный шаг остановится на границе.")).toBeLessThan(
       text.indexOf("произвольный текст сервера"),
     );
+  });
+
+  test("kill: Останавливаю, ошибка при stop_key_set=false и повтор", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-pending");
+    let release = () => {};
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let body: { ok: boolean; stop_key_set: boolean; detail: string } = {
+      ok: true,
+      stop_key_set: false,
+      detail: "стоп-ключ не встал",
+    };
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).toContainText("Останавливаю…");
+    await expect(banner).not.toContainText("Остановлено");
+    release();
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+    gate = Promise.resolve();
+    body = { ok: true, stop_key_set: true, detail: "ключ установлен" };
+    await page.getByTestId("orch-kill-retry").click();
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(banner).toContainText("Платный шаг остановится на границе");
+    await expect(banner).toContainText("ключ установлен");
+    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
   });
 
   test("план: риск, стоимость и параллельные read-only", async ({ page }) => {
@@ -259,8 +300,10 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-classification")).toContainText("остановка");
     await expect(page.getByTestId("orch-classification")).toContainText("kill switch из сообщения");
     await expect(page.getByTestId("orch-classification")).not.toContainText("interrupt");
-    await expect(page.getByTestId("orch-kill-status")).toContainText(/из сообщения/i);
-    await expect(page.getByTestId("orch-kill-status")).toContainText(/платный шаг остановится на границе/i);
+    await expect(page.getByTestId("orch-kill-status")).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(page.getByTestId("orch-kill-status")).toContainText("Останавливаю…");
+    await expect(page.getByTestId("orch-kill-status")).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-status")).not.toContainText(/платный шаг остановится на границе/i);
   });
 
   test("task: новая задача встаёт в очередь и стартует после текущей", async ({ page }) => {
