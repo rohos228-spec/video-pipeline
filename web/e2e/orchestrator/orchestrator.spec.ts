@@ -56,6 +56,96 @@ test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупрежд�
   }
 });
 
+test("approval_decided закрывает карточку по своему change_id", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "decided",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        action: "run_node",
+        forecast_usd: 2.4,
+        retry_armed: false,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  const foreign = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "decided",
+      payload: { change_id: "orch-appr-9-1", decision: "deny", task_id: 1 },
+    },
+  });
+  expect(foreign.approvals[0]?.resolved).toBeNull();
+
+  const denied = reduceOrchScreen(foreign, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 4,
+      session_id: "decided",
+      payload: { change_id: "orch-appr-1-1", decision: "deny", task_id: 1 },
+    },
+  });
+  expect(denied.approvals[0]?.resolved).toBe("rejected");
+
+  const retryOpened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "retry",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        retry_armed: false,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  const retryDecided = reduceOrchScreen(retryOpened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "retry",
+      payload: { change_id: "orch-appr-1-1", decision: "retry_step", task_id: 1 },
+    },
+  });
+  expect(retryDecided.approvals[0]?.resolved).toBe("closed");
+  const forecast = reduceOrchScreen(retryDecided, {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 4,
+      session_id: "retry",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        forecast_usd: 2.4,
+        retry_armed: true,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  expect(forecast.approvals).toHaveLength(1);
+  expect(forecast.approvals[0]?.resolved).toBeNull();
+  expect(forecast.approvals[0]?.retryArmed).toBe(true);
+  expect(forecast.approvals[0]?.forecast).toBe(2.4);
+});
+
 test("первое approval_required несёт change_id, forecast_usd и retry_armed false", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
