@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from loguru import logger
@@ -176,6 +177,55 @@ async def _drop_frame_rows(
     )
 
 
+_HEAD_ROLLBACK_KEY = "head_promotion_rollback"
+
+
+def _store_head_rollback(parent: Frame, kids: list[Frame]) -> None:
+    """Запомнить голову и шоты до повышения, чтобы restore вернул роли."""
+    snap = {
+        "head_voiceover": parent.voiceover_text,
+        "head_attrs": copy.deepcopy(dict(getattr(parent, "attrs", None) or {})),
+        "members": [
+            {
+                "id": int(fr.id),
+                "voiceover_text": fr.voiceover_text,
+                "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
+            }
+            for fr in kids
+        ],
+    }
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs[_HEAD_ROLLBACK_KEY] = snap
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+
+def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
+    """Вернуть голову и шоты к состоянию до повышения. False — снимка нет."""
+    raw = dict(getattr(frame, "attrs", None) or {})
+    snap = raw.get(_HEAD_ROLLBACK_KEY)
+    if not isinstance(snap, dict):
+        return False
+    by_id = {int(fr.id): fr for fr in frames if getattr(fr, "id", None)}
+    frame.voiceover_text = snap.get("head_voiceover")
+    frame.attrs = copy.deepcopy(snap.get("head_attrs") or {})
+    _flag_attrs(frame)
+    for member in snap.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        try:
+            mid = int(member.get("id"))
+        except (TypeError, ValueError):
+            continue
+        kid = by_id.get(mid)
+        if kid is None or kid is frame:
+            continue
+        kid.voiceover_text = member.get("voiceover_text")
+        kid.attrs = copy.deepcopy(member.get("attrs") or {})
+        _flag_attrs(kid)
+    return True
+
+
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
     if not kids:
@@ -243,13 +293,15 @@ async def delete_montage_frame(
             "marked": 1,
         }
 
+    from app.services.frame_tombstones import frame_is_active
+
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    if kids:
+        _store_head_rollback(frame, kids)
     reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, number)
     mark_frame_deleted(frame, project, reason)
     _stamp_deleted_shot(frames, frame, reason)
-    from app.services.frame_tombstones import frame_is_active
-
-    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
     promoted = _promote_first_child(frame, kids)
     promoted_number: int | None = None
     if promoted is not None:
@@ -390,11 +442,13 @@ async def restore_montage_frame(
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден")
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    for key in ("удалён", "пометка", "карантин", "активен"):
-        attrs.pop(key, None)
-    frame.attrs = attrs
-    _flag_attrs(frame)
+    rolled = _apply_head_rollback(frames, frame)
+    if not rolled:
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        for key in ("удалён", "пометка", "карантин", "активен"):
+            attrs.pop(key, None)
+        frame.attrs = attrs
+        _flag_attrs(frame)
     _unstamp_deleted_shot(frames, frame)
     forget_deleted(project, int(frame.number))
     await session.flush()
