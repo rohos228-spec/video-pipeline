@@ -106,6 +106,15 @@ class InvalidTransition(RuntimeError):
     pass
 
 
+class ApprovalGrantError(RuntimeError):
+    """Отказ grant_approval с кодом для WS4: 409 уже решён, 404 чужой id."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
 def _coerce_decision(decision: ApprovalDecision | str | None) -> ApprovalDecision | None:
     if decision is None or decision == "":
         return None
@@ -1865,12 +1874,28 @@ class Supervisor:
         retry_grant: bool,
         decision: ApprovalDecision | str | None,
     ) -> None:
-        """Клиентский change_id не становится id одобрения.
+        """Повтор кнопки по тому же id — 409 до смены статуса и до execute.
 
-        Отказ 409/404 для повторного и чужого id добавляется отдельно:
-        здесь значение не подменяет серверный ``orch-appr-<task>-<n>``.
+        ``retry_grant`` после ``retry_step`` остаётся одноразовым допуском.
+        Чужой и неизвестный id пока не отклоняются здесь.
         """
-        del task_id, session_id, change_id, retry_grant, decision
+        key = int(task_id)
+        button = _coerce_decision(decision) is not None
+        if not change_id:
+            open_id = self._appr_open.get(key)
+            if button and not retry_grant and open_id is not None and open_id in self._appr_decided:
+                raise ApprovalGrantError(409, "change_id already decided")
+            return
+        owner = self._appr_owner.get(change_id)
+        if owner is None or owner != (key, session_id):
+            return
+        if change_id in self._appr_decided:
+            label = self._appr_decided[change_id]
+            if retry_grant and label == ApprovalDecision.retry_step.value:
+                return
+            raise ApprovalGrantError(409, "change_id already decided")
+        if self._appr_open.get(key) != change_id:
+            raise ApprovalGrantError(409, "change_id is not current")
 
     async def publish_approval_required(
         self,

@@ -10,9 +10,11 @@ import pytest
 from app.orchestrator.agents.critic import PlanCritic
 from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.agents.supervisor import ApprovalGrantError
 from app.orchestrator.agents.task_store import TaskStore
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
+    ApprovalDecision,
     ApprovalEvent,
     CheckpointData,
     LLMResponse,
@@ -265,5 +267,103 @@ async def test_change_id_survives_restart(token: str) -> None:
         assert decided[0].payload["decision"] is None
         assert decided[0].payload["task_id"] == task_id
         assert change_id in restarted.supervisor._appr_decided
+    finally:
+        set_runtime(None)
+
+
+def _open_paid(session: str) -> int:
+    paid = PlanStep(
+        action="charge",
+        params={"_cost": 1.5},
+        expected="paid",
+        paid=True,
+        mutating=True,
+    )
+    nxt = PlanStep(action="next", expected="second", paid=False, mutating=True)
+    tasks = TaskStore()
+    task_id = tasks.insert(session, "списать", TaskStatus.executing.value, project_id=13)
+    tasks.save_plan(task_id, [paid, nxt], position=0)
+    tasks.insert_step(task_id, 0, paid)
+    CheckpointStore().save(task_id, session, CheckpointData(plan=[paid, nxt], position=0))
+    return task_id
+
+
+def _snapshot(runtime, session: str, task_id: int) -> dict:
+    steps = [(row["action_name"], row["status"]) for row in runtime.tasks.list_steps(task_id)]
+    return {
+        "calls": [call["name"] for call in runtime.supervisor.actions.calls],
+        "status": runtime.tasks.get(task_id)["status"],
+        "events": len(runtime.bus.replay(session, 0)),
+        "armed": runtime.supervisor._retry_armed.get(task_id),
+        "steps": steps,
+    }
+
+
+async def _wait_paid(session: str) -> tuple:
+    task_id = _open_paid(session)
+    actions = MockActions()
+    runtime = build_runtime(actions=actions, validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(runtime)
+    await runtime.supervisor.recover_after_restart()
+    await runtime.supervisor.wait(task_id, timeout=5)
+    change_id = _approvals(runtime, session)[-1].payload["change_id"]
+    return runtime, task_id, change_id
+
+
+@pytest.mark.asyncio
+async def test_approve_resolved_change_id_409(token: str) -> None:
+    del token
+    session = "appr-resolved"
+    runtime, task_id, first_id = await _wait_paid(session)
+    try:
+        await runtime.supervisor.publish_approval_required(
+            session,
+            {"reason": "paid_outcome_unknown", "task_id": task_id, "change_id": "orch-appr-5-99"},
+            task_id=task_id,
+        )
+        current = _approvals(runtime, session)[-1].payload["change_id"]
+        assert current == f"orch-appr-{task_id}-2"
+        assert first_id == f"orch-appr-{task_id}-1"
+        before = _snapshot(runtime, session, task_id)
+        with pytest.raises(ApprovalGrantError) as stale:
+            await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id=first_id)
+        assert stale.value.status_code == 409
+        assert _snapshot(runtime, session, task_id) == before
+
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id=current)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in runtime.supervisor.actions.calls] == ["next"]
+        settled = _snapshot(runtime, session, task_id)
+        with pytest.raises(ApprovalGrantError) as again:
+            await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id=current)
+        assert again.value.status_code == 409
+        assert _snapshot(runtime, session, task_id) == settled
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [ApprovalDecision.approve, ApprovalDecision.deny, ApprovalDecision.retry_step])
+async def test_repeat_decision_same_change_id_409(token: str, decision: ApprovalDecision) -> None:
+    del token
+    session = f"appr-repeat-{decision.value}"
+    runtime, task_id, change_id = await _wait_paid(session)
+    try:
+        await runtime.supervisor.grant_approval(session, decision, change_id=change_id)
+        if decision is ApprovalDecision.approve:
+            await runtime.supervisor.wait(task_id, timeout=5)
+        settled = _snapshot(runtime, session, task_id)
+        with pytest.raises(ApprovalGrantError) as exc:
+            await runtime.supervisor.grant_approval(session, decision, change_id=change_id)
+        assert exc.value.status_code == 409
+        assert _snapshot(runtime, session, task_id) == settled
+        if decision is ApprovalDecision.approve:
+            assert settled["calls"] == ["next"]
+        else:
+            assert settled["calls"] == []
+        if decision is ApprovalDecision.retry_step:
+            assert settled["status"] == TaskStatus.waiting_approval.value
+            assert settled["armed"]
     finally:
         set_runtime(None)
