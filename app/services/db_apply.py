@@ -364,7 +364,13 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     оживает: ни если его нет в новом списке, ни если новый пришёл без флага.
     """
     if not isinstance(new, list):
-        return new
+        from loguru import logger
+
+        logger.warning(
+            "WARN apply-ops кадры: новое значение не список ({}) — старые шоты остаются, как при null",
+            type(new).__name__,
+        )
+        new = []
     incoming: list[Any] = []
     seen_ids: set[str] = set()
     incoming_by_id: dict[str, dict[str, Any]] = {}
