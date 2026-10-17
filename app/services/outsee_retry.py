@@ -1426,6 +1426,7 @@ async def generate_video_with_retries(
     concurrency_waits = 0
     transient_streak = 0
     fallback_started = False
+    substitution_line: str | None = None
     phase = "primary"
     logger.info(
         "outsee_retry: video primary model={} via {} (ladder fallback={})",
@@ -1645,6 +1646,16 @@ async def generate_video_with_retries(
                         model_fallback=KIE_KLING_FALLBACK_SLUG,
                     ),
                 )
+                from app.services.model_substitution import note_model_substitution
+
+                substitution_line = note_model_substitution(
+                    original_model=str(primary_slug or ""),
+                    substituted_model=str(KIE_KLING_FALLBACK_SLUG),
+                    reason="видео-лестница: primary исчерпан, клип уходит на Kling",
+                    node="video",
+                    run=project_id,
+                    project_id=project_id,
+                )
                 fallback_started = True
                 if not local_sanitized:
                     current_prompt = _apply_local_prompt_sanitize(
@@ -1695,7 +1706,10 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            if use_kling and substitution_line:
+                result.model_substitution = substitution_line
+            return result
         except StepCancelledError:
             raise
         except OutseeDownloadError as e:
@@ -1867,6 +1881,7 @@ async def generate_video_with_retries(
             "primary_model": primary_slug,
             "fallback_model": KIE_KLING_FALLBACK_SLUG,
             "last_error": detail[:300],
+            "model_substitution": substitution_line,
         },
     )
 
