@@ -2575,21 +2575,32 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             members[0],
         )
-        planned = planned_for_parent_expand(
-            parent, planned_shots_from_attrs(parent)
-        )
-        if not planned:
+        full = [
+            dict(s)
+            for s in planned_shots_from_attrs(parent)
+            if isinstance(s, dict)
+        ]
+        source = planned_for_parent_expand(parent, full)
+        if not source:
             continue
-        planned = _repair_door_actions(parent, planned)
+        planned = _repair_door_actions(parent, source)
         ordered = list(members)
         ordered.sort(
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
-        # Ensure parent carries full ladder (QC SoT).
-        pattrs = dict(getattr(parent, "attrs", None) or {})
-        if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
-            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+        # Подмножество своей сцены идёт в meta кадров ячейки.
+        # На родителе остаётся полная лестница: шоты соседних сцен не стираем.
+        for src, shot in zip(source, planned):
+            if not isinstance(shot, dict):
+                continue
+            idx = next((i for i, item in enumerate(full) if item is src), None)
+            if idx is None:
+                continue
+            full[idx] = dict(shot)
+        previous = planned_shots_from_attrs(parent)
+        if previous != full:
+            pattrs = dict(getattr(parent, "attrs", None) or {})
+            pattrs["кадры"] = full
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
