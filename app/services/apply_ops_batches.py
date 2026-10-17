@@ -132,14 +132,15 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну пачку.
+    """Стена на одну пачку: тройной GPT-таймаут, не короче 180 с.
 
-    Шоты — 15 минут: длинный живой ответ (5–7 мин на high) не выбрасываем;
-    мёртвый сокет ловит keepalive, а не стена. Остальные ноды ждут 20 минут.
+    ``footer_kind`` не меняет стену: шоты и остальные ноды ждут одно и то же.
     """
-    if shots_short_packs(footer_kind):
-        return SHOTS_PACK_TIMEOUT_S
-    return 1200.0
+    del footer_kind
+    from app.settings import settings
+
+    wall = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
+    return max(180.0, wall * 3.0)
 
 
 def shots_short_packs(footer_kind: str | None) -> bool:

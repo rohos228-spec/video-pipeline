@@ -21,6 +21,22 @@ def test_default_is_kie_gpt(monkeypatch, tmp_path: Path) -> None:
     assert "GPT" in s.text_llm_label
 
 
+def test_tokenrouter_is_not_selectable(monkeypatch, tmp_path: Path) -> None:
+    from app.services import text_llm_catalog as cat
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "tokenrouter")
+    monkeypatch.setenv("TOKENROUTER_API_KEY", "tr-test-key")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    assert s.resolved_text_llm_provider() == "kie"
+    assert "Kimi" not in s.text_llm_label
+    for name in ("tokenrouter", "kimi", "kimi-k3"):
+        with pytest.raises(ValueError, match="unknown text LLM provider"):
+            cat.write_choice(provider=name, cfg=s)
+
+
 def test_choice_file_switches_without_touching_gpt_env(
     monkeypatch, tmp_path: Path
 ) -> None:

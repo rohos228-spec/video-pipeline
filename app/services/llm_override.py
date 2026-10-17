@@ -77,26 +77,41 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
     ov: NodeLlmOverride | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
-        # Границы / каркас / площадка / кадры / QC: vibecode напрямую с ПК,
-        # без VPS-relay (13.10: relay режет поток на 159-й секунде; kie Codex на
-        # тяжёлой задаче с high отдаёт Cloudflare 524 через 300 с, не начав
-        # стрим; vibecode.moe напрямую — 3/3 полных ответа по 34k за 3.5 мин).
-        # Высокое мышление — поле reasoning_effort. Модель с канваса не перебивает.
-        ov = NodeLlmOverride(
-            model_id="gpt-5.6-sol",
-            channel="stable",
-            kind="text",
-            provider="vibecode",
-            label="GPT 5.6 Sol (vibecode · high)",
-            reasoning_effort="high",
-        )
-        logger.info(
-            "node_llm: #{} {} → {} ({})",
-            getattr(project, "id", "?"),
-            node_key or node_type or "?",
-            ov.label,
-            ov.model_id,
-        )
+        # Основной маршрут — 52pay gpt-5.6-sol. Vibecode только если ключ 52pay
+        # для этой модели пуст. Мышление high. Канвасная модель не перебивает.
+        from app.services.pay52_routes import resolve_text
+
+        model_id = "gpt-5.6-sol"
+        if resolve_text(model_id) is not None:
+            ov = NodeLlmOverride(
+                model_id=model_id,
+                channel="stable",
+                kind="text",
+                provider="52pay",
+                label="GPT 5.6 Sol (52pay · high)",
+                reasoning_effort="high",
+            )
+            logger.info(
+                "node_llm: #{} {} → {} ({})",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+                ov.label,
+                ov.model_id,
+            )
+        else:
+            ov = NodeLlmOverride(
+                model_id=model_id,
+                channel="stable",
+                kind="text",
+                provider="vibecode",
+                label="GPT 5.6 Sol (vibecode · high, fallback)",
+                reasoning_effort="high",
+            )
+            logger.warning(
+                "node_llm: #{} {} fallback vibecode: ключ 52pay для gpt-5.6-sol пуст",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+            )
     else:
         choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
         if choice_raw and choice_raw.get("kind") == "text":

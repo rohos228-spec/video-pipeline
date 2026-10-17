@@ -13,12 +13,15 @@ from app.services.apply_ops_batches import (
 )
 
 
-def test_pack_call_timeout_is_twenty_minutes() -> None:
-    """Обычная пачка ждёт 20 минут. Шоты — 15 минут: длинный живой ответ не выбрасываем."""
-    assert pack_call_timeout_s("bits") == 1200.0
-    assert pack_call_timeout_s("shots_coverage") == 900.0
-    assert pack_call_timeout_s("prompts") == 1200.0
-    assert pack_call_timeout_s(None) == 1200.0
+def test_pack_call_timeout_uses_gpt_timeout_not_90(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_timeout_s", 600.0)
+    assert pack_call_timeout_s("bits") == 1800.0
+    assert pack_call_timeout_s("shots_coverage") == 1800.0
+    assert pack_call_timeout_s("prompts") == 1800.0
+    monkeypatch.setattr(settings, "gpt_timeout_s", 90.0)
+    assert pack_call_timeout_s("bits") >= 180.0
 
 
 def test_dense_102_splits_into_ten_packs() -> None:
