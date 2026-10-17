@@ -2011,6 +2011,22 @@ def test_audit_header_counters() -> None:
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
 
 
+def test_shared_prompt_writes_are_destructive() -> None:
+    """Любая запись общего мастер-промта, кроме чтения, — ярус destructive."""
+    rows = [
+        row
+        for row in action_table_rows()
+        if row["id"].startswith("prompt.") and row["id"].endswith("_master")
+    ]
+    ids = {row["id"] for row in rows}
+    assert "prompt.get_master" in ids
+    assert "prompt.create_master" in ids
+    writers = [row for row in rows if row["id"] != "prompt.get_master"]
+    assert writers
+    bad = [row["id"] for row in writers if row["tier"] != "destructive"]
+    assert not bad, "общий промт записан ярусом ниже destructive: " + ", ".join(bad)
+
+
 def test_documented_deletes_are_modify() -> None:
     """Описание с удалением, стиранием или перезаписью не остаётся keep."""
     rows = action_table_rows()
