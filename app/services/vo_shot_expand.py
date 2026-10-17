@@ -1155,7 +1155,7 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             continue
         seen.add(pid)
         cells.append((parent, live))
-    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.frame_tombstones import mark_shots_inactive
 
     cells.sort(key=lambda item: int(getattr(item[0], "number", 0) or 0))
     earlier: set[str] = set()
@@ -1195,15 +1195,19 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
                     extra["use_parent_still"] = False
                 _set_cs(m, **extra)
                 detached += 1
-            pattrs = dict(getattr(parent, "attrs", None) or {})
-            planned = planned_shots_from_attrs(parent)
-            if planned:
-                pattrs["кадры"] = merge_kadry_keep_missing(planned, planned[:1])
-            vo = str(getattr(parent, "voiceover_text", "") or "").strip()
-            if vo:
-                pattrs["vo_cell_full"] = vo
-            parent.attrs = pattrs
-            _flag_attrs(parent)
+            for m in members:
+                mattrs = dict(getattr(m, "attrs", None) or {})
+                shots = planned_shots_from_attrs(m)
+                if shots:
+                    mattrs["кадры"] = mark_shots_inactive(
+                        shots, where="detach_duplicate_vo_replica_cells"
+                    )
+                if m is parent:
+                    vo = str(getattr(parent, "voiceover_text", "") or "").strip()
+                    if vo:
+                        mattrs["vo_cell_full"] = vo
+                m.attrs = mattrs
+                _flag_attrs(m)
             _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:

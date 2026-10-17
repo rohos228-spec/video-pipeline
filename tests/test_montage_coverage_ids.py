@@ -247,11 +247,66 @@ def test_detach_replica_keeps_ids_cut_from_ladder(caplog) -> None:
     assert early_ids["early-k1"].get("активен") is not False
     assert early_ids["early-k2"].get("активен") is not False
     replica_ids = {s["id"]: s for s in replica.attrs["кадры"]}
-    assert replica_ids["early-k1"].get("активен") is not False
+    assert replica_ids["early-k1"]["активен"] is False
     assert replica_ids["replica-only"]["активен"] is False
     assert replica_ids["replica-only"]["закадр"] == "только на реплике"
     assert replica_ids["early-k2"]["активен"] is False
     assert "replica-only" in caplog.text
+
+
+def test_detach_replica_marks_all_shots_inactive_or_consumers_skip_leftover() -> None:
+    """Реплика не оставляет живой шот: e1 тоже неактивен, ранняя ячейка жива.
+
+    Повторный прогон не удлиняет лестницу.
+    """
+    import copy
+
+    from app.services.frame_tombstones import shot_is_active
+
+    p1 = "3" * 24
+    p2 = "4" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "закадр": "открытие ролика", "действие": "стоит"},
+            {"id": "e2", "закадр": "второй кусок", "действие": "шаг"},
+        ],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "закадр": "открытие ролика", "действие": "стоит"},
+            {"id": "e2", "закадр": "второй кусок", "действие": "шаг"},
+        ],
+    )
+    early_before = copy.deepcopy(early.attrs["кадры"])
+    replica_before_ids = [s["id"] for s in replica.attrs["кадры"]]
+    n1 = detach_duplicate_vo_replica_cells([early, replica])
+    assert n1 == 1
+    assert is_coverage_leftover(replica)
+    assert not is_coverage_leftover(early)
+    assert [s["id"] for s in replica.attrs["кадры"]] == replica_before_ids
+    assert replica.attrs["кадры"]
+    assert not any(shot_is_active(s) for s in replica.attrs["кадры"])
+    assert all(s.get("активен") is False for s in replica.attrs["кадры"])
+    assert early.attrs["кадры"] == early_before
+    assert all(shot_is_active(s) for s in early.attrs["кадры"])
+    after_first = copy.deepcopy(replica.attrs["кадры"])
+    n2 = detach_duplicate_vo_replica_cells([early, replica])
+    assert n2 == 0
+    assert replica.attrs["кадры"] == after_first
+    assert len(replica.attrs["кадры"]) == len(replica_before_ids)
+    assert early.attrs["кадры"] == early_before
 
 
 def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> None:
