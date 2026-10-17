@@ -509,10 +509,8 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     )
                     await asyncio.sleep(delay)
                     continue
-            if isinstance(
-                e,
-                (httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError),
-            ):
+            # Таймаут после отправки: исход платежа неизвестен, повтор не делаем.
+            if type(e).__name__ in {"ReadTimeout", "WriteTimeout", "RemoteProtocolError"}:
                 raise OutseeSubmitUncertain(
                     f"Outsee API network {path}: {detail}",
                     context={
