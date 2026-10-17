@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Activity, Network, Film, Bot, Database, User, Settings, Code2, FolderOpen, HardDrive, CreditCard, Wallet } from "lucide-react";
+import { Activity, Network, Film, Bot, Database, User, Settings, FolderOpen, HardDrive, CreditCard, Wallet } from "lucide-react";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
@@ -56,6 +56,11 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         <a href="/home" title="Главная"><img src="/via-logo.png" alt="VIA" className="mb-3 w-[46px] select-none" draggable={false} /></a>
         <RailBtn icon={<Film className="h-[18px] w-[18px]" />} label="Генерация" title="Полный интерфейс генерации" onClick={() => openOutsee()} />
         <RailBtn icon={<FolderOpen className="h-[18px] w-[18px]" />} label="Проекты" title="Показать / скрыть панель проектов" onClick={() => window.dispatchEvent(new CustomEvent("studio-toggle-projects-sidebar"))} />
+        <RailBtn icon={<Activity className="h-[18px] w-[18px]" />} label="Логи" title="Журнал студии" onClick={() => setLogsOpen(true)} />
+        <RailBtn icon={<Bot className="h-[18px] w-[18px]" />} label="Чат" title="Чат GPT" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-gpt"))} />
+        <RailBtn icon={<Database className="h-[18px] w-[18px]" />} label="База" title="База проекта" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-baza"))} />
+        <RailBtn icon={<Network className="h-[18px] w-[18px]" />} label="Сеть" title="Сеть машин" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-fleet"))} />
+        <BugReportButton />
         <RailBtn icon={<HardDrive className="h-[18px] w-[18px]" />} label="Хранилище" active={railPanel === "Хранилище"} onClick={() => togglePanel("Хранилище")} />
         <div className="flex-1" />
         <RailBtn icon={<CreditCard className="h-[18px] w-[18px]" />} label="Оплата" active={railPanel === "Оплата"} onClick={() => togglePanel("Оплата")} />
