@@ -16,12 +16,30 @@ from evals.orchestrator.query_split import SPLIT_PATH, write_split_file
 DATA = Path("evals/orchestrator/datasets")
 
 
+def test_repinned_rule_labels_cite_57acac40_and_keep_the_previous_sha() -> None:
+    """Перепин source_id и chunk_id правил указывает на 57acac40, прежний sha сохранён."""
+    previous = {
+        "precision_live_labels_transferred.json": (
+            "f3b72c16e24368e92e47f4919a6cede156d35004ec21dd811000885899986098"
+        ),
+        "precision_live_labels_s0_s7.json": (
+            "12bdb1ee6e785593783fe7fb60f25073d9b445d36563e5d5da5e1938132ca0ea"
+        ),
+    }
+    for name, prior in previous.items():
+        pin = FROZEN_SHA256[name]
+        assert pin["commit"] == "57acac40"
+        assert pin["previous_sha256"] == prior
+        assert pin["sha256"] != pin["previous_sha256"]
+        assert file_sha256(DATA / name) == pin["sha256"]
+
+
 def test_pins_match_files_and_cite_the_freeze_commits() -> None:
     assert FROZEN_SHA256["precision_live_queries.json"]["commit"] == "a79f70a9"
     assert FROZEN_SHA256["precision_live_split.json"]["commit"] == "a79f70a9"
-    assert FROZEN_SHA256["precision_live_labels_transferred.json"]["commit"] == "1396ea43"
+    assert FROZEN_SHA256["precision_live_labels_transferred.json"]["commit"] == "57acac40"
     assert FROZEN_SHA256["precision_live_label_ambiguous.json"]["commit"] == "1396ea43"
-    assert FROZEN_SHA256["precision_live_labels_s0_s7.json"]["commit"] == "19d050c2"
+    assert FROZEN_SHA256["precision_live_labels_s0_s7.json"]["commit"] == "57acac40"
     for name, pin in FROZEN_SHA256.items():
         assert file_sha256(DATA / name) == pin["sha256"]
         assert_frozen(DATA / name)
