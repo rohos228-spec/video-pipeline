@@ -2315,21 +2315,26 @@ async def run_img_pr_xlsx(
     all_ops: list[dict] = list(ckpt.get("ops") or [])
     done_set = set(done_uuids)
 
-    writeable = ipb.writeable_img_pr_ops(all_ops)
-    dropped_short = len(all_ops) - len(writeable)
-    if dropped_short:
+    raw_ops = list(all_ops)
+    writeable, rejected = ipb.partition_img_pr_checkpoint(raw_ops)
+    if rejected:
         logger.warning(
-            "img_pr_db: drop {} short/placeholder ops from checkpoint",
-            dropped_short,
+            "img_pr_db: keep {} short/placeholder ops in checkpoint",
+            len(rejected),
         )
-    all_ops = writeable
-    if all_ops:
-        all_ops = await _apply_img_pr_ops_now(
-            project, all_ops, export_xlsx=False, label="checkpoint"
+    if writeable:
+        applied = await _apply_img_pr_ops_now(
+            project, writeable, export_xlsx=False, label="checkpoint"
         )
-        done_uuids = [ipb.uuid_of_op(op) for op in all_ops if ipb.uuid_of_op(op)]
+        stored = list(applied) + rejected
+        if not stored:
+            stored = raw_ops
+        done_uuids = [ipb.uuid_of_op(op) for op in applied if ipb.uuid_of_op(op)]
         done_set = set(done_uuids)
-        ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=all_ops)
+        ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=stored)
+        all_ops = list(applied)
+    else:
+        all_ops = []
 
     # После flush чекпоинта пустые кадры смотрим по DB, не по skip_uuids:
     # иначе промты живут только в JSON до конца всего прогона.

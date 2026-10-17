@@ -321,6 +321,19 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     return clean
 
 
+def partition_img_pr_checkpoint(ops: list[Any]) -> tuple[list[dict], list[dict]]:
+    """Пишемые опы и отброшенные. Чекпоинт хранит оба списка, не только фильтр."""
+    raw = [op for op in ops if isinstance(op, dict)]
+    writeable = writeable_img_pr_ops(raw)
+    writeable_ids = {uuid_of_op(op) for op in writeable if uuid_of_op(op)}
+    rejected = [
+        op
+        for op in raw
+        if not uuid_of_op(op) or uuid_of_op(op) not in writeable_ids
+    ]
+    return writeable, rejected
+
+
 def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
     """Ops, которые можно писать в DB: реальный uuid + полный промт."""
     kept: list[dict] = []
