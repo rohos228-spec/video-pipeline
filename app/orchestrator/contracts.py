@@ -837,8 +837,12 @@ class StepExecutor(Protocol):
 RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step.run_step"})
 
 # Снимок флагов ws2-r2.2 (#378 a17ff283): paid, destructive, risk.
-# Пакет WS2 не импортируется. Пока пуст: у семи имён PLAN аналога нет.
-R22_ACTION_FLAGS: dict[str, tuple[bool, bool, str]] = {}
+# Пакет WS2 не импортируется.
+# ``node.run_step`` — high, destructive+paid (аудит, ``_run_node_step``).
+# ``step.run_step`` — отдельный платный запуск медиа, не подставляется вместо run_node.
+R22_ACTION_FLAGS: dict[str, tuple[bool, bool, str]] = {
+    "node.run_step": (True, True, "high"),
+}
 
 # PLAN §6.1–6.2 → имя r2.2. ``None`` — дыра: в реестре 102 и в R2 такого
 # действия нет, ближайшее имя не подставляется.
@@ -854,6 +858,7 @@ PLAN_ACTION_MAP: dict[str, str | None] = {
     "get_shots": None,
     "get_run_logs": None,
     "get_spend_report": None,
+    "run_node": "node.run_step",
 }
 
 

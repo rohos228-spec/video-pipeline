@@ -10,6 +10,7 @@ from app.orchestrator.agents.critic import _critic_system
 from app.orchestrator.agents.planner import _system_prompt
 from app.orchestrator.contracts import (
     PLAN_ACTION_MAP,
+    R22_ACTION_FLAGS,
     RUN_NODE_ACTIONS,
     metadata_call_gate,
     plan_action_metadata,
@@ -31,13 +32,17 @@ class _R22Metadata:
     """``metadata_of`` как в r2.2: неизвестное имя — paid и destructive, без KeyError."""
 
     def metadata_of(self, name: str) -> dict[str, object]:
-        flags = plan_action_metadata(name)
-        if flags["resolved"]:
+        key = name
+        if name in PLAN_ACTION_MAP:
+            resolved = resolve_plan_action(name)
+            key = resolved or name
+        if key in R22_ACTION_FLAGS:
+            paid, destructive, risk = R22_ACTION_FLAGS[key]
             return {
-                "name": flags["resolved"],
-                "paid": flags["paid"],
-                "destructive": flags["destructive"],
-                "risk": flags["risk"],
+                "name": key,
+                "paid": paid,
+                "destructive": destructive,
+                "risk": risk,
                 "read_only": False,
             }
         return {
@@ -97,6 +102,26 @@ def test_get_run_logs_is_a_hole() -> None:
 
 def test_get_spend_report_is_a_hole() -> None:
     _assert_hole("get_spend_report")
+
+
+def test_run_node_resolves_to_node_run_step_and_needs_approval() -> None:
+    """Ядро зовёт литерал ``run_node``. В r2.2 это ``node.run_step``: paid и destructive."""
+    text = _core_mentions()
+    assert "run_node" in text
+    assert "node.run_step" in RUN_NODE_ACTIONS
+    assert "step.run_step" in RUN_NODE_ACTIONS
+    assert resolve_plan_action("run_node") == "node.run_step"
+    flags = plan_action_metadata("run_node")
+    assert flags["hole"] is False
+    assert flags["paid"] is True
+    assert flags["destructive"] is True
+    assert flags["risk"] == "high"
+    meta = _R22Metadata().metadata_of("run_node")
+    assert meta["name"] == "node.run_step"
+    assert meta["paid"] is True
+    assert meta["destructive"] is True
+    assert metadata_call_gate("node.run_step", _R22Metadata()) == "destructive"
+    assert metadata_call_gate("run_node", _R22Metadata()) == "destructive"
 
 
 def test_hole_names_are_exactly_the_unmapped_plan_reads() -> None:
