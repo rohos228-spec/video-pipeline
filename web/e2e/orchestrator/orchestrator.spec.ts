@@ -52,6 +52,27 @@ test("чужая сессия не съедает переход статуса 
   expect(state.tasks[0]?.status).toBe("executing");
 });
 
+test("автозакрытие по статусу не трогает терминальную карточку", () => {
+  let seq = 0;
+  let state = initialOrchScreen();
+  const push = (type: string, payload: Record<string, unknown>) => {
+    seq += 1;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: { type, task_id: 1, seq, session_id: "own", payload },
+    });
+  };
+  push("task_failed", { error: "deletion_blocked" });
+  const terminal = state.approvals.find((item) => item.reason === "deletion_blocked");
+  expect(terminal?.resolved).toBeNull();
+  push("approval_required", { reason: "budget_exhausted", approval_id: "ap-budget" });
+  expect(state.approvals.find((item) => item.reason === "deletion_blocked")?.resolved).toBeNull();
+  expect(state.approvals.find((item) => item.reason === "budget_exhausted")?.resolved).toBeNull();
+  push("agent_status", { agent: "supervisor", status: "running", task_status: "executing" });
+  expect(state.approvals.find((item) => item.reason === "deletion_blocked")?.resolved).toBeNull();
+  expect(state.approvals.find((item) => item.reason === "budget_exhausted")?.resolved).toBe("closed");
+});
+
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
   const cfg = {

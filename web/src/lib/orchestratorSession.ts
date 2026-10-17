@@ -367,6 +367,7 @@ function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, ses
   if (!taskId || !sessionId) return;
   for (const item of state.approvals) {
     if (item.resolved || item.changeId) continue;
+    if (isTerminalBlock(item.reason)) continue;
     if (item.taskId !== taskId || item.sessionId !== sessionId) continue;
     item.resolved = "closed";
   }
