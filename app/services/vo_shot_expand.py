@@ -538,6 +538,87 @@ def flattened_coverage_groups(
     return out
 
 
+def _kadry_copies(raw: Any) -> list[Any]:
+    if not isinstance(raw, list):
+        return []
+    return [dict(row) if isinstance(row, dict) else row for row in raw]
+
+
+def _snapshot_frame_kadry(frames: list[Any]) -> dict[int, list[Any]]:
+    snap: dict[int, list[Any]] = {}
+    for fr in frames:
+        attrs = getattr(fr, "attrs", None)
+        raw = attrs.get("кадры") if isinstance(attrs, dict) else None
+        snap[id(fr)] = _kadry_copies(raw)
+    return snap
+
+
+def _keep_assigned_kadry(frame: Any, before_rows: Any, after_rows: Any) -> Any:
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    uid = str(getattr(frame, "uuid", None) or getattr(frame, "id", None) or "cell")
+    number = getattr(frame, "number", None)
+    return keep_soft_kadry(
+        before_rows,
+        after_rows,
+        scene_id=uid,
+        number=0 if number is None else number,
+    )
+
+
+def _shot_row_id(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    for key in ("id", "uuid", "frame_id", "shot_id"):
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _preserve_promoted_frames(
+    frames: list[Any], before_map: dict[int, list[Any]]
+) -> None:
+    """Один общий снимок: шот, уехавший на другую ячейку, не возвращается назад."""
+
+    from app.pipeline.no_deletions_guard import run_preservation_validators
+
+    before_all: list[Any] = []
+    owner: dict[str, int] = {}
+    for fr in frames:
+        for row in before_map.get(id(fr)) or []:
+            fid = _shot_row_id(row)
+            if fid and fid not in owner:
+                owner[fid] = id(fr)
+            before_all.append(row)
+    after_all: list[Any] = []
+    for fr in frames:
+        attrs = getattr(fr, "attrs", None)
+        raw = attrs.get("кадры") if isinstance(attrs, dict) else None
+        if isinstance(raw, list):
+            after_all.extend(raw)
+    probe = list(after_all)
+    run_preservation_validators(
+        {"сцены": [{"id": "promote", "номер": 0, "кадры": before_all}]},
+        {"сцены": [{"id": "promote", "номер": 0, "кадры": probe}]},
+        mode="soft",
+    )
+    if len(probe) == len(after_all):
+        return
+    by_frame = {id(fr): fr for fr in frames}
+    for row in probe[len(after_all) :]:
+        target = by_frame.get(owner.get(_shot_row_id(row), -1))
+        if target is None:
+            continue
+        attrs = dict(getattr(target, "attrs", None) or {})
+        current = attrs.get("кадры")
+        kadry = list(current) if isinstance(current, list) else []
+        kadry.append(row)
+        attrs["кадры"] = kadry
+        target.attrs = attrs
+        _flag_attrs(target)
+
+
 def merge_flattened_coverage_members(
     members: list[Any],
 ) -> tuple[Any, list[Any]]:
@@ -569,9 +650,14 @@ def merge_flattened_coverage_members(
         parent.voiceover_text = full
         parent.duration_seconds = vo_duration_sec(full, shots=1)
     attrs = dict(getattr(parent, "attrs", None) or {})
+    before_rows = _kadry_copies(attrs.get("кадры"))
     from app.services.frame_tombstones import merge_kadry_keep_missing
 
-    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), shots)
+    attrs["кадры"] = _keep_assigned_kadry(
+        parent,
+        before_rows,
+        merge_kadry_keep_missing(attrs.get("кадры"), shots),
+    )
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
@@ -1297,12 +1383,16 @@ def apply_ordered_voiceover_to_stills(
         if str(getattr(fr, "voiceover_text", "") or "") != text:
             fr.voiceover_text = text
             updated += 1
+        raw_attrs = getattr(fr, "attrs", None)
+        before_rows = _kadry_copies(
+            raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
+        )
         planned = planned_shots_from_attrs(fr)
         if planned:
             planned[0]["закадр"] = text
-        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs = dict(raw_attrs or {})
         if planned:
-            attrs["кадры"] = planned
+            attrs["кадры"] = _keep_assigned_kadry(fr, before_rows, planned)
         fr.attrs = attrs
         _set_cs(fr, **{_VO_SHOT_KEY: text})
     return updated
@@ -1444,13 +1534,17 @@ def apply_generation_places_from_sidecars(
         place = generation_place_from_sidecar(scenes_dir, number)
         if not place:
             continue
+        raw_attrs = getattr(fr, "attrs", None)
+        before_rows = _kadry_copies(
+            raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
+        )
         planned = planned_shots_from_attrs(fr)
         if planned:
             planned[0]["место"] = place
-        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs = dict(raw_attrs or {})
         attrs["place"] = place
         if planned:
-            attrs["кадры"] = planned
+            attrs["кадры"] = _keep_assigned_kadry(fr, before_rows, planned)
         fr.attrs = attrs
         extra_cs: dict[str, Any] = {"место": place, "набор": place}
         _set_cs(fr, **extra_cs)
@@ -1806,6 +1900,7 @@ def relink_shot_roles_by_scene(
         )
         full = " ".join(full.split())
         pattrs = dict(getattr(parent, "attrs", None) or {})
+        before_parent = _kadry_copies(pattrs.get("кадры"))
         if keep_longer_kadry:
             existing = planned_shots_from_attrs(parent)
             if len(existing) > len(shots):
@@ -1813,6 +1908,7 @@ def relink_shot_roles_by_scene(
         from app.services.frame_tombstones import merge_kadry_keep_missing
 
         shots = merge_kadry_keep_missing(pattrs.get("кадры"), shots)
+        shots = _keep_assigned_kadry(parent, before_parent, shots)
         pattrs["кадры"] = shots
         if full:
             pattrs["vo_cell_full"] = full
@@ -1888,8 +1984,11 @@ def relink_shot_roles_by_scene(
             cattrs = dict(getattr(fr, "attrs", None) or {})
             one = shots[i - 1] if i - 1 < len(shots) else {}
             if one:
-                cattrs["кадры"] = merge_kadry_keep_missing(
-                    cattrs.get("кадры"), [one]
+                before_child = _kadry_copies(cattrs.get("кадры"))
+                cattrs["кадры"] = _keep_assigned_kadry(
+                    fr,
+                    before_child,
+                    merge_kadry_keep_missing(cattrs.get("кадры"), [one]),
                 )
             if child_place and not str(cattrs.get("place") or "").strip():
                 cattrs["place"] = child_place
@@ -2102,9 +2201,13 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         full = _cell_full_text(parent, members)
         if not full:
             continue
+        raw_attrs = getattr(parent, "attrs", None)
+        before_rows = _kadry_copies(
+            raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
+        )
         planned = planned_shots_from_attrs(parent)
         parts = _vo_parts_without_empty(full, len(members))
-        attrs = dict(getattr(parent, "attrs", None) or {})
+        attrs = dict(raw_attrs or {})
         attrs["vo_cell_full"] = full
         if planned:
             for i, item in enumerate(planned):
@@ -2114,7 +2217,7 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = list(planned)
+            attrs["кадры"] = _keep_assigned_kadry(parent, before_rows, list(planned))
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(members):
@@ -2162,6 +2265,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
     )
     from app.services.shot_templates import parse_scene_chain
 
+    before_map = _snapshot_frame_kadry(frames)
     updated = 0
     extra: list[Any] = []
     for members in list(_group_by_parent(frames).values()):
@@ -2340,6 +2444,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
             continue
         extra.append(fr)
         seen_extra.add(id(fr))
+    _preserve_promoted_frames(frames, before_map)
     return updated, extra
 
 
