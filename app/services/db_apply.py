@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any
@@ -22,6 +23,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.preservation import (
+    PreservationRejected,
+    collect_violations,
+    run_preservation_validators,
+)
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -1365,6 +1371,23 @@ def export_project_xlsx(
     }
 
 
+def _preservation_view(frames: list[Any]) -> dict[str, Any]:
+    """Снимок кадров для ``run_preservation_validators``. Только чтение полей."""
+
+    scenes: list[dict[str, Any]] = []
+    for frame in frames:
+        attrs = getattr(frame, "attrs", None)
+        attrs = attrs if isinstance(attrs, dict) else {}
+        row: dict[str, Any] = {
+            "id": str(getattr(frame, "uuid", "") or ""),
+            "номер": getattr(frame, "number", None),
+        }
+        if "кадры" in attrs:
+            row["кадры"] = attrs.get("кадры")
+        scenes.append(row)
+    return {"сцены": scenes}
+
+
 async def apply_ops(
     session: AsyncSession,
     project: Project,
@@ -1494,6 +1517,10 @@ async def apply_ops(
         if missing:
             raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
 
+    preservation_before = (
+        copy.deepcopy(_preservation_view(list(by_uuid.values()))) if frame_ops else None
+    )
+
     updated = 0
     for op in frame_ops:
         uuid = str(op.get("frame_uuid") or "")
@@ -1611,6 +1638,29 @@ async def apply_ops(
                 pass
         project.meta = meta
         updated += 1
+
+    if preservation_before is not None:
+        preservation_after = _preservation_view(list(by_uuid.values()))
+        try:
+            run_preservation_validators(
+                preservation_before,
+                preservation_after,
+                ops,
+                mode="reject",
+            )
+        except PreservationRejected as exc:
+            already = {
+                (item.code, item.path, item.id)
+                for item in collect_violations(preservation_before, preservation_before, ops)
+                if item.severity == "error"
+            }
+            fresh = [
+                item
+                for item in exc.violations
+                if item.severity == "error" and (item.code, item.path, item.id) not in already
+            ]
+            if fresh:
+                raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
 
     await session.flush()
 
