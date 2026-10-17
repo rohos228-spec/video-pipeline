@@ -118,6 +118,51 @@ interrupt с `kill_switch=false`. Классификатор для аварий
 `budget_scope=pipeline` в суб-бюджет $10 не входит. Enum статуса вызова
 остаётся `ok|timeout|error|fixture_miss`.
 
+## Чтение расхода для WS1
+
+`spend_guard` в #351 (`d37c63e4`) читает леджер только публично.
+`SpendLedger._pipeline` не нужен.
+
+```python
+from app.orchestrator.routing.ledger import get_spend_ledger
+
+ledger = get_spend_ledger()
+spent = ledger.spent(run_id)                 # только internal, $10
+cap = ledger.internal_budget_usd             # 10
+pipe = ledger.pipeline_spent(run_id)         # не входит в $10
+same = ledger.read_pipeline_spent(           # то же число, project_id игнорируется
+    project_id=project_id,
+    run_id=run_id,
+)
+```
+
+`pipeline_spent(run_id)` — позиционный вызов, как в адаптере после
+`TypeError` на лишнем `project_id`. `read_pipeline_spent` — keyword-only,
+адаптер пробует его первым. Оба имени возвращают pipeline-scope этого
+`run_id`. Пустой или неизвестный `run_id` даёт `0.0` (анонимный бакет
+не отдаётся). `spent(None)` по-прежнему анонимный internal: так зовёт
+роутер и #351, когда `run_id` нет.
+
+Стабильный снимок:
+
+```python
+view = ledger.totals(run_id)
+# view["internal_spent_usd"]   — входит в лимит $10
+# view["pipeline_spent_usd"]   — не входит
+# view["internal_limit_usd"]
+# view["internal_remaining_usd"]
+# view["budget_exhausted"]     — internal_spent >= limit
+```
+
+`get_spend_ledger()` — процессный синглтон, роутер без своего ledger
+пишет в него. Вызов потокобезопасен. Пустой или неизвестный `run_id`
+у `totals` даёт нулевой расход и `budget_exhausted=False` (лимит леджера
+на месте). `SpendReader.read_totals(*, project_id, run_id)` из #351 —
+action layer WS2 (`daily/project/run/internal/actions_spent_usd`), не
+этот леджер. Pipeline-scope, если его прочитали, лежит отдельно как
+`pipeline_scope_spent_usd` и не подменяет `actions_spent_usd` WS2.
+Таблицы `orch_llm_calls` здесь нет.
+
 ## Фикстура (совместно с WS6)
 
 Один JSON на ключ, файл `{key}.json`.

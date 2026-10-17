@@ -11,7 +11,7 @@ import socket
 import pytest
 
 from app.orchestrator.routing.config import load_config
-from app.orchestrator.routing.ledger import SpendLedger
+from app.orchestrator.routing.ledger import SpendLedger, reset_spend_ledger
 from app.orchestrator.routing.sink import InMemoryLlmCallSink
 
 
@@ -21,6 +21,11 @@ class RecordingSleeper:
 
     async def __call__(self, seconds: float) -> None:
         self.calls.append(float(seconds))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_ledger() -> None:
+    reset_spend_ledger()
 
 
 @pytest.fixture(autouse=True)

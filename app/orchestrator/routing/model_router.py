@@ -33,7 +33,7 @@ from app.orchestrator.routing.config import (
     load_config,
 )
 from app.orchestrator.routing.hashing import fixture_key, messages_sha256, normalize_messages
-from app.orchestrator.routing.ledger import SpendLedger
+from app.orchestrator.routing.ledger import SpendLedger, get_spend_ledger
 from app.orchestrator.routing.sink import LlmCallSink, NullLlmCallSink
 from app.orchestrator.routing.transport import (
     CompletionResult,
@@ -150,7 +150,7 @@ class ModelRouter:
     ) -> None:
         self.config = config or load_config()
         self.transport = transport
-        self.ledger = ledger or SpendLedger(self.config.internal_budget_usd)
+        self.ledger = ledger if ledger is not None else get_spend_ledger()
         self.sink = sink or NullLlmCallSink()
         self._sleep = sleeper or asyncio.sleep
         self._rng = rng or random.Random()

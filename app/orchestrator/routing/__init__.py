@@ -1,5 +1,6 @@
 """Маршрутизация fast/strong внутренних ходов оркестратора (WS5)."""
 
+from app.orchestrator.routing.ledger import SpendLedger, get_spend_ledger
 from app.orchestrator.routing.model_router import (
     LiveRouter,
     ModelRouter,
@@ -30,6 +31,8 @@ __all__ = [
     "RouterError",
     "RouterExhausted",
     "ScriptedRouter",
+    "SpendLedger",
     "build_router",
+    "get_spend_ledger",
     "primary_key_fields",
 ]
