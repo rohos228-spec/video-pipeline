@@ -867,7 +867,7 @@ test.describe("orchestrator chat", () => {
       agent: "supervisor",
       status: "missing-id",
       decision: "approved",
-      approval_id: "chg-own",
+      approval_id: "appr-other",
     });
     await expect(page.getByTestId("orch-agent-supervisor")).toContainText("missing-id");
     await expect(card).toBeVisible();
