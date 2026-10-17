@@ -109,9 +109,17 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    `text == ""`, `model` и `provider` тоже пустые (попытки хопа не было),
    те же `task_status` и `approval`. Строку вызова не пишем.
    Стриминговый chat-запрос 52pay несёт `stream_options.include_usage=true`.
-   Если usage пустой, а текст есть, стоимость не ноль: completion-токены
-   ≈ `len(text)/4` (минимум 1) по прайсу strong. То же у нестримингового
-   ответа без usage. Списание идёт в `SpendLedger`.
+   Если usage пустой, а текст есть, стоимость не ноль. Оценка сверху:
+   промпт и ответ по `ceil(len/2)` (кириллица ≈ 2 символа на токен),
+   ответ не ниже `max_tokens`, если он задан. При `reasoning_effort`
+   столько же токенов пишется в reasoning. Цена — фактической модели хопа.
+   В строке вызова `usage_estimated=1`. То же у нестримингового ответа
+   без usage, и у пустого или пробельного текста: списываются промпт и
+   `max_tokens` (плюс reasoning, если у хопа есть effort). Retryable-ошибка
+   пустого completion (`empty …`) списывается до ретрая, каждая попытка
+   отдельно. Обрыв стрима (таймаут, обрыв соединения, ошибка `on_delta`,
+   `CancelledError`) списывается в `finally` по уже пришедшему тексту и
+   промпту, затем исключение пробрасывается. Списание идёт в `SpendLedger`.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие
@@ -289,6 +297,7 @@ CREATE TABLE orch_llm_calls (
   router_impl TEXT NOT NULL CHECK (router_impl IN ('live','replay','scripted')),
   messages_sha256 TEXT NOT NULL,
   fixture_key TEXT NULL,
+  usage_estimated INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE INDEX ix_orch_llm_calls_run ON orch_llm_calls (run_id, created_at);
@@ -312,12 +321,13 @@ CREATE INDEX ix_orch_llm_calls_fixture ON orch_llm_calls (fixture_key);
 | `deterministic_flag` | 1, если tier выбрали правила, а не классификатор |
 | `classifier_confidence` | NULL, если классификатор не участвовал |
 | `latency_ms` | длительность попытки |
-| `prompt_tokens`, `completion_tokens`, `reasoning_tokens` | usage попытки; у ошибки нули |
-| `cost_usd` | по прайсу `pay52_routes.yaml` (USD / 1M). У ошибки 0 |
+| `prompt_tokens`, `completion_tokens`, `reasoning_tokens` | usage попытки. У обрыва — оценка, если провайдер usage не прислал |
+| `cost_usd` | по прайсу `pay52_routes.yaml` (USD / 1M). Таймаут, обрыв, cancel и пустой ретрай списываются, не остаются нулём |
 | `budget_scope` | `internal` (суб-бюджет $10) или `pipeline` |
 | `router_impl` | `live` \| `replay` \| `scripted` |
 | `messages_sha256` | sha256 канонических messages, без текста |
 | `fixture_key` | ключ фикстуры или NULL у live |
+| `usage_estimated` | 1, если токены оценены, а не пришли от провайдера |
 | `created_at` | ISO UTC |
 
 Запись идёт через `LlmCallSink.record(LlmCallRecord)`. Подмена:

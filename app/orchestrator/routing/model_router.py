@@ -141,14 +141,85 @@ def _latency_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
 
 
-def estimate_usage(text: str) -> LLMUsage:
-    """Консервативная оценка, если провайдер не прислал usage.
+def _chars_to_tokens(text: str) -> int:
+    """Кириллица ≈ 2 символа на токен. Пустая строка — 0."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 1) // 2)
 
-    4 символа ответа ≈ 1 completion-токен, минимум 1. Цена берётся
-    по strong, чтобы пустой SSE не обнулял суб-бюджет.
+
+def estimate_usage(
+    messages: list[dict[str, str]] | None,
+    text: str,
+    *,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+) -> LLMUsage:
+    """Оценка сверху, если провайдер не прислал usage.
+
+    Промпт и видимый ответ — ``ceil(len/2)``. Ответ не ниже ``max_tokens``,
+    когда он задан: берётся большее. При ``reasoning_effort`` столько же
+    токенов пишется в reasoning, потому что у strong high рассуждение
+    часто длиннее видимого текста.
     """
-    tokens = max(1, (len(text) + 3) // 4)
-    return LLMUsage(prompt_tokens=0, completion_tokens=tokens, reasoning_tokens=0)
+    prompt = "".join(
+        str((item or {}).get("content") or "") for item in (messages or [])
+    )
+    try:
+        ceiling = max(0, int(max_tokens)) if max_tokens is not None else 0
+    except (TypeError, ValueError):
+        ceiling = 0
+    completion_tokens = max(_chars_to_tokens(text or ""), ceiling)
+    reasoning_tokens = completion_tokens if reasoning_effort else 0
+    return LLMUsage(
+        prompt_tokens=_chars_to_tokens(prompt),
+        completion_tokens=completion_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
+def _abort_should_bill(exc: BaseException) -> bool:
+    """Таймаут, обрыв, cancel и пустой completion — платные. Промах фикстуры — нет."""
+    if isinstance(exc, FixtureMiss):
+        return False
+    if isinstance(exc, RouterError):
+        return False
+    if isinstance(exc, ProviderError):
+        return bool(exc.retryable) or _is_empty_completion(exc)
+    return True
+
+
+def _partial_text(exc: BaseException) -> str:
+    partial = getattr(exc, "partial", None)
+    if partial is None:
+        return ""
+    return str(getattr(partial, "text", "") or "")
+
+
+def _partial_model(exc: BaseException, hop: Hop) -> str:
+    partial = getattr(exc, "partial", None)
+    model = "" if partial is None else str(getattr(partial, "model", "") or "")
+    return model or hop.model
+
+
+def _is_empty_completion(exc: BaseException) -> bool:
+    """Пустой completion: провайдер мог взять деньги за промпт и reasoning."""
+    if "empty" in str(exc).lower():
+        return True
+    partial = getattr(exc, "partial", None)
+    if partial is None:
+        return False
+    return not str(getattr(partial, "text", "") or "").strip()
+
+
+def _usage_from_partial(partial: CompletionResult | None) -> LLMUsage:
+    if partial is None:
+        return LLMUsage()
+    return LLMUsage(
+        prompt_tokens=int(partial.prompt_tokens),
+        completion_tokens=int(partial.completion_tokens),
+        reasoning_tokens=int(partial.reasoning_tokens),
+    )
 
 
 def _usage_missing(usage: LLMUsage) -> bool:
@@ -416,9 +487,39 @@ class ModelRouter:
                     return self._waiting_approval(ctx, hop, fallback_index)
                 call_id = str(uuid.uuid4())
                 started = time.perf_counter()
+                caught: BaseException | None = None
+                response: LLMResponse | None = None
+                abort_usage: LLMUsage | None = None
+                abort_cost = 0.0
+                abort_estimated = False
                 try:
                     result = await self._provider_complete(hop, ctx, timeout_s)
-                except FixtureMiss as exc:
+                except BaseException as exc:
+                    caught = exc
+                else:
+                    response = self._success(
+                        ctx,
+                        hop,
+                        result,
+                        call_id=call_id,
+                        attempt=attempt,
+                        fallback_index=fallback_index,
+                        started=started,
+                    )
+                finally:
+                    if response is None and caught is not None and _abort_should_bill(caught):
+                        abort_usage, abort_cost, abort_estimated = self._priced_usage(
+                            ctx,
+                            hop,
+                            text=_partial_text(caught),
+                            usage=_usage_from_partial(getattr(caught, "partial", None)),
+                            model=_partial_model(caught, hop),
+                        )
+                        self._charge(ctx, abort_cost)
+                if response is not None:
+                    return response
+                assert caught is not None
+                if isinstance(caught, FixtureMiss):
                     self._log(
                         ctx,
                         hop,
@@ -428,10 +529,10 @@ class ModelRouter:
                         status="fixture_miss",
                         error="fixture-miss",
                         latency_ms=_latency_ms(started),
-                        fixture_key=exc.fixture_key,
+                        fixture_key=caught.fixture_key,
                     )
-                    raise
-                except ProviderTimeout as exc:
+                    raise caught
+                if isinstance(caught, ProviderTimeout):
                     self._log(
                         ctx,
                         hop,
@@ -439,15 +540,18 @@ class ModelRouter:
                         attempt=attempt,
                         fallback_index=fallback_index,
                         status="timeout",
-                        error=str(exc) or "timeout",
+                        error=str(caught) or "timeout",
                         latency_ms=_latency_ms(started),
+                        usage=abort_usage,
+                        cost_usd=abort_cost,
+                        usage_estimated=abort_estimated,
                     )
                     if attempt <= self.config.retries:
                         await self._sleep(self.config.backoff_base_s * (2 ** (attempt - 1)))
                         continue
-                    last_error = str(exc) or "timeout"
+                    last_error = str(caught) or "timeout"
                     break
-                except ProviderError as exc:
+                if isinstance(caught, ProviderError):
                     self._log(
                         ctx,
                         hop,
@@ -455,24 +559,31 @@ class ModelRouter:
                         attempt=attempt,
                         fallback_index=fallback_index,
                         status="error",
-                        error=str(exc) or "error",
+                        error=str(caught) or "error",
                         latency_ms=_latency_ms(started),
+                        usage=abort_usage,
+                        cost_usd=abort_cost,
+                        usage_estimated=abort_estimated,
                     )
-                    if exc.retryable and attempt <= self.config.retries:
+                    if caught.retryable and attempt <= self.config.retries:
                         await self._sleep(self.config.backoff_base_s * (2 ** (attempt - 1)))
                         continue
-                    last_error = str(exc) or "error"
+                    last_error = str(caught) or "error"
                     break
-                else:
-                    return self._success(
-                        ctx,
-                        hop,
-                        result,
-                        call_id=call_id,
-                        attempt=attempt,
-                        fallback_index=fallback_index,
-                        started=started,
-                    )
+                self._log(
+                    ctx,
+                    hop,
+                    call_id=call_id,
+                    attempt=attempt,
+                    fallback_index=fallback_index,
+                    status="error",
+                    error=str(caught) or caught.__class__.__name__,
+                    latency_ms=_latency_ms(started),
+                    usage=abort_usage,
+                    cost_usd=abort_cost,
+                    usage_estimated=abort_estimated,
+                )
+                raise caught
         raise RouterExhausted(last_error)
 
     async def _provider_complete(
@@ -516,21 +627,19 @@ class ModelRouter:
         cost_override: float | None = None,
         latency_override: int | None = None,
     ) -> LLMResponse:
-        usage = LLMUsage(
-            prompt_tokens=int(result.prompt_tokens),
-            completion_tokens=int(result.completion_tokens),
-            reasoning_tokens=int(result.reasoning_tokens),
+        usage, cost, estimated = self._priced_usage(
+            ctx,
+            hop,
+            text=result.text,
+            usage=LLMUsage(
+                prompt_tokens=int(result.prompt_tokens),
+                completion_tokens=int(result.completion_tokens),
+                reasoning_tokens=int(result.reasoning_tokens),
+            ),
+            model=result.model or hop.model,
+            cost_override=cost_override,
         )
         model = result.model or hop.model
-        price_model = model
-        if cost_override is None and _usage_missing(usage) and (result.text or "").strip():
-            usage = estimate_usage(result.text)
-            price_model = self._strong_price_model()
-        cost = (
-            float(cost_override)
-            if cost_override is not None
-            else compute_cost(price_model, usage, self.config.prices)
-        )
         approval = self._charge(ctx, cost)
         latency = _latency_ms(started) if latency_override is None else int(latency_override)
         response = LLMResponse(
@@ -562,8 +671,37 @@ class ModelRouter:
             cost_usd=cost,
             fixture_key=fixture_key_value,
             model=model,
+            usage_estimated=estimated,
         )
         return response
+
+    def _priced_usage(
+        self,
+        ctx: CallContext,
+        hop: Hop,
+        *,
+        text: str,
+        usage: LLMUsage,
+        model: str,
+        cost_override: float | None = None,
+    ) -> tuple[LLMUsage, float, bool]:
+        """Реальный usage, либо оценка. Пустой текст тоже оценивается."""
+        price_model = model or hop.model or self._strong_price_model()
+        estimated = False
+        if cost_override is None and _usage_missing(usage):
+            usage = estimate_usage(
+                ctx.messages,
+                text,
+                max_tokens=ctx.max_tokens,
+                reasoning_effort=hop.reasoning_effort,
+            )
+            estimated = True
+        cost = (
+            float(cost_override)
+            if cost_override is not None
+            else compute_cost(price_model, usage, self.config.prices)
+        )
+        return usage, cost, estimated
 
     def _charge(self, ctx: CallContext, cost: float) -> ApprovalEvent | None:
         result = self.ledger.charge(ctx.run_id, cost, scope=ctx.budget_scope)
@@ -661,6 +799,7 @@ class ModelRouter:
         cost_usd: float = 0.0,
         fixture_key: str | None = None,
         model: str | None = None,
+        usage_estimated: bool = False,
     ) -> None:
         tokens = usage or LLMUsage()
         self.sink.record(
@@ -689,6 +828,7 @@ class ModelRouter:
                 router_impl=self.impl_name,
                 messages_sha256=ctx.messages_sha256,
                 fixture_key=fixture_key,
+                usage_estimated=bool(usage_estimated),
                 created_at=self._created_at(),
             )
         )

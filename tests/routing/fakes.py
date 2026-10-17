@@ -24,7 +24,7 @@ class FakeTransport:
             if not self.script:
                 raise AssertionError("fake transport script exhausted")
             item = self.script.pop(0)
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 raise item
             return item
         finally:
