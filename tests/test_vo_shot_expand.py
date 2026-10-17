@@ -1086,8 +1086,18 @@ def test_sync_qc_keeps_ids_missing_from_mirror(
     assert "child-extra" in scene
     assert scene["child-extra"][0]["активен"] is False
     assert scene["child-extra"][0]["закадр"] == "хвост ребёнка"
-    assert any(s.get("активен") is not False for s in scene["1-S1-K1"])
-    assert any(s.get("активен") is not False for s in scene["1-S1-K2"])
+    child_live = [
+        s for s in child.attrs["кадры"]
+        if isinstance(s, dict) and s.get("активен") is not False
+    ]
+    assert [s.get("id") for s in child_live] == ["1-S1-K2"]
+    assert [
+        s.get("id")
+        for s in parent.attrs["кадры"]
+        if isinstance(s, dict)
+        and s.get("id") == "1-S1-K1"
+        and s.get("активен") is not False
+    ] == ["1-S1-K1"]
     assert "orphan" in caplog.text
     assert "child-extra" in caplog.text
 
