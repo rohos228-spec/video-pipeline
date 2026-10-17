@@ -10,6 +10,7 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
+import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -19,6 +20,51 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("чужая сессия с тем же executing не прячет своё закрытие карточки", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 1,
+      session_id: "own",
+      payload: {
+        approval_id: "appr-own",
+        reason: "budget_exhausted",
+        title: "Бюджет",
+      },
+    },
+  });
+  expect(opened.tasks[0]?.status).toBe("waiting_approval");
+  expect(opened.approvals[0]?.resolved).toBeNull();
+
+  const foreign = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 2,
+      session_id: "other-session",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(foreign.tasks[0]?.status).toBe("waiting_approval");
+  expect(foreign.approvals[0]?.resolved).toBeNull();
+
+  const own = reduceOrchScreen(foreign, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 3,
+      session_id: "own",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(own.tasks[0]?.status).toBe("executing");
+  expect(own.approvals[0]?.resolved).toBe("closed");
+});
 
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;

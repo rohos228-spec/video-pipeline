@@ -180,6 +180,8 @@ export interface TaskView {
   id: string;
   title: string;
   status: TaskStatus;
+  /** Сессия, которая первой записала статус. Чужая сессия статус не подменяет. */
+  sessionId: string | null;
   steps: StepView[];
   checkpoints: CheckpointView[];
   validators: ValidatorView[];
@@ -372,6 +374,10 @@ function applyTaskStatus(
   sessionId: string | null,
 ): TaskView {
   const task = ensureTask(state.tasks, taskId);
+  if (sessionId) {
+    if (!task.sessionId) task.sessionId = sessionId;
+    else if (task.sessionId !== sessionId) return task;
+  }
   if (task.status !== status) {
     closeApprovalsWithoutChange(state, taskId, sessionId);
     task.status = status;
@@ -504,6 +510,7 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
       id,
       title: title || "Задача",
       status: "queued",
+      sessionId: null,
       steps: [],
       checkpoints: [],
       validators: [],
