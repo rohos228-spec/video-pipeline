@@ -85,11 +85,18 @@ class TaskStatus(StrEnum):
 
 
 class MessageMode(StrEnum):
-    """Режим входящего сообщения (§3.3)."""
+    """Режим входящего сообщения (§3.3).
+
+    ``task`` — новая задача, не interrupt/steer/append. Если в сессии уже
+    есть активная задача, новая остаётся ``queued`` и не вливается в текущую.
+    ``kill_switch`` приходит вместе с ``interrupt`` и обрабатывается как
+    аварийный стоп, с приоритетом над обычным interrupt.
+    """
 
     interrupt = "interrupt"
     steer = "steer"
     append = "append"
+    task = "task"
 
 
 class CriticVerdict(StrEnum):
@@ -307,8 +314,30 @@ class LLMUsage(BaseModel):
     reasoning_tokens: int = 0
 
 
+class ApprovalEvent(BaseModel):
+    """Событие approval в SSE-шине и в ``LLMResponse.approval`` (WS5).
+
+    Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся
+    ``waiting_approval``, а причина лежит здесь и в payload события
+    ``approval_required`` (``reason=budget_exhausted``).
+    """
+
+    task_id: int | None = None
+    action: str = ""
+    reason: str = ""
+    risk: str = ""
+    change_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class LLMResponse(BaseModel):
-    """Ответ ``router.call`` (WS5). Текст промпта не дублируется в ``orch_llm_calls``."""
+    """Ответ ``router.call`` (WS5). Текст промпта не дублируется в ``orch_llm_calls``.
+
+    ``task_status`` и ``approval`` — сигнал супервизору, не статус LLM-вызова.
+    Исчерпание суб-бюджета $10: ``task_status=waiting_approval`` и
+    ``approval.reason=budget_exhausted``. Текст этого хода сохраняется.
+    Роутер при исчерпании исключение не бросает.
+    """
 
     text: str = ""
     call_id: str = ""
@@ -322,6 +351,8 @@ class LLMResponse(BaseModel):
     fallback_index: int = 0
     deterministic: bool = False
     fixture_key: str | None = None
+    task_status: TaskStatus | None = None
+    approval: ApprovalEvent | None = None
 
 
 class ChunkMetadata(BaseModel):
@@ -371,22 +402,6 @@ class NodeDef(BaseModel):
     db_version: int | None = None
     git_sha256: str | None = None
     stale_base: bool = False
-
-
-class ApprovalEvent(BaseModel):
-    """Событие approval в SSE-шине.
-
-    Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся
-    ``waiting_approval``, а причина лежит здесь и в payload события
-    ``approval_required`` (``reason=budget_exhausted``).
-    """
-
-    task_id: int | None = None
-    action: str = ""
-    reason: str = ""
-    risk: str = ""
-    change_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class OrchEvent(BaseModel):
@@ -513,7 +528,9 @@ class ModelRouter(Protocol):
         ``run_id``, ``task_id``, ``agent_role``, ``budget_scope``,
         ``reasoning_effort``, ``on_delta`` — keyword-only и необязательные.
         ``task_id`` — строка, как у WS5. Собственные вызовы оркестратора
-        передают ``budget_scope=internal``.
+        передают ``budget_scope=internal`` (суб-бюджет $10).
+        ``budget_scope=internal`` без непустого ``run_id`` — ValueError у WS5:
+        ``spent(None)`` не подменяет бакет.
 
         До D6 tier хода — ``strong``, ``reasoning_effort=high``
         (``ORCH_DEFAULT_TIER`` / ``ORCH_REASONING_EFFORT``).
@@ -521,6 +538,11 @@ class ModelRouter(Protocol):
         ``on_delta(text)`` — боевой стрим WS5: каждый кусок текста. Нарезка
         готового ``response.text`` на слова — заглушка, не контракт UI.
         ``stream=True`` без ``on_delta`` эту заглушку не отменяет.
+
+        После каждого вызова супервизор смотрит ``task_status`` и ``approval``.
+        ``waiting_approval`` + ``reason=budget_exhausted`` останавливает задачу:
+        чекпоинт, событие ``approval_required``, без следующих internal-вызовов.
+        Текст ответа этого хода сохраняется.
         """
 
     async def classify(self, message: str) -> ClassifyResult:
@@ -592,6 +614,21 @@ def max_risk(*values: Any) -> Risk:
     if not values:
         return Risk.high
     return max((coerce_risk(item) for item in values), key=lambda item: _RISK_RANK[item])
+
+
+def budget_exhausted_response(response: Any) -> bool:
+    """Ответ роутера, после которого супервизор больше не делает internal-вызовы.
+
+    Условие WS5: ``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``.
+    """
+    status = getattr(response, "task_status", None)
+    status_value = getattr(status, "value", status)
+    approval = getattr(response, "approval", None)
+    reason = getattr(approval, "reason", "") if approval is not None else ""
+    return (
+        status_value == TaskStatus.waiting_approval.value
+        and reason == ApprovalReason.budget_exhausted.value
+    )
 
 
 def is_deletion_action(action: str) -> bool:

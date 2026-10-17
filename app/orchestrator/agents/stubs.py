@@ -7,9 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.orchestrator.agents.llm_call import router_call
 from app.orchestrator.contracts import (
     ORCH_DEFAULT_TIER,
     ActionResult,
+    AgentRole,
+    BudgetScope,
     ClassifyResult,
     LLMResponse,
     MessageMode,
@@ -20,7 +23,7 @@ from app.orchestrator.contracts import (
 
 
 class StubPlanner:
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
         return [
             PlanStep(
                 action="noop",
@@ -33,18 +36,36 @@ class StubPlanner:
 
 
 class StubCritic:
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
+    async def review(self, plan: list[PlanStep], context: str = "", **_call: Any) -> str:
         del plan, context
         return "approve"
 
 
 class ActionBackedExecutor:
-    """Шаг плана → ``actions.execute``. До WS2 подставляется ``UnlinkedActions``."""
+    """Шаг плана → ``actions.execute``. До WS2 подставляется ``UnlinkedActions``.
 
-    def __init__(self, actions: Any) -> None:
+    Если передан ``router``, перед действием идёт internal-вызов с kwargs
+    из контекста шага (run_id, task_id, agent_role, budget_scope).
+    """
+
+    def __init__(self, actions: Any, router: Any | None = None) -> None:
         self.actions = actions
+        self.router = router
+        self.last_response: Any = None
 
     async def run(self, step: PlanStep, ctx: dict[str, Any]) -> ActionResult:
+        self.last_response = None
+        if self.router is not None:
+            self.last_response = await router_call(
+                self.router,
+                "fast",
+                [{"role": "user", "content": step.expected or step.action}],
+                stream=False,
+                run_id=ctx.get("run_id"),
+                task_id=ctx.get("task_id"),
+                agent_role=ctx.get("agent_role") or AgentRole.executor.value,
+                budget_scope=ctx.get("budget_scope") or BudgetScope.internal.value,
+            )
         result = await self.actions.execute(step.action, dict(step.params), dict(ctx))
         if isinstance(result, ActionResult):
             return result

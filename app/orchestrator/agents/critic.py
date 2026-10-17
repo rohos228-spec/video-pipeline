@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.orchestrator.agents.llm_call import router_call
 from app.orchestrator.agents.planner import _retrieve
 from app.orchestrator.contracts import (
     PIPELINE_FORECAST_LIMIT_USD,
+    AgentRole,
+    BudgetScope,
     Chunk,
     PlanStep,
     forecast_cost,
@@ -25,8 +28,10 @@ class PlanCritic:
     def __init__(self, router: Any, rag: Any | None = None) -> None:
         self.router = router
         self.rag = rag
+        self.last_response: Any = None
 
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
+    async def review(self, plan: list[PlanStep], context: str = "", **call: Any) -> str:
+        self.last_response = None
         rules: list[Chunk] = []
         if self.rag is not None:
             rules = await _retrieve(self.rag, context or "critic", ["rules"], 8)
@@ -38,7 +43,8 @@ class PlanCritic:
             return "revise"
         if self.router is None:
             return "approve"
-        response = await self.router.call(
+        response = await router_call(
+            self.router,
             "strong",
             [
                 {"role": "system", "content": _critic_system(rules)},
@@ -48,7 +54,12 @@ class PlanCritic:
                 },
             ],
             stream=False,
+            run_id=call.get("run_id"),
+            task_id=call.get("task_id"),
+            agent_role=call.get("agent_role") or AgentRole.critic.value,
+            budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
         )
+        self.last_response = response
         return _parse_verdict(getattr(response, "text", "") or "")
 
 

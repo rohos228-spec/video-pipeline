@@ -9,7 +9,8 @@ import inspect
 import json
 from typing import Any
 
-from app.orchestrator.contracts import Chunk, PlanStep
+from app.orchestrator.agents.llm_call import router_call
+from app.orchestrator.contracts import AgentRole, BudgetScope, Chunk, PlanStep
 
 
 class NullRetriever:
@@ -29,19 +30,26 @@ class RouterPlanner:
     def __init__(self, router: Any, rag: Any | None = None) -> None:
         self.router = router
         self.rag = rag or NullRetriever()
+        self.last_response: Any = None
 
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **call: Any) -> list[PlanStep]:
         rules = await _retrieve(self.rag, goal or context or "plan", ["rules"], 8)
         system = _system_prompt(rules)
         user = goal if not context else f"{goal}\n\n{context}"
-        response = await self.router.call(
+        response = await router_call(
+            self.router,
             "strong",
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             stream=False,
+            run_id=call.get("run_id"),
+            task_id=call.get("task_id"),
+            agent_role=call.get("agent_role") or AgentRole.planner.value,
+            budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
         )
+        self.last_response = response
         return parse_plan(getattr(response, "text", "") or "")
 
 

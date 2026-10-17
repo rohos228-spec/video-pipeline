@@ -33,10 +33,14 @@ from app.orchestrator.contracts import (
     APPROVAL_RISKS,
     TERMINAL_STATUSES,
     VALIDATOR_CONTEXT_DRY_RUN,
+    AgentRole,
+    ApprovalReason,
+    BudgetScope,
     CheckpointData,
     PlanStep,
     SpendSnapshot,
     TaskStatus,
+    budget_exhausted_response,
     can_transition,
     paid_step_identity,
     plan_deletions,
@@ -84,6 +88,8 @@ class Supervisor:
         self._context: dict[int, str] = {}
         self._risk_granted: set[tuple[int, int]] = set()
         self._paid_done: dict[int, set[str]] = {}
+        self._queued: dict[str, list[tuple[int, str]]] = {}
+        self._budget_stop: set[int] = set()
 
     async def start_task(self, session_id: str, goal: str) -> int:
         self._cancel.discard(session_id)
@@ -205,7 +211,30 @@ class Supervisor:
         self._approval[session_id] = reason
 
     def active_task(self, session_id: str) -> int | None:
-        return self._session_task.get(session_id)
+        task_id = self._session_task.get(session_id)
+        if task_id is None:
+            return None
+        status = self._status(task_id)
+        if status is None or status in TERMINAL_STATUSES:
+            return None
+        return task_id
+
+    async def submit_task(self, session_id: str, goal: str) -> int:
+        """Новая задача (``MessageMode.task``). Активную не меняет: встаёт в очередь."""
+        active = self.active_task(session_id)
+        if active is not None:
+            task_id = self.tasks.insert(session_id, goal, TaskStatus.queued.value)
+            self._queued.setdefault(session_id, []).append((task_id, goal))
+            return task_id
+        return await self.start_task(session_id, goal)
+
+    def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
+        return {
+            "run_id": f"run-{task_id}",
+            "task_id": task_id,
+            "agent_role": role,
+            "budget_scope": BudgetScope.internal.value,
+        }
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
         await self.bus.publish(
@@ -252,16 +281,18 @@ class Supervisor:
         goal: str,
         context: str,
     ) -> list[PlanStep] | None:
-        await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = list(await self._cancellable(session_id, self.planner.make_plan(goal, context=context)))
-        self.tasks.save_plan(task_id, plan)
+        plan = await self._make_plan(task_id, session_id, goal, context)
+        if plan is None:
+            return None
         revises = 0
         while True:
             blocked = await self._screen_plan(task_id, session_id, plan)
             if blocked:
                 return None
             await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
-            verdict = str(await self._cancellable(session_id, self.critic.review(plan, context=context)))
+            verdict = await self._review_plan(task_id, session_id, plan, context)
+            if verdict is None:
+                return None
             if verdict == "approve":
                 return plan
             if verdict == "reject":
@@ -271,14 +302,105 @@ class Supervisor:
             if revises > 2:
                 await self._escalate(task_id, session_id, "critic_escalation")
                 return None
-            await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-            plan = list(
-                await self._cancellable(
-                    session_id,
-                    self.planner.make_plan(goal, context=context or "revise"),
-                )
+            plan = await self._make_plan(task_id, session_id, goal, context or "revise")
+            if plan is None:
+                return None
+
+    async def _make_plan(
+        self,
+        task_id: int,
+        session_id: str,
+        goal: str,
+        context: str,
+    ) -> list[PlanStep] | None:
+        if task_id in self._budget_stop:
+            return None
+        await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
+        plan = list(
+            await self._cancellable(
+                session_id,
+                self.planner.make_plan(
+                    goal,
+                    context=context,
+                    **self._llm_kwargs(task_id, AgentRole.planner.value),
+                ),
             )
-            self.tasks.save_plan(task_id, plan)
+        )
+        self.tasks.save_plan(task_id, plan)
+        if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
+            return None
+        return plan
+
+    async def _review_plan(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        context: str,
+    ) -> str | None:
+        if task_id in self._budget_stop:
+            return None
+        verdict = str(
+            await self._cancellable(
+                session_id,
+                self.critic.review(
+                    plan,
+                    context=context,
+                    **self._llm_kwargs(task_id, AgentRole.critic.value),
+                ),
+            )
+        )
+        if await self._absorb_budget(task_id, session_id, getattr(self.critic, "last_response", None)):
+            return None
+        return verdict
+
+    async def _absorb_budget(self, task_id: int, session_id: str, response: Any) -> bool:
+        """Чекпоинт и waiting_approval, если роутер сообщил исчерпание суб-бюджета."""
+        if not budget_exhausted_response(response):
+            return False
+        if task_id not in self._budget_stop:
+            self._budget_stop.add(task_id)
+            text = str(getattr(response, "text", "") or "")
+            self._context[task_id] = (self._context.get(task_id, "") + "\n" + text).strip()
+            plan = self._stored_plan(task_id)
+            position = 0
+            existing = self.checkpoints.load_latest(task_id)
+            if existing is not None:
+                position = int(existing.position)
+                if not plan:
+                    plan = list(existing.plan)
+            await self.bus.publish(
+                session_id,
+                "message",
+                {"role": "assistant", "text": text, "kept": True},
+                task_id=task_id,
+            )
+            await self._checkpoint(task_id, session_id, plan, position)
+            approval = getattr(response, "approval", None)
+            extra: dict[str, Any] | None = None
+            if approval is not None and hasattr(approval, "model_dump"):
+                extra = approval.model_dump()
+                extra.pop("reason", None)
+            await self._escalate(
+                task_id,
+                session_id,
+                ApprovalReason.budget_exhausted.value,
+                extra=extra,
+            )
+        return True
+
+    def _stored_plan(self, task_id: int) -> list[PlanStep]:
+        row = self.tasks.get(task_id) or {}
+        raw = row.get("plan_json")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, list):
+            return []
+        return [PlanStep.model_validate(item) for item in data]
 
     async def _screen_plan(self, task_id: int, session_id: str, plan: list[PlanStep]) -> bool:
         """Dry-run валидаторов и локальные правила 9 / запрет удалений. True — план отклонён."""
@@ -354,7 +476,11 @@ class Supervisor:
                     await self._fail_validation(task_id, session_id)
                     return
 
-            ctx = {"task_id": task_id, "session_id": session_id}
+            ctx = {
+                "task_id": task_id,
+                "session_id": session_id,
+                **self._llm_kwargs(task_id, AgentRole.executor.value),
+            }
             started: list[tuple[PlanStep, int]] = []
             db_pos = self._next_step_position(task_id)
             for offset, item in enumerate(batch):
@@ -388,6 +514,15 @@ class Supervisor:
                     {"error": "step_failed", "action": step.action},
                     task_id=task_id,
                 )
+                return
+
+            if await self._absorb_budget(
+                task_id,
+                session_id,
+                getattr(self.executor, "last_response", None),
+            ):
+                for _, step_id in started:
+                    self.tasks.finish_step(step_id, "cancelled", None, 0.0)
                 return
 
             paid_in_batch = False
@@ -438,13 +573,16 @@ class Supervisor:
         ctx = (self._context.get(task_id, "") + "\n" + text).strip()
         self._context[task_id] = ctx
         await self._checkpoint(task_id, session_id, plan, index)
-        await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        revised = list(await self._cancellable(session_id, self.planner.make_plan(goal, context=ctx)))
+        revised = await self._make_plan(task_id, session_id, goal, ctx)
+        if revised is None:
+            return None
         self.tasks.save_plan(task_id, revised, position=0)
         if await self._screen_plan(task_id, session_id, revised):
             return None
         await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
-        verdict = str(await self._cancellable(session_id, self.critic.review(revised, context=ctx)))
+        verdict = await self._review_plan(task_id, session_id, revised, ctx)
+        if verdict is None:
+            return None
         if verdict != "approve":
             await self._escalate(task_id, session_id, "steer_not_approved")
             return None
@@ -657,7 +795,31 @@ class Supervisor:
             {"status": status.value, "agent": "supervisor"},
             task_id=task_id,
         )
+        if status in TERMINAL_STATUSES:
+            await self._start_queued(session_id, task_id)
         return task_id
+
+    async def _start_queued(self, session_id: str, finished_id: int) -> None:
+        if self._session_task.get(session_id) not in {None, finished_id}:
+            return
+        if session_id in self._kill:
+            return
+        pending = self._queued.get(session_id) or []
+        if not pending:
+            return
+        task_id, goal = pending.pop(0)
+        self._cancel.discard(session_id)
+        self._pause.discard(session_id)
+        self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
+        self._session_task[session_id] = task_id
+        self._change_ids[task_id] = []
+        self._context[task_id] = ""
+        self._paid_done[task_id] = set()
+        self._runs[task_id] = asyncio.create_task(
+            self._drive(task_id, session_id, goal),
+            name=f"orch-task-{task_id}",
+        )
 
     def _status(self, task_id: int) -> TaskStatus | None:
         row = self.tasks.get(task_id)

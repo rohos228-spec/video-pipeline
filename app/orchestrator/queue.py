@@ -19,6 +19,7 @@ from app.orchestrator.contracts import (
     BudgetScope,
     ClassifyResult,
     MessageMode,
+    budget_exhausted_response,
     orch_call_tier,
 )
 from app.orchestrator.db.migrations import connect, utc_now
@@ -173,6 +174,9 @@ class MessageQueue:
         if decided.mode is MessageMode.steer:
             self.supervisor.request_steer(session_id, text)
             return
+        if decided.mode is MessageMode.task:
+            await self.supervisor.submit_task(session_id, text)
+            return
         await self._stream_fast(session_id, text, decided.tier or "fast")
 
     async def _stream_fast(self, session_id: str, text: str, tier: str) -> None:
@@ -192,7 +196,7 @@ class MessageQueue:
             orch_call_tier(tier),
             [{"role": "user", "content": text}],
             True,
-            run_id=session_id,
+            run_id=f"orch-task-{task_id}" if task_id is not None else f"orch-session-{session_id}",
             task_id=None if task_id is None else str(task_id),
             agent_role=AgentRole.classifier.value,
             budget_scope=BudgetScope.internal.value,
@@ -203,6 +207,8 @@ class MessageQueue:
         for part in parts:
             await self.bus.publish(session_id, "token", {"text": part})
         _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
+        if budget_exhausted_response(response) and task_id is not None:
+            await self.supervisor._absorb_budget(task_id, session_id, response)
         await self.bus.publish(
             session_id,
             "message",

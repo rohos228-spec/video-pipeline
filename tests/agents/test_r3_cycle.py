@@ -12,10 +12,16 @@ import pytest
 from app.orchestrator.agents.critic import PlanCritic
 from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.agents.stubs import ActionBackedExecutor
 from app.orchestrator.contracts import (
     VALIDATOR_CONTEXT_DRY_RUN,
+    AgentRole,
+    ApprovalEvent,
+    BudgetScope,
     Chunk,
     ChunkCorpus,
+    LLMResponse,
+    MessageMode,
     PlanStep,
     Risk,
     TaskStatus,
@@ -52,14 +58,14 @@ class CountingPlanner:
         self.steps = list(steps)
         self.calls = 0
 
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
         del goal, context
         self.calls += 1
         return list(self.steps)
 
 
 class SteerPlanner:
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
         del goal
         if "измени" in context:
             return [
@@ -633,6 +639,168 @@ async def test_plan_risk_cannot_lower_registry_risk(token: str) -> None:
         assert approvals[0].payload["risk"] == Risk.high.value
         assert approvals[0].payload["plan_risk"] == "low"
         assert approvals[0].payload["action"] == "charge"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_stops_before_next_internal_call(token: str) -> None:
+    del token
+    text = json.dumps({"steps": [{"action": "noop", "expected": "ok", "mutating": True}]})
+    router = ScriptedRouter()
+    router.responses = [
+        LLMResponse(
+            text=text,
+            call_id="budget-call",
+            model="scripted",
+            provider="52pay",
+            tier="strong",
+            finish_reason="stop",
+            task_status=TaskStatus.waiting_approval,
+            approval=ApprovalEvent(
+                reason="budget_exhausted",
+                payload={"spent_usd": 10, "budget_usd": 10, "run_id": "run"},
+            ),
+        )
+    ]
+    actions = MockActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+        critic=PlanCritic(router),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-budget", "план")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert router.call_count == 1
+        assert actions.calls == []
+        approvals = [event for event in rt.bus.replay("r3-budget", 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "budget_exhausted"
+        checkpoint = rt.checkpoints.load_latest(task_id)
+        assert checkpoint is not None
+        assert text in checkpoint.context
+        kept = [
+            event.payload.get("text")
+            for event in rt.bus.replay("r3-budget", 0)
+            if event.type == "message"
+        ]
+        assert text in kept
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_task_mode_queues_new_task_behind_active(token: str) -> None:
+    del token
+    actions = MockActions()
+    router = ScriptedRouter()
+    router.mode = MessageMode.task
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=FixedPlanner([PlanStep(action="hold", params={"_wait": True}, paid=False)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-task", "первая")
+        await actions.started.wait()
+        plan_before = rt.tasks.get(task_id)["plan_json"]
+        await rt.queue.accept("r3-task", "новая задача на потом")
+        pending = list(rt.queue._pending)
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        queued = rt.supervisor._queued["r3-task"]
+        assert len(queued) == 1
+        queued_id, goal = queued[0]
+        assert goal == "новая задача на потом"
+        assert queued_id != task_id
+        assert rt.tasks.get(queued_id)["status"] == TaskStatus.queued.value
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
+        assert rt.tasks.get(task_id)["plan_json"] == plan_before
+        assert [call["name"] for call in actions.calls] == ["hold"]
+        actions.release.set()
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.wait(queued_id, timeout=5)
+        assert rt.tasks.get(queued_id)["status"] == TaskStatus.done.value
+        assert [call["name"] for call in actions.calls] == ["hold", "hold"]
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_classifier_kill_switch_outranks_interrupt(token: str) -> None:
+    del token
+    actions = MockActions()
+    router = ScriptedRouter()
+    router.mode = MessageMode.interrupt
+    router.kill_switch = True
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=FixedPlanner([PlanStep(action="slow", params={"_block": True, "_seconds": 30})]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-kill-cls", "идёт")
+        await actions.started.wait()
+        await rt.queue.accept("r3-kill-cls", "продолжай")
+        pending = list(rt.queue._pending)
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        assert router.classify_calls == 1
+        kill = next(event for event in rt.bus.replay("r3-kill-cls", 0) if event.type == "kill_switch")
+        assert kill.payload["stop_key_set"] is True
+        classification = next(event for event in rt.bus.replay("r3-kill-cls", 0) if event.type == "classification")
+        assert classification.payload["mode"] == MessageMode.interrupt.value
+        assert classification.payload["kill_switch"] is True
+        assert "r3-kill-cls" in rt.supervisor._kill
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        assert actions.calls[0]["name"] == "slow"
+        assert all(call["name"] != "later" for call in actions.calls)
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_router_call_passes_run_task_role_and_budget(token: str) -> None:
+    del token
+    router = ScriptedRouter()
+    router.script = [
+        json.dumps({"steps": [{"action": "noop", "expected": "ok", "mutating": True}]}),
+        "approve",
+        "step",
+    ]
+    actions = MockActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+        critic=PlanCritic(router),
+        executor=ActionBackedExecutor(actions, router),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-kwargs", "план")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
+        assert [call["agent_role"] for call in router.seen_calls] == [
+            AgentRole.planner.value,
+            AgentRole.critic.value,
+            AgentRole.executor.value,
+        ]
+        for call in router.seen_calls:
+            assert call["run_id"] == f"run-{task_id}"
+            assert call["task_id"] == str(task_id)
+            assert call["budget_scope"] == BudgetScope.internal.value
+        assert [call["name"] for call in actions.calls] == ["noop"]
     finally:
         set_runtime(None)
 

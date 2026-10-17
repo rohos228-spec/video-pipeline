@@ -37,6 +37,9 @@ class ScriptedRouter:
         self.call_started = asyncio.Event()
         self.seen_messages: list[list[dict[str, Any]]] = []
         self.script: list[str] = []
+        self.responses: list[LLMResponse] = []
+        self.seen_calls: list[dict[str, Any]] = []
+        self.kill_switch = False
 
     async def classify(self, message: str) -> ClassifyResult:
         del message
@@ -53,6 +56,7 @@ class ScriptedRouter:
             mode=self.mode,
             deterministic=False,
             confidence=0.9,
+            kill_switch=self.kill_switch,
         )
 
     async def call(
@@ -69,6 +73,15 @@ class ScriptedRouter:
         on_delta: Any = None,
     ) -> LLMResponse:
         self.seen_messages.append([dict(item) for item in messages])
+        self.seen_calls.append(
+            {
+                "tier": tier,
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_role": agent_role,
+                "budget_scope": budget_scope,
+            }
+        )
         self.call_count += 1
         self.call_started.set()
         self.last_call = {
@@ -86,6 +99,8 @@ class ScriptedRouter:
                 on_delta(piece)
         if self.call_delay:
             await asyncio.sleep(self.call_delay)
+        if self.responses:
+            return self.responses.pop(0)
         text = self.script.pop(0) if self.script else self.answer
         return LLMResponse(
             text=text,
@@ -155,7 +170,7 @@ class FixedPlanner:
     def __init__(self, steps: list[PlanStep]) -> None:
         self.steps = list(steps)
 
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
         del goal, context
         return list(self.steps)
 
@@ -164,6 +179,6 @@ class ScriptedCritic:
     def __init__(self, verdicts: list[str]) -> None:
         self.verdicts = list(verdicts)
 
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
+    async def review(self, plan: list[PlanStep], context: str = "", **_call: Any) -> str:
         del plan, context
         return self.verdicts.pop(0)
