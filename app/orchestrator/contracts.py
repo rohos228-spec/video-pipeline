@@ -835,6 +835,70 @@ class StepExecutor(Protocol):
 # Правило 9: перед run_node обязателен verify_code_state
 # (read_pipeline_code + get_node). Имена действий — мини-RFC для WS1/WS2.
 RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step.run_step"})
+
+# Снимок флагов ws2-r2.2 (#378 a17ff283): paid, destructive, risk.
+# Пакет WS2 не импортируется. Пока пуст: у семи имён PLAN аналога нет.
+R22_ACTION_FLAGS: dict[str, tuple[bool, bool, str]] = {}
+
+# PLAN §6.1–6.2 → имя r2.2. ``None`` — дыра: в реестре 102 и в R2 такого
+# действия нет, ближайшее имя не подставляется.
+# Ядро сейчас зовёт литералы ``run_node`` и ``get_node`` (planner, critic,
+# ``plan_missing_verify``). ``node.run_step`` и ``step.run_step`` лежат в
+# ``RUN_NODE_ACTIONS`` как алиасы правила 9. Остальные шесть имён в
+# ``app/orchestrator/agents`` и здесь как действия не встречаются.
+PLAN_ACTION_MAP: dict[str, str | None] = {
+    "get_project_state": None,
+    "list_nodes": None,
+    "get_node": None,
+    "get_scenes": None,
+    "get_shots": None,
+    "get_run_logs": None,
+    "get_spend_report": None,
+}
+
+
+def resolve_plan_action(name: str) -> str | None:
+    """Имя действия r2.2 для имени из PLAN. ``None`` — дыра, аналог не выдуман."""
+    if name not in PLAN_ACTION_MAP:
+        raise KeyError(name)
+    return PLAN_ACTION_MAP[name]
+
+
+def plan_action_metadata(name: str) -> dict[str, Any]:
+    """Флаги как ``metadata_of`` r2.2.
+
+    Дыра и имя вне снимка: ``paid`` и ``destructive`` истинны, ``risk`` — high.
+    """
+    if name not in PLAN_ACTION_MAP:
+        return {
+            "plan_name": name,
+            "resolved": None,
+            "hole": False,
+            "paid": True,
+            "destructive": True,
+            "risk": "high",
+        }
+    target = PLAN_ACTION_MAP[name]
+    if target is None:
+        return {
+            "plan_name": name,
+            "resolved": None,
+            "hole": True,
+            "paid": True,
+            "destructive": True,
+            "risk": "high",
+        }
+    paid, destructive, risk = R22_ACTION_FLAGS[target]
+    return {
+        "plan_name": name,
+        "resolved": target,
+        "hole": False,
+        "paid": paid,
+        "destructive": destructive,
+        "risk": risk,
+    }
+
+
 DELETION_ACTIONS: frozenset[str] = frozenset(
     {
         "montage.delete_frame",
