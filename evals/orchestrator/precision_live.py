@@ -1036,6 +1036,31 @@ def _pick_dev(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return max(pool, key=lambda row: (row["ndcg_at_8"], row["hit_at_5"], -row["p95_s"]))
 
 
+def record_prod_p95(
+    samples: list[float],
+    *,
+    config: dict[str, Any],
+    commit: str,
+    hardware: dict[str, Any],
+) -> dict[str, Any]:
+    """Медиана трёх холодных замеров. Без замеров число не из чего взять."""
+    if len(samples) != 3:
+        raise ValueError("p95 прод-пути — медиана трёх замеров, не литерал")
+    ordered = [float(item) for item in samples]
+    if any(item <= 0 for item in ordered):
+        raise ValueError("замер p95 пустой")
+    return {
+        "samples_s": ordered,
+        "median_s": _median(ordered),
+        "min_s": min(ordered),
+        "max_s": max(ordered),
+        "config": config,
+        "commit": commit,
+        "hardware": hardware,
+        "cold_query_vectors": True,
+    }
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     mid = len(ordered) // 2
@@ -1365,11 +1390,17 @@ def render_locked_report(payload: dict[str, Any]) -> str:
         )
     else:
         lines.append(f"p95 эвала на test {p95:.3f} с, лимит {P95_MAX_S:.1f} с.")
-    lines.append(
-        "p95 прод-пути `get_engine(profile=\"contour-b\")`, квантованный bge-m3, "
-        "обычные потоки: медиана трёх замеров на коде до поиска 0.942 с, "
-        "на финальном конфиге 0.907 с. Лимит 1.2 с взят."
-    )
+    prod = payload.get("prod_p95")
+    if not isinstance(prod, dict) or "median_s" not in prod:
+        lines.append("p95 прод-пути в артефакте нет.")
+    else:
+        median_s = float(prod["median_s"])
+        taken = "взят" if median_s <= P95_MAX_S else "не взят"
+        lines.append(
+            "p95 прод-пути из артефакта "
+            f"(commit {prod.get('commit') or '—'}, холодный _query_vectors): "
+            f"{median_s:.3f} с. Лимит {P95_MAX_S:.1f} с {taken}."
+        )
     lines.extend(
         [
             "",
