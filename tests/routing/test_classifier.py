@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import pytest
 
+from app.orchestrator.routing.classifier import classify_rules
 from app.orchestrator.routing.model_router import LiveRouter, RouterExhausted
 from app.orchestrator.routing.transport import ProviderTimeout
 from tests.routing.fakes import FakeTransport, ok
+
+
+def test_ne_tak_does_not_swallow_ne_takoy():
+    longer = classify_rules("не такой большой")
+    assert longer.mode != "steer"
+    exact = classify_rules("не так")
+    assert exact.mode == "steer"
+    assert exact.mode_locked is True
 
 
 @pytest.mark.parametrize(
