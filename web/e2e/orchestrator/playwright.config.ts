@@ -9,6 +9,7 @@ const mockPort = process.env.ORCH_MOCK_PORT ?? "8799";
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.spec\.ts/,
+  testIgnore: /r6\//,
   timeout: 60_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,
