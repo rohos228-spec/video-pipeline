@@ -102,6 +102,8 @@ EVENT_TYPES = (
     "paid_retry_blocked",
     "step_skipped",
     "approval_decided",
+    "message_start",
+    "message_end",
 )
 
 

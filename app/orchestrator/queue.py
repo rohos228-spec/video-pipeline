@@ -291,15 +291,32 @@ class MessageQueue:
             on_delta=on_delta,
         )
         parts = deltas or _token_pieces(response.text)
-        for part in parts:
-            await self.bus.publish(session_id, "token", {"text": part})
-        await asyncio.to_thread(
+        message_id = await asyncio.to_thread(
             _insert_message,
             session_id,
             "assistant",
             response.text,
             task_id=task_id,
             mode=MessageMode.append.value,
+        )
+        await self.bus.publish(
+            session_id,
+            "message_start",
+            {"message_id": message_id, "role": "assistant"},
+            task_id=task_id,
+        )
+        for part in parts:
+            await self.bus.publish(
+                session_id,
+                "token",
+                {"text": part, "message_id": message_id},
+                task_id=task_id,
+            )
+        await self.bus.publish(
+            session_id,
+            "message_end",
+            {"message_id": message_id, "role": "assistant"},
+            task_id=task_id,
         )
         if budget_exhausted_response(response) and task_id is not None:
             await self.supervisor.absorb_budget(task_id, session_id, response)
