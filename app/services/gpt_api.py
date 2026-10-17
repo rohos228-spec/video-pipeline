@@ -3798,11 +3798,6 @@ async def chat(
             await _spend_release(1.0)
 
         if attempt <= retries:
-            from app.services.spend_guard import SpendBlocked
-            from app.services.spend_guard import cannot_reserve as _spend_blocked
-
-            if await _spend_blocked(1.0):
-                raise SpendBlocked("spend cap: повтор остановлен")
             backoff = _gpt_retry_backoff_s(attempt, last_exc)
             await asyncio.sleep(backoff)
 
