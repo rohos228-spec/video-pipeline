@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
+from app.orchestrator.rag.corpora import resolve_corpora
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
 from app.orchestrator.rag.family_boost import boost_scores
 from app.orchestrator.rag.lexical import LEXICAL_ANALYZER, fts_or_query
@@ -21,7 +22,7 @@ from app.orchestrator.rag.node_store import NodeStore
 from app.orchestrator.rag.rerank import Reranker
 from app.orchestrator.rag.rrf import rrf_merge
 from app.orchestrator.rag.store import RagStore, chunk_id_for
-from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
+from app.orchestrator.rag.types import Chunk, ReindexResult, SourceDoc
 
 _RRF_K = 60
 _AGGREGATES = ("none", "prompt_pool", "prompt_expand")
@@ -415,12 +416,9 @@ class RagEngine:
 
     def _corpora_arg(self, corpus: str | list[str] | None) -> list[str]:
         if corpus is None:
-            return list(CORPORA)
+            return resolve_corpora(None)
         selected = [corpus] if isinstance(corpus, str) else list(corpus)
-        unknown = [name for name in selected if name not in CORPORA]
-        if unknown:
-            raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {', '.join(CORPORA)}")
-        return selected
+        return resolve_corpora(selected)
 
 
 def _doc_key(chunk: Chunk) -> str:

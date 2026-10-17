@@ -19,8 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from app.orchestrator.rag.corpora import CANONICAL_CORPORA as CORPORA
+
 CorpusName = Literal["rules", "history", "nodes", "prompts"]
-CORPORA: tuple[str, ...] = ("rules", "history", "nodes", "prompts")
 
 META_KEYS: tuple[str, ...] = ("node_key", "version", "project_id", "updated_at")
 

@@ -1,6 +1,7 @@
 """RAG оркестратора: ``retrieve`` / ``reindex``.
 
 Корпуса: ``rules`` | ``history`` | ``nodes`` | ``prompts``.
+Алиасы плана (``projects``, ``chats``) разбирает ``corpora.resolve_corpora``.
 Хранилище по умолчанию: ``data/orch_rag.db`` (WAL, один reindex-воркер).
 """
 
@@ -117,6 +118,16 @@ def retrieve(
     return engine.retrieve(query, corpora, top_k, **merged)
 
 
+def rag_search(
+    query: str,
+    corpora: list[str] | tuple[str, ...] | None = None,
+    top_k: int = 8,
+    **kwargs: object,
+) -> list[Chunk]:
+    """Поиск по каноническому имени или алиасу. Индекс — после ``resolve_corpora``."""
+    return retrieve(query, corpora, top_k, **kwargs)
+
+
 def reindex(corpus: str | None = None) -> ReindexResult | dict[str, ReindexResult]:
     return get_engine().reindex(corpus)
 
@@ -130,6 +141,7 @@ __all__ = [
     "RagEngine",
     "ReindexResult",
     "get_engine",
+    "rag_search",
     "reindex",
     "reset_engine",
     "retrieve",
