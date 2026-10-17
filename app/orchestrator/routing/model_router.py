@@ -141,14 +141,41 @@ def _latency_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
 
 
-def estimate_usage(text: str) -> LLMUsage:
-    """Консервативная оценка, если провайдер не прислал usage.
+def _chars_to_tokens(text: str) -> int:
+    """Кириллица ≈ 2 символа на токен. Пустая строка — 0."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 1) // 2)
 
-    4 символа ответа ≈ 1 completion-токен, минимум 1. Цена берётся
-    по strong, чтобы пустой SSE не обнулял суб-бюджет.
+
+def estimate_usage(
+    messages: list[dict[str, str]] | None,
+    text: str,
+    *,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+) -> LLMUsage:
+    """Оценка сверху, если провайдер не прислал usage.
+
+    Промпт и видимый ответ — ``ceil(len/2)``. Ответ не ниже ``max_tokens``,
+    когда он задан: берётся большее. При ``reasoning_effort`` столько же
+    токенов пишется в reasoning, потому что у strong high рассуждение
+    часто длиннее видимого текста.
     """
-    tokens = max(1, (len(text) + 3) // 4)
-    return LLMUsage(prompt_tokens=0, completion_tokens=tokens, reasoning_tokens=0)
+    prompt = "".join(
+        str((item or {}).get("content") or "") for item in (messages or [])
+    )
+    try:
+        ceiling = max(0, int(max_tokens)) if max_tokens is not None else 0
+    except (TypeError, ValueError):
+        ceiling = 0
+    completion_tokens = max(_chars_to_tokens(text or ""), ceiling)
+    reasoning_tokens = completion_tokens if reasoning_effort else 0
+    return LLMUsage(
+        prompt_tokens=_chars_to_tokens(prompt),
+        completion_tokens=completion_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
 
 
 def _usage_missing(usage: LLMUsage) -> bool:
@@ -522,10 +549,16 @@ class ModelRouter:
             reasoning_tokens=int(result.reasoning_tokens),
         )
         model = result.model or hop.model
-        price_model = model
+        price_model = model or self._strong_price_model()
+        estimated = False
         if cost_override is None and _usage_missing(usage) and (result.text or "").strip():
-            usage = estimate_usage(result.text)
-            price_model = self._strong_price_model()
+            usage = estimate_usage(
+                ctx.messages,
+                result.text,
+                max_tokens=ctx.max_tokens,
+                reasoning_effort=hop.reasoning_effort,
+            )
+            estimated = True
         cost = (
             float(cost_override)
             if cost_override is not None
@@ -562,6 +595,7 @@ class ModelRouter:
             cost_usd=cost,
             fixture_key=fixture_key_value,
             model=model,
+            usage_estimated=estimated,
         )
         return response
 
@@ -661,6 +695,7 @@ class ModelRouter:
         cost_usd: float = 0.0,
         fixture_key: str | None = None,
         model: str | None = None,
+        usage_estimated: bool = False,
     ) -> None:
         tokens = usage or LLMUsage()
         self.sink.record(
@@ -689,6 +724,7 @@ class ModelRouter:
                 router_impl=self.impl_name,
                 messages_sha256=ctx.messages_sha256,
                 fixture_key=fixture_key,
+                usage_estimated=bool(usage_estimated),
                 created_at=self._created_at(),
             )
         )

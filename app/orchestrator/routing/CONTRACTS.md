@@ -107,9 +107,12 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    и со `stream=True` тоже: проверка стоит до `_provider_complete`.
    `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
    Стриминговый chat-запрос 52pay несёт `stream_options.include_usage=true`.
-   Если usage пустой, а текст есть, стоимость не ноль: completion-токены
-   ≈ `len(text)/4` (минимум 1) по прайсу strong. То же у нестримингового
-   ответа без usage. Списание идёт в `SpendLedger`.
+   Если usage пустой, а текст есть, стоимость не ноль. Оценка сверху:
+   промпт и ответ по `ceil(len/2)` (кириллица ≈ 2 символа на токен),
+   ответ не ниже `max_tokens`, если он задан. При `reasoning_effort`
+   столько же токенов пишется в reasoning. Цена — фактической модели хопа.
+   В строке вызова `usage_estimated=1`. То же у нестримингового ответа
+   без usage. Списание идёт в `SpendLedger`.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие
@@ -287,6 +290,7 @@ CREATE TABLE orch_llm_calls (
   router_impl TEXT NOT NULL CHECK (router_impl IN ('live','replay','scripted')),
   messages_sha256 TEXT NOT NULL,
   fixture_key TEXT NULL,
+  usage_estimated INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE INDEX ix_orch_llm_calls_run ON orch_llm_calls (run_id, created_at);
@@ -316,6 +320,7 @@ CREATE INDEX ix_orch_llm_calls_fixture ON orch_llm_calls (fixture_key);
 | `router_impl` | `live` \| `replay` \| `scripted` |
 | `messages_sha256` | sha256 канонических messages, без текста |
 | `fixture_key` | ключ фикстуры или NULL у live |
+| `usage_estimated` | 1, если токены оценены, а не пришли от провайдера |
 | `created_at` | ISO UTC |
 
 Запись идёт через `LlmCallSink.record(LlmCallRecord)`. Подмена:

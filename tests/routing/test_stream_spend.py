@@ -59,7 +59,9 @@ async def test_stream_without_usage_charges_the_ledger(config):
         run_id="run-stream",
     )
     assert response.text == "привет"
-    assert response.usage.completion_tokens == (len("привет") + 3) // 4
+    assert response.usage.prompt_tokens == (len("да") + 1) // 2
+    assert response.usage.completion_tokens == (len("привет") + 1) // 2
+    assert response.usage.reasoning_tokens == response.usage.completion_tokens
     assert response.cost_usd == response.usage.completion_tokens
     assert response.cost_usd > 0
     assert ledger.spent("run-stream") == response.cost_usd
@@ -77,8 +79,40 @@ async def test_nonstream_without_usage_is_not_free(config):
         stream=False,
         run_id="run-plain",
     )
+    assert response.usage.prompt_tokens == (len("да") + 1) // 2
+    assert response.usage.completion_tokens >= (len("аб") + 1) // 2
     assert response.cost_usd > 0
     assert ledger.spent("run-plain") == response.cost_usd
+
+
+async def test_missing_usage_charges_the_prompt(config, sink):
+    prices = dict(config.prices)
+    prices["gpt-5.6-sol"] = Price(prompt=1_000_000, completion=1_000_000, reasoning=1_000_000)
+    priced = replace(config, prices=prices)
+    prompt = "привет" * 20
+    text = "абв"
+    transport = FakeTransport(
+        [ok(text, prompt_tokens=0, completion_tokens=0, reasoning_tokens=0)]
+    )
+    ledger = SpendLedger(internal_budget_usd=10_000)
+    router = LiveRouter(priced, transport=transport, ledger=ledger, sink=sink)
+    response = await router.call(
+        "strong",
+        [{"role": "user", "content": prompt}],
+        max_tokens=10,
+        stream=True,
+        run_id="run-est",
+    )
+    prompt_tokens = (len(prompt) + 1) // 2
+    completion_tokens = max((len(text) + 1) // 2, 10)
+    assert response.usage.prompt_tokens == prompt_tokens
+    assert response.usage.completion_tokens == completion_tokens
+    assert response.usage.reasoning_tokens == completion_tokens
+    assert response.cost_usd == prompt_tokens + completion_tokens + completion_tokens
+    assert response.cost_usd > completion_tokens
+    assert ledger.spent("run-est") == response.cost_usd
+    assert sink.records[-1].usage_estimated is True
+    assert sink.records[-1].prompt_tokens == prompt_tokens
 
 
 async def test_exhausted_budget_blocks_stream_before_transport(config):

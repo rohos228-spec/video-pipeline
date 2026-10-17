@@ -202,7 +202,8 @@ class LlmCallRecord:
     router_impl: str
     messages_sha256: str
     fixture_key: str | None
-    created_at: str
+    usage_estimated: bool = False
+    created_at: str = ""
 
 
 class RouterError(Exception):
