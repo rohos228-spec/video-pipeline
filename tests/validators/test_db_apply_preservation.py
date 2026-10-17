@@ -260,3 +260,97 @@ async def test_db_apply_preservation_view_includes_texts_edges_characters(
     assert any(item.get("id") == "c01" or item.get("code") == "c01" for item in view.get("characters") or [])
     await session.refresh(left)
     assert left.voiceover_text == "стало"
+
+
+@pytest.mark.asyncio
+async def test_db_apply_preservation_covers_all_mutating_ops(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+    real = run_preservation_validators
+
+    def _spy(before, after, ops=None, *, mode="reject"):
+        seen.append(mode)
+        return real(before, after, ops, mode=mode)
+
+    monkeypatch.setattr(db_apply, "run_preservation_validators", _spy)
+
+    project = Project(slug="allops", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    left = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="ffffffffffffffffffffffff",
+        voiceover_text="было",
+        attrs={"кадры": [{"id": "k1", "закадр": "а"}]},
+    )
+    right = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="111111111111111111111111",
+        voiceover_text="ещё",
+        attrs={},
+    )
+    session.add_all([left, right])
+    await session.flush()
+    text = FrameText(project_id=project.id, frame_id=left.id, kind="voiceover", text="привет")
+    edge = FrameEdge(
+        project_id=project.id,
+        from_frame_id=left.id,
+        to_frame_id=right.id,
+        type="next",
+    )
+    person = Entity(project_id=project.id, type="character", code="c01", name="Анна", attrs={})
+    session.add_all([text, edge, person])
+    await session.commit()
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        None,
+        characters=[{"id": "c01", "имя": "Анна Петровна"}],
+    )
+    assert seen == ["reject"]
+    await session.refresh(person)
+    assert person.name == "Анна Петровна"
+    await session.refresh(text)
+    assert text.text == "привет"
+
+    real_upsert = db_apply.upsert_characters
+
+    async def _wipe(session, project, characters, *, replace=False):
+        await real_upsert(session, project, characters, replace=replace)
+        await session.execute(select(FrameText).where(FrameText.project_id == project.id))
+        for row in (
+            await session.execute(select(FrameText).where(FrameText.project_id == project.id))
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(select(FrameEdge).where(FrameEdge.project_id == project.id))
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(
+                select(Entity).where(Entity.project_id == project.id, Entity.type == "character")
+            )
+        ).scalars():
+            await session.delete(row)
+        await session.flush()
+        return 1
+
+    monkeypatch.setattr(db_apply, "upsert_characters", _wipe)
+    with pytest.raises(db_apply.ApplyOpsError):
+        await db_apply.apply_ops(
+            session,
+            project,
+            None,
+            characters=[{"id": "c01", "имя": "Анна"}],
+        )
+    await session.rollback()
+    await session.refresh(text)
+    await session.refresh(edge)
+    await session.refresh(person)
+    assert text.text == "привет"
+    assert edge.type == "next"
+    assert person.code == "c01"

@@ -1505,6 +1505,16 @@ async def apply_ops(
         from app.services.node_write_contract import filter_ops_for_node
 
         ops = filter_ops_for_node(ops, node_kind=str(node_kind))
+    touches_preservation = bool(characters) or any(
+        (op.get("target") or "frame") in {"frame", "replace_frames"}
+        for op in ops
+        if isinstance(op, dict)
+    )
+    preservation_before = (
+        copy.deepcopy(await _project_preservation_view(session, project))
+        if touches_preservation
+        else None
+    )
     chars_n = 0
     scenes_n = 0
     if characters:
@@ -1534,7 +1544,8 @@ async def apply_ops(
         specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
         if not isinstance(specs, list):
             raise ApplyOpsError("replace_frames: нужен список frames")
-        preservation_before = copy.deepcopy(await _project_preservation_view(session, project))
+        if preservation_before is None:
+            preservation_before = copy.deepcopy(await _project_preservation_view(session, project))
         try:
             created = await db_v2.replace_all_frames(session, project, specs)
         except ValueError as e:
@@ -1606,10 +1617,6 @@ async def apply_ops(
         missing = [u for u in uuids if u not in by_uuid]
         if missing:
             raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
-
-    preservation_before = (
-        copy.deepcopy(await _project_preservation_view(session, project)) if frame_ops else None
-    )
 
     updated = 0
     for op in frame_ops:
