@@ -7,13 +7,30 @@
 from __future__ import annotations
 
 import json
+import threading
 
 from app.orchestrator.contracts import CheckpointData, PlanStep, SpendSnapshot
 from app.orchestrator.db.migrations import connect, utc_now
 
+# load+insert контекста не должен затереть change_id, который другая
+# корутина уже записала новым снимком.
+_LOCK = threading.RLock()
+
 
 class CheckpointStore:
     def save(self, task_id: int, session_id: str, data: CheckpointData) -> int:
+        with _LOCK:
+            return self._insert(task_id, session_id, data)
+
+    def save_context(self, task_id: int, session_id: str, context: str) -> None:
+        """Дописать контекст в последний снимок, не откатывая план и change_id."""
+        with _LOCK:
+            data = self._load(task_id)
+            if data is None or (data.context or "") == (context or ""):
+                return
+            self._insert(task_id, session_id, data.model_copy(update={"context": context or ""}))
+
+    def _insert(self, task_id: int, session_id: str, data: CheckpointData) -> int:
         conn = connect()
         try:
             cur = conn.execute(
@@ -41,6 +58,10 @@ class CheckpointStore:
             conn.close()
 
     def load_latest(self, task_id: int) -> CheckpointData | None:
+        with _LOCK:
+            return self._load(task_id)
+
+    def _load(self, task_id: int) -> CheckpointData | None:
         conn = connect()
         try:
             row = conn.execute(

@@ -2282,10 +2282,10 @@ class Supervisor:
         if packed_context == data.context:
             return
         await asyncio.to_thread(
-            self.checkpoints.save,
+            self.checkpoints.save_context,
             int(task_id),
             session_id,
-            data.model_copy(update={"context": packed_context}),
+            packed_context,
         )
 
     async def _escalate(
