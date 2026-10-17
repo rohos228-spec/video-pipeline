@@ -24,20 +24,21 @@
         rrf_weights=(CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR),
         bm25_scope=CONTOUR_B_BM25_SCOPE,
         rerank_pool=CONTOUR_B_RERANK_POOL,
+        aggregate=CONTOUR_B_AGGREGATE,
         rerank=False,  # гибрид без реранкера
     )
 
-Отбор дефолта — только вариант C (8 частей, метки s0–s7):
-среди hit@5 ≥ 0.9 и p95 ≤ 1.5 с берётся максимальный nDCG@8.
-Порог nDCG@8 0.65 не снижался.
+Дефолт — вариант C (8 частей, метки s0–s7) с bge-m3.
+Подбор на нечётных query_id (dev), до него сплит зафиксирован.
+Порог nDCG@8 0.65 не снижался: это приёмка R5.
 
-Вариант C, bge-m3 топ-20/256: hit@5 0.9400, nDCG@8 0.6235, p95 1.491 с.
-Гибрид C в отбор не вошёл: hit@5 0.8800. Реранкер возвращён.
-Порог 0.65 не взят (0.6235) и не снижался.
-
-Константы: e5-large, bge-m3, RRF k=20, веса 0.5/1.5, BM25 full,
-пул 20, 256 токенов. ``ORCH_RAG_RERANK=0`` или ``retrieve(..., rerank=False)``
-оставляют гибрид. Цифры — в ``evals/orchestrator/datasets/precision_live_report.md``.
+Выбранный конфиг: RRF k=20, веса лексика/вектор 0.5/1.5, BM25 full,
+реранк топ-12, агрегация ``prompt_pool`` (части одного промпта внутри пула).
+Эмбеддинги чанков и повторных запросов кэшируются. p95 — медиана трёх прогонов,
+на test 0.914 с, на всех запросах 0.926 с: порог 1.2 с взят.
+Медиана nDCG@8 на test — 0.6372. Порог 0.65 на test не взят и не снижался.
+``ORCH_RAG_RERANK=0`` или ``retrieve(..., rerank=False)`` оставляют гибрид.
+Цифры — в ``evals/orchestrator/datasets/precision_live_report.md``.
 """
 
 from __future__ import annotations
@@ -49,5 +50,6 @@ CONTOUR_B_RRF_K = 20
 CONTOUR_B_RRF_LEXICAL = 0.5
 CONTOUR_B_RRF_VECTOR = 1.5
 CONTOUR_B_BM25_SCOPE = "full"
-CONTOUR_B_RERANK_POOL = 20
+CONTOUR_B_RERANK_POOL = 12
+CONTOUR_B_AGGREGATE = "prompt_pool"
 CONTOUR_B_RERANK_MAX_LENGTH = 256

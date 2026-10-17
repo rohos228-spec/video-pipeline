@@ -775,6 +775,7 @@ def measure_labelings(
     rrf_weights: tuple[float, float],
     bm25_scope: str,
     rerank_pool: int,
+    aggregate: str = "none",
 ) -> dict[str, dict[str, float]]:
     """Один проход retrieve, несколько разметок. Задержка от разметки не зависит."""
     indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
@@ -792,6 +793,7 @@ def measure_labelings(
         "rrf_weights": rrf_weights,
         "bm25_scope": bm25_scope,
         "rerank_pool": rerank_pool,
+        "aggregate": aggregate,
     }
     anchor = labelings[0][1][0]["text"]
     engine.retrieve(anchor, ["rules", "nodes", "prompts"], top_k=8, **kwargs)
@@ -985,12 +987,133 @@ def run_abc(out: Path | None = None) -> dict[str, Any]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _pick_dev(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Только dev: hit@5 ≥ 0.9, грубый p95 ≤ 1.2 с, максимальный nDCG@8."""
+    eligible = [row for row in rows if row["hit_at_5"] >= HIT_AT_5_MIN and row["p95_s"] <= 1.2]
+    pool = eligible or [row for row in rows if row["hit_at_5"] >= HIT_AT_5_MIN] or rows
+    return max(pool, key=lambda row: (row["ndcg_at_8"], row["hit_at_5"], -row["p95_s"]))
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def run_tune() -> dict[str, Any]:
+    """Подбор только на dev. Test считается после выбора конфига."""
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.query_split import SPLIT_PATH
+
+    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    by_id = {query["id"]: query for query in expanded}
+    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
+    dev = [by_id[query_id] for query_id in split["dev"]]
+    test = [by_id[query_id] for query_id in split["test"]]
+    configs: list[dict[str, Any]] = [
+        {"aggregate": "none", "rerank_pool": 20, "lexical": 0.5, "vector": 1.5},
+    ]
+    for aggregate in ("none", "prompt_pool", "prompt_expand"):
+        for pool in (8, 12, 16):
+            for lexical, vector in ((0.5, 1.5), (0.3, 1.7), (1.0, 2.0)):
+                configs.append(
+                    {"aggregate": aggregate, "rerank_pool": pool, "lexical": lexical, "vector": vector}
+                )
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-tune-"))
+    dev_rows: list[dict[str, Any]] = []
+    try:
+        embedder = build_embedder("e5-large")
+        reranker = build_reranker("bge-m3", max_length=256)
+        engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        try:
+            engine.reindex(["rules", "nodes", "prompts"])
+            print("index chunks", len(_index_catalog(engine)), flush=True)
+            engine.retrieve(dev[0]["text"], ["rules", "nodes", "prompts"], top_k=8, rerank=False)
+            for config in configs:
+                engine._query_vectors.clear()
+                metrics = measure_labelings(
+                    engine,
+                    [("C", dev, "chunk")],
+                    rerank=True,
+                    rrf_k=20,
+                    rrf_weights=(config["lexical"], config["vector"]),
+                    bm25_scope="full",
+                    rerank_pool=config["rerank_pool"],
+                    aggregate=config["aggregate"],
+                )["C"]
+                row = {**config, **metrics}
+                dev_rows.append(row)
+                print(
+                    "DEV",
+                    config["aggregate"],
+                    config["rerank_pool"],
+                    config["lexical"],
+                    config["vector"],
+                    {key: round(metrics[key], 4) for key in ("hit_at_5", "ndcg_at_8", "ndcg_doc", "p95_s")},
+                    flush=True,
+                )
+            chosen = _pick_dev(dev_rows)
+            print("CHOSEN_BEFORE_TEST", json.dumps(chosen, ensure_ascii=False), flush=True)
+            held_out: dict[str, dict[str, float]] = {}
+            for name, subset in (("dev", dev), ("test", test), ("all", expanded)):
+                engine._query_vectors.clear()
+                held_out[name] = measure_labelings(
+                    engine,
+                    [("C", subset, "chunk")],
+                    rerank=True,
+                    rrf_k=20,
+                    rrf_weights=(chosen["lexical"], chosen["vector"]),
+                    bm25_scope="full",
+                    rerank_pool=chosen["rerank_pool"],
+                    aggregate=chosen["aggregate"],
+                )["C"]
+                print("SCORE", name, {key: round(held_out[name][key], 4) for key in held_out[name]}, flush=True)
+            kwargs = {
+                "rerank": True,
+                "rrf_k": 20,
+                "rrf_weights": (chosen["lexical"], chosen["vector"]),
+                "bm25_scope": "full",
+                "rerank_pool": chosen["rerank_pool"],
+                "aggregate": chosen["aggregate"],
+            }
+            dev_ids = set(split["dev"])
+            run_p95: dict[str, list[float]] = {"dev": [], "test": [], "all": []}
+            for _run in range(3):
+                engine._query_vectors.clear()
+                engine.retrieve(expanded[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+                buckets: dict[str, list[float]] = {"dev": [], "test": [], "all": []}
+                for query in expanded:
+                    started = time.perf_counter()
+                    engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+                    elapsed = time.perf_counter() - started
+                    half = "dev" if query["id"] in dev_ids else "test"
+                    buckets[half].append(elapsed)
+                    buckets["all"].append(elapsed)
+                for name, samples in buckets.items():
+                    run_p95[name].append(_percentile(samples, 95))
+            latency = {name: _median(values) for name, values in run_p95.items()}
+            print("P95_MEDIAN", {key: round(value, 4) for key, value in latency.items()}, flush=True)
+            summary = {"chosen": chosen, "dev_grid": dev_rows, "scores": held_out, "p95_median": latency}
+            print(json.dumps(summary, ensure_ascii=False), flush=True)
+            return summary
+        finally:
+            engine.close()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
     parser.add_argument("--pair", action="store_true", help="только дефолт bge-m3 и гибрид без реранкера")
     parser.add_argument("--abc", action="store_true", help="варианты A и C на 8 частях, B из прошлого прогона")
+    parser.add_argument("--tune", action="store_true", help="подбор на dev, затем один замер test")
     args = parser.parse_args()
+    if args.tune:
+        run_tune()
+        return
     if args.abc:
         run_abc(args.out)
         return

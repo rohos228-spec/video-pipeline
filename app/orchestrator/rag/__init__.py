@@ -35,6 +35,7 @@ def _engine_for_profile(profile: str) -> RagEngine:
         return RagEngine(db_path=default_db_path())
     from app.orchestrator.rag.embedder import build_embedder
     from app.orchestrator.rag.profile import (
+        CONTOUR_B_AGGREGATE,
         CONTOUR_B_BM25_SCOPE,
         CONTOUR_B_EMBEDDER,
         CONTOUR_B_RERANK_MAX_LENGTH,
@@ -59,6 +60,7 @@ def _engine_for_profile(profile: str) -> RagEngine:
         "rrf_weights": (CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR),
         "bm25_scope": CONTOUR_B_BM25_SCOPE,
         "rerank_pool": CONTOUR_B_RERANK_POOL,
+        "aggregate": CONTOUR_B_AGGREGATE,
         "rerank": False if _rerank_disabled() else None,
     }
     return engine

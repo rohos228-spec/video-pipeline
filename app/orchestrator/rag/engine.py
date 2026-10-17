@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
 _TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 _RRF_K = 60
+_AGGREGATES = ("none", "prompt_pool", "prompt_expand")
 
 
 def fts_match_query(text: str) -> str:
@@ -131,6 +133,8 @@ class RagEngine:
         self.store = RagStore(self.db_path)
         self._worker = ReindexWorker()
         self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
+        self._query_vectors: dict[str, list[float]] = {}
+        self._corpus_cache: dict[tuple[str, ...], tuple[list[Chunk], dict[str, list[float]]]] = {}
 
     def close(self) -> None:
         self._worker.close()
@@ -158,11 +162,15 @@ class RagEngine:
         rerank: bool | None = None,
         rerank_pool: int = 30,
         bm25_scope: str = "full",
+        aggregate: str = "none",
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
         Cross-encoder применяется только к гибриду: топ ``rerank_pool`` после RRF,
         затем срез до ``top_k``. BM25 и вектор реранкер не трогает.
+        Эмбеддинги чанков и повторных запросов берутся из кэша процесса.
+        ``aggregate=prompt_pool`` склеивает части одного промпта внутри пула.
+        ``aggregate=prompt_expand`` поднимает все части такого промпта.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -175,6 +183,8 @@ class RagEngine:
             raise ValueError("rerank_pool должен быть > 0")
         if bm25_scope not in {"full", "head"}:
             raise ValueError("bm25_scope должен быть full или head")
+        if aggregate not in _AGGREGATES:
+            raise ValueError("aggregate должен быть none, prompt_pool или prompt_expand")
         if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
             raise ValueError("веса RRF должны быть > 0")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
@@ -192,18 +202,16 @@ class RagEngine:
         )
         lexical_ids = [chunk_id for chunk_id, _score in lexical]
         lexical_scores = dict(lexical)
-        stored = self.store.fetch_chunks(selected)
+        stored, vectors = self._cached_corpus(selected)
         vector_scored: list[tuple[float, Chunk]] = []
         if channel == "bm25":
             for chunk in stored:
-                chunk.metadata.pop("_embedding", None)
                 vector_scored.append((0.0, chunk))
             query_vector_ids: list[str] = []
         else:
-            query_vector = self.embedder.embed_query(query)
+            query_vector = self._cached_query_vector(query)
             for chunk in stored:
-                embedding = chunk.metadata.pop("_embedding", None)
-                score = cosine(query_vector, embedding or [])
+                score = cosine(query_vector, vectors.get(chunk.chunk_id) or [])
                 vector_scored.append((score, chunk))
             vector_scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
             query_vector_ids = [chunk.chunk_id for _score, chunk in vector_scored[:pool]]
@@ -236,21 +244,56 @@ class RagEngine:
                     key=lambda item: (-item[1], item[0]),
                 )
             ]
+        rank_scores = rerank_scores if rerank_scores else fused
+        ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
         result: list[Chunk] = []
         for rank, chunk_id in enumerate(ordered[:top_k], start=1):
             chunk = by_id[chunk_id]
-            chunk.score = rerank_scores[chunk_id] if chunk_id in rerank_scores else fused[chunk_id]
-            chunk.score_bm25 = float(lexical_scores.get(chunk_id, 0.0))
-            chunk.score_vec = float(vector_scores.get(chunk_id, 0.0))
-            chunk.rank = rank
-            result.append(chunk)
+            score = rank_scores[chunk_id] if chunk_id in rank_scores else fused.get(chunk_id, 0.0)
+            result.append(
+                replace(
+                    chunk,
+                    score=float(score),
+                    score_bm25=float(lexical_scores.get(chunk_id, 0.0)),
+                    score_vec=float(vector_scores.get(chunk_id, 0.0)),
+                    rank=rank,
+                    metadata=dict(chunk.metadata),
+                )
+            )
         return result
+
+    def _clear_retrieval_cache(self) -> None:
+        self._query_vectors.clear()
+        self._corpus_cache.clear()
+
+    def _cached_query_vector(self, query: str) -> list[float]:
+        cached = self._query_vectors.get(query)
+        if cached is None:
+            cached = self.embedder.embed_query(query)
+            self._query_vectors[query] = cached
+        return cached
+
+    def _cached_corpus(self, selected: list[str]) -> tuple[list[Chunk], dict[str, list[float]]]:
+        key = tuple(selected)
+        cached = self._corpus_cache.get(key)
+        if cached is not None:
+            return cached
+        stored = self.store.fetch_chunks(selected)
+        vectors: dict[str, list[float]] = {}
+        for chunk in stored:
+            embedding = chunk.metadata.pop("_embedding", None)
+            if embedding:
+                vectors[chunk.chunk_id] = embedding
+        snapshot = (stored, vectors)
+        self._corpus_cache[key] = snapshot
+        return snapshot
 
     def _reindex_many(self, corpora: list[str]) -> ReindexResult | dict[str, ReindexResult]:
         from app.orchestrator.rag.loaders import invalidate_group_role_cache
 
         invalidate_group_role_cache()
         self._node_cache = None
+        self._clear_retrieval_cache()
         results = {corpus: self._reindex_one(corpus) for corpus in corpora}
         self._node_cache = None
         if len(corpora) == 1:
@@ -327,6 +370,53 @@ class RagEngine:
         if unknown:
             raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {', '.join(CORPORA)}")
         return selected
+
+
+def _doc_key(chunk: Chunk) -> str:
+    if chunk.corpus == "prompts":
+        return f"prompts:{chunk.source_id}"
+    return f"chunk:{chunk.chunk_id}"
+
+
+def _aggregate_parts(
+    ordered: list[str],
+    scores: dict[str, float],
+    by_id: dict[str, Chunk],
+    mode: str,
+) -> list[str]:
+    """Склеивает части одного промпта. Правила и каталог остаются отдельными чанками."""
+    if mode == "none" or not ordered:
+        return ordered
+    doc_score: dict[str, float] = {}
+    pool_members: dict[str, list[str]] = {}
+    for chunk_id in ordered:
+        chunk = by_id[chunk_id]
+        key = _doc_key(chunk)
+        score = float(scores.get(chunk_id, 0.0))
+        doc_score[key] = score if key not in doc_score else max(doc_score[key], score)
+        pool_members.setdefault(key, []).append(chunk_id)
+    if mode == "prompt_expand":
+        members: dict[str, list[str]] = {key: [] for key in doc_score}
+        for chunk in by_id.values():
+            key = _doc_key(chunk)
+            bucket = members.get(key)
+            if bucket is not None and chunk.chunk_id not in bucket:
+                bucket.append(chunk.chunk_id)
+    else:
+        members = pool_members
+
+    def part_order(chunk_id: str) -> tuple[float, str]:
+        return (-float(scores.get(chunk_id, float("-inf"))), chunk_id)
+
+    flat: list[str] = []
+    seen: set[str] = set()
+    for key in sorted(doc_score, key=lambda item: (-doc_score[item], item)):
+        for chunk_id in sorted(members.get(key, []), key=part_order):
+            if chunk_id in seen or chunk_id not in by_id:
+                continue
+            seen.add(chunk_id)
+            flat.append(chunk_id)
+    return flat
 
 
 def _rerank_passage(chunk: Chunk) -> str:
