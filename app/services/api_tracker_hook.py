@@ -311,6 +311,13 @@ def reraise_if_spend_blocked(exc: BaseException) -> None:
     if isinstance(exc, ApiEmergencyBlockedError):
         raise exc
     try:
+        from app.services.spend_guard import SpendBlocked
+    except Exception:  # noqa: BLE001
+        pass
+    else:
+        if isinstance(exc, SpendBlocked):
+            raise exc
+    try:
         from app.services.style_agent.budget import BudgetExceeded
     except Exception:  # noqa: BLE001
         return

@@ -152,9 +152,11 @@ class _PackSendGate:
     """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
 
     def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
-        cap = PACK_IN_FLIGHT_MAX
+        from app.services.spend_guard import llm_pack_limit
+
+        cap = llm_pack_limit()
         if in_flight is not None and int(in_flight) > 0:
-            cap = max(1, min(PACK_IN_FLIGHT_MAX, int(in_flight)))
+            cap = max(1, min(cap, int(in_flight)))
         self.sem = asyncio.Semaphore(cap)
         self.lock = asyncio.Lock()
         self.next_at = 0.0
