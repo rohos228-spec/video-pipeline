@@ -10,13 +10,13 @@
 существующего коммита или существующий тег. Короткий hex и голое имя
 ветки отклоняются: имя вроде ``deadbeef`` не считается SHA.
 По умолчанию, если
-локального файла нет, берётся SHA ``288d23111058f753fc4d70a711ee9c3d2fe27dcc``
-(#350, контракт ws3-r3.2), не имя ветки.
+локального файла нет, берётся SHA ``483b1fe89b454b16b7eaac0c23f88d9d47a66bdb``
+(#350, контракт ws3-r3.3), не имя ветки.
 Локальный ``contracts.py`` используется, только когда ``--ref`` не передан.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
-  python web/scripts/gen_orch_types.py --ref 288d23111058f753fc4d70a711ee9c3d2fe27dcc
+  python web/scripts/gen_orch_types.py --ref 483b1fe89b454b16b7eaac0c23f88d9d47a66bdb
   python web/scripts/gen_orch_types.py --stdout
   python web/scripts/gen_orch_types.py --self-test
 """
@@ -36,7 +36,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
-DEFAULT_CONTRACT_REF = "288d23111058f753fc4d70a711ee9c3d2fe27dcc"
+DEFAULT_CONTRACT_REF = "483b1fe89b454b16b7eaac0c23f88d9d47a66bdb"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -186,7 +186,7 @@ export interface ClassificationPayload {
 
 /**
  * POST /api/orchestrator/chat/{session}/message.
- * MessageIn (#350 @ 288d2311): ``text``, ``mode: MessageMode | None``,
+ * MessageIn (#350 @ 483b1fe8): ``text``, ``mode: MessageMode | None``,
  * ``project_id: int | None``.
  * Допустимые mode: interrupt | steer | append | task. Иное значение — 422.
  * Клиент шлёт ``mode`` только при включённом NEXT_PUBLIC_ORCH_TASK_MODE
@@ -511,7 +511,7 @@ def _self_test() -> int:
         "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
-        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.2\"",
+        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.3\"",
         '"missing_project_id"',
         "export const BLOCK_OUTCOMES",
         '"deletion_blocked"',
@@ -576,7 +576,7 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         default=None,
-        help="git ref: origin/*, полный SHA (40 hex) или тег. Без флага — локальный файл или SHA 288d23111058f753fc4d70a711ee9c3d2fe27dcc",
+        help="git ref: origin/*, полный SHA (40 hex) или тег. Без флага — локальный файл или SHA 483b1fe89b454b16b7eaac0c23f88d9d47a66bdb",
     )
     args = parser.parse_args()
     if args.self_test:

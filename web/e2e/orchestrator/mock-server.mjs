@@ -755,6 +755,10 @@ function startScenario(session, scenario, text, mode) {
     void runUnknownReason(session, id);
     return;
   }
+  if (scenario === "risk") {
+    void runRiskApproval(session, id);
+    return;
+  }
   void runStream(session, id);
 }
 
@@ -790,6 +794,26 @@ async function runTerminalBlock(session, taskId, reason) {
     detail: reason,
   });
   emit(session, "task_failed", taskId, { error: reason });
+}
+
+async function runRiskApproval(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("task", "риск"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Среднее касание",
+    detail: "risk",
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: "ap-risk",
+    title: "Запустить test.medium_touch",
+    reason: "risk",
+    risk: "medium",
+    action: "test.medium_touch",
+  });
 }
 
 async function runUnknownReason(session, taskId) {

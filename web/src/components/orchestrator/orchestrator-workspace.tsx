@@ -40,6 +40,7 @@ const KILL_HONEST =
 /** Старое имя причины, пока WS3 дописывает замену на critic_escalation. */
 const REVISE_LIMIT = "revise_limit";
 const MISSING_PROJECT = "missing_project_id" satisfies ApprovalReason;
+const RISK_APPROVAL = "risk" satisfies ApprovalReason;
 
 const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string }> = {
   [BUDGET_EXHAUSTED]: {
@@ -61,6 +62,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     title: "Не выбран проект: план содержит платный или изменяющий шаг",
     body: "Задача ждёт подтверждения. Платный или изменяющий шаг без проекта не стартует.",
     testId: "orch-missing-project",
+  },
+  [RISK_APPROVAL]: {
+    title: "Шаг с риском: нужно подтверждение",
+    body: "Реестр действий просит одобрение. Шаг не стартует, пока его не подтвердят.",
+    testId: "orch-risk",
   },
   deletion_blocked: {
     title: "Удаление запрещено",

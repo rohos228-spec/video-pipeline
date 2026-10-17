@@ -309,6 +309,24 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
   });
 
+  test("risk: карточка approval с кнопками", async ({ page }) => {
+    await openWithToken(page, "risk", "risk-1", 13);
+    const posted = page.waitForRequest(
+      (req) => req.method() === "POST" && req.url().includes("/message"),
+    );
+    await page.getByTestId("orch-composer").fill("среднее касание");
+    await page.getByTestId("orch-send").click();
+    const body = (await posted).postDataJSON() as { project_id?: number };
+    expect(body.project_id).toBe(13);
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toHaveAttribute("data-terminal", "false");
+    await expect(page.getByTestId("orch-risk")).toHaveText("Шаг с риском: нужно подтверждение");
+    await expect(card).toContainText("test.medium_touch");
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");
