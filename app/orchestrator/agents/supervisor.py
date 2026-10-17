@@ -1874,10 +1874,11 @@ class Supervisor:
         retry_grant: bool,
         decision: ApprovalDecision | str | None,
     ) -> None:
-        """Повтор кнопки по тому же id — 409 до смены статуса и до execute.
+        """404 — чужой или неизвестный id. 409 — уже решён или не текущий.
 
-        ``retry_grant`` после ``retry_step`` остаётся одноразовым допуском.
-        Чужой и неизвестный id пока не отклоняются здесь.
+        Проверка владельца идёт раньше 409, чтобы id другой задачи не
+        выглядел просто «не текущим». ``retry_grant`` после ``retry_step``
+        остаётся одноразовым допуском.
         """
         key = int(task_id)
         button = _coerce_decision(decision) is not None
@@ -1887,8 +1888,10 @@ class Supervisor:
                 raise ApprovalGrantError(409, "change_id already decided")
             return
         owner = self._appr_owner.get(change_id)
-        if owner is None or owner != (key, session_id):
-            return
+        if owner is None:
+            raise ApprovalGrantError(404, "unknown change_id")
+        if owner != (key, session_id):
+            raise ApprovalGrantError(404, "foreign change_id")
         if change_id in self._appr_decided:
             label = self._appr_decided[change_id]
             if retry_grant and label == ApprovalDecision.retry_step.value:

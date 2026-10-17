@@ -367,3 +367,61 @@ async def test_repeat_decision_same_change_id_409(token: str, decision: Approval
             assert settled["armed"]
     finally:
         set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_approve_unknown_change_id_404(token: str) -> None:
+    del token
+    session = "appr-unknown"
+    runtime, task_id, change_id = await _wait_paid(session)
+    try:
+        before = _snapshot(runtime, session, task_id)
+        for bogus in ("made-up", f"orch-appr-{task_id}-99"):
+            with pytest.raises(ApprovalGrantError) as exc:
+                await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id=bogus)
+            assert exc.value.status_code == 404
+            assert _snapshot(runtime, session, task_id) == before
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id=change_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in runtime.supervisor.actions.calls] == ["next"]
+        done = _snapshot(runtime, session, task_id)
+        with pytest.raises(ApprovalGrantError) as late:
+            await runtime.supervisor.grant_approval(session, ApprovalDecision.approve, change_id="made-up")
+        assert late.value.status_code == 404
+        assert _snapshot(runtime, session, task_id) == done
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_approve_foreign_change_id_404(token: str) -> None:
+    del token
+    session_a = "appr-foreign-a"
+    session_b = "appr-foreign-b"
+    task_a = _open_paid(session_a)
+    task_b = _open_paid(session_b)
+    actions = MockActions()
+    runtime = build_runtime(actions=actions, validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_a, timeout=5)
+        await runtime.supervisor.wait(task_b, timeout=5)
+        id_a = _approvals(runtime, session_a)[-1].payload["change_id"]
+        id_b = _approvals(runtime, session_b)[-1].payload["change_id"]
+        assert id_a != id_b
+        before_a = _snapshot(runtime, session_a, task_a)
+        before_b = _snapshot(runtime, session_b, task_b)
+        with pytest.raises(ApprovalGrantError) as exc:
+            await runtime.supervisor.grant_approval(session_b, ApprovalDecision.approve, change_id=id_a)
+        assert exc.value.status_code == 404
+        assert _snapshot(runtime, session_a, task_a) == before_a
+        assert _snapshot(runtime, session_b, task_b) == before_b
+        assert actions.calls == []
+        await runtime.supervisor.grant_approval(session_b, ApprovalDecision.approve, change_id=id_b)
+        await runtime.supervisor.wait(task_b, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["next"]
+        assert runtime.tasks.get(task_a)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_b)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
