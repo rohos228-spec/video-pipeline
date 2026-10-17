@@ -302,6 +302,40 @@ def modify_ids_from_audit(text: str | None = None) -> list[str]:
     return _MODIFY_ITEM_RE.findall(match.group(1))
 
 
+_ACTION_TABLE_RE = re.compile(
+    r"^## Таблица действий\n(.*?)(?=^## )",
+    re.MULTILINE | re.DOTALL,
+)
+_DELETE_PHRASE_RE = re.compile(
+    r"(?<!не )(?:удаляются|удаляет|с диска|без архива|стирает|перезаписыва)",
+    re.IGNORECASE,
+)
+
+
+def action_table_rows(text: str | None = None) -> list[dict[str, str]]:
+    """Строки основной таблицы: id, описание («Что делает»), ярус реестра, вердикт."""
+    raw = _audit_text() if text is None else text
+    match = _ACTION_TABLE_RE.search(raw)
+    if match is None:
+        pytest.fail("в actions_audit.md нет раздела «Таблица действий»")
+    rows: list[dict[str, str]] = []
+    for line in match.group(1).splitlines():
+        if not line.startswith("| ") or line.startswith("| #") or line.startswith("|---"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 8:
+            continue
+        rows.append(
+            {
+                "id": cells[1].strip("`").strip(),
+                "what": cells[3],
+                "tier": cells[5],
+                "verdict": cells[7],
+            }
+        )
+    return rows
+
+
 def _assert_registry_counts(ids: list[str], header: dict) -> None:
     assert ids, "реестр пуст: тест не должен быть зелёным при нуле действий"
     assert len(ids) == header["actions"], (
@@ -1938,8 +1972,8 @@ def test_audit_header_counters() -> None:
     assert header["sha"].startswith("3ec7c957")
     assert header["date"] == "2026-10-17"
     assert header["actions"] == 102
-    assert header["keep"] == 89
-    assert header["modify"] == 13
+    assert header["keep"] == 80
+    assert header["modify"] == 22
     assert header["remove"] == 0
     assert header["actions"] == header["keep"] + header["modify"] + header["remove"]
     assert modify_ids == [
@@ -1956,6 +1990,15 @@ def test_audit_header_counters() -> None:
         "montage.delete_frame",
         "node.clear_check_agent",
         "storage.clear_files",
+        "node.reset_from_step",
+        "montage.delete_image",
+        "montage.delete_video",
+        "montage.delete_manual_ref",
+        "node.upload_file",
+        "project.reload_xlsx",
+        "node.run_step",
+        "project.upload_xlsx",
+        "hero.replace_image",
     ]
     assert len(modify_ids) == header["modify"]
     assert header["fs_breach"] == (
@@ -1966,6 +2009,45 @@ def test_audit_header_counters() -> None:
         ("storage.clear_files", "http.delete"),
     )
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
+
+
+def test_documented_deletes_are_modify() -> None:
+    """Описание с удалением, стиранием или перезаписью не остаётся keep."""
+    rows = action_table_rows()
+    flagged = [row for row in rows if _DELETE_PHRASE_RE.search(row["what"])]
+    assert flagged, "в таблице нет описаний удаления или перезаписи"
+    bad = [row["id"] for row in flagged if row["verdict"] != "modify"]
+    assert not bad, "описание удаляет или перезаписывает, вердикт не modify: " + ", ".join(bad)
+    flagged_ids = {row["id"] for row in flagged}
+    for action_id in (
+        "node.reset_from_step",
+        "montage.delete_image",
+        "montage.delete_video",
+        "montage.delete_manual_ref",
+        "node.upload_file",
+        "project.reload_xlsx",
+        "node.run_step",
+        "project.upload_xlsx",
+        "hero.replace_image",
+    ):
+        assert action_id in flagged_ids
+
+    source = (
+        "import os, shutil\n"
+        "def wipe():\n"
+        "    os.unlink('data/node_overrides/x.json')\n"
+        "    shutil.rmtree('data/reports/old')\n"
+        "    open('data/node_overrides/x.json', 'w')\n"
+        "    os.replace('data/reports/a.tmp', 'data/other/a.txt')\n"
+    )
+    hits = analyze_module_source(source, "node.upload_file")
+    assert [hit.kind for hit in hits] == [
+        "os.unlink",
+        "shutil.rmtree",
+        "open",
+        "os.replace",
+    ]
+    assert all(hit.allowed is False for hit in hits)
 
 
 def test_empty_registry_is_not_green() -> None:
