@@ -102,6 +102,10 @@ _APPR_MARK = "\n\x1eorappr:"
 _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
+_APPROVED_MARK = "\n\x1eorchfp:"
+_PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
+
+
 class InvalidTransition(RuntimeError):
     pass
 
@@ -220,6 +224,9 @@ class Supervisor:
         row = self.tasks.get(task_id)
         if row is None:
             raise LookupError(task_id)
+        live = self._runs.get(task_id)
+        if live is not None and not live.done():
+            raise InvalidTransition("resume живой задачи")
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
@@ -373,11 +380,12 @@ class Supervisor:
             return
         if await self._screen_plan(task_id, session_id, plan):
             return
-        if not self._plan_was_approved(task_id, plan):
+        paid_outcome = self._block_reason.get(task_id) in _PAID_OUTCOME_REASONS
+        if not paid_outcome and not self._plan_was_approved(task_id, plan):
             await self._replan_from_grant(task_id, session_id)
             return
         position = int(data.position)
-        if position < len(plan):
+        if not paid_outcome and position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
@@ -410,10 +418,13 @@ class Supervisor:
         self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = list(data.change_ids)
-        visible, packed = _split_appr_context(data.context)
+        visible, packed = _split_appr_context(data.context or "")
+        visible, mark = _unpack_approved(visible)
         self._context[task_id] = visible
         if task_id not in self._appr_loaded:
             self._merge_appr_pack(task_id, session_id, packed)
+        if mark:
+            self._approved[task_id] = mark
         self._remember_paid(task_id)
 
     def request_cancel(self, session_id: str) -> None:
@@ -621,8 +632,11 @@ class Supervisor:
         """Черновик после рестарта не исполняется, пока dry-run и критик не approve."""
         plan = list(data.plan)
         context, packed = _split_appr_context(data.context or self._context.get(task_id, ""))
+        context, mark = _unpack_approved(context)
         if task_id not in self._appr_loaded:
             self._merge_appr_pack(task_id, session_id, packed)
+        if mark:
+            self._approved[task_id] = mark
         self._context[task_id] = context
         revises = 0
         while True:
@@ -713,19 +727,13 @@ class Supervisor:
         return self._running_paid_row(task_id, step) is not None
 
     def _running_paid_row(self, task_id: int, step: PlanStep) -> dict[str, Any] | None:
+        """Открытая платная строка ``running`` того же действия, params не важны."""
         if not step.paid:
             return None
-        ident = _public_params(step.params)
         for row in self.tasks.list_steps(task_id):
             if str(row.get("status")) != "running" or not row.get("paid"):
                 continue
-            if str(row.get("action_name") or "") != step.action:
-                continue
-            try:
-                stored = json.loads(row.get("params_json") or "{}")
-            except json.JSONDecodeError:
-                stored = {}
-            if isinstance(stored, dict) and _public_params(stored) == ident:
+            if str(row.get("action_name") or "") == step.action:
                 return row
         return None
 
@@ -1402,6 +1410,7 @@ class Supervisor:
                 return
 
             if task_id in self._paid_outcome_hold and any(item.paid for item, _ in started):
+                await self._capture_unknown_paid(task_id, session_id, started, results, plan, index)
                 if self._status(task_id) is TaskStatus.executing:
                     await self._mark_paid_outcome_unknown(session_id, task_id)
                 return
@@ -1873,23 +1882,33 @@ class Supervisor:
             return 0
         return max(int(row["position"]) for row in rows) + 1
 
-    def _running_paid_row(self, task_id: int, step: PlanStep) -> dict[str, Any] | None:
-        """Платная строка ``running`` с тем же действием и публичными params."""
-        if not step.paid:
-            return None
-        ident = _public_params(step.params)
-        for row in self.tasks.list_steps(task_id):
-            if str(row.get("status")) != "running" or not row.get("paid"):
+    async def _capture_unknown_paid(
+        self,
+        task_id: int,
+        session_id: str,
+        started: list[tuple[PlanStep, int]],
+        results: list[Any],
+        plan: list[PlanStep],
+        index: int,
+    ) -> None:
+        """Исход платного шага неизвестен, но сдача и стоимость уже есть."""
+        noted = False
+        for (done_step, step_id), result in zip(started, results, strict=True):
+            if not done_step.paid or isinstance(result, BaseException):
                 continue
-            if str(row.get("action_name") or "") != step.action:
-                continue
-            try:
-                stored = json.loads(row.get("params_json") or "{}")
-            except json.JSONDecodeError:
-                stored = {}
-            if isinstance(stored, dict) and _public_params(stored) == ident:
-                return row
-        return None
+            cost = float(getattr(result, "cost", 0) or 0)
+            raw_id = getattr(result, "change_id", None)
+            change_id = str(raw_id) if raw_id else None
+            self.tasks.note_running_outcome(step_id, change_id, cost)
+            if change_id:
+                bucket = self._change_ids.setdefault(task_id, [])
+                if change_id not in bucket:
+                    bucket.append(change_id)
+            if cost:
+                self.tasks.add_spend(task_id, actions=cost)
+            noted = True
+        if noted:
+            await self._checkpoint(task_id, session_id, plan, index)
 
     async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
         """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
@@ -1935,7 +1954,7 @@ class Supervisor:
             position=position,
             change_ids=list(self._change_ids.get(task_id, [])),
             spend=self._spend(task_id),
-            context=self._context_with_appr(task_id, self._context.get(task_id, "")),
+            context=self._checkpoint_context(task_id),
         )
         self.tasks.mirror_progress(task_id, plan, position, data.spend)
         await asyncio.to_thread(self.checkpoints.save, task_id, session_id, data)
@@ -2173,6 +2192,11 @@ class Supervisor:
             "sessions": {change_id: self._appr_owner[change_id][1] for change_id in issued},
         }
 
+    def _checkpoint_context(self, task_id: int) -> str:
+        visible, _packed = _split_appr_context(self._context.get(task_id, ""))
+        visible, _mark = _unpack_approved(visible)
+        return self._context_with_appr(task_id, _pack_approved(visible, self._approved.get(task_id)))
+
     def _context_with_appr(self, task_id: int, visible: str) -> str:
         visible, _packed = _split_appr_context(visible)
         state = self._appr_pack_dict(int(task_id))
@@ -2186,10 +2210,13 @@ class Supervisor:
         data = await asyncio.to_thread(self.checkpoints.load_latest, int(task_id))
         if data is None:
             return
-        stored, _packed = _split_appr_context(data.context)
+        stored, _packed = _split_appr_context(data.context or "")
+        stored, stored_mark = _unpack_approved(stored)
         memory, _memory_pack = _split_appr_context(self._context.get(int(task_id), ""))
+        memory, memory_mark = _unpack_approved(memory)
         base = memory or stored
-        packed_context = self._context_with_appr(int(task_id), base)
+        mark = self._approved.get(int(task_id)) or memory_mark or stored_mark
+        packed_context = self._context_with_appr(int(task_id), _pack_approved(base, mark))
         if packed_context == data.context:
             return
         await asyncio.to_thread(
@@ -2327,6 +2354,22 @@ def _split_appr_context(context: str) -> tuple[str, dict[str, Any] | None]:
 def _plan_fingerprint(plan: list[PlanStep]) -> str:
     payload = [step.model_dump() for step in plan]
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _pack_approved(visible: str, fingerprint: str | None) -> str:
+    """Отпечаток approve лежит в JSON чекпоинта, в поле ``context``."""
+    base = (visible or "").split(_APPROVED_MARK, 1)[0]
+    if not fingerprint:
+        return base
+    return f"{base}{_APPROVED_MARK}{fingerprint}"
+
+
+def _unpack_approved(raw: str) -> tuple[str, str | None]:
+    if _APPROVED_MARK not in (raw or ""):
+        return raw or "", None
+    visible, mark = raw.split(_APPROVED_MARK, 1)
+    mark = mark.strip()
+    return visible, mark or None
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:

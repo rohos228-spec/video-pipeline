@@ -16,7 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sse_starlette.sse import EventSourceResponse
 
 from app.orchestrator.agents.runtime import get_runtime
-from app.orchestrator.agents.supervisor import ApprovalGrantError, ProjectBindError, Supervisor
+from app.orchestrator.agents.supervisor import (
+    ApprovalGrantError,
+    InvalidTransition,
+    ProjectBindError,
+    Supervisor,
+)
 from app.orchestrator.auth import require_orch_token
 from app.orchestrator.contracts import MessageMode, OrchEvent
 
@@ -174,6 +179,8 @@ async def post_approve(session_id: str, body: ApproveIn) -> dict[str, object]:
         )
     except ApprovalGrantError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except InvalidTransition:
+        raise HTTPException(status_code=409, detail="invalid transition") from None
     except LookupError:
         raise HTTPException(status_code=404, detail="not found") from None
     return _approval_result(runtime.supervisor, session_id, body, result)

@@ -5,8 +5,34 @@ from __future__ import annotations
 import pytest
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.agents.supervisor import InvalidTransition
 from app.orchestrator.contracts import CheckpointData, PlanStep, TaskStatus
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_a_live_run(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="mock_sleep", params={"_wait": True})]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("resume-live", "идёт", project_id=13)
+        await actions.started.wait()
+        with pytest.raises(InvalidTransition):
+            await runtime.supervisor.resume(task_id)
+        assert len(actions.calls) == 1
+        actions.release.set()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["mock_sleep"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
 
 
 @pytest.mark.asyncio

@@ -92,7 +92,14 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
         actions.release.set()
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
-        assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
-        assert rt.tasks.list_steps(task_id)[0]["change_id"] in {None, ""}
+        row = rt.tasks.list_steps(task_id)[0]
+        assert row["status"] == "running"
+        assert row["change_id"] == "chg-paid"
+        assert float(row["cost"]) == 1.0
+        assert float(rt.tasks.get(task_id)["spend_actions"]) == 1.0
+        saved = rt.checkpoints.load_latest(task_id)
+        assert saved is not None
+        assert "chg-paid" in saved.change_ids
+        assert saved.spend.actions == 1.0
     finally:
         set_runtime(None)
