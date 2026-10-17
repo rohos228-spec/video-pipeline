@@ -761,8 +761,7 @@ async def _run_check_vision_batched(
             )
         return bi, res
 
-    # 2026-10-11 user: always parallel, ~5s apart
-    streams = max(streams, len(batches))
+    # Потолок — check_streams. Не поднимать его до числа батчей: это снимает лимит и ловит 429.
 
     async def _stag_batch(bi: int, batch: Any) -> tuple[int, OperatorApiResult]:
         await asyncio.sleep((bi - 1) * 5.0)
