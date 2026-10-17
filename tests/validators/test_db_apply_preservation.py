@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from sqlalchemy import select
 
-from app.models import Base, Frame, Project
+from app.models import Base, Entity, Frame, FrameEdge, FrameText, Project
 from app.orchestrator.validators.preservation import (
     PreservationRejected,
     run_preservation_validators,
@@ -200,3 +200,63 @@ async def test_replace_frames_runs_preservation(
     await session.rollback()
     await session.refresh(frame)
     assert [item["id"] for item in frame.attrs["кадры"]] == ["k1", "k2"]
+
+
+@pytest.mark.asyncio
+async def test_db_apply_preservation_view_includes_texts_edges_characters(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[dict] = []
+    real = run_preservation_validators
+
+    def _spy(before, after, ops=None, *, mode="reject"):
+        captured.append(before)
+        return real(before, after, ops, mode=mode)
+
+    monkeypatch.setattr(db_apply, "run_preservation_validators", _spy)
+
+    project = Project(slug="view", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    left = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="dddddddddddddddddddddddd",
+        voiceover_text="было",
+        attrs={"кадры": [{"id": "k1"}]},
+    )
+    right = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="eeeeeeeeeeeeeeeeeeeeeeee",
+        voiceover_text="ещё",
+        attrs={},
+    )
+    session.add_all([left, right])
+    await session.flush()
+    session.add_all(
+        [
+            FrameText(project_id=project.id, frame_id=left.id, kind="voiceover", text="привет"),
+            FrameEdge(
+                project_id=project.id,
+                from_frame_id=left.id,
+                to_frame_id=right.id,
+                type="next",
+            ),
+            Entity(project_id=project.id, type="character", code="c01", name="Анна", attrs={}),
+        ]
+    )
+    await session.commit()
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        [{"frame_uuid": left.uuid, "fields": {"закадр": "стало"}}],
+    )
+    assert captured
+    view = captured[0]
+    assert any(item.get("kind") == "voiceover" and item.get("text") == "привет" for item in view.get("frame_texts") or [])
+    assert any(item.get("type") == "next" for item in view.get("frame_edges") or [])
+    assert any(item.get("id") == "c01" or item.get("code") == "c01" for item in view.get("characters") or [])
+    await session.refresh(left)
+    assert left.voiceover_text == "стало"

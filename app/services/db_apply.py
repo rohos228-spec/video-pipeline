@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project
+from app.models import Entity, Frame, FrameEdge, FrameText, Project
 from app.orchestrator.validators.preservation import (
     PreservationRejected,
     collect_violations,
@@ -1391,8 +1391,13 @@ def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]
             raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
 
 
-def _preservation_view(frames: list[Any]) -> dict[str, Any]:
-    """Снимок кадров для ``run_preservation_validators``. Только чтение полей."""
+def _preservation_view(
+    frames: list[Any],
+    texts: list[Any] | None = None,
+    edges: list[Any] | None = None,
+    characters: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Снимок кадров, текстов, связей и персонажей. Только чтение полей."""
 
     scenes: list[dict[str, Any]] = []
     for frame in frames:
@@ -1405,7 +1410,66 @@ def _preservation_view(frames: list[Any]) -> dict[str, Any]:
         if "кадры" in attrs:
             row["кадры"] = attrs.get("кадры")
         scenes.append(row)
-    return {"сцены": scenes}
+    return {
+        "сцены": scenes,
+        "frame_texts": [_text_row(item) for item in texts or []],
+        "frame_edges": [_edge_row(item) for item in edges or []],
+        "characters": [_character_row(item) for item in characters or []],
+    }
+
+
+def _text_row(item: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(item, "id", None),
+        "frame_id": getattr(item, "frame_id", None),
+        "kind": getattr(item, "kind", None),
+        "text": getattr(item, "text", None),
+    }
+
+
+def _edge_row(item: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(item, "id", None),
+        "from_frame_id": getattr(item, "from_frame_id", None),
+        "to_frame_id": getattr(item, "to_frame_id", None),
+        "type": getattr(item, "type", None),
+    }
+
+
+def _character_row(item: Any) -> dict[str, Any]:
+    attrs = getattr(item, "attrs", None)
+    attrs = dict(attrs) if isinstance(attrs, dict) else {}
+    code = str(getattr(item, "code", None) or "") or str(getattr(item, "id", None) or "")
+    row: dict[str, Any] = {
+        "id": code,
+        "code": str(getattr(item, "code", None) or ""),
+        "name": getattr(item, "name", None),
+        "attrs": attrs,
+    }
+    if attrs.get("archived"):
+        row["archived"] = True
+    if attrs.get("inactive"):
+        row["inactive"] = True
+    return row
+
+
+async def _project_preservation_view(session: AsyncSession, project: Project) -> dict[str, Any]:
+    pid = project.id
+    frames = list((await session.execute(select(Frame).where(Frame.project_id == pid))).scalars())
+    texts = list(
+        (await session.execute(select(FrameText).where(FrameText.project_id == pid))).scalars()
+    )
+    edges = list(
+        (await session.execute(select(FrameEdge).where(FrameEdge.project_id == pid))).scalars()
+    )
+    characters = list(
+        (
+            await session.execute(
+                select(Entity).where(Entity.project_id == pid, Entity.type == "character")
+            )
+        ).scalars()
+    )
+    return _preservation_view(frames, texts, edges, characters)
 
 
 async def apply_ops(
@@ -1470,22 +1534,16 @@ async def apply_ops(
         specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
         if not isinstance(specs, list):
             raise ApplyOpsError("replace_frames: нужен список frames")
-        frames_now = list(
-            (
-                await session.execute(select(Frame).where(Frame.project_id == project.id))
-            ).scalars()
-        )
-        preservation_before = copy.deepcopy(_preservation_view(frames_now))
+        preservation_before = copy.deepcopy(await _project_preservation_view(session, project))
         try:
             created = await db_v2.replace_all_frames(session, project, specs)
         except ValueError as e:
             raise ApplyOpsError(str(e)) from None
-        frames_after = list(
-            (
-                await session.execute(select(Frame).where(Frame.project_id == project.id))
-            ).scalars()
+        _raise_if_new_preservation(
+            preservation_before,
+            await _project_preservation_view(session, project),
+            ops,
         )
-        _raise_if_new_preservation(preservation_before, _preservation_view(frames_after), ops)
         exported = None
         if export_xlsx:
             exported = export_project_xlsx(project, created)
@@ -1550,7 +1608,7 @@ async def apply_ops(
             raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
 
     preservation_before = (
-        copy.deepcopy(_preservation_view(list(by_uuid.values()))) if frame_ops else None
+        copy.deepcopy(await _project_preservation_view(session, project)) if frame_ops else None
     )
 
     updated = 0
@@ -1674,7 +1732,7 @@ async def apply_ops(
     if preservation_before is not None:
         _raise_if_new_preservation(
             preservation_before,
-            _preservation_view(list(by_uuid.values())),
+            await _project_preservation_view(session, project),
             ops,
         )
 
