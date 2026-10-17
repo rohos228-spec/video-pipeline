@@ -1086,6 +1086,26 @@ def _clear_child_scene_chain(frame: Frame) -> None:
 MAX_IMPROVE_SHOTS = 12
 
 
+def fold_excess_shot_voiceover(kadry: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Хвост закадра, который не влезает в keep кадров, склеивается в последний.
+
+    Кадры и шоты не удаляются: режется только список, который пишем на ячейку,
+    а текст закадра остаётся целиком.
+    """
+    if keep <= 0 or len(kadry) <= keep:
+        return kadry
+    kept = [dict(shot) for shot in kadry[:keep]]
+    extra: list[str] = []
+    for shot in kadry[keep:]:
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece:
+            extra.append(piece)
+    if extra:
+        base = " ".join(str(kept[-1].get("закадр") or "").split())
+        kept[-1]["закадр"] = " ".join(part for part in (base, *extra) if part)
+    return kept
+
+
 def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]) -> None:
     """Покрытие кадра с улучшения сцены → те же ключи, что пишут чипы доски."""
     for key, fn in (
@@ -1153,7 +1173,7 @@ async def apply_coverage_scene_action(
             raw, place=place, vo=scene_vo, cell_number=int(parent.number)
         )
     if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
-        kadry = kadry[:MAX_IMPROVE_SHOTS]
+        kadry = fold_excess_shot_voiceover(kadry, MAX_IMPROVE_SHOTS)
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
     if lock_parent_plan:
@@ -1222,6 +1242,8 @@ async def apply_coverage_scene_action(
         )
 
     used = min(len(kadry), len(group))
+    if used and len(kadry) > used:
+        kadry = fold_excess_shot_voiceover(kadry, used)
     parent_sid = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
     for i, member in enumerate(group[:used]):
         shot = kadry[i]
