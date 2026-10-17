@@ -30,3 +30,16 @@ def test_missing_fixture_fails_and_does_not_open_socket(
     assert caught.value.fixture_key
     assert caught.value.label == "fixture-miss"
     assert "fixture-miss" in str(caught.value)
+
+
+def test_fixture_miss_comes_from_routing_when_present() -> None:
+    from app.orchestrator.rag.types import FixtureMiss as Bound
+
+    try:
+        from app.orchestrator.routing.types import FixtureMiss as RoutingMiss
+    except ImportError:
+        RoutingMiss = None
+    if RoutingMiss is None:
+        assert Bound.__module__ == "app.orchestrator.rag.types"
+    else:
+        assert Bound is RoutingMiss

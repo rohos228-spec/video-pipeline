@@ -65,10 +65,18 @@ def chunk_id_for(corpus: str, source_id: str, part_key: str) -> str:
     return sha256_payload({"corpus": corpus, "part_key": part_key, "source_id": source_id})
 
 
+RAG_DB_NAME = "orch_rag.db"
+RAG_SIDECAR_NAMES = frozenset({f"{RAG_DB_NAME}-wal", f"{RAG_DB_NAME}-shm"})
+
+
 def connect(db_path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    """Писатель создаёт только ``orch_rag.db``. Каталог — лишь у записи (reindex)."""
     if readonly and not db_path.is_file():
         raise FileNotFoundError(db_path)
+    if not readonly:
+        if db_path.name != RAG_DB_NAME:
+            raise RuntimeError("rag пишет только orch_rag.db (и соседние -wal/-shm) и только из reindex")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) if readonly else sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
@@ -107,16 +115,10 @@ def _try_sqlite_vec(conn: sqlite3.Connection) -> bool:
 
 
 class RagStore:
+    """Писатель открывается только из ``RagEngine.reindex`` → ``sync``."""
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
-
-    def initialize(self) -> None:
-        conn = connect(self.db_path)
-        try:
-            ensure_schema(conn)
-            conn.commit()
-        finally:
-            conn.close()
 
     def sync(
         self,

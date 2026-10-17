@@ -317,20 +317,32 @@ def _node_metadata(node: ResolvedNode, *, prompt_path: str | None = None) -> dic
         "stale_base": node.stale_base,
         "group_key": node.group_key,
         "status": node.status,
+        "updated_change_id": node.updated_change_id,
     }
     if prompt_path:
         meta["prompt_path"] = prompt_path
     return meta
 
 
+def _prompt_lead(template: str) -> str:
+    body = (template or "").strip()
+    if not body:
+        return ""
+    paragraphs = [part.strip() for part in body.split("\n\n") if part.strip()]
+    lead = " ".join(paragraphs[:2])
+    return lead[:500]
+
+
 def _node_doc(node: ResolvedNode) -> SourceDoc:
     glued = node.node_key.replace("_", "")
     params = json.dumps(node.params, ensure_ascii=False, sort_keys=True) if node.params else "{}"
+    lead = _prompt_lead(node.prompt_template)
     text = (
         f"Нода {node.node_key}. Ключ {glued}. Группа {node.group_key}. "
         f"Название: {node.title}. Статус: {node.status}. "
         f"Версия: {node.version}. Источник: {node.source}. "
-        f"Описание: {node.description}. Параметры: {params}."
+        f"Описание: {node.description}. Параметры: {params}. "
+        f"О чём промпт: {lead}"
     )
     return SourceDoc(
         corpus="nodes",
@@ -346,8 +358,9 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     template = (node.prompt_template or "").strip()
     if not template:
         return []
-    header = f"Промпт ноды {node.node_key} версия {node.version}."
-    parts = split_prompt(template, max_parts=3)
+    header = f"Промпт «{node.title}» ноды {node.node_key}, версия {node.version}."
+    # До 8 секций ##, без склейки в 3 ведра: иначе вектор секции тонет в чужом тексте.
+    parts = split_prompt(template, max_parts=8)
     docs: list[SourceDoc] = []
     for part_key, body in parts:
         docs.append(

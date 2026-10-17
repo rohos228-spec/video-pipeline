@@ -143,27 +143,45 @@ class RagEngine:
         query: str,
         corpora: list[str] | tuple[str, ...] | None = None,
         top_k: int = 8,
+        *,
+        channel: str = "hybrid",
+        rrf_k: int = _RRF_K,
+        rrf_weights: tuple[float, float] | None = None,
     ) -> list[Chunk]:
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
             return []
         if not self.db_path.is_file():
             return []
+        if channel not in {"hybrid", "bm25", "vector"}:
+            raise ValueError("channel должен быть hybrid, bm25 или vector")
         pool = max(top_k * 4, 20)
-        lexical = self.store.bm25(fts_match_query(query), selected, limit=pool)
+        lexical = self.store.bm25(fts_match_query(query), selected, limit=pool) if channel != "vector" else []
         lexical_ids = [chunk_id for chunk_id, _score in lexical]
         lexical_scores = dict(lexical)
         stored = self.store.fetch_chunks(selected)
-        query_vector = self.embedder.embed_query(query)
         vector_scored: list[tuple[float, Chunk]] = []
-        for chunk in stored:
-            embedding = chunk.metadata.pop("_embedding", None)
-            score = cosine(query_vector, embedding or [])
-            vector_scored.append((score, chunk))
-        vector_scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
-        vector_ids = [chunk.chunk_id for _score, chunk in vector_scored[:pool]]
+        if channel == "bm25":
+            for chunk in stored:
+                chunk.metadata.pop("_embedding", None)
+                vector_scored.append((0.0, chunk))
+            query_vector_ids: list[str] = []
+        else:
+            query_vector = self.embedder.embed_query(query)
+            for chunk in stored:
+                embedding = chunk.metadata.pop("_embedding", None)
+                score = cosine(query_vector, embedding or [])
+                vector_scored.append((score, chunk))
+            vector_scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
+            query_vector_ids = [chunk.chunk_id for _score, chunk in vector_scored[:pool]]
         vector_scores = {chunk.chunk_id: score for score, chunk in vector_scored}
-        fused = rrf_merge([lexical_ids, vector_ids], k=_RRF_K)
+        if channel == "bm25":
+            fused = {chunk_id: score for chunk_id, score in lexical}
+        elif channel == "vector":
+            fused = {chunk_id: score for chunk_id, score in vector_scores.items()}
+        else:
+            weights = None if rrf_weights is None else [rrf_weights[0], rrf_weights[1]]
+            fused = rrf_merge([lexical_ids, query_vector_ids], k=rrf_k, weights=weights)
         by_id = {chunk.chunk_id: chunk for _score, chunk in vector_scored}
         ordered = [
             chunk_id

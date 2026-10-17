@@ -84,7 +84,7 @@ def test_sqlite_node_store_reads_active_row(tmp_path: Path) -> None:
         """
         CREATE TABLE node_defs (
             node_key TEXT, group_key TEXT, title TEXT, origin TEXT,
-            status TEXT, active_version INTEGER
+            status TEXT, active_version INTEGER, updated_change_id TEXT
         )
         """
     )
@@ -92,20 +92,31 @@ def test_sqlite_node_store_reads_active_row(tmp_path: Path) -> None:
         """
         CREATE TABLE node_prompt_versions (
             node_key TEXT, version INTEGER, prompt_template TEXT, params_json TEXT,
-            kind TEXT, is_active INTEGER, change_id TEXT, created_at TEXT
+            kind TEXT, change_id TEXT, created_at TEXT, base_git_sha256 TEXT,
+            created_via TEXT
         )
         """
     )
-    conn.execute("INSERT INTO node_defs VALUES ('n_from_db', 'custom', 'Из БД', 'db', 'active', 2)")
+    conn.execute("INSERT INTO node_defs VALUES ('n_from_db', 'custom', 'Из БД', 'db', 'active', 2, 'upd-2')")
     conn.execute(
-        "INSERT INTO node_prompt_versions VALUES (?, 1, 'старая', '{}', 'create', 0, 'c1', '2026-10-01')",
+        """
+        INSERT INTO node_prompt_versions
+        VALUES (?, 1, 'старая', '{}', 'create', 'c1', '2026-10-01', NULL, 'orchestrator')
+        """,
         ("n_from_db",),
     )
     conn.execute(
         """
         INSERT INTO node_prompt_versions
         VALUES ('n_from_db', 2, 'активный промпт dbactiveprompt', '{"reasoning_effort":"high"}',
-                'edit_prompt', 1, 'c2', '2026-10-02')
+                'edit_prompt', 'c2', '2026-10-02', NULL, 'studio_ui')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO node_prompt_versions
+        VALUES ('n_from_db', 3, 'revert не индексировать', '{}', 'revert_to_git', 'c3',
+                '2026-10-03', NULL, 'orchestrator')
         """
     )
     conn.commit()
@@ -187,7 +198,7 @@ def test_db_override_marks_stale_base_when_git_hash_differs(tmp_path: Path) -> N
         """
         CREATE TABLE node_defs (
             node_key TEXT, group_key TEXT, title TEXT, origin TEXT,
-            status TEXT, active_version INTEGER, git_sha256 TEXT, stale_base INTEGER
+            status TEXT, active_version INTEGER, updated_change_id TEXT
         )
         """
     )
@@ -195,18 +206,26 @@ def test_db_override_marks_stale_base_when_git_hash_differs(tmp_path: Path) -> N
         """
         CREATE TABLE node_prompt_versions (
             node_key TEXT, version INTEGER, prompt_template TEXT, params_json TEXT,
-            kind TEXT, is_active INTEGER, change_id TEXT, created_at TEXT
+            kind TEXT, change_id TEXT, created_at TEXT, base_git_sha256 TEXT,
+            created_via TEXT
         )
         """
     )
     conn.execute(
-        "INSERT INTO node_defs VALUES ('n_stale_qc', 'custom', 'Stale QC', 'git_override', 'active', 2, ?, 0)",
+        "INSERT INTO node_defs VALUES ('n_stale_qc', 'custom', 'Stale QC', 'git_override', 'active', 2, 'upd-stale')"
+    )
+    conn.execute(
+        """
+        INSERT INTO node_prompt_versions
+        VALUES ('n_stale_qc', 2, 'DBPROMPT resolveddbbody', '{}', 'edit_prompt', 'c9', '2026-10-02', ?, 'orchestrator')
+        """,
         (sha256_text("OLD PROMPT"),),
     )
     conn.execute(
         """
         INSERT INTO node_prompt_versions
-        VALUES ('n_stale_qc', 2, 'DBPROMPT resolveddbbody', '{}', 'edit_prompt', 1, 'c9', '2026-10-02')
+        VALUES ('n_stale_qc', 4, 'REVERTPROMPT не должен попасть в индекс', '{}', 'revert_to_git',
+                'c-revert', '2026-10-04', NULL, 'orchestrator')
         """
     )
     conn.commit()
@@ -223,6 +242,7 @@ def test_db_override_marks_stale_base_when_git_hash_differs(tmp_path: Path) -> N
         hits = engine.retrieve("resolveddbbody", ["prompts"], top_k=4)
         hit = next(item for item in hits if item.metadata.get("node_key") == "n_stale_qc")
         assert "DBPROMPT" in hit.text
+        assert "REVERTPROMPT" not in hit.text
         assert hit.metadata["source"] == "db"
         assert hit.metadata["version"] == 2
         assert hit.metadata["db_version"] == 2
@@ -230,5 +250,75 @@ def test_db_override_marks_stale_base_when_git_hash_differs(tmp_path: Path) -> N
         assert hit.metadata["git_sha256"] == sha256_text("GITPROMPT currentgitbody\n")
         assert "active_version" not in hit.metadata
         assert "overridden_in_db" not in hit.metadata
+        assert "active_version" not in hit.metadata
     finally:
+        engine.close()
+
+
+def test_null_active_version_indexes_git_and_ignores_revert(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    folder = repo / "templates" / "node_groups" / "custom"
+    folder.mkdir(parents=True)
+    (folder / "n_git_only.md").write_text(
+        "---\nnode_key: n_git_only\ntitle: Git only\ngroup_key: custom\n---\n"
+        "GITFILE тело шаблона gitonlybody\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "nodes.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE node_defs (
+            node_key TEXT, group_key TEXT, title TEXT, origin TEXT,
+            status TEXT, active_version INTEGER, updated_change_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE node_prompt_versions (
+            node_key TEXT, version INTEGER, prompt_template TEXT, params_json TEXT,
+            kind TEXT, change_id TEXT, created_at TEXT, base_git_sha256 TEXT,
+            created_via TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO node_defs VALUES ('n_git_only', 'custom', 'Git only', 'git_override', 'active', NULL, 'upd-null')"
+    )
+    conn.execute(
+        """
+        INSERT INTO node_prompt_versions
+        VALUES ('n_git_only', 1, 'REVERTBODY не индекс', '{}', 'revert_to_git', 'c-rev',
+                '2026-10-04', NULL, 'orchestrator')
+        """
+    )
+    conn.commit()
+    engine = RagEngine(
+        db_path=tmp_path / "orch_rag.db",
+        rules_path=tmp_path / "no-rules.md",
+        repo_root=repo,
+        node_store=SqliteNodeStore(db_path),
+        scan_git=True,
+    )
+    try:
+        engine.reindex("prompts")
+        hits = engine.retrieve("gitonlybody", ["prompts"], top_k=4)
+        hit = next(item for item in hits if item.metadata.get("node_key") == "n_git_only")
+        assert "GITFILE" in hit.text
+        assert "REVERTBODY" not in hit.text
+        assert hit.metadata["source"] == "git"
+        assert hit.metadata["db_version"] is None
+        assert hit.metadata["stale_base"] is False
+        assert hit.metadata["updated_change_id"] == "upd-null"
+        conn.execute("UPDATE node_defs SET updated_change_id = 'upd-next' WHERE node_key = 'n_git_only'")
+        conn.commit()
+        second = engine.reindex("prompts")
+        assert second.written >= 1
+        again = engine.retrieve("gitonlybody", ["prompts"], top_k=4)
+        bumped = next(item for item in again if item.metadata.get("node_key") == "n_git_only")
+        assert bumped.metadata["updated_change_id"] == "upd-next"
+        assert bumped.metadata["source"] == "git"
+    finally:
+        conn.close()
         engine.close()

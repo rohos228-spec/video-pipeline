@@ -3,18 +3,19 @@
 WS6 не импортирует ``app/orchestrator/node_store``. Чтение git-baseline и
 DB-override идёт через этот протокол.
 
-Таблица (чтение, не миграция), как в PR #346:
+Таблица (чтение, не миграция), как в PR #346 после ``fab1b126``:
 
-* ``node_defs(node_key UNIQUE ^n_[a-z0-9_]+$, group_key, title,
-  origin db|git_override, status active|disabled, active_version, ...)``
-* ``node_prompt_versions(node_key, version, prompt_template, params_json,
-  kind create|edit_prompt|edit_params|rollback, is_active, change_id, created_at)``
+* ``node_defs.active_version`` — единственный указатель активной DB-версии.
+  ``NULL`` = git-шаблон (``source=git``, ``db_version=None``).
+* ``node_defs.updated_change_id`` — вместе с ``active_version`` входит в ревизию
+  источника, включая переход указателя в ``NULL``.
+* ``node_prompt_versions`` без ``is_active``. История неизменяема.
+  ``kind`` включает ``revert_to_git``: такие строки никогда не индексируются
+  как активные. ``base_git_sha256`` — хеш git-файла на момент записи версии
+  (для ``stale_base``). ``created_via`` — ``orchestrator|studio_ui``.
 
-Рантайм-снимок — утверждённый ``NodeDef``: ``source`` (git|db), ``version``,
-``db_version``, ``git_sha256``, ``stale_base``. Полей ``overridden_in_db`` и
-``active_version`` на снимке нет. Колонка ``active_version`` только выбирает
-строку версии. Индексируется эта разрешённая версия. Ревизия включает
-``version``, ``db_version``, ``git_sha256``, ``stale_base`` и ``change_id``.
+Рантайм-снимок — ``NodeDef``: ``source``, ``version``, ``db_version``,
+``git_sha256``, ``stale_base``. Колонка ``active_version`` на снимок не копируется.
 """
 
 from __future__ import annotations
@@ -50,6 +51,10 @@ class ResolvedNode:
     updated_at: str | None = None
     description: str = ""
     prompt_path: str | None = None
+    # Указатель node_defs. NULL = «сейчас git». В metadata чанка не кладётся.
+    pointer_active_version: int | None = None
+    updated_change_id: str | None = None
+    follow_git: bool = False
 
     @property
     def revision_token(self) -> str:
@@ -59,11 +64,13 @@ class ResolvedNode:
                 "db_version": self.db_version,
                 "git_sha256": self.git_sha256,
                 "params": self.params,
+                "pointer_active_version": self.pointer_active_version,
                 "prompt_template": self.prompt_template,
                 "source": self.source,
                 "stale_base": self.stale_base,
                 "status": self.status,
                 "title": self.title,
+                "updated_change_id": self.updated_change_id,
                 "version": self.version,
             },
             ensure_ascii=False,
@@ -78,17 +85,18 @@ def git_content_sha256(prompt_template: str) -> str:
 
 
 def merge_resolved(base: ResolvedNode | None, override: ResolvedNode) -> ResolvedNode:
-    """DB-строка перекрывает git. Индексируется разрешённая (активная) версия.
+    """DB-указатель поверх git.
 
-    ``git_sha256`` снимка — хеш текущего git-промпта, если baseline есть.
-    ``stale_base`` истинен, если строка БД так помечена или записанный в ней
-    ``git_sha256`` не совпал с текущим файлом.
+    ``follow_git`` (``active_version IS NULL`` или ``revert_to_git``) оставляет
+    текст git-файла: ``source=git``, ``db_version=None``, ``stale_base=False``.
+    Иначе индексируется строка версии. ``git_sha256`` снимка — хеш текущего
+    git-файла. ``stale_base`` — ``base_git_sha256`` версии не совпал с ним.
     """
+    if override.follow_git:
+        return _follow_git(base, override)
     current_git = base.git_sha256 if base is not None else None
     recorded = override.git_sha256
-    stale = bool(override.stale_base)
-    if recorded and current_git and recorded != current_git:
-        stale = True
+    stale = bool(current_git and recorded and current_git != recorded)
     prompt = override.prompt_template or (base.prompt_template if base else "")
     params = override.params or (base.params if base else {})
     return ResolvedNode(
@@ -100,13 +108,58 @@ def merge_resolved(base: ResolvedNode | None, override: ResolvedNode) -> Resolve
         source="db",
         version=override.version,
         db_version=override.db_version if override.db_version is not None else override.version,
-        git_sha256=current_git if base is not None else recorded,
+        git_sha256=current_git,
         stale_base=stale,
         params=params,
         change_id=override.change_id,
         updated_at=override.updated_at or (base.updated_at if base else None),
         description=override.description or (base.description if base else ""),
         prompt_path=base.prompt_path if base else override.prompt_path,
+        pointer_active_version=override.pointer_active_version,
+        updated_change_id=override.updated_change_id,
+        follow_git=False,
+    )
+
+
+def _follow_git(base: ResolvedNode | None, override: ResolvedNode) -> ResolvedNode:
+    if base is None:
+        return ResolvedNode(
+            node_key=override.node_key,
+            group_key=override.group_key,
+            title=override.title or override.node_key,
+            status=override.status,
+            prompt_template="",
+            source="git",
+            version=0,
+            db_version=None,
+            git_sha256=None,
+            stale_base=False,
+            params={},
+            updated_at=override.updated_at,
+            description=override.description,
+            pointer_active_version=None,
+            updated_change_id=override.updated_change_id,
+            follow_git=True,
+        )
+    return ResolvedNode(
+        node_key=base.node_key,
+        group_key=override.group_key or base.group_key,
+        title=override.title or base.title,
+        status=override.status or base.status,
+        prompt_template=base.prompt_template,
+        source="git",
+        version=base.version,
+        db_version=None,
+        git_sha256=base.git_sha256,
+        stale_base=False,
+        params=dict(base.params),
+        change_id=None,
+        updated_at=override.updated_at or base.updated_at,
+        description=override.description or base.description,
+        prompt_path=base.prompt_path,
+        pointer_active_version=None,
+        updated_change_id=override.updated_change_id,
+        follow_git=True,
     )
 
 
@@ -158,7 +211,7 @@ class SqliteNodeStore:
                 node_key = str(record.get("node_key") or "")
                 if not NODE_KEY_RE.match(node_key):
                     continue
-                version = _active_version(conn, node_key, record, version_cols)
+                version = _selected_version(conn, node_key, record, version_cols)
                 nodes.append(_node_from_record(record, version, defs_cols))
             return nodes
         finally:
@@ -189,33 +242,33 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def _active_version(
+def _selected_version(
     conn: sqlite3.Connection,
     node_key: str,
     record: dict[str, Any],
     cols: set[str],
 ) -> dict[str, Any] | None:
-    if not cols:
+    """Строка, на которую указывает ``active_version``.
+
+    ``NULL``, отсутствие строки и ``kind=revert_to_git`` → ``None`` (индексировать git).
+    Колонка ``is_active`` не читается: её больше нет.
+    """
+    if not cols or record.get("active_version") is None:
         return None
     active_version = record.get("active_version")
     rows = [
         _row_dict(row)
         for row in conn.execute(
-            "SELECT * FROM node_prompt_versions WHERE node_key = ?",
-            (node_key,),
+            "SELECT * FROM node_prompt_versions WHERE node_key = ? AND version = ?",
+            (node_key, active_version),
         )
     ]
-    active = [row for row in rows if _truthy(row.get("is_active"))]
-    if active_version is not None:
-        pinned = [row for row in active if row.get("version") == active_version]
-        if pinned:
-            return pinned[0]
-        pinned_any = [row for row in rows if row.get("version") == active_version]
-        if pinned_any:
-            return pinned_any[0]
-    if active:
-        return max(active, key=lambda row: int(row.get("version") or 0))
-    return None
+    if not rows:
+        return None
+    chosen = rows[0]
+    if str(chosen.get("kind") or "") == "revert_to_git":
+        return None
+    return chosen
 
 
 def _node_from_record(
@@ -223,26 +276,51 @@ def _node_from_record(
     version: dict[str, Any] | None,
     cols: set[str],
 ) -> ResolvedNode:
-    version = version or {}
+    updated_change_id = _as_str(record.get("updated_change_id")) if "updated_change_id" in cols else None
+    updated_at = _as_str(record.get("updated_at"))
+    title = str(record.get("title") or record["node_key"])
+    status = str(record.get("status") or "active")
+    group_key = str(record.get("group_key") or "")
+    description = str(record.get("description") or "") if "description" in cols else ""
+    if version is None:
+        return ResolvedNode(
+            node_key=str(record["node_key"]),
+            group_key=group_key,
+            title=title,
+            status=status,
+            prompt_template="",
+            source="git",
+            version=0,
+            db_version=None,
+            git_sha256=None,
+            stale_base=False,
+            updated_at=updated_at,
+            description=description,
+            pointer_active_version=None,
+            updated_change_id=updated_change_id,
+            follow_git=True,
+        )
     params = _parse_params(version.get("params_json"))
-    resolved_version = int(version.get("version") or record.get("active_version") or 1)
-    recorded_git = _as_str(record.get("git_sha256")) if "git_sha256" in cols else None
-    stale = _truthy(record.get("stale_base")) if "stale_base" in cols else False
+    resolved_version = int(version.get("version") or 0)
+    recorded_git = _as_str(version.get("base_git_sha256")) if "base_git_sha256" in version else None
     return ResolvedNode(
         node_key=str(record["node_key"]),
-        group_key=str(record.get("group_key") or ""),
-        title=str(record.get("title") or record["node_key"]),
-        status=str(record.get("status") or "active"),
+        group_key=group_key,
+        title=title,
+        status=status,
         prompt_template=str(version.get("prompt_template") or ""),
         source="db",
         version=resolved_version,
         db_version=resolved_version,
         git_sha256=recorded_git,
-        stale_base=stale,
+        stale_base=False,
         params=params,
         change_id=(None if version.get("change_id") in (None, "") else str(version.get("change_id"))),
-        updated_at=_as_str(version.get("created_at") or record.get("updated_at")),
-        description=str(record.get("description") or "") if "description" in cols else "",
+        updated_at=_as_str(version.get("created_at") or updated_at),
+        description=description,
+        pointer_active_version=resolved_version,
+        updated_change_id=updated_change_id,
+        follow_git=False,
     )
 
 
@@ -256,12 +334,6 @@ def _parse_params(raw: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes"}
-    return bool(value)
 
 
 def _as_str(value: Any) -> str | None:
