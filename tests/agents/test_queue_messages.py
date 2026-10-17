@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.orchestrator.contracts import MessageMode
+from app.orchestrator.contracts import AgentRole, MessageMode
 from app.orchestrator.db.migrations import connect
 
 
@@ -45,3 +45,10 @@ async def test_classifier_failure_marks_that_row_append(runtime) -> None:
     assert len(failed) == 1
     assert failed[0].payload.get("error") == "classifier_failed"
     assert failed[0].payload.get("mode") == MessageMode.append.value
+
+
+@pytest.mark.asyncio
+async def test_append_stream_uses_summarizer_role(runtime) -> None:
+    await runtime.queue.accept("sum-role", "добро пожаловать")
+    await runtime.queue.drain()
+    assert runtime.router.last_call["agent_role"] == AgentRole.summarizer.value

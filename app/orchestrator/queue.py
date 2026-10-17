@@ -257,7 +257,7 @@ class MessageQueue:
             True,
             run_id=orch_run_id(task_id=task_id, session_id=session_id),
             task_id=None if task_id is None else str(task_id),
-            agent_role=AgentRole.classifier.value,
+            agent_role=AgentRole.summarizer.value,
             budget_scope=BudgetScope.internal.value,
             reasoning_effort=ORCH_REASONING_EFFORT,
             on_delta=on_delta,
