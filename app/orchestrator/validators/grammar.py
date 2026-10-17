@@ -198,8 +198,22 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
     return notes
 
 
+def _previous_active(shots: list[Any], index: int) -> Any | None:
+    cursor = index - 1
+    while cursor >= 0:
+        shot = shots[cursor]
+        if shot_counts_as_active(shot):
+            return shot
+        cursor -= 1
+    return None
+
+
 def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
-    """Временная копия ``ensure_wide_before_dialogue``. TODO(R0a): удалить."""
+    """Временная копия ``ensure_wide_before_dialogue``. TODO(R0a): удалить.
+
+    Говорящие и предыдущий план смотрятся только у живых шотов. Неактивный
+    остаётся на своём месте, его id и ``порядок`` не переписываются.
+    """
 
     if not isinstance(shots, list) or not shots:
         return []
@@ -207,18 +221,30 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
     i = 0
     while i < len(shots):
         s = shots[i]
+        if not shot_counts_as_active(s):
+            i += 1
+            continue
+        prev = _previous_active(shots, i)
         if not (isinstance(s, dict) and _is_reply(s)) or (
-            i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])
+            isinstance(prev, dict) and _is_reply(prev)
         ):
             i += 1
             continue
         j = i
         speakers: set[str] = set()
-        while j < len(shots) and isinstance(shots[j], dict) and _is_reply(shots[j]):
-            speakers.add(_shot_s(shots[j], "говорит").casefold())
-            j += 1
-        prev = shots[i - 1] if i > 0 and isinstance(shots[i - 1], dict) else None
-        if len(speakers) >= 2 and not (prev is not None and _shot_s(prev, "план").upper() == "ОБЩИЙ"):
+        while j < len(shots):
+            current = shots[j]
+            if not shot_counts_as_active(current):
+                j += 1
+                continue
+            if isinstance(current, dict) and _is_reply(current):
+                speakers.add(_shot_s(current, "говорит").casefold())
+                j += 1
+                continue
+            break
+        if len(speakers) >= 2 and not (
+            isinstance(prev, dict) and _shot_s(prev, "план").upper() == "ОБЩИЙ"
+        ):
             w = copy.deepcopy(s)
             who = _shot_s(s, "кто") or "участники разговора"
             w["действие"] = f"{who} друг напротив друга перед разговором, видно, кто где."
@@ -239,7 +265,7 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
         idmap: dict[str, str] = {}
         k = 0
         for s in shots:
-            if not isinstance(s, dict):
+            if not isinstance(s, dict) or not shot_counts_as_active(s):
                 continue
             k += 1
             old = str(s.get("id") or "")
@@ -252,7 +278,9 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
             if "порядок" in s:
                 s["порядок"] = k
         for s in shots:
-            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
+            if not isinstance(s, dict) or not shot_counts_as_active(s):
+                continue
+            if str(s.get("parent_id") or "") in idmap:
                 s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes
 
