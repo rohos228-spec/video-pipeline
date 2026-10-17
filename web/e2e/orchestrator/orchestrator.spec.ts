@@ -552,7 +552,7 @@ test.describe("orchestrator chat", () => {
     await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
     await expect(banner).toContainText("Остановлено");
     await expect(banner).not.toContainText("Стоп-ключ не установлен");
-    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
   test("kill: ответ без stop_key_set показывает ошибку и повтор", async ({ page }) => {

@@ -216,20 +216,22 @@ export function OrchestratorWorkspace() {
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
-          {chat.state.killNotice.lateStopWarning ? (
-            <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
-          ) : null}
-          {chat.state.killNotice.phase === "error" ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="mt-2 h-7 text-[11px]"
-              data-testid="orch-kill-retry"
-              onClick={() => void chat.kill()}
-            >
-              Повторить
-            </Button>
+          {chat.state.killNotice.phase === "error" || chat.state.killNotice.lateStopWarning ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {chat.state.killNotice.lateStopWarning ? (
+                <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                data-testid="orch-kill-retry"
+                onClick={() => void chat.kill()}
+              >
+                Повторить
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}
