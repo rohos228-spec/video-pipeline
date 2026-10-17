@@ -129,6 +129,7 @@ class Supervisor:
         self._shield_jobs: set[asyncio.Task[Any]] = set()
         self._block_reason: dict[int, str] = {}
         self._pending_kill_publish: list[tuple[str, int | None]] = []
+        self._approved: dict[int, str] = {}
 
     async def start_task(
         self,
@@ -205,9 +206,10 @@ class Supervisor:
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
         data = self.checkpoints.load_latest(task_id)
-        if data is None:
-            raise LookupError(f"нет чекпоинта для задачи {task_id}")
         self._budget_stop.discard(task_id)
+        if data is None:
+            await self._replan_from_grant(task_id, session_id)
+            return
         self._arm_resume(session_id, task_id, data)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         await self._flush_kill_publishes()
@@ -217,14 +219,35 @@ class Supervisor:
             return
         if await self._screen_plan(task_id, session_id, plan):
             return
+        if not self._plan_was_approved(task_id, plan):
+            await self._replan_from_grant(task_id, session_id)
+            return
         position = int(data.position)
         if position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
-            self._execute_plan(task_id, session_id, plan, int(data.position), goal),
+            self._execute_plan(task_id, session_id, plan, position, goal),
             name=f"orch-approve-{task_id}",
         )
+
+    async def _replan_from_grant(self, task_id: int, session_id: str) -> None:
+        """Эскалация случилась до approve: цикл planner → critic заново, с позиции 0."""
+        self._approved.pop(task_id, None)
+        self._cancel.discard(session_id)
+        self._pause.discard(session_id)
+        self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
+        self._session_task[session_id] = task_id
+        goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
+        self._runs[task_id] = asyncio.create_task(
+            self._drive(task_id, session_id, goal),
+            name=f"orch-replan-{task_id}",
+        )
+
+    def _plan_was_approved(self, task_id: int, plan: list[PlanStep]) -> bool:
+        mark = self._approved.get(task_id)
+        return mark is not None and mark == _plan_fingerprint(plan)
 
     def _arm_resume(self, session_id: str, task_id: int, data: CheckpointData) -> None:
         self._cancel.discard(session_id)
@@ -395,9 +418,11 @@ class Supervisor:
             if verdict is None:
                 return None
             if verdict == "approve":
+                self._approved[task_id] = _plan_fingerprint(plan)
                 return plan
             if verdict == "reject":
-                await self._escalate(task_id, session_id, "critic_reject")
+                await self._checkpoint(task_id, session_id, plan, 0)
+                await self._apply_block(task_id, session_id, "critic_reject")
                 return None
             revises += 1
             if revises > 2:
@@ -498,10 +523,16 @@ class Supervisor:
             self._context[task_id] = (self._context.get(task_id, "") + "\n" + text).strip()
             plan = self._stored_plan(task_id)
             existing = self.checkpoints.load_latest(task_id)
-            if position is None:
-                position = int(existing.position) if existing is not None else 0
             if existing is not None and not plan:
                 plan = list(existing.plan)
+            if (
+                existing is not None
+                and plan
+                and _plan_fingerprint(list(existing.plan)) != _plan_fingerprint(plan)
+            ):
+                position = 0
+            elif position is None:
+                position = int(existing.position) if existing is not None else 0
             await self.bus.publish(
                 session_id,
                 "message",
@@ -542,7 +573,7 @@ class Supervisor:
         Пустой чекпоинт на grant/resume сюда не попадает: это ``empty_plan``.
         """
         if not plan:
-            await self._escalate(task_id, session_id, "plan_sanity")
+            await self._apply_block(task_id, session_id, "plan_sanity")
             return True
         for step in plan:
             kind = action_guard(step.action, self.actions)
@@ -553,7 +584,8 @@ class Supervisor:
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
         if plan_missing_verify(plan):
-            await self._escalate(task_id, session_id, "plan_sanity")
+            await self._checkpoint(task_id, session_id, plan, 0)
+            await self._apply_block(task_id, session_id, "plan_sanity")
             return True
         if self._task_project_id(task_id) is None and _plan_requires_project(plan, self.actions):
             await self._apply_block(task_id, session_id, ApprovalReason.missing_project_id.value)
@@ -573,8 +605,9 @@ class Supervisor:
         return (task_id, index, paid_step_identity(step.action, step.params))
 
     def _save_plan(self, task_id: int, plan: list[PlanStep], position: int | None = None) -> None:
-        """Новый план сбрасывает гранты риска этой задачи."""
+        """Новый план сбрасывает гранты риска и отметку approve этой задачи."""
         self._forget_risk_grants(task_id)
+        self._approved.pop(task_id, None)
         if position is None:
             self.tasks.save_plan(task_id, plan)
             return
@@ -865,8 +898,10 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         if verdict != "approve":
-            await self._escalate(task_id, session_id, "steer_not_approved")
+            await self._checkpoint(task_id, session_id, revised, 0)
+            await self._apply_block(task_id, session_id, "steer_not_approved")
             return None
+        self._approved[task_id] = _plan_fingerprint(revised)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         return revised, 0
 
@@ -1346,6 +1381,11 @@ class Supervisor:
             internal=float(row.get("spend_internal") or 0),
             actions=float(row.get("spend_actions") or 0),
         )
+
+
+def _plan_fingerprint(plan: list[PlanStep]) -> str:
+    payload = [step.model_dump() for step in plan]
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:

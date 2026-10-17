@@ -796,13 +796,16 @@ def validator_missing_run_id(result: Any) -> bool:
 
 # Причина → исход. Супервизор ставит статус блокировки только через block_status.
 # Строки revise_limit нет: лимит revise — critic_escalation.
-# risk, plan_sanity, critic_reject, steer_not_approved в таблицу не входят:
-# это запрос человека, не blocking валидатора, исход по-прежнему waiting_approval.
+# plan_sanity, critic_reject и steer_not_approved — waiting_approval.
+# Грант до approve критика не исполняет чекпоинт, а возвращает задачу в planning.
 # empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
 BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
     ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
     ApprovalReason.missing_project_id.value: TaskStatus.waiting_approval,
+    "plan_sanity": TaskStatus.waiting_approval,
+    "critic_reject": TaskStatus.waiting_approval,
+    "steer_not_approved": TaskStatus.waiting_approval,
     "deletion_blocked": TaskStatus.failed,
     "missing_run_id": TaskStatus.failed,
     "empty_plan": TaskStatus.failed,

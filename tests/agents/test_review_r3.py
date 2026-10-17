@@ -226,7 +226,7 @@ async def test_grant_clears_budget_stop_and_steer_replans(token: str) -> None:
         actions.release.set()
         await rt.supervisor.wait(task_id, timeout=5)
         assert planner.calls >= 2
-        assert "after" in [call["name"] for call in actions.calls]
+        assert [call["name"] for call in actions.calls] == ["after"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
     finally:
         set_runtime(None)
