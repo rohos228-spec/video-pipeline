@@ -189,5 +189,6 @@ def test_api_modified_uses_meta_not_mtime(plan_step):
     meta_path = step_dir(plan_step) / ".file_meta.json"
     if meta_path.is_file():
         meta_path.unlink()
-    assert _prompt_modified(plan_step, "draft", p) == p.stat().st_mtime
+    # R0a: без saved_at штамп не берётся из mtime файла.
+    assert _prompt_modified(plan_step, "draft", p) is None
 
