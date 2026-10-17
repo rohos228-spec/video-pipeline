@@ -143,6 +143,59 @@ async def test_shield_records_paid_step_when_driver_is_cancelled(token: str) -> 
 
 
 @pytest.mark.asyncio
+async def test_shield_records_paid_run_node_after_verify(token: str) -> None:
+    del token
+    actions = MockActions()
+    paid_started = asyncio.Event()
+
+    async def _on_execute(name: str, params: dict, task_ctx: dict) -> None:
+        del params, task_ctx
+        if name == "run_node":
+            paid_started.set()
+
+    actions.on_execute = _on_execute
+    steps = [
+        PlanStep(action="verify_code_state", expected="ok", paid=False, mutating=False),
+        PlanStep(
+            action="run_node",
+            params={"node_key": "n_qc", "_wait": True, "_change_id": "chg-node", "_cost": 1.5},
+            expected="ran",
+            paid=True,
+            mutating=True,
+        ),
+    ]
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(steps),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("shield-node", "нода", project_id=13)
+        await asyncio.wait_for(paid_started.wait(), timeout=5)
+        run = rt.supervisor._runs[task_id]
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        actions.release.set()
+        for _ in range(50):
+            rows = rt.tasks.list_steps(task_id)
+            node = next(row for row in rows if row["action_name"] == "run_node")
+            if node["status"] == "done" and node["change_id"] == "chg-node":
+                break
+            await asyncio.sleep(0.02)
+        rows = rt.tasks.list_steps(task_id)
+        node = next(row for row in rows if row["action_name"] == "run_node")
+        assert node["status"] == "done"
+        assert node["change_id"] == "chg-node"
+        assert node["cost"] == pytest.approx(1.5)
+        assert [call["name"] for call in actions.calls] == ["verify_code_state", "run_node"]
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
 async def test_stream_uses_on_delta_and_strong_high(runtime) -> None:
     runtime.router.deltas = ["раз", " два"]
     runtime.router.answer = "не эта нарезка"
