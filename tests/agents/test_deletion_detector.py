@@ -13,7 +13,8 @@ from app.orchestrator.contracts import (
     TaskStatus,
     action_guard,
     is_deletion_action,
-    is_named_deletion,
+    params_request_deletion,
+    step_is_deletion,
 )
 from app.orchestrator.path_guard import path_is_within
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
@@ -25,22 +26,30 @@ _NAMES = [
     "montage.remove_shot",
     "delete_shot",
     "scenes.remove",
-    "kadr.erase",
-    "kadry.wipe",
+    "character.delete",
+    "hero.remove",
+    "vo.wipe",
+    "voiceover.clear",
+    "kadr.truncate",
     "os.remove",
-    "os.unlink",
-    "os.rmdir",
-    "os.removedirs",
-    "shutil.rmtree",
-    "Path.unlink",
-    "Path.rmdir",
     "clear",
     "wipe",
     "truncate",
     "prune",
     "reset",
     "destroy",
+    "rename",
+    "replace",
+    "overwrite",
     "remove_watermark",
+]
+
+_PARAMS = [
+    {"sql": "DELETE FROM scenes WHERE id = 1"},
+    {"query": "DROP TABLE vo"},
+    {"method": "DELETE"},
+    {"http_method": "delete"},
+    {"path": "replace frame"},
 ]
 
 
@@ -49,23 +58,48 @@ def test_common_deletion_names_are_blocked(action: str) -> None:
     assert is_deletion_action(action)
 
 
+@pytest.mark.parametrize("params", _PARAMS)
+def test_sql_and_http_delete_in_params_are_blocked(params: dict) -> None:
+    assert params_request_deletion(params)
+    registry = MockActions()
+    step = PlanStep(action="look", params=params)
+    assert step_is_deletion(step, registry)
+    assert not step_is_deletion(PlanStep(action="look"), registry)
+
+
 def test_dropdown_is_not_a_deletion_segment() -> None:
     assert not is_deletion_action("dropdown")
     assert not is_deletion_action("look")
+    assert not params_request_deletion({"label": "dropdown"})
 
 
-def test_metadata_does_not_waive_scene_or_filesystem_deletion() -> None:
+def test_unregistered_call_is_denied_without_listing_it() -> None:
     class _Registry:
         def metadata_of(self, action_name: str) -> ActionMetadata | None:
-            if action_name in {"scene.delete", "os.remove", "remove_watermark"}:
+            if action_name == "look":
+                return ActionMetadata(read_only=True, destructive=False, risk="none")
+            return None
+
+    registry = _Registry()
+    assert action_guard("shutil.rmtree", registry) == "name"
+    assert action_guard("Path.unlink", registry) == "name"
+    assert action_guard("kadr.erase", registry) == "name"
+    assert action_guard("look", registry) is None
+    assert step_is_deletion(PlanStep(action="shutil.rmtree"), registry)
+
+
+def test_metadata_does_not_waive_scene_or_token_deletion() -> None:
+    class _Registry:
+        def metadata_of(self, action_name: str) -> ActionMetadata | None:
+            if action_name in {"scene.delete", "os.remove", "remove_watermark", "character.drop"}:
                 return ActionMetadata(read_only=True, destructive=False, risk="none")
             return None
 
     registry = _Registry()
     assert action_guard("scene.delete", registry) == "name"
     assert action_guard("os.remove", registry) == "name"
-    assert is_named_deletion("os.remove")
-    assert action_guard("remove_watermark", registry) is None
+    assert action_guard("remove_watermark", registry) == "name"
+    assert action_guard("character.drop", registry) == "name"
 
 
 @pytest.mark.asyncio
@@ -102,6 +136,7 @@ def test_path_prefix_lookalike_is_outside(tmp_path) -> None:
     assert not path_is_within(root, sibling)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="WinError 1314: creating a symlink needs privilege")
 def test_symlink_outside_root_is_rejected(tmp_path) -> None:
     root = tmp_path / "allowed"
     root.mkdir()
@@ -110,5 +145,10 @@ def test_symlink_outside_root_is_rejected(tmp_path) -> None:
     secret = outside / "scene.png"
     secret.write_text("x", encoding="utf-8")
     link = root / "alias"
-    os.symlink(secret, link)
+    try:
+        os.symlink(secret, link)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("WinError 1314")
+        raise
     assert not path_is_within(root, link)

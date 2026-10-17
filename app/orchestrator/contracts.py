@@ -875,12 +875,8 @@ def budget_exhausted_response(response: Any) -> bool:
     )
 
 
-def _action_segments(action: str) -> set[str]:
-    return {part for part in re.split(r"[._]", (action or "").lower()) if part}
-
-
-# Глагол удаления — отдельный сегмент имени, не подстрока (``dropdown`` не ``drop``).
-_DELETION_VERBS = frozenset(
+# Сегмент, не подстрока: ``dropdown`` не содержит ``drop``.
+_DELETION_TOKENS = frozenset(
     {
         "delete",
         "remove",
@@ -892,14 +888,13 @@ _DELETION_VERBS = frozenset(
         "prune",
         "reset",
         "destroy",
-        "erase",
-        "unlink",
-        "rmdir",
-        "removedirs",
-        "rmtree",
+        "rename",
+        "replace",
+        "overwrite",
     }
 )
-_DELETION_OBJECTS = frozenset(
+# Сцены, кадры, персонажи и VO не удаляются никогда.
+_PROTECTED_OBJECTS = frozenset(
     {
         "frame",
         "frames",
@@ -910,53 +905,60 @@ _DELETION_OBJECTS = frozenset(
         "kadr",
         "kadry",
         "kadrs",
-    }
-)
-# Вызовы файловой системы. ``metadata_of`` их не оправдывает.
-_FS_DELETION_CALLS = frozenset(
-    {
-        "os.remove",
-        "os.unlink",
-        "os.rmdir",
-        "os.removedirs",
-        "shutil.rmtree",
-        "path.unlink",
-        "path.rmdir",
+        "character",
+        "characters",
+        "hero",
+        "heroes",
+        "vo",
+        "voiceover",
+        "voiceovers",
     }
 )
 
 
-def _call_name(action: str) -> str:
-    return re.sub(r"[^a-z0-9.]+", ".", (action or "").strip().lower()).strip(".")
+def _text_tokens(value: str) -> set[str]:
+    return {part for part in re.split(r"[^a-z0-9]+", value.lower()) if part}
 
 
 def is_named_deletion(action: str) -> bool:
-    """Удаление кадра/сцены/шота или вызов ``os``/``shutil``/``Path``.
+    """Маркер удаления в имени. Метаданные реестра его не снимают.
 
-    Такой запрет не снимается метаданными реестра.
+    Список системных вызовов не ведётся: срабатывает сегмент
+    (``delete``/``remove``/… и SQL/HTTP ``DELETE``/``DROP`` как слово).
     """
-    name = (action or "").strip()
-    if not name:
-        return False
-    if name in DELETION_ACTIONS or _call_name(name) in _FS_DELETION_CALLS:
-        return True
-    parts = _action_segments(name)
-    return bool(parts & _DELETION_VERBS and parts & _DELETION_OBJECTS)
+    return is_deletion_action(action)
 
 
 def is_deletion_verb(action: str) -> bool:
-    """Сегмент-глагол удаления. ``dropdown`` сегмента ``drop`` не содержит."""
-    return bool(_action_segments(action) & _DELETION_VERBS)
+    """Сегмент из списка запрета. ``dropdown`` сегмента ``drop`` не содержит."""
+    return bool(_text_tokens(action or "") & _DELETION_TOKENS)
 
 
 def is_deletion_action(action: str) -> bool:
-    """Fail-closed по имени, пока реестр не поручился через ``metadata_of``.
+    """Имя с маркером удаления или точное действие из ``DELETION_ACTIONS``."""
+    name = (action or "").strip()
+    if not name:
+        return False
+    if name in DELETION_ACTIONS:
+        return True
+    return bool(_text_tokens(name) & _DELETION_TOKENS)
 
-    Попадают точные имена, вызовы ``os.remove`` / ``Path.unlink`` / ``shutil.rmtree``,
-    глагол рядом с frame/scene/shot/kadr и любой глагол удаления без объекта
-    (``remove_watermark``, ``clear``, ``reset``). ``dropdown`` не попадает.
-    """
-    return is_named_deletion(action) or is_deletion_verb(action)
+
+def params_request_deletion(value: Any) -> bool:
+    """Маркер удаления в параметрах: имя поля, SQL ``DELETE``/``DROP``, метод ``DELETE``."""
+    if isinstance(value, str):
+        return bool(_text_tokens(value) & _DELETION_TOKENS)
+    if isinstance(value, dict):
+        return any(params_request_deletion(key) or params_request_deletion(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(params_request_deletion(item) for item in value)
+    return False
+
+
+def _protects_media(action: str) -> bool:
+    """Сцена, кадр, персонаж или VO вместе с глаголом удаления."""
+    parts = _text_tokens(action or "")
+    return bool(parts & _DELETION_TOKENS and parts & _PROTECTED_OBJECTS)
 
 
 _MISSING = object()
@@ -983,56 +985,59 @@ def action_unknown(action: str, registry: Any | None) -> bool:
     return True
 
 
-def action_guard(action: str, registry: Any | None = None) -> str | None:
-    """``hard`` — destructive или неизвестное.
+def explicitly_safe(action: str, registry: Any | None) -> bool:
+    """В реестре есть явные ``read_only=True`` и ``destructive=False``.
 
-    ``name`` — запрет по имени (``deletion_blocked`` → failed, grant запрещён).
-    ``None`` — действие можно планировать.
-
-    Флаги плана (``mutating``, ``read_only``) сюда не входят: они не ослабляют
-    реестр. Удаление по имени блокируется даже если план сказал ``mutating=False``.
-    Пока нет ``metadata_of``, неизвестное имя — destructive.
+    Иначе запрет по умолчанию. Открытый мок (``risks is None``, нет
+    ``metadata_of``) не закрытый реестр: имя без маркера удаления живёт.
+    Закрытый словарь без ключа безопасным не считается.
     """
-    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
-    meta = metadata_of(action) if metadata_of is not None else None
-    if meta is not None and bool(getattr(meta, "destructive", False)):
-        return "hard"
-    if is_named_deletion(action):
-        return "name"
-    if is_deletion_verb(action):
-        vouched = (
-            metadata_of is not None
-            and meta is not None
-            and not bool(getattr(meta, "destructive", False))
-            and getattr(meta, "read_only", None) is True
-        )
-        if not vouched:
-            return "name"
+    if registry is None:
+        return False
+    metadata_of = getattr(registry, "metadata_of", None)
     if metadata_of is not None:
-        if meta is None or getattr(meta, "read_only", None) is not True:
-            return "hard"
-        return None
-    if action_unknown(action, registry):
-        return "hard"
+        meta = metadata_of(action)
+        return (
+            meta is not None
+            and getattr(meta, "read_only", None) is True
+            and not bool(getattr(meta, "destructive", False))
+        )
+    risks = getattr(registry, "risks", _MISSING)
+    if risks is None:
+        return True
+    if isinstance(risks, dict):
+        return action in risks
+    return False
+
+
+def action_guard(action: str, registry: Any | None = None) -> str | None:
+    """``name`` — ``deletion_blocked``. ``None`` — действие можно планировать.
+
+    Запрет по умолчанию: нет явных ``read_only`` и не-destructive, либо в имени
+    маркер удаления. Флаги плана это не ослабляют. Сцены, кадры, персонажи и
+    VO с глаголом удаления не оправдываются метаданными.
+    """
+    if is_deletion_action(action) or _protects_media(action) or not explicitly_safe(action, registry):
+        return "name"
     return None
+
+
+def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
+    """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен."""
+    if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params):
+        return True
+    return not explicitly_safe(step.action, registry)
 
 
 def registry_is_readonly(action: str, registry: Any | None) -> bool:
     """Read-only решает реестр, не план.
 
-    Удаление и неизвестное имя — не read-only. Явный ``metadata.read_only``
-    нужен, когда ``metadata_of`` есть. Риск реестра из ``APPROVAL_RISKS`` тоже
-    не read-only. Открытый мок без метаданных и с ``Risk.none`` — read-only.
+    Удаление и имя без явного ``read_only`` — не read-only. Риск реестра из
+    ``APPROVAL_RISKS`` тоже не read-only. Открытый мок без метаданных и с
+    ``Risk.none`` — read-only, если в имени нет маркера удаления.
     """
-    if is_deletion_action(action) or action_unknown(action, registry):
+    if is_deletion_action(action) or _protects_media(action) or not explicitly_safe(action, registry):
         return False
-    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
-    if metadata_of is not None:
-        meta = metadata_of(action)
-        if meta is None or bool(getattr(meta, "destructive", False)):
-            return False
-        if getattr(meta, "read_only", None) is not True:
-            return False
     risk_of = getattr(registry, "risk_of", None) if registry is not None else None
     if risk_of is None:
         return True
@@ -1049,7 +1054,12 @@ def step_is_readonly(step: PlanStep, registry: Any | None) -> bool:
 
 
 def plan_deletions(plan: list[PlanStep]) -> list[str]:
-    return [step.action for step in plan if is_deletion_action(step.action)]
+    """Маркеры в имени и параметрах. Запрет по реестру смотрит супервизор."""
+    return [
+        step.action
+        for step in plan
+        if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params)
+    ]
 
 
 def plan_missing_verify(plan: list[PlanStep]) -> bool:
@@ -1076,7 +1086,8 @@ def cost_is_unknown(value: Any) -> bool:
     if isinstance(value, bool):
         return True
     if isinstance(value, (int, float)):
-        return not math.isfinite(float(value))
+        number = float(value)
+        return not math.isfinite(number)
     if isinstance(value, str):
         text = value.strip()
         if not text:

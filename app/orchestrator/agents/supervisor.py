@@ -66,7 +66,6 @@ from app.orchestrator.contracts import (
     SpendSnapshot,
     TaskStatus,
     ValidatorResult,
-    action_guard,
     block_status,
     budget_exhausted_response,
     can_transition,
@@ -75,6 +74,7 @@ from app.orchestrator.contracts import (
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
+    step_is_deletion,
     step_is_readonly,
     usable_project_id,
     validator_budget_exhausted,
@@ -631,11 +631,7 @@ class Supervisor:
             await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
-            kind = action_guard(step.action, self.actions)
-            if kind == "hard":
-                await self._apply_block(task_id, session_id, "destructive_blocked")
-                return True
-            if kind == "name":
+            if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
         if plan_missing_verify(plan):

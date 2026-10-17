@@ -935,7 +935,7 @@ async def test_unknown_action_without_metadata_is_destructive(token: str) -> Non
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
         assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
-        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
     finally:
         set_runtime(None)
 
@@ -956,7 +956,7 @@ async def test_plan_mutating_false_does_not_loosen_registry(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-tighten", "правка")
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
-        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
     finally:
         set_runtime(None)
 
