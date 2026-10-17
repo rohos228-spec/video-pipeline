@@ -340,7 +340,7 @@ def _r2_metadata() -> dict[str, ActionMetadata]:
         ("rag_search", "none", True, False, False),
         ("run_validators", "none", True, False, False),
         ("stop_node", "medium", False, False, False),
-        ("resume_node", "medium", False, False, True),
+        ("resume_node", "high", False, True, True),
         ("create_node", "medium", False, False, False),
         ("edit_node_prompt", "medium", False, True, False),
         ("edit_node_params", "medium", False, True, False),

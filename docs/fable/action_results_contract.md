@@ -151,7 +151,7 @@ id и карточка приходят из ядра WS3. Лишнее поле
 | `rag_search` | none | true | false | false |
 | `run_validators` | none | true | false | false |
 | `stop_node` | medium | false | false | false |
-| `resume_node` | medium | false | false | true |
+| `resume_node` | high | false | true | true |
 | `create_node` | medium | false | false | false |
 | `edit_node_prompt` | medium | false | true | false |
 | `edit_node_params` | medium | false | true | false |
@@ -163,7 +163,7 @@ id и карточка приходят из ядра WS3. Лишнее поле
 | `group.restore` | high | false | true | false |
 | `prompt.restore_master` | high | false | true | false |
 
-`resume_node` платный: план §6.2 вешает на него paid-retry.
+`resume_node` не слабее `project.resume`: риск `high`, `destructive` и `paid`.
 `export_nodes_snapshot` по плану read-only относительно рантайма нод.
 
 Ниже — по одному конверту на действие, для которого WS4 рисует результат.

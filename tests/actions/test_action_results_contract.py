@@ -80,6 +80,18 @@ def test_revert_node_to_git_has_medium_risk() -> None:
     assert meta.needs_approval is True
 
 
+def test_r2_flags_not_weaker_than_342_analogues() -> None:
+    rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    analogue = metadata_of("project.resume")
+    resume = metadata_of("resume_node")
+    assert rank[resume.risk] >= rank[analogue.risk]
+    if analogue.destructive:
+        assert resume.destructive is True
+    if analogue.paid:
+        assert resume.paid is True
+    assert resume.needs_approval is True
+
+
 def test_unversioned_edit_actions_need_approval() -> None:
     for name in (
         "edit_node_prompt",
