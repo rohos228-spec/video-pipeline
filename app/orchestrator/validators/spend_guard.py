@@ -29,13 +29,15 @@ $50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` 
 
 ``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
 или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
-``details["reason"] == "budget_exhausted"``. Это форма, которую
-``contracts.validator_budget_exhausted`` (#350 ``406a0cfb``) считает
-поводом для ``waiting_approval``, а не ``failed``. Ответ роутера:
-``context["response"]`` / ``context["llm_response"]`` с
+``details["reason"] == "budget_exhausted"``. Контракт WS3 (#346 ``e4c3745b``,
+#350 ``19e803df``): ``blocking=True`` и ``details.reason``.
+``budget_exhausted`` уводит задачу в ``waiting_approval``, ``missing_run_id``
+— в ``failed``. Локальная ``validator_budget_exhausted`` проверяет
+``blocking`` и ``reason == "budget_exhausted"`` и не читает contracts.
+Ответ роутера: ``context["response"]`` / ``context["llm_response"]`` с
 ``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``.
-Предикат ответа совпадает с ``contracts.budget_exhausted_response``;
-пока contracts нет в main, то же условие считается локально.
+Предикат ответа для объекта совпадает с ``contracts.budget_exhausted_response``,
+если эта функция есть; иначе то же условие считается здесь.
 Жёсткие потолки тоже ``blocking=True``, но с другим ``reason``.
 ``validators.run`` остаётся sync.
 """

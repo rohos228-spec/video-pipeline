@@ -18,7 +18,6 @@ from typing import Any
 from . import no_deletions, plan_sanity, shot_merge, spend_guard, wide_before_dialogue
 from .result import (
     VALIDATOR_CONTEXT_DRY_RUN,
-    budget_exhausted_fallback,
     dry_run_key,
     is_dry_run,
     make_result,
@@ -171,7 +170,6 @@ def _dump(result: Any) -> dict[str, Any]:
 __all__ = [
     "VALIDATOR_CONTEXT_DRY_RUN",
     "VO_LENGTH",
-    "budget_exhausted_fallback",
     "dry_run_key",
     "is_dry_run",
     "make_result",

@@ -8,10 +8,7 @@ import types
 import pytest
 
 from app.orchestrator.validators import VALIDATOR_CONTEXT_DRY_RUN, run
-from app.orchestrator.validators.result import (
-    budget_exhausted_fallback,
-    validator_budget_exhausted,
-)
+from app.orchestrator.validators.result import validator_budget_exhausted
 from app.orchestrator.validators.spend_guard import check, get_spend_reader, set_spend_reader
 
 
@@ -402,13 +399,12 @@ def test_ws2_actions_stay_when_pipeline_scope_is_also_present() -> None:
     assert any(item["source"] == "pipeline_scope" for item in result.details["violations"])
 
 
-def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Форма #350@406a0cfb: blocking и details.reason. Contracts в main ещё нет."""
+def test_budget_exhausted_is_local_blocking_and_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """blocking и details.reason. Функция из contracts не читается."""
 
     numeric = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10.0), "run_id": "r"})
     assert numeric.blocking is True
     assert numeric.details["reason"] == "budget_exhausted"
-    assert budget_exhausted_fallback(numeric) is True
     assert validator_budget_exhausted(numeric) is True
 
     signaled = run(
@@ -436,23 +432,24 @@ def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyP
         blocking = True
         details = ObjectDetails()
 
-    assert budget_exhausted_fallback(ObjectResult()) is True
+    assert validator_budget_exhausted(ObjectResult()) is True
     quiet = ObjectResult()
     quiet.blocking = False
-    assert budget_exhausted_fallback(quiet) is False
+    assert validator_budget_exhausted(quiet) is False
+
+    missing = run("spend_guard", 1, {})
+    assert missing.blocking is True
+    assert missing.details["reason"] == "missing_run_id"
+    assert validator_budget_exhausted(missing) is False
 
     module = types.ModuleType("app.orchestrator.contracts")
-    seen: list[str] = []
 
     def remote(result: object) -> bool:
-        seen.append(getattr(result, "name", ""))
-        return False
+        raise AssertionError(result)
 
     module.validator_budget_exhausted = remote
     monkeypatch.setitem(sys.modules, "app.orchestrator.contracts", module)
-    assert validator_budget_exhausted(numeric) is False
-    assert seen == ["spend_guard"]
-    assert budget_exhausted_fallback(numeric) is True
+    assert validator_budget_exhausted(numeric) is True
 
 
 def _blank_run(run_id: str | None) -> bool:
