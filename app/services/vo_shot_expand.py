@@ -1283,10 +1283,12 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
                 detached += 1
             for m in members:
                 mattrs = dict(getattr(m, "attrs", None) or {})
-                shots = planned_shots_from_attrs(m)
-                if shots:
+                # Сырой список, не planned_shots_from_attrs: не-dict и шоты
+                # без сцены не отфильтровываются до пометки.
+                raw = mattrs.get("кадры")
+                if isinstance(raw, list):
                     mattrs["кадры"] = mark_shots_inactive(
-                        shots, where="detach_duplicate_vo_replica_cells"
+                        raw, where="detach_duplicate_vo_replica_cells"
                     )
                 if m is parent:
                     vo = str(getattr(parent, "voiceover_text", "") or "").strip()

@@ -309,6 +309,52 @@ def test_detach_replica_marks_all_shots_inactive_or_consumers_skip_leftover() ->
     assert early.attrs["кадры"] == early_before
 
 
+def test_detach_replica_keeps_inactive_shot() -> None:
+    """Неактивный шот и шот без сцены берутся из сырого кадры[], не из planned."""
+    p1 = "5" * 24
+    p2 = "6" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[{"id": "e1", "сцена": 1, "закадр": "открытие ролика"}],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "сцена": 1, "закадр": "открытие ролика", "активен": True},
+            {
+                "id": "tomb",
+                "активен": False,
+                "закадр": "уже могила",
+                "действие": "молчит",
+            },
+            {"id": "loose", "закадр": "без номера сцены", "действие": "ждёт"},
+            "marker",
+        ],
+    )
+    n = detach_duplicate_vo_replica_cells([early, replica])
+    assert n == 1
+    rows = replica.attrs["кадры"]
+    assert "marker" in rows
+    by_id = {s["id"]: s for s in rows if isinstance(s, dict)}
+    assert by_id["tomb"]["активен"] is False
+    assert by_id["tomb"]["закадр"] == "уже могила"
+    assert "сцена" not in by_id["loose"]
+    assert by_id["loose"]["активен"] is False
+    assert by_id["loose"]["закадр"] == "без номера сцены"
+    assert by_id["e1"]["активен"] is False
+    assert early.attrs["кадры"][0].get("активен") is not False
+
+
 def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> None:
     from app.services.vo_shot_expand import leftover_later_duplicate_vo_frames
 
