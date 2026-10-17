@@ -137,7 +137,7 @@ class MessageQueue:
         """
         task_id = self.supervisor.active_task(session_id)
         run_id = orch_run_id(task_id=task_id, session_id=session_id)
-        _insert_message(session_id, "user", text, task_id=task_id, mode=None)
+        message_id = _insert_message(session_id, "user", text, task_id=task_id, mode=None)
         ack = await self.bus.publish(
             session_id,
             "ack",
@@ -145,7 +145,7 @@ class MessageQueue:
             task_id=task_id,
         )
         job = asyncio.create_task(
-            self._classify(session_id, text, run_id, mode, project_id),
+            self._classify(session_id, text, run_id, mode, project_id, message_id),
             name=f"orch-classify-{session_id}",
         )
         self._pending.add(job)
@@ -166,6 +166,7 @@ class MessageQueue:
         run_id: str,
         mode: MessageMode | None,
         project_id: int | None = None,
+        message_id: int | None = None,
     ) -> None:
         published = False
         try:
@@ -201,7 +202,8 @@ class MessageQueue:
                 },
             )
             published = True
-            _set_message_mode(session_id, text, decided.mode.value)
+            if message_id is not None:
+                _set_message_mode(message_id, decided.mode.value)
             await self._apply(session_id, text, decided, project_id)
         except Exception:
             logger.exception("orch classification failed for session {}", session_id)
@@ -295,10 +297,10 @@ def _insert_message(
     *,
     task_id: int | None,
     mode: str | None,
-) -> None:
+) -> int:
     conn = connect()
     try:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO orch_messages (session_id, task_id, role, content, mode, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -306,25 +308,17 @@ def _insert_message(
             (session_id, task_id, role, content, mode, utc_now()),
         )
         conn.commit()
+        return int(cursor.lastrowid)
     finally:
         conn.close()
 
 
-def _set_message_mode(session_id: str, content: str, mode: str) -> None:
+def _set_message_mode(message_id: int, mode: str) -> None:
     conn = connect()
     try:
         conn.execute(
-            """
-            UPDATE orch_messages
-            SET mode = ?
-            WHERE id = (
-                SELECT id FROM orch_messages
-                WHERE session_id = ? AND role = 'user' AND content = ? AND mode IS NULL
-                ORDER BY id DESC
-                LIMIT 1
-            )
-            """,
-            (mode, session_id, content),
+            "UPDATE orch_messages SET mode = ? WHERE id = ? AND mode IS NULL",
+            (mode, message_id),
         )
         conn.commit()
     finally:
