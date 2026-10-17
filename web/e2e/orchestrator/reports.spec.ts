@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { reportPreviewDocument } from "../../src/lib/orchestratorSanitize";
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
@@ -144,5 +145,25 @@ test.describe("report editor", () => {
     await page.getByTestId("orch-create-html").fill("<p>маркер</p>");
     await page.getByTestId("orch-report-create").click();
     await expect(page.getByTestId("orch-report-error")).toContainText("heading longer than 200");
+  });
+
+  test("превью отчёта на фоне INT и остаётся контрастным", async ({ page }) => {
+    const doc = reportPreviewDocument([{ heading: "Светлый", html: "<p>текст без фона</p>" }]);
+    expect(doc).toContain("background:hsl(0 0% 2%)");
+    expect(doc).toContain("color:hsl(0 0% 94%)");
+    expect(doc).not.toMatch(/<script/i);
+    const ratio = (0.941 + 0.05) / (0.02 + 0.05);
+    expect(ratio).toBeGreaterThan(7);
+
+    await openReports(page);
+    const preview = page.getByTestId("orch-report-preview");
+    await expect(preview).toHaveAttribute("sandbox", "");
+    await expect(preview).toHaveClass(/bg-background/);
+    await expect(preview).not.toHaveClass(/\bbg-white\b/);
+    const srcdoc = await preview.getAttribute("srcdoc");
+    expect(srcdoc).toContain("background:hsl(0 0% 2%)");
+    expect(srcdoc).toContain("color:hsl(0 0% 94%)");
+    expect(srcdoc).toContain("молчит");
+    expect(srcdoc).not.toMatch(/<script/i);
   });
 });

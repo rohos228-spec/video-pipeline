@@ -337,7 +337,7 @@ export function ReportEditor() {
                 data-testid="orch-report-preview"
                 sandbox=""
                 srcDoc={preview}
-                className="mt-2 h-52 w-full rounded-md border border-border bg-white"
+                className="mt-2 h-52 w-full rounded-md border border-border bg-background"
               />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
