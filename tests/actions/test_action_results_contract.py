@@ -353,9 +353,114 @@ def test_edit_result_requires_before_or_snapshot() -> None:
 
 
 def test_suggest_scene_variants_tier_is_paid() -> None:
-    """Опечатка paid+paid живёт только в документе #344."""
+    """Ярус paid. Ячейка paid+paid, если вернётся в таблицу, не становится destructive."""
 
     meta = metadata_of("montage.suggest_scene_variants")
     assert meta.paid is True
     assert meta.destructive is False
     assert meta.risk == "high"
+
+
+def _flags_from_doc_tier(name: str, tier: str) -> tuple[bool, bool, bool]:
+    """Те же правила, что текст контракта: read / destructive / paid и две особые строки."""
+
+    parts = set(tier.split("+"))
+    if name == "montage.suggest_scene_variants" and tier == "paid+paid":
+        parts = {"paid"}
+    read_only = tier == "read"
+    paid = "paid" in parts
+    destructive = "destructive" in parts
+    if name == "prompt.create_master":
+        destructive = True
+        read_only = False
+    return read_only, destructive, paid
+
+
+def _audit_flag_rows(text: str) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    in_table = False
+    for line in text.splitlines():
+        if line.startswith("## Таблица действий"):
+            in_table = True
+            continue
+        if in_table and line.startswith("## "):
+            break
+        if not in_table or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells or not cells[0].isdigit():
+            continue
+        rows.append((cells[1].strip("`").strip(), cells[4], cells[5]))
+    return rows
+
+
+def _audit_headings(text: str) -> list[tuple[str, str, str]]:
+    return re.findall(
+        r"^#### `([^`]+)` \(risk: ([a-z]+), tier: ([a-z0-9+]+)\)",
+        text,
+        re.MULTILINE,
+    )
+
+
+def _contract_flag_rows(text: str) -> list[tuple[str, str, bool, bool, bool]]:
+    rows: list[tuple[str, str, bool, bool, bool]] = []
+    in_table = False
+    for line in text.splitlines():
+        if line.startswith("## Имена R2"):
+            in_table = True
+            continue
+        if in_table and line.startswith("## "):
+            break
+        if not in_table or not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        rows.append(
+            (
+                cells[0].strip("`"),
+                cells[1],
+                cells[2] == "true",
+                cells[3] == "true",
+                cells[4] == "true",
+            )
+        )
+    return rows
+
+
+def test_doc_flags_match_contract_metadata() -> None:
+    from app.orchestrator.actions.contracts import metadata_registry
+
+    audit = (_REPO / "docs" / "fable" / "actions_audit.md").read_text(encoding="utf-8")
+    contract = _MD.read_text(encoding="utf-8")
+    registry = metadata_registry()
+    covered: set[str] = set()
+
+    table = _audit_flag_rows(audit)
+    assert len(table) == 102
+    for name, risk, tier in table:
+        meta = registry[name]
+        assert meta.risk == risk, name
+        assert (meta.read_only, meta.destructive, meta.paid) == _flags_from_doc_tier(name, tier), name
+        covered.add(name)
+
+    headings = _audit_headings(audit)
+    assert headings, "в аудите нет ярусов новых действий"
+    for name, risk, tier in headings:
+        meta = metadata_of(name)
+        assert meta.risk == risk, name
+        assert (meta.read_only, meta.destructive, meta.paid) == _flags_from_doc_tier(name, tier), name
+        covered.add(name)
+    revert = metadata_of("revert_node_to_git")
+    assert revert.destructive is True
+    assert any(name == "revert_node_to_git" and tier == "destructive" for name, _, tier in headings)
+
+    documented = _contract_flag_rows(contract)
+    assert documented, "в контракте нет таблицы флагов"
+    for name, risk, read_only, destructive, paid in documented:
+        meta = metadata_of(name)
+        assert meta.risk == risk, name
+        assert meta.read_only is read_only, name
+        assert meta.destructive is destructive, name
+        assert meta.paid is paid, name
+        covered.add(name)
+
+    assert set(registry) == covered
