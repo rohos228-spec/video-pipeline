@@ -97,9 +97,35 @@ export function readOrchProjectId(): number | null {
   }
 }
 
-/** Абсолютный хост API из сборки. Пусто — относительный `/api/...` на том же origin. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * `NEXT_PUBLIC_ORCH_API`: https на любом хосте, http только на localhost / 127.0.0.1 / [::1].
+ * Userinfo, протокол-относительный адрес и прочие схемы — нет.
+ */
+export function isAllowedOrchEnvApi(value: string): boolean {
+  const raw = value.trim();
+  if (!raw || raw.startsWith("//")) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password) return false;
+  if (url.protocol === "https:") return true;
+  if (url.protocol === "http:") return isLoopbackHost(url.hostname);
+  return false;
+}
+
+/** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  return (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+  if (!raw || !isAllowedOrchEnvApi(raw)) return "";
+  return raw;
 }
 
 function queryApiOverrideEnabled(): boolean {
@@ -140,7 +166,7 @@ export function resolveOrchApiBase(queryApi: string | null, pageOrigin: string):
   return envOrchApiBase();
 }
 
-/** Пустая база, env-хост или same-origin `/api/...`. Чужой origin — нет. */
+/** Пустая база, разрешённый env-хост или same-origin `/api/...`. Чужой origin — нет. */
 export function bearerTargetAllowed(apiBase: string, pageOrigin = ""): boolean {
   const base = normalizeBase(apiBase);
   if (!base) return true;

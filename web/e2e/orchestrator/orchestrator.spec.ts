@@ -2,7 +2,13 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { orchAuthHeaders, orchTestModeEnabled } from "../../src/lib/orchestratorApi";
+import {
+  bearerTargetAllowed,
+  envOrchApiBase,
+  orchAuthHeaders,
+  orchTestModeEnabled,
+  resolveOrchApiBase,
+} from "../../src/lib/orchestratorApi";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -43,6 +49,45 @@ test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   } finally {
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
     else process.env.NEXT_PUBLIC_ORCH_TEST = previous;
+  }
+});
+
+test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const pageOrigin = "http://127.0.0.1:3100";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    expect(envOrchApiBase()).toBe("https://api.example.com");
+    expect(bearerTargetAllowed("https://api.example.com", pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799";
+    expect(envOrchApiBase()).toBe("http://127.0.0.1:8799");
+    expect(bearerTargetAllowed("http://127.0.0.1:8799", pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://localhost:8799/";
+    expect(envOrchApiBase()).toBe("http://localhost:8799");
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://[::1]:8799";
+    expect(envOrchApiBase()).toBe("http://[::1]:8799");
+
+    const rejected = [
+      "http://evil.com",
+      "http://evil.com/api",
+      "https://user@evil.com",
+      "http://127.0.0.1:8799@evil.com",
+      "//evil.com",
+      "javascript:alert(1)",
+      "http://127.0.0.1.evil.com",
+    ];
+    for (const value of rejected) {
+      process.env.NEXT_PUBLIC_ORCH_API = value;
+      expect(envOrchApiBase(), value).toBe("");
+      expect(resolveOrchApiBase(null, pageOrigin), value).toBe("");
+      expect(bearerTargetAllowed(value, pageOrigin), value).toBe(false);
+    }
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
   }
 });
 
