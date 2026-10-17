@@ -162,6 +162,8 @@ export interface ValidatorView {
 
 export interface ApprovalView {
   id: string;
+  /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
+  serverId: boolean;
   taskId: string | null;
   title: string;
   reason: string;
@@ -197,12 +199,16 @@ export interface ClassificationView {
   killSwitch: boolean;
 }
 
+export type KillPhase = "stopping" | "stopped" | "error";
+
 export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
   paidBoundary: boolean;
   /** Имени нет в реестре: шаг считаем и платным, и разрушающим. */
   destructive: boolean;
+  /** stopping — запрос ушёл; stopped — сервер подтвердил; error — отказ или stop_key_set=false. */
+  phase: KillPhase;
 }
 
 export interface OrchScreenState {
@@ -220,7 +226,7 @@ export interface OrchScreenState {
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
-  | { type: "kill-notice"; detail: string; paidBoundary: boolean; destructive: boolean }
+  | { type: "kill-notice"; detail: string; paidBoundary: boolean; destructive: boolean; phase: KillPhase }
   | { type: "registry"; registry: ActionRegistryState }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
@@ -300,6 +306,72 @@ function taskKey(value: unknown): string | null {
   return null;
 }
 
+/** approval_id только из payload. Пустая строка и нестрока — не id. */
+export function serverApprovalId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function approvalDecision(value: unknown): "approved" | "rejected" | null {
+  if (value === "approved" || value === "approve") return "approved";
+  if (value === "rejected" || value === "reject") return "rejected";
+  return null;
+}
+
+function closeServerApproval(state: OrchScreenState, id: string, decision: "approved" | "rejected"): void {
+  const item = state.approvals.find((entry) => entry.id === id && entry.serverId);
+  if (!item || item.resolved) return;
+  item.resolved = decision;
+}
+
+function isTerminalKillStatus(value: string): boolean {
+  return value === "cancelled" || value === "killed";
+}
+
+function readStopKey(payload: Record<string, unknown>): boolean | null {
+  if (payload.stop_key_set === true) return true;
+  if (payload.stop_key_set === false) return false;
+  return null;
+}
+
+function markKill(next: OrchScreenState, phase: KillPhase, text: string, paidBoundary: boolean, destructive?: boolean): void {
+  if (phase === "error" && next.killNotice?.phase === "stopped") return;
+  next.killNotice = {
+    phase,
+    text,
+    paidBoundary,
+    destructive: destructive ?? next.killNotice?.destructive ?? false,
+  };
+}
+
+/** Запрос остановки или событие kill_switch. «Остановлено» — только после подтверждения. */
+function noteKillRequested(next: OrchScreenState, payload: Record<string, unknown>): void {
+  const stopKey = readStopKey(payload);
+  const detail = str(payload.detail);
+  const status = str(payload.status) || str(payload.task_status);
+  if (stopKey === true) {
+    markKill(next, "stopped", detail, true);
+    return;
+  }
+  if (stopKey === false) {
+    markKill(next, "error", detail || "Стоп-ключ не установлен", false);
+    return;
+  }
+  if (isTerminalKillStatus(status)) {
+    markKill(next, "stopped", detail || next.killNotice?.text || "", next.killNotice?.paidBoundary ?? true);
+    return;
+  }
+  if (next.killNotice?.phase === "stopped") return;
+  markKill(next, "stopping", "", true);
+}
+
+/** SSE cancelled/killed подтверждает уже запрошенную остановку. */
+function promoteKillIfTerminal(next: OrchScreenState, status: string): void {
+  if (!isTerminalKillStatus(status)) return;
+  const phase = next.killNotice?.phase;
+  if (phase !== "stopping" && phase !== "error") return;
+  markKill(next, "stopped", next.killNotice?.text ?? "", next.killNotice?.paidBoundary ?? true);
+}
+
 function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
   const status = asTaskStatus(str(payload.task_status));
   if (taskId && status) {
@@ -310,10 +382,12 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
   const body = approval as Record<string, unknown>;
   const reason = str(body.reason);
   if (!reason) return;
-  const id = str(body.approval_id, `appr-llm-${seq}`);
+  const fromServer = serverApprovalId(body.approval_id);
+  const id = fromServer ?? `local-llm-${seq}`;
   if (!state.approvals.some((item) => item.id === id)) {
     state.approvals.push({
       id,
+      serverId: fromServer != null,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
@@ -388,9 +462,15 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     };
   }
   if (action.type === "kill-notice") {
+    if (state.killNotice?.phase === "stopped" && action.phase === "error") return state;
     return {
       ...state,
-      killNotice: { text: action.detail, paidBoundary: action.paidBoundary, destructive: action.destructive },
+      killNotice: {
+        text: action.detail,
+        paidBoundary: action.paidBoundary,
+        destructive: action.destructive,
+        phase: action.phase,
+      },
     };
   }
   if (action.type === "registry") {
@@ -399,9 +479,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   if (action.type === "approval-resolved") {
     return {
       ...state,
-      approvals: state.approvals.map((item) =>
-        item.id === action.id ? { ...item, resolved: action.decision } : item,
-      ),
+      approvals: state.approvals.map((item) => {
+        if (item.id !== action.id) return item;
+        if (action.decision !== "closed" && !item.serverId) return item;
+        return { ...item, resolved: action.decision };
+      }),
     };
   }
 
@@ -424,6 +506,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   };
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
+  if (event.type !== "approval_required") {
+    const decided = approvalDecision(payload.decision ?? payload.approval_decision);
+    const decidedId = serverApprovalId(payload.approval_id);
+    if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+  }
 
   if (event.type === "ack") {
     const accepted = payload.accepted === true;
@@ -448,12 +535,15 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         killSwitch,
       };
       if (killSwitch) {
+        noteKillRequested(next, payload);
         const honesty = killHonestyOf(next);
-        next.killNotice = {
-          text: "Сработал из сообщения.",
-          paidBoundary: honesty.paidBoundary,
-          destructive: honesty.destructive,
-        };
+        if (next.killNotice && next.killNotice.phase === "stopping") {
+          next.killNotice = {
+            ...next.killNotice,
+            paidBoundary: honesty.paidBoundary,
+            destructive: honesty.destructive,
+          };
+        }
       }
     }
     absorbLlmSignal(next, taskId, payload, event.seq);
@@ -472,17 +562,26 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     return next;
   }
 
+  if (event.type === "kill_switch") {
+    noteKillRequested(next, payload);
+    return next;
+  }
+
   if (event.type === "agent_status") {
     const agent = str(payload.agent) as AgentStatusPayload["agent"];
     const found = next.agents.find((item) => item.role === agent);
     if (found) {
       found.status = str(payload.status, found.status);
       found.detail = str(payload.detail);
+      promoteKillIfTerminal(next, found.status);
     }
     if (!taskId) return next;
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(str(payload.task_status));
-    if (taskStatus) task.status = taskStatus;
+    if (taskStatus) {
+      task.status = taskStatus;
+      promoteKillIfTerminal(next, taskStatus);
+    }
     return next;
   }
 
@@ -547,10 +646,12 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "approval_required") {
     const body = payload as ApprovalPayload & Record<string, unknown>;
-    const id = str(body.approval_id, `appr-${event.seq}`);
+    const fromServer = serverApprovalId(body.approval_id);
+    const id = fromServer ?? `local-${event.seq}`;
     if (!next.approvals.some((item) => item.id === id)) {
       next.approvals.push({
         id,
+        serverId: fromServer != null,
         taskId,
         title: str(body.title, "Нужно подтверждение"),
         reason: str(body.reason),
@@ -588,6 +689,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
       next.approvals.push({
         id: `block-${event.seq}`,
+        serverId: false,
         taskId,
         title: "",
         reason: error,

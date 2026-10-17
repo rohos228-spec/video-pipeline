@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   metapaid | metaunpaid | metaunknown | fallbackpaid | fallbackfree
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
@@ -700,7 +700,7 @@ function startScenario(session, scenario, text, mode) {
     void runInterruptStart(session, id);
     return;
   }
-  if (scenario === "approval" || scenario === "approvefail") {
+  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409") {
     void runApproval(session, id);
     return;
   }
@@ -910,6 +910,7 @@ function handleKill(session, scenario) {
   return {
     ok: true,
     status: "cancelled",
+    stop_key_set: true,
     detail: neutral
       ? "остановлены только неплатные шаги"
       : "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
@@ -1190,9 +1191,18 @@ const server = http.createServer(async (req, res) => {
   ) {
     const approvalId = decodeURIComponent(parts[3]);
     const decision = parts[4] === "approve" ? "approve" : "reject";
-    if (decision === "approve" && scenarioOf(req, url) === "approvefail") {
+    const scenario = scenarioOf(req, url);
+    if (decision === "approve" && scenario === "approvefail") {
       await sleep(800);
       sendJson(res, 500, { detail: "approve failed" });
+      return;
+    }
+    if (decision === "approve" && scenario === "approve404") {
+      sendJson(res, 404, { detail: "approval not found" });
+      return;
+    }
+    if (decision === "approve" && scenario === "approve409") {
+      sendJson(res, 409, { detail: "approval conflict" });
       return;
     }
     let matched = false;
@@ -1205,7 +1215,11 @@ const server = http.createServer(async (req, res) => {
         break;
       }
     }
-    sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched });
+    if (!matched) {
+      sendJson(res, 404, { detail: "approval not found" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched: true });
     return;
   }
 

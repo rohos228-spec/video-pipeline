@@ -27,6 +27,15 @@ import {
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
+function approvalPostAccepted(
+  result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
+  approvalId: string,
+): boolean {
+  if (!result || result.ok === false || result.matched === false) return false;
+  if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
+  return true;
+}
+
 export function useOrchestratorChat() {
   const boot = useMemo(() => readOrchBoot(), []);
   const [token, setToken] = useState("");
@@ -216,13 +225,24 @@ export function useOrchestratorChat() {
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
+      const card = state.approvals.find((item) => item.id === approvalId);
+      if (!card?.serverId) {
+        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+        return;
+      }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
         const body = { approval_id: approvalId, task_id: taskId };
-        if (decision === "approved") await postOrchApprove(cfg, body);
-        else await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        const result =
+          decision === "approved"
+            ? await postOrchApprove(cfg, body)
+            : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        if (!approvalPostAccepted(result, approvalId)) {
+          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+          return;
+        }
         dispatch({ type: "approval-resolved", id: approvalId, decision });
         setSendError("");
       } catch (error) {
@@ -237,7 +257,7 @@ export function useOrchestratorChat() {
         setDecisionPendingId(null);
       }
     },
-    [cfg, noteAuth],
+    [cfg, noteAuth, state.approvals],
   );
 
   const dismissBlock = useCallback((approvalId: string) => {
@@ -245,12 +265,13 @@ export function useOrchestratorChat() {
   }, []);
 
   const kill = useCallback(async () => {
+    dispatch({ type: "kill-notice", detail: "", paidBoundary: true, destructive: false, phase: "stopping" });
     try {
       const [result, actions] = await Promise.all([
         postOrchKill(cfg, {
           session_id: boot.session,
           reason: "kill switch из чата",
-        }),
+        }) as Promise<{ ok?: boolean; detail?: string; stop_key_set?: boolean }>,
         loadActionRegistry(cfg).catch((error: unknown) => {
           if (error instanceof OrchApiError && error.status === 401) throw error;
           return null;
@@ -261,16 +282,37 @@ export function useOrchestratorChat() {
         steps,
         actions ? { status: "ready", actions } : { status: "missing" },
       );
-      dispatch({
-        type: "kill-notice",
-        detail: result.detail || "Платный шаг остановится на границе.",
-        paidBoundary: honesty.paidBoundary,
-        destructive: honesty.destructive,
-      });
+      if (result.stop_key_set === true && result.ok !== false) {
+        dispatch({
+          type: "kill-notice",
+          detail: result.detail || "",
+          paidBoundary: honesty.paidBoundary,
+          destructive: honesty.destructive,
+          phase: "stopped",
+        });
+        setSendError("");
+        return;
+      }
+      if (result.stop_key_set === false || result.ok === false) {
+        dispatch({
+          type: "kill-notice",
+          detail: result.detail || (result.stop_key_set === false ? "Стоп-ключ не установлен" : "остановка не подтверждена"),
+          paidBoundary: false,
+          destructive: false,
+          phase: "error",
+        });
+        return;
+      }
       setSendError("");
     } catch (error) {
       if (!noteAuth(error)) {
-        setSendError(error instanceof Error ? error.message : "kill switch не прошёл");
+        dispatch({
+          type: "kill-notice",
+          detail: error instanceof Error ? error.message : "kill switch не прошёл",
+          paidBoundary: false,
+          destructive: false,
+          phase: "error",
+        });
       }
     }
   }, [boot.session, cfg, noteAuth, state.tasks]);
