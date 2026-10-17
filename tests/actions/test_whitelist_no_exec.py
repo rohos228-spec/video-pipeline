@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import os
 import re
 import sys
 import textwrap
@@ -615,15 +616,38 @@ def _has_dotdot(sketch: str) -> bool:
     return any(part == ".." for part in normalized)
 
 
+def paths_share_root(path: str, root: str) -> bool:
+    """Путь лежит в корне после realpath. Сравнение через commonpath, не по строке."""
+    try:
+        real_path = os.path.realpath(path)
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except (OSError, ValueError):
+        return False
+
+
+def _logical_path(sketch: str) -> str:
+    text = sketch.replace("\\", "/").replace(
+        "{settings.data_dir}", str(_REPO_ROOT / "data")
+    )
+    if os.path.isabs(text):
+        return text
+    return str(_REPO_ROOT / text)
+
+
+def _sketch_under(sketch: str, root: str) -> bool:
+    return paths_share_root(_logical_path(sketch), _logical_path(root))
+
+
 def _under_snapshot(sketch: str) -> bool:
     if _has_dotdot(sketch):
         return False
-    segments = _path_segments(sketch)
+    concrete = sketch.replace(_DYN, "dynseg")
     roots = (
-        ["data", _SNAPSHOT_DIR],
-        ["{settings.data_dir}", _SNAPSHOT_DIR],
+        f"data/{_SNAPSHOT_DIR}",
+        "{settings.data_dir}/" + _SNAPSHOT_DIR,
     )
-    return any(segments[: len(root)] == root for root in roots)
+    return any(_sketch_under(concrete, root) for root in roots)
 
 
 def _path_permitted(sketch: str, action_id: str) -> bool:
@@ -639,25 +663,19 @@ def _path_permitted(sketch: str, action_id: str) -> bool:
 
 
 def _is_allow_path(sketch: str) -> bool:
-    text = sketch.replace("\\", "/")
-    for marker in _ALLOW_MARKERS:
-        start = 0
-        while True:
-            idx = text.find(marker, start)
-            if idx < 0:
-                break
-            before_ok = idx == 0 or text[idx - 1] in "/{."
-            after = text[idx + len(marker):]
-            after_ok = after == "" or after.startswith("/")
-            if before_ok and after_ok:
-                return True
-            start = idx + 1
-    return False
+    if _DYN in sketch or _has_dotdot(sketch):
+        return False
+    return any(_sketch_under(sketch, marker) for marker in _ALLOW_MARKERS)
 
 
 def _is_rag_path(sketch: str) -> bool:
-    text = sketch.replace("\\", "/")
-    return any(text == "{settings.data_dir}/" + suffix for suffix in _RAG_SUFFIXES)
+    if _DYN in sketch or _has_dotdot(sketch):
+        return False
+    real = os.path.realpath(_logical_path(sketch))
+    return any(
+        real == os.path.realpath(_logical_path("{settings.data_dir}/" + suffix))
+        for suffix in _RAG_SUFFIXES
+    )
 
 
 def _kind_compare(node: ast.AST) -> str | None:
@@ -1289,6 +1307,48 @@ def test_reassigned_name_is_unknown_and_denied() -> None:
     assert changed_hits[0].sketch is None
     assert len(same_hits) == 1 and same_hits[0].allowed is True
     assert len(unknown_hits) == 1 and unknown_hits[0].allowed is False
+
+
+def test_allow_prefix_is_component_not_substring() -> None:
+    source = (
+        "def save():\n"
+        "    open('data/reports/ok.txt', 'w')\n"
+        "    open('data/reports_evil/x', 'w')\n"
+        "    open('x/data/reports/../../etc/passwd', 'w')\n"
+        "    open('foo_data/reports/a', 'w')\n"
+        "    open('app/services/data/reports/x.py', 'w')\n"
+        "    open('templates/node_groups/data/reports/a.md', 'w')\n"
+        "    open('/etc/data/reports/x', 'w')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in hits] == [True, False, False, False, False, False, False]
+
+
+def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
+    root = tmp_path / "allowed"
+    evil = tmp_path / "allowed_evil"
+    root.mkdir()
+    evil.mkdir()
+    assert paths_share_root(str(root / "ok.txt"), str(root))
+    assert not paths_share_root(str(evil / "x"), str(root))
+    assert not paths_share_root("/allowed_evil/x", "/allowed")
+    assert not paths_share_root("/allowed_evil", "/allowed")
+
+
+def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> None:
+    reports = tmp_path / "data" / "reports"
+    outside = tmp_path / "outside"
+    reports.mkdir(parents=True)
+    outside.mkdir()
+    link = reports / "escape"
+    link.symlink_to(outside, target_is_directory=True)
+    escaped = link / "secret.txt"
+    assert not paths_share_root(str(escaped), str(reports))
+    assert paths_share_root(str(reports / "ok.txt"), str(reports))
+    source = f"def save():\n    open({str(escaped)!r}, 'w')\n"
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert len(hits) == 1
+    assert hits[0].allowed is False
 
 
 def test_dotdot_segment_is_rejected() -> None:
