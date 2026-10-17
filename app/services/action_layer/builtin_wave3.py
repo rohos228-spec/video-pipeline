@@ -307,6 +307,8 @@ async def _save_master(ctx, params):
     old = await _read_prompt(ctx, params)
     if old is None:
         raise RuntimeError("промт не найден")
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, int(old.get("version") or 1))
     prev = _digest(str(old.get("content") or ""))
     await ctx.call("PUT", _prompt_path(params), json={"content": params["content"]})
     new = _digest(params["content"])
@@ -649,7 +651,7 @@ def _specs() -> list[ActionSpec]:
           preconditions=(Precondition("prompt_exists", "Промт существует", _pre_prompt_exists),
                          Precondition("content_nonblank", "Текст не пустой",
                                       _pre_content_nonblank)),
-          tags=("prompt", "global")),
+          tags=("prompt", "global", "edit")),
         S(id="prompt.create_master", title_ru="Создать вариант мастер-промта",
           description_ru="Новый файл варианта промта шага, общий для всех проектов. Существующее "
                          "имя не перезаписывается. Файл в репозитории общий, поэтому создание "

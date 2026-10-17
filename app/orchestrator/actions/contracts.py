@@ -228,6 +228,28 @@ def metadata_registry() -> dict[str, ActionMetadata]:
 EDIT_CONFLICT_HTTP = 409
 
 
+def guard_stale_edit(params: dict, current_version: int) -> None:
+    """Отказ до записи, если клиент прислал устаревшую base_version.
+
+    Без ключа проверка не включается: старые вызовы не шлют версию.
+    """
+
+    if "base_version" not in params or params.get("base_version") is None:
+        return
+    from app.services.action_layer.context import ActionCallError
+
+    try:
+        base = int(params["base_version"])
+        current = int(current_version)
+    except (TypeError, ValueError) as exc:
+        raise ActionCallError(EDIT_CONFLICT_HTTP, "conflict") from exc
+    try:
+        failed = reject_stale_edit(base_version=base, current_version=current)
+    except ValueError:
+        return
+    raise ActionCallError(EDIT_CONFLICT_HTTP, failed.error or "conflict")
+
+
 def reject_stale_edit(*, base_version: int, current_version: int) -> ActionResult:
     """Устаревшая base_version не меняет данные.
 

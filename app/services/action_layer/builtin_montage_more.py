@@ -692,6 +692,8 @@ async def _set_assemble_params(ctx, params):
     detail = await ctx.call("GET", f"/projects/{pid}")
     meta = detail.get("meta") if isinstance(detail, dict) else None
     book = load_book(meta if isinstance(meta, dict) else None)
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, book.version)
     changed = {k: params[k] for k in _ASSEMBLE_KEYS if k in params}
     try:
         book.set_assemble_params(values=changed, version=expected_version(params, book))
@@ -1081,7 +1083,7 @@ def _specs() -> list[ActionSpec]:
           executor=_set_assemble_params, risk=RISK_LOCAL_SAFE, idempotent=True,
           preconditions=(_PRE_PROJECT, Precondition("assemble_args", "Указан хотя бы один параметр",
                                                     _pre_assemble_args)),
-          tags=("montage", "assemble")),
+          tags=("montage", "assemble", "edit")),
         S(id="montage.get_cost_basis", title_ru="Модель оплаты проекта и очередь",
           description_ru="Текущие генераторы и разрешения, как их берёт регенерация панели, их цена "
                          "по каталогу Kie (или признак «цена неизвестна») и число операций в очереди. "
