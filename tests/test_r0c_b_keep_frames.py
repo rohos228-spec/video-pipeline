@@ -1392,3 +1392,70 @@ async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> No
     assert [c.frame_number for c in clips] == [1, 3]
     assert abs(sum(c.duration for c in clips) - master) < 0.05
     assert clips[1].start_ts == clips[0].end_ts
+
+
+@pytest.mark.asyncio
+async def test_drop_frame_rows_marks_and_keeps_related_rows(
+    session: AsyncSession, project: Project, warn_log
+) -> None:
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.montage_board_frames import _drop_frame_rows
+
+    session.add(project)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        number=4,
+        uuid="d4" * 12,
+        voiceover_text="не стирать",
+        status=FrameStatus.planned,
+        attrs={},
+    )
+    session.add(frame)
+    await session.flush()
+    session.add_all(
+        [
+            PromptVersion(
+                project_id=project.id,
+                frame_id=frame.id,
+                kind="img",
+                version=1,
+                text="промт",
+                is_active=True,
+            ),
+            FrameText(
+                project_id=project.id,
+                frame_id=frame.id,
+                kind="voiceover",
+                text="не стирать",
+            ),
+            Artifact(
+                project_id=project.id,
+                frame_id=frame.id,
+                kind=ArtifactKind.scene_image,
+                uuid="art-drop",
+                path="scenes/frame_004.png",
+            ),
+        ]
+    )
+    await session.flush()
+    frame_id = int(frame.id)
+    await _drop_frame_rows(session, project, [frame])
+    kept = await session.get(Frame, frame_id)
+    assert kept is not None
+    assert kept.voiceover_text == "не стирать"
+    assert frame_is_active(kept) is False
+    assert (kept.attrs or {}).get("удалён") is True
+    prompt = (
+        await session.execute(select(PromptVersion).where(PromptVersion.frame_id == frame_id))
+    ).scalar_one()
+    text = (
+        await session.execute(select(FrameText).where(FrameText.frame_id == frame_id))
+    ).scalar_one()
+    art = (
+        await session.execute(select(Artifact).where(Artifact.uuid == "art-drop"))
+    ).scalar_one()
+    assert prompt.text == "промт"
+    assert text.text == "не стирать"
+    assert art.frame_id == frame_id
+    assert any("_drop_frame_rows" in line for line in warn_log)

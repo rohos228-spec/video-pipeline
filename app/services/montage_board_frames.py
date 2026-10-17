@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Artifact, Frame, FrameEdge, FrameStatus, FrameText, Project, PromptVersion
+from app.models import Frame, FrameStatus, FrameText, Project
 from app.services.db_v2 import insert_frame_after
 from app.services.montage_board_meta import (
     drop_pending_ops_for_frames,
@@ -157,26 +157,23 @@ async def _drop_frame_rows(
     project: Project,
     frames_to_drop: list[Frame],
 ) -> None:
-    drop_ids = [int(fr.id) for fr in frames_to_drop if getattr(fr, "id", None)]
-    if not drop_ids:
+    """Пометить кадры. Строки, тексты, промты и связь артефакта не стираются."""
+    from app.services.frame_tombstones import mark_frame_deleted
+
+    pending = [fr for fr in frames_to_drop if getattr(fr, "id", None)]
+    if not pending:
         return
-    await session.execute(
-        update(Artifact).where(Artifact.frame_id.in_(drop_ids)).values(frame_id=None)
-    )
-    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(drop_ids)))
-    await session.execute(delete(FrameText).where(FrameText.frame_id.in_(drop_ids)))
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            or_(
-                FrameEdge.from_frame_id.in_(drop_ids),
-                FrameEdge.to_frame_id.in_(drop_ids),
-            ),
+    for fr in pending:
+        mark_frame_deleted(
+            fr,
+            project,
+            "_drop_frame_rows: кадр помечен, не удалён",
         )
-    )
-    for fr in frames_to_drop:
-        await session.delete(fr)
     await session.flush()
+    logger.warning(
+        "WARN _drop_frame_rows: кадры {} помечены, строки сохранены",
+        [int(fr.number) for fr in pending],
+    )
 
 
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
