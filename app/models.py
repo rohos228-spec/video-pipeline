@@ -152,19 +152,21 @@ class BatchStatus(str, enum.Enum):
 class NodeRunStatus(str, enum.Enum):
     """Состояние одной ноды в рамках WorkflowRun.
 
-    pending      — ещё не запущена (ждёт upstream-ы или ручной триггер)
-    queued       — в очереди на запуск (после клика ▶, до взятия воркером)
-    running      — выполняется прямо сейчас (воркер взял в работу)
-    waiting_hitl — ждёт решения пользователя (HITL-gate)
-    done         — успешно завершена
-    failed       — упала с ошибкой (детали в `error`)
-    skipped      — пропущена (например, HITL `rejected` отбросил проект)
+    pending           — ещё не запущена (ждёт upstream-ы или ручной триггер)
+    queued            — в очереди на запуск (после клика ▶, до взятия воркером)
+    running           — выполняется прямо сейчас (воркер взял в работу)
+    waiting_hitl      — ждёт решения пользователя (HITL-gate)
+    waiting_approval  — ждёт одобрения трат (потолок, рубильник, диск)
+    done              — успешно завершена
+    failed            — упала с ошибкой (детали в `error`)
+    skipped           — пропущена (например, HITL `rejected` отбросил проект)
     """
 
     pending = "pending"
     queued = "queued"
     running = "running"
     waiting_hitl = "waiting_hitl"
+    waiting_approval = "waiting_approval"
     done = "done"
     failed = "failed"
     skipped = "skipped"

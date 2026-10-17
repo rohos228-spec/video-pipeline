@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models import (
     Base,
+    Frame,
     NodeRun,
     NodeRunStatus,
     Project,
@@ -62,7 +63,7 @@ def _block(monkeypatch: pytest.MonkeyPatch, code: str, message: str) -> dict[str
     return seen
 
 
-async def _parked_project(session: AsyncSession, tmp_path: Path) -> tuple[Project, NodeRun, Path, list]:
+async def _parked_project(session: AsyncSession, tmp_path: Path) -> tuple[Project, NodeRun, Path, list, list]:
     project = Project(
         slug="sb-live",
         topic="двор",
@@ -80,6 +81,15 @@ async def _parked_project(session: AsyncSession, tmp_path: Path) -> tuple[Projec
         meaning="Альфа уже на месте",
     )
     session.add(ready)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        scene_id=ready.id,
+        number=1,
+        voiceover_text=_VO,
+        meaning="Альфа уже на месте",
+    )
+    session.add(frame)
     workflow = Workflow(name="sb")
     session.add(workflow)
     await session.flush()
@@ -108,15 +118,27 @@ async def _parked_project(session: AsyncSession, tmp_path: Path) -> tuple[Projec
         rep={"check_passed": True},
     )
 
-    async def snapshot() -> list[tuple]:
+    async def snapshot() -> tuple[list[tuple], list[tuple]]:
         rows = (
             await session.execute(
                 select(Scene).where(Scene.project_id == project.id).order_by(Scene.sort_key)
             )
         ).scalars().all()
-        return [(row.id, row.sort_key, row.title, row.place, row.meaning) for row in rows]
+        frames = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        ).scalars().all()
+        return (
+            [(row.id, row.sort_key, row.title, row.place, row.meaning) for row in rows],
+            [
+                (row.id, row.number, row.voiceover_text, row.meaning, row.scene_id)
+                for row in frames
+            ],
+        )
 
-    return project, node, saved, await snapshot()
+    scenes, frames = await snapshot()
+    return project, node, saved, scenes, frames
 
 
 async def _assert_parked(
@@ -125,6 +147,7 @@ async def _assert_parked(
     node: NodeRun,
     saved: Path,
     before_rows: list,
+    before_frames: list,
     before_file: bytes,
     *,
     reason: str,
@@ -133,6 +156,8 @@ async def _assert_parked(
     assert project.meta["approval_status"] == "waiting_approval"
     assert project.meta["approval_reason"] == reason
     await session.refresh(node)
+    assert node.status is NodeRunStatus.waiting_approval
+    assert node.attempts == 0
     assert node.error is None
     assert node.meta["status"] == "waiting_approval"
     assert node.meta["reason"] == reason
@@ -143,7 +168,15 @@ async def _assert_parked(
             select(Scene).where(Scene.project_id == project.id).order_by(Scene.sort_key)
         )
     ).scalars().all()
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
     assert [(row.id, row.sort_key, row.title, row.place, row.meaning) for row in rows] == before_rows
+    assert [
+        (row.id, row.number, row.voiceover_text, row.meaning, row.scene_id) for row in frames
+    ] == before_frames
 
 
 async def test_live_exhausted_budget_does_not_send_http(
@@ -152,7 +185,7 @@ async def test_live_exhausted_budget_does_not_send_http(
     session: AsyncSession,
 ) -> None:
     seen = _block(monkeypatch, "spend_cap_run", "потолок за запуск")
-    project, node, saved, before_rows = await _parked_project(session, tmp_path)
+    project, node, saved, before_rows, before_frames = await _parked_project(session, tmp_path)
     before_file = saved.read_bytes()
     with pytest.raises(spend_guard.BudgetExhausted) as raised:
         await sb.run_boundaries(_VO, tmp_path / "trace")
@@ -162,7 +195,14 @@ async def test_live_exhausted_budget_does_not_send_http(
     assert seen["n"] == 1
     assert not list((tmp_path / "trace").glob("*.err*.txt"))
     await _assert_parked(
-        session, project, node, saved, before_rows, before_file, reason="budget_exhausted",
+        session,
+        project,
+        node,
+        saved,
+        before_rows,
+        before_frames,
+        before_file,
+        reason="budget_exhausted",
     )
 
 
@@ -173,7 +213,7 @@ async def _raise_live(
     code: str,
 ) -> None:
     seen = _block(monkeypatch, code, code)
-    project, node, saved, before_rows = await _parked_project(session, tmp_path)
+    project, node, saved, before_rows, before_frames = await _parked_project(session, tmp_path)
     before_file = saved.read_bytes()
     from app.services.gpt_api import GptApiError
 
@@ -187,7 +227,7 @@ async def _raise_live(
     assert seen["n"] == 1
     assert not list((tmp_path / "trace").glob("*.err*.txt"))
     await _assert_parked(
-        session, project, node, saved, before_rows, before_file, reason=code,
+        session, project, node, saved, before_rows, before_frames, before_file, reason=code,
     )
 
 

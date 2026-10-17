@@ -414,12 +414,20 @@ async def _park_budget_exhausted(
             )
         )
     ).scalars().all()
+    from app.services.node_status_machine import transition_node_status
+
     for nr in running:
         node_meta = dict(nr.meta or {})
         node_meta["status"] = "waiting_approval"
         node_meta["reason"] = reason
         nr.meta = node_meta
         flag_modified(nr, "meta")
+        transition_node_status(
+            nr,
+            NodeRunStatus.waiting_approval,
+            initiator="spend_guard",
+            project_id=project.id,
+        )
     project.status = ProjectStatus.paused
     await session.flush()
     logger.warning(

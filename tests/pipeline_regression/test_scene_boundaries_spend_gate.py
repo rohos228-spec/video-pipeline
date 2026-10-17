@@ -458,7 +458,7 @@ async def test_exhausted_budget_parks_task_and_keeps_ready_scenes(
     assert project.meta["approval_status"] == "waiting_approval"
     assert project.meta["approval_reason"] == "budget_exhausted"
     await session.refresh(node)
-    assert node.status is NodeRunStatus.running
+    assert node.status is NodeRunStatus.waiting_approval
     assert node.error is None
     assert node.meta["status"] == "waiting_approval"
     assert node.meta["reason"] == "budget_exhausted"

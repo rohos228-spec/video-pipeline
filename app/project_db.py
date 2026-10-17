@@ -959,6 +959,7 @@ def _noderun_copy_should_apply(dest: NodeRun, src: NodeRun) -> bool:
         NodeRunStatus.running,
         NodeRunStatus.queued,
         NodeRunStatus.waiting_hitl,
+        NodeRunStatus.waiting_approval,
     }
     if dest.status in live and src.status in (
         NodeRunStatus.failed,

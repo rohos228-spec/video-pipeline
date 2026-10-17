@@ -3,7 +3,7 @@
 Разрешённые переходы:
   pending → queued | skipped
   queued → running
-  running → done | failed | waiting_hitl
+  running → done | failed | waiting_hitl | waiting_approval
   waiting_hitl → done | running | failed
   failed → queued
   любой → pending — явный сброс/стоп (ui_reset, api_reset, api_stop, ui_restart, auto_unstick)
@@ -36,7 +36,12 @@ _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
     NodeRunStatus.pending: frozenset({NodeRunStatus.queued, NodeRunStatus.skipped}),
     NodeRunStatus.queued: frozenset({NodeRunStatus.running}),
     NodeRunStatus.running: frozenset(
-        {NodeRunStatus.done, NodeRunStatus.failed, NodeRunStatus.waiting_hitl}
+        {
+            NodeRunStatus.done,
+            NodeRunStatus.failed,
+            NodeRunStatus.waiting_hitl,
+            NodeRunStatus.waiting_approval,
+        }
     ),
     NodeRunStatus.waiting_hitl: frozenset(
         {NodeRunStatus.done, NodeRunStatus.running, NodeRunStatus.failed}
