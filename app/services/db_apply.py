@@ -503,6 +503,10 @@ def _strip_json_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
+@observe_check(
+    "json_text_repair",
+    lambda args, kw, result: {"status": "performed", "changed": result != args[0]},
+)
 def repair_apply_ops_json_text(text: str) -> str:
     """Починить частые опечатки модели до json.loads.
 
