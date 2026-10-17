@@ -21,7 +21,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONTRACT_VERSION = "ws3-r3.3"
+CONTRACT_VERSION = "ws3-r3.4"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -66,6 +66,15 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
         "таблица действий); флаги плана только ужесточают. Пока metadata_of "
         "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
+    ),
+    (
+        "ws3-r3.4",
+        "MessageIn.kill_switch (bool, по умолчанию false) идёт тем же путём, что фраза "
+        "аварийного стопа, и не добавляет значение в MessageMode. "
+        "POST /api/orchestrator/chat/{session}/project пишет project_id >= 1 и снимает "
+        "только missing_project_id. message_start и message_end несут message_id строки "
+        "orch_messages; token остаётся эфемерным и получает тот же message_id. "
+        "В экспорт входят ApprovalDecision, ApprovalDecisionBody и approval_decision_labels.",
     ),
 )
 
@@ -1701,6 +1710,7 @@ WIRE_MODELS: dict[str, type[BaseModel]] = {
     "PlanStep": PlanStep,
     "SpendSnapshot": SpendSnapshot,
     "CheckpointData": CheckpointData,
+    "ApprovalDecisionBody": ApprovalDecisionBody,
 }
 
 
@@ -1731,6 +1741,7 @@ def export_contract_schemas() -> dict[str, Any]:
             "ChunkCorpus": [v.value for v in ChunkCorpus],
             "Risk": [v.value for v in Risk],
             "EventType": list(EVENT_TYPES),
+            "ApprovalDecision": [v.value for v in ApprovalDecision],
         },
         "fsm": {src.value: sorted(dst.value for dst in allowed) for src, allowed in FSM_TRANSITIONS.items()},
         "rules": {
@@ -1742,5 +1753,6 @@ def export_contract_schemas() -> dict[str, Any]:
             "risk_order": [item.value for item in Risk],
             "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
             "default_block_outcome": TaskStatus.failed.value,
+            "approval_decision_labels": dict(APPROVAL_DECISION_LABELS),
         },
     }

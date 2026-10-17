@@ -1,4 +1,4 @@
-"""RFC ws3-r3.4 — только документ. Код контракта остаётся r3.3."""
+"""RFC ws3-r3.4 совпадает с контрактом после бампа версии."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from app.orchestrator.contracts import CONTRACT_VERSION
 _RFC = Path(__file__).resolve().parents[2] / "docs" / "fable" / "rfc_ws3_r3_4.md"
 
 
-def test_rfc_ws3_r3_4_covers_three_topics_without_bumping_code() -> None:
+def test_rfc_ws3_r3_4_topics_match_the_contract() -> None:
     text = _RFC.read_text(encoding="utf-8")
-    assert CONTRACT_VERSION == "ws3-r3.3"
+    assert CONTRACT_VERSION == "ws3-r3.4"
     assert "ws3-r3.4" in text
     assert "kill_switch" in text
     assert "missing_project_id" in text

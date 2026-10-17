@@ -57,8 +57,10 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 ## `POST /api/orchestrator/chat/{session_id}/approve`
 
 Тот же Bearer `ORCH_API_TOKEN`, что и у остальных `/api/orchestrator/**`.
-Версия контракта не меняется (`ws3-r3.3`): роут добавлен к проводу, старые поля
-и `export_contract_schemas()` не трогаются. Тело в экспорт не входит.
+Роут добавлен к проводу ещё на `ws3-r3.3` и остаётся на `ws3-r3.4`. Тело
+`ApproveIn` в `export_contract_schemas()` не входит. `ApprovalDecision`,
+`ApprovalDecisionBody` и `rules.approval_decision_labels` входят в экспорт
+вместе с версией `ws3-r3.4`.
 
 Тело — pydantic `extra=forbid`:
 

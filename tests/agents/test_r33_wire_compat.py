@@ -6,7 +6,6 @@ import pytest
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.contracts import (
-    CONTRACT_VERSION,
     ApprovalDecisionBody,
     ApprovalEvent,
     PlanStep,
@@ -16,12 +15,8 @@ from app.orchestrator.contracts import (
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
 
-def test_r33_export_has_no_approval_decision_wire() -> None:
+def test_r33_note_stays_free_of_later_decision_wire() -> None:
     schema = export_contract_schemas()
-    assert schema["version"] == CONTRACT_VERSION == "ws3-r3.3"
-    assert "ApprovalDecisionBody" not in schema["models"]
-    assert "ApprovalDecision" not in schema["enums"]
-    assert "approval_decision_labels" not in schema["rules"]
     note = next(item["note"] for item in schema["changelog"] if item["version"] == "ws3-r3.3")
     assert "paid_outcome_unknown" not in note
     assert "retry_grant" not in note
