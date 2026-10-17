@@ -394,3 +394,53 @@ async def test_rebuild_keeps_live_frame_edges(session: AsyncSession, warn_log) -
     assert kept_stale is not None and kept_stale.type == "archived:next"
     assert any("archived:next" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_store_and_wipe_cells_archive_instead_of_delete(
+    session: AsyncSession, warn_log
+) -> None:
+    """Было: delete(SceneDesignCell) в store_cells и wipe_cells (все ячейки проекта)."""
+    project = await _project(session, "cells-archive")
+    payload = {
+        "characters": [
+            {"id": "c01", "имя": "Анна", "внешность": "пальто"},
+        ]
+    }
+    cells = sd_cells.slice_to_cells(project, "characters", payload, "Анна в пальто.")
+    await sd_cells.store_cells(session, project, "characters", cells, chunk_size=2)
+    first_ids = list(
+        (
+            await session.execute(
+                select(SceneDesignCell.id).where(SceneDesignCell.project_id == project.id)
+            )
+        ).scalars()
+    )
+    assert first_ids
+    fresh = sd_cells.slice_to_cells(project, "characters", payload, "Анна в пальто.")
+    await sd_cells.store_cells(session, project, "characters", fresh, chunk_size=2)
+    all_rows = list(
+        (
+            await session.execute(
+                select(SceneDesignCell).where(SceneDesignCell.project_id == project.id)
+            )
+        ).scalars()
+    )
+    assert len(all_rows) > len(first_ids)
+    assert any(row.status == "archived" for row in all_rows)
+    loaded = await sd_cells.load_cells(session, project)
+    assert loaded
+    assert all(row.status == "ok" for row in loaded)
+    wiped = await sd_cells.wipe_cells(session, project)
+    assert wiped == len(loaded)
+    assert await sd_cells.load_cells(session, project) == []
+    still = list(
+        (
+            await session.execute(
+                select(SceneDesignCell).where(SceneDesignCell.project_id == project.id)
+            )
+        ).scalars()
+    )
+    assert still
+    assert all(row.status == "archived" for row in still)
+    assert any("archived" in line for line in warn_log)
+
