@@ -1066,6 +1066,9 @@ async def delete_coverage_child(
     )
     await session.delete(frame)
     await session.flush()
+    from app.services.frame_tombstones import remember_deleted
+
+    remember_deleted(project, int(frame.number))
     if parent is not None:
         remaining = [fr for fr in frames if int(fr.id) != drop_id]
         _remove_kadry_id(parent, sid)

@@ -530,6 +530,9 @@ async def upload_xlsx(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=validation_err)
     tmp_path.replace(dest)
+    from app.services.frame_tombstones import forget_deleted
+
+    forget_deleted(p)
     if node_key:
         from app.services.node_xlsx_snapshot import clear_bound_snapshot
 
@@ -972,6 +975,7 @@ async def montage_board_delete_frame(
     from app.services.montage_board_frames import delete_montage_frame
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         result = await delete_montage_frame(session, p, frame_id)
     except RuntimeError as e:
@@ -2276,6 +2280,7 @@ async def gpt_operator_patch(
         from app.project_db import push_runtime_to_master
 
         await push_runtime_to_master(session, p)
+        await sync_project_row_to_master_db(p)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[#{}] gpt_operator_patch sync to master: {}", project_id, exc)
     return {"ok": True, "resolve": resolved}
@@ -2793,7 +2798,17 @@ async def project_asr_words(
 
     _project_or_404(await session.get(Project, project_id))
     rows = await load_project_asr_words(session, project_id)
-    words = asr_words_to_dicts(rows)
+    if not rows:
+        from app.db import session_scope
+
+        try:
+            async with session_scope() as master:
+                rows = await load_project_asr_words(master, project_id)
+                words = asr_words_to_dicts(rows)
+        except Exception:
+            words = []
+    else:
+        words = asr_words_to_dicts(rows)
     run_uuid = words[0]["run_uuid"] if words else None
     backend = words[0]["backend"] if words else None
     return {
