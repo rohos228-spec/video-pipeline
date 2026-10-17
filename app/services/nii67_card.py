@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import copy
 import uuid
+from collections import defaultdict
 from typing import Any
+
+from loguru import logger
 
 META_KEY = "nii67_card"
 
@@ -166,6 +169,11 @@ def _normalize_block(raw: Any) -> dict[str, Any]:
     block["exit_animation"] = _clip(src.get("exit_animation"), TEXT_LIMIT)
     block["room_after"] = _clip(src.get("room_after"), TEXT_LIMIT)
     block["character"] = _normalize_character(src.get("character"))
+    note = _clip(src.get("пометка"), TEXT_LIMIT)
+    if note:
+        block["пометка"] = note
+    if _as_bool(src.get("карантин")):
+        block["карантин"] = True
     return block
 
 
@@ -492,6 +500,46 @@ _BEAT_KIND = {
 }
 
 
+def _keep_operator_block(block: dict[str, Any], reason: str) -> None:
+    if block.get("пометка"):
+        return
+    block["пометка"] = reason
+    block["карантин"] = True
+    logger.warning(
+        "WARN apply_generated_scenario: блок {} сохранён, не заменён: {}",
+        block.get("id"),
+        reason,
+    )
+
+
+def _merge_generated_beat(
+    block: dict[str, Any], beat: dict[str, Any], scenario: dict[str, Any]
+) -> dict[str, Any]:
+    """Вписать бит в существующий блок. Текст и файлы оператора не затирать."""
+    kind = str(block.get("kind") or "")
+    text = str(beat.get("text") or "")
+    if kind == "exit":
+        text = str(scenario.get("illustration") or text)
+    if str(block.get("text") or "").strip():
+        if text.strip() and text.strip() != str(block.get("text") or "").strip():
+            _keep_operator_block(block, "текст оператора сохранён")
+    else:
+        block["text"] = text
+    frames = beat.get("frames") if isinstance(beat.get("frames"), list) else []
+    generated_prompt = ""
+    if kind == "world_frame" and frames and isinstance(frames[0], dict):
+        generated_prompt = str(frames[0].get("start_frame") or "")
+    current_prompt = str(block.get("image_prompt") or "").strip()
+    if current_prompt:
+        if generated_prompt and generated_prompt.strip() != current_prompt:
+            _keep_operator_block(block, "image_prompt оператора сохранён")
+    elif generated_prompt:
+        block["image_prompt"] = generated_prompt
+    if str(block.get("image_name") or "").strip():
+        _keep_operator_block(block, "image_name оператора сохранён")
+    return block
+
+
 def apply_generated_scenario(
     card: dict[str, Any],
     doors: dict[str, dict[str, Any]],
@@ -507,23 +555,28 @@ def apply_generated_scenario(
             continue
         door["theme"] = scenario.get("theme") or ""
         door["theme_note"] = scenario.get("law") or ""
-        blocks = []
+        pending: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for beat in scenario.get("beats") or []:
             if not isinstance(beat, dict):
                 continue
             kind = _BEAT_KIND.get(str(beat.get("id") or ""))
             if kind is None:
                 continue
-            block = new_block(kind)
-            text = str(beat.get("text") or "")
-            if kind == "exit":
-                text = str(scenario.get("illustration") or text)
-            block["text"] = text
-            frames = beat.get("frames") if isinstance(beat.get("frames"), list) else []
-            if kind == "world_frame" and frames and isinstance(frames[0], dict):
-                block["image_prompt"] = str(frames[0].get("start_frame") or "")
-            blocks.append(block)
-        door["blocks"] = blocks
+            pending[kind].append(beat)
+        merged_blocks: list[dict[str, Any]] = []
+        for block in list(door["blocks"]):
+            queue = pending.get(str(block.get("kind") or ""))
+            if queue:
+                merged_blocks.append(_merge_generated_beat(block, queue.pop(0), scenario))
+            else:
+                _keep_operator_block(
+                    block, "блок оператора сохранён: генерация его не заменила"
+                )
+                merged_blocks.append(block)
+        for kind, beats_left in pending.items():
+            for beat in beats_left:
+                merged_blocks.append(_merge_generated_beat(new_block(kind), beat, scenario))
+        door["blocks"] = merged_blocks
         side = "left" if door_id == "door1" else "right"
         out["portal"][f"{side}_design"] = str(scenario.get("door_design") or "")
         out["portal"][f"{side}_anim"] = str(scenario.get("door_anim") or "")

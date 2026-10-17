@@ -212,8 +212,9 @@ async def test_delete_parent_keeps_children(
 
     result = await delete_montage_frame(session, project, parent_id)
     await session.commit()
-    assert result["deleted"] == 1
-    assert result["promoted"] == 2
+    assert result["deleted"] == 0
+    assert result["marked"] == 1
+    assert result["promoted"] is None
     left = list(
         (
             await session.execute(
@@ -223,9 +224,11 @@ async def test_delete_parent_keeps_children(
             )
         ).scalars()
     )
-    assert [fr.number for fr in left] == [2, 3]
-    assert left[0].voiceover_text == "кусок"
-    assert left[1].voiceover_text == "дальше"
+    assert [fr.number for fr in left] == [1, 2, 3]
+    assert [fr.id for fr in left if fr.number == 1] == [parent_id]
+    assert (left[0].attrs or {}).get("удалён") is True
+    assert left[1].voiceover_text == "кусок"
+    assert left[2].voiceover_text == "дальше"
 
 
 @pytest.mark.asyncio
@@ -527,7 +530,11 @@ async def test_delete_does_not_resurrect_from_disk_png(
     assert not png.exists()
     assert await ensure_frames_from_disk_media(session, project) == []
     board = await build_montage_board(session, project)
-    assert [row["number"] for row in board["frames"]] == [20]
+    assert [row["number"] for row in board["frames"]] == [19, 20]
+    marked = next(row for row in board["frames"] if row["number"] == 19)
+    live = await session.get(Frame, fr.id)
+    assert live is not None and (live.attrs or {}).get("удалён") is True
+    assert marked["number"] == 19
 
 
 @pytest.mark.asyncio

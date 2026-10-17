@@ -217,46 +217,52 @@ async def delete_montage_frame(
     project: Project,
     frame_id: int,
 ) -> dict[str, Any]:
-    """Удалить только этот кадр. Детей сцены не трогаем — повышаем первого."""
+    """Пометить кадр удалённым. Строка и дети сцены остаются на месте."""
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     frames = await _load_frames(session, int(project.id))
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден")
+    from app.services.frame_tombstones import mark_frame_deleted
+
     number = int(frame.number)
     if is_shot_child(frame):
         await delete_coverage_child(session, project, frame, frames)
         board = montage_meta(project)
         drop_pending_ops_for_frames(board, {number})
         set_montage_meta(project, board)
-        logger.info("montage delete child #{} frame {}", project.id, number)
-        return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
+        logger.warning(
+            "WARN delete_montage_frame: дочерний кадр #{} id={} помечен, не удалён",
+            number,
+            frame_id,
+        )
+        return {
+            "ok": True,
+            "frame_id": frame_id,
+            "number": number,
+            "deleted": 0,
+            "marked": 1,
+        }
 
-    kids = _children_of(frames, frame)
-    new_head = _promote_first_child(frame, kids)
     quarantine_frame_media(project, number)
-    await _drop_frame_rows(session, project, [frame])
-    if new_head is not None:
-        leftover = await _load_frames(session, int(project.id))
-        live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
-        _refresh_shots_in_beat(leftover, live)
-        await session.flush()
+    mark_frame_deleted(frame, project, "delete_montage_frame: кадр помечен, не удалён")
+    await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
-    logger.info(
-        "montage delete frame #{} number {} (сцена жива, шотов {})",
-        project.id,
+    logger.warning(
+        "WARN delete_montage_frame: кадр #{} id={} помечен, сцена и шоты на месте",
         number,
-        len(kids),
+        frame_id,
     )
     return {
         "ok": True,
         "frame_id": frame_id,
         "number": number,
-        "deleted": 1,
-        "promoted": int(new_head.number) if new_head is not None else None,
+        "deleted": 0,
+        "marked": 1,
+        "promoted": None,
     }
 
 

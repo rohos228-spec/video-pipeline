@@ -6,17 +6,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Artifact,
     Frame,
-    FrameEdge,
     FrameStatus,
-    FrameText,
     Project,
-    PromptVersion,
 )
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
@@ -1041,35 +1038,26 @@ async def delete_coverage_child(
     frame: Frame,
     frames: list[Frame],
 ) -> None:
+    """Мягкая пометка дочернего кадра. Строка Frame и тексты остаются."""
     parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):
         raise RuntimeError("удалять можно только дочерний кадр")
     from app.services.ensure_frames_from_disk import quarantine_frame_media
+    from app.services.frame_tombstones import mark_frame_deleted
 
     quarantine_frame_media(project, int(frame.number))
     drop_id = int(frame.id)
-    sid = coverage_shot_id(frame)
     await session.execute(
         update(Artifact).where(Artifact.frame_id == drop_id).values(frame_id=None)
     )
-    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id == drop_id))
-    await session.execute(delete(FrameText).where(FrameText.frame_id == drop_id))
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            or_(
-                FrameEdge.from_frame_id == drop_id,
-                FrameEdge.to_frame_id == drop_id,
-            ),
-        )
-    )
-    await session.delete(frame)
+    mark_frame_deleted(frame, project, "delete_coverage_child: дочерний кадр помечен, не удалён")
     await session.flush()
-    if parent is not None:
-        remaining = [fr for fr in frames if int(fr.id) != drop_id]
-        _remove_kadry_id(parent, sid)
-        _refresh_shots_in_beat(remaining, parent)
+    logger.warning(
+        "WARN delete_coverage_child: кадр #{} id={} помечен, PromptVersion/FrameText на месте",
+        frame.number,
+        frame.id,
+    )
 
 
 def _clear_child_scene_chain(frame: Frame) -> None:
@@ -1372,7 +1360,20 @@ async def apply_coverage_op(
             parent_number=parent_number,
         )
     elif op_type == "coverage_delete":
-        await delete_coverage_child(session, project, frame, frames)
+        from app.services.frame_tombstones import mark_frame_deleted
+
+        logger.warning(
+            "WARN coverage_delete запрещён в авто-apply: кадр #{} помечен, не удалён",
+            frame.number,
+        )
+        await session.execute(
+            update(Artifact).where(Artifact.frame_id == int(frame.id)).values(frame_id=None)
+        )
+        mark_frame_deleted(
+            frame,
+            project,
+            "coverage_delete в авто-очереди: кадр помечен, не удалён",
+        )
 
     await session.flush()
     highlight = slot_key_from_op(op)

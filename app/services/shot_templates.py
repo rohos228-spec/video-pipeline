@@ -14,7 +14,20 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from app.project_root import find_project_root
+
+
+def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    shot["карантин"] = True
+    shot["пометка"] = reason
+    logger.warning(
+        "WARN {}: кадр {} помечен, не удалён: {}",
+        where,
+        shot.get("id") or "?",
+        reason,
+    )
 
 _SCENE_SPLIT = re.compile(r"\n(?=\d+\.\s)")
 _SCENE_HEAD = re.compile(r"^(\d+)\.\s*(.+)$")
@@ -717,7 +730,7 @@ def _drop_extra_shots(
     keep_n: int,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Лишние кадры: сначала drop_order / required=0, потом с конца."""
+    """Лишние кадры помечаем. required=1 не трогаем и не выкидываем никого."""
     if keep_n >= len(shots) or not shots:
         return shots
     if keep_n < 1:
@@ -729,12 +742,16 @@ def _drop_extra_shots(
     order = _template_drop_ids(tid)
     drop_set: set[int] = set()
     need_drop = len(shots) - keep_n
-    # С конца: сначала required=0 (не трогаем K1 / master), потом drop_order.
+
+    def _required(i: int) -> bool:
+        row = rows[i] if i < len(rows) else {}
+        return row.get("required") == 1
+
+    # С конца: сначала required=0 (не трогаем K1 / master и required=1).
     for i in range(len(shots) - 1, 0, -1):
         if need_drop <= 0:
             break
-        row = rows[i] if i < len(rows) else {}
-        if row.get("required") == 1:
+        if _required(i):
             continue
         drop_set.add(i)
         need_drop -= 1
@@ -743,7 +760,7 @@ def _drop_extra_shots(
             if need_drop <= 0:
                 break
             for i, sh in enumerate(shots):
-                if i in drop_set or i == 0:
+                if i in drop_set or i == 0 or _required(i):
                     continue
                 row = rows[i] if i < len(rows) else {}
                 if str(row.get("shot_id") or "") == sid:
@@ -751,13 +768,19 @@ def _drop_extra_shots(
                     need_drop -= 1
                     break
     if need_drop > 0:
-        for i in range(len(shots) - 1, 0, -1):
-            if need_drop <= 0:
-                break
-            if i not in drop_set:
-                drop_set.add(i)
-                need_drop -= 1
-    return [sh for i, sh in enumerate(shots) if i not in drop_set]
+        logger.warning(
+            "WARN _drop_extra_shots: drop остановлен на required=1, осталось {} слотов",
+            need_drop,
+        )
+    for i in sorted(drop_set):
+        if _required(i):
+            continue
+        _mark_shot_kept(
+            shots[i],
+            f"лишний кадр сверх {keep_n} — сохранён, required=1 не трогаем",
+            where="_drop_extra_shots",
+        )
+    return list(shots)
 
 
 def _assign_scene_vo(
@@ -766,12 +789,24 @@ def _assign_scene_vo(
     *,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
+    """Каждый кадр — свой кусок закадра. Пустой кадр помечаем, не выкидываем."""
     vo = plain_scene_vo(vo)
     if not shots:
         return []
     if not vo:
-        return []
+        logger.warning(
+            "WARN _assign_scene_vo: пустой закадр, {} кадров сцены сохранены",
+            len(shots),
+        )
+        for shot in shots:
+            shot["закадр"] = str(shot.get("закадр") or "")
+            if not shot.get("карантин"):
+                _mark_shot_kept(
+                    shot,
+                    "пустой закадр ячейки — кадры сцены сохранены",
+                    where="_assign_scene_vo",
+                )
+        return list(shots)
     existing = [" ".join(str(s.get("закадр") or "").split()) for s in shots]
     if all(existing) and _norm_vo_words(" ".join(existing)) == _norm_vo_words(vo):
         return shots
@@ -794,13 +829,28 @@ def _assign_scene_vo(
     for sh, piece in zip(shots, parts):
         piece = " ".join((piece or "").split())
         if not piece:
-            continue
-        sh["закадр"] = piece
+            sh["закадр"] = ""
+            if not sh.get("карантин"):
+                _mark_shot_kept(
+                    sh,
+                    "пустой кусок закадра — кадр сохранён",
+                    where="_assign_scene_vo",
+                )
+        else:
+            sh["закадр"] = piece
         kept.append(sh)
-    if not kept:
+    for sh in shots[len(kept) :]:
+        sh["закадр"] = str(sh.get("закадр") or "")
+        if not sh.get("карантин"):
+            _mark_shot_kept(
+                sh,
+                "нет куска закадра — кадр сохранён",
+                where="_assign_scene_vo",
+            )
+        kept.append(sh)
+    if vo and shots and not any(str(s.get("закадр") or "").strip() for s in kept):
         shots[0]["закадр"] = vo
-        kept = [shots[0]]
-    return kept
+    return kept if kept else list(shots)
 
 
 def fill_kadry_from_catalog(

@@ -2151,32 +2151,49 @@ def coalesce_cell_shot_ops(
                 for i, s in enumerate(slot["shots"])
                 if str(s.get("id") or "")
             }
+            incoming_ids = {
+                str(shot.get("id") or "")
+                for shot in incoming
+                if str(shot.get("id") or "")
+            }
+            unknown: list[str] = []
             for shot in incoming:
                 sid = str(shot.get("id") or "")
                 if sid and sid in index:
                     slot["shots"][index[sid]] = shot
-            # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
+                elif sid:
+                    unknown.append(sid)
+            if unknown:
+                logger.warning(
+                    "WARN coalesce_cell_shot_ops: QC-кадры {} нет в ячейке, список не подменён",
+                    ", ".join(unknown),
+                )
+            # QC правит по id. Пустой закадр — норма; кадры не выкидываем и
+            # не подменяем список целиком (REPLACE).
             if incoming:
                 from app.services.scene_shot_grammar import is_cutaway_shot
 
-                existing_empty = sum(
-                    1
-                    for s in slot["shots"]
-                    if isinstance(s, dict)
-                    and not str(s.get("закадр") or "").strip()
-                    and not is_cutaway_shot(s)
-                )
-                if existing_empty and len(incoming) < len(slot["shots"]):
-                    # REPLACE: QC-список — источник истины
-                    slot["shots"] = [dict(s) for s in incoming]
-                else:
-                    slot["shots"] = [
-                        s
-                        for s in slot["shots"]
-                        if not isinstance(s, dict)
-                        or str(s.get("закадр") or "").strip()
-                        or is_cutaway_shot(s)
-                    ]
+                shorter = len(incoming) < len(slot["shots"])
+                for shot in slot["shots"]:
+                    if not isinstance(shot, dict):
+                        continue
+                    sid = str(shot.get("id") or "")
+                    empty = not str(shot.get("закадр") or "").strip() and not is_cutaway_shot(
+                        shot
+                    )
+                    # REPLACE снёс бы кадры вне incoming; фильтр снёс бы пустой закадр.
+                    if not ((shorter and sid not in incoming_ids) or empty):
+                        continue
+                    if shot.get("карантин"):
+                        continue
+                    reason = "QC не удаляет кадр — правка только по id"
+                    shot["карантин"] = True
+                    shot["пометка"] = reason
+                    logger.warning(
+                        "WARN coalesce_cell_shot_ops: кадр {} помечен, не удалён: {}",
+                        sid or "?",
+                        reason,
+                    )
         else:
             slot["shots"].extend(incoming)
     out: list[dict[str, Any]] = []

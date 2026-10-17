@@ -11,7 +11,21 @@ import re
 import unicodedata
 from typing import Any
 
+from loguru import logger
+
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+
+
+def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
+    shot["карантин"] = True
+    shot["пометка"] = reason
+    logger.warning(
+        "WARN {}: кадр {} помечен, не удалён: {}",
+        where,
+        shot.get("id") or shot.get("id_shot") or "?",
+        reason,
+    )
 
 SHOT_VO_MIN = 26
 SHOT_VO_MAX = 80
@@ -677,14 +691,16 @@ def merge_gpt_shots_with_action(
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # убрать наследие авто-«общий вид …»
-    cleaned = [
-        s
-        for s in dict_shots
-        if not str(s.get("действие") or "").casefold().startswith("общий вид")
-    ]
-    if not cleaned:
-        cleaned = dict_shots
+    # Наследие авто-«общий вид …» помечаем, но не выкидываем.
+    cleaned: list[dict[str, Any]] = []
+    for shot in dict_shots:
+        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
+            _mark_shot_kept(
+                shot,
+                "наследие авто-«общий вид» — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+        cleaned.append(shot)
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
@@ -782,28 +798,37 @@ def merge_gpt_shots_with_action(
             + "; ".join(missing[:5])
             + " — нужен добор GPT"
         )
-    # если GPT дал больше кадров (осознанные вставки) — дописать хвост GPT
-    if len(cleaned) > len(out):
-        seen_ids = {str(r.get("id") or "") for r in out}
-        for s in cleaned[len(out) :]:
-            sid = str(s.get("id") or "")
-            if sid and sid in seen_ids:
-                continue
-            out.append(s)
-    # VO-cap / expected: не держим десятки кадров на короткий закадр.
+    # Кадры GPT, которые не попали в склейку (в том числе помеченный
+    # «общий вид»), дописываем. Идентификаторы не теряем.
+    seen_ids = {str(r.get("id") or "") for r in out if str(r.get("id") or "")}
+    for shot in cleaned:
+        sid = str(shot.get("id") or "")
+        if sid and sid in seen_ids:
+            continue
+        if any(shot is row for row in out):
+            continue
+        out.append(shot)
+        if sid:
+            seen_ids.add(sid)
+    # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
     limit = expected if expected > 0 else cap
     if limit > 0 and len(out) > limit:
-        kept: list[dict[str, Any]] = []
         normal_n = 0
-        for s in out:
-            if is_cutaway_shot(s) and normal_n >= limit:
-                kept.append(s)
-                continue
-            if normal_n < limit:
-                kept.append(s)
-                if not is_cutaway_shot(s):
+        for shot in out:
+            over = False
+            if is_cutaway_shot(shot) and normal_n >= limit:
+                over = False
+            elif normal_n < limit:
+                if not is_cutaway_shot(shot):
                     normal_n += 1
-        out = kept or out[:limit]
+            else:
+                over = True
+            if over and not shot.get("карантин"):
+                _mark_shot_kept(
+                    shot,
+                    f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
+                    where="merge_gpt_shots_with_action",
+                )
     return out, None
 
 
@@ -1043,7 +1068,15 @@ def align_shots_to_action_chain(
             scene_place = places.get(n) or ""
             shot_place = str(shot.get("место") or "").strip()
             if scene_place and shot_place and not _same_place(shot_place, scene_place):
-                removed += 1
+                reason = (
+                    f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён"
+                )
+                if not shot.get("карантин"):
+                    _mark_shot_kept(
+                        shot, reason, where="align_shots_to_action_chain"
+                    )
+                    removed += 1
+                kept.append(shot)
                 continue
             kept.append(shot)
         if len(kept) != len(shots):
@@ -1175,21 +1208,25 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             warnings.append(f"короткий закадр {n} перенесён в предыдущий кусок (кадр оставлен)")
         i += 1
 
-    # 3) выкинуть только пустые оболочки: без шага, без закадра, без промтов
-    before = len(shots)
-    kept: list[Any] = []
+    # 3) пустые оболочки (без шага, закадра и промтов) помечаем, не выкидываем
+    empty_n = 0
     for s in shots:
+        if not isinstance(s, dict):
+            continue
         if (
-            isinstance(s, dict)
-            and not _vo(s)
+            not _vo(s)
             and not str(s.get("действие") or "").strip()
             and not any(str(s.get(k) or "").strip() for k in s if str(k).startswith("промт"))
         ):
-            continue
-        kept.append(s)
-    if len(kept) < before:
-        warnings.append(f"удалили пустые оболочки без шага {before - len(kept)} шт")
-        shots[:] = kept
+            if not s.get("карантин"):
+                _mark_shot_kept(
+                    s,
+                    "пустая оболочка без шага, закадра и промтов — кадр сохранён",
+                    where="repair_shot_vo_lengths",
+                )
+                empty_n += 1
+    if empty_n:
+        warnings.append(f"помечены пустые оболочки без шага {empty_n} шт")
 
     glued = " ".join(_vo(s) for s in shots if _vo(s))
     if norm_vo and glued and " ".join(glued.split()) != norm_vo:
