@@ -121,6 +121,12 @@ async def _lifespan(app: FastAPI):
     Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
+    import os
+
+    if os.environ.get("ORCH_RUNTIME", "").strip() == "r6-fixture":
+        from app.orchestrator.agents.testkit import enforce_r6_gate
+
+        enforce_r6_gate()
     try:
         from app.db import engine
         from app.models import Base

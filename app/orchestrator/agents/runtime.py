@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,9 +64,19 @@ _runtime: Runtime | None = None
 
 
 def get_runtime() -> Runtime:
+    """Один runtime на процесс.
+
+    ``ORCH_RUNTIME=r6-fixture`` (и только это значение) подставляет приёмку R6.
+    Без переменной — прежняя прод-сборка. Гейт ``ORCH_TEST=1`` проверяет testkit.
+    """
     global _runtime
     if _runtime is None:
-        _runtime = build_runtime()
+        if os.environ.get("ORCH_RUNTIME", "").strip() == "r6-fixture":
+            from app.orchestrator.agents.testkit import build_r6_runtime
+
+            _runtime = build_r6_runtime()
+        else:
+            _runtime = build_runtime()
     return _runtime
 
 
