@@ -151,7 +151,10 @@ _ALLOW_MARKERS = (
     "{settings.data_dir}/reports",
     "{settings.data_dir}/node_overrides",
 )
+# rag.reindex нет среди 102 действий реестра #342. Allowlist orch_rag.db —
+# заранее объявленное исключение вне реестра, не 103-е действие.
 _RAG_ID = "rag.reindex"
+_OUTSIDE_REGISTRY_ALLOW = frozenset({_RAG_ID})
 _CONTENT_OVERWRITE = frozenset({"open", "write_text", "write_bytes", "os.open"})
 _RAG_SUFFIXES = ("orch_rag.db", "orch_rag.db-wal", "orch_rag.db-shm")
 _SNAPSHOT_DIR = "action_layer_snapshots"
@@ -989,7 +992,7 @@ def _path_permitted(sketch: str, action_id: str) -> bool:
         return False
     if _is_allow_path(resolved):
         return True
-    return action_id == _RAG_ID and _is_rag_path(resolved)
+    return action_id in _OUTSIDE_REGISTRY_ALLOW and _is_rag_path(resolved)
 
 
 def _is_allow_path(sketch: str) -> bool:
@@ -2323,6 +2326,19 @@ def test_fs_rejects_templates_and_foreign_snapshots() -> None:
     own = [hit for hit in analyze_module_source(source, "history.rollback") if hit.function == "_backup_file"]
     assert len(own) == 1 and own[0].allowed and own[0].kind == "shutil.copy2"
     assert not own[0].snapshot_delete
+
+
+def test_rag_reindex_marked_outside_registry() -> None:
+    """rag.reindex есть в allowlist теста и отсутствует в реестре 102."""
+    rows = action_table_rows()
+    ids = [row["id"] for row in rows]
+    assert len(ids) == 102
+    assert len(set(ids)) == 102
+    assert _RAG_ID not in ids
+    assert load_audit_header()["actions"] == 102
+    assert _RAG_ID in _OUTSIDE_REGISTRY_ALLOW
+    assert "allowlist теста помечен явно" in _audit_text()
+    assert f"`{_RAG_ID}` в реестре 102 нет" in _audit_text()
 
 
 def test_rag_reindex_allows_only_its_db_files() -> None:
