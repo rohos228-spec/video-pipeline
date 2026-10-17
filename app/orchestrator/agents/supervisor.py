@@ -209,6 +209,9 @@ class Supervisor:
         row = self.tasks.get(task_id)
         if row is None:
             raise LookupError(task_id)
+        live = self._runs.get(task_id)
+        if live is not None and not live.done():
+            raise InvalidTransition("resume живой задачи")
         data = self.checkpoints.load_latest(task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
