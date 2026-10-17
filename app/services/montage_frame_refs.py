@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -398,13 +397,17 @@ def _ref_path(data_dir: Path, row: dict[str, Any]) -> Path | None:
     raw = str(row.get("file") or "").strip()
     if not raw:
         return None
-    # Путь пришёл из БД проекта: не даём вылезти за data_dir.
-    if re.match(r"^[a-zA-Z]:[\\/]|^/", raw):
-        path = Path(raw)
-        try:
-            path.relative_to(data_dir)
-        except ValueError:
-            logger.warning("montage refs: путь вне проекта, пропускаю: {}", raw)
-            return None
-        return path
-    return data_dir / raw
+    # Путь пришёл из БД проекта: resolve и не выпускаем за data_dir.
+    root = data_dir.resolve()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        resolved = path.resolve()
+    except OSError:
+        logger.warning("montage refs: путь вне проекта, пропускаю")
+        return None
+    if not resolved.is_relative_to(root):
+        logger.warning("montage refs: путь вне проекта, пропускаю")
+        return None
+    return resolved

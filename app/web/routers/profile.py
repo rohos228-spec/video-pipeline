@@ -243,12 +243,30 @@ async def get_stats() -> dict[str, Any]:
 
 # ---------- ключи ----------
 def _mask(v: str) -> str:
-    v = v or ""
+    """Маска без кусков ключа: ни начала, ни хвоста."""
     if not v:
         return ""
-    if len(v) <= 8:
-        return "•" * len(v)
-    return v[:3] + "•" * 8 + v[-4:]
+    return "•" * 8
+
+
+def _caller_is_studio_admin(token: str | None) -> bool:
+    """Legacy-токен студии — админ. Сессия users.db — только role=admin."""
+    from app.web.auth_sessions import _TOKENS
+
+    if token and token in _TOKENS:
+        return True
+    if not token:
+        return False
+    try:
+        from app.web import user_accounts
+
+        user = user_accounts.user_for_session(token)
+    except Exception:
+        return False
+    if user is None:
+        return False
+    role = user.get("role") if isinstance(user, dict) else user["role"]
+    return role == "admin"
 
 
 def _env_value(env: str) -> str:
@@ -260,7 +278,8 @@ def _env_value(env: str) -> str:
 
 
 @router.get("/keys")
-async def get_keys() -> list[dict[str, Any]]:
+async def get_keys(request: Request) -> list[dict[str, Any]]:
+    await require_web_user(request)
     out = []
     for kid, label, env in _KEYS:
         val = _env_value(env)
@@ -274,7 +293,9 @@ class KeyUpdate(BaseModel):
 
 @router.put("/keys/{key_id}")
 async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
-    await require_web_user(request)
+    token = await require_web_user(request)
+    if settings.web_auth_enabled and not _caller_is_studio_admin(token):
+        raise HTTPException(403, "Только администратор студии")
     match = next((k for k in _KEYS if k[0] == key_id), None)
     if match is None:
         raise HTTPException(404, "Неизвестный ключ")

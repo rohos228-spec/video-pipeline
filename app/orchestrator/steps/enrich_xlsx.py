@@ -1612,17 +1612,7 @@ async def _run_fw_skeleton_node(
         trace_dir,
     )
     await session.commit()
-    # 2026-10-11: one-shot reuse of the validated skeleton.json (no LLM) when
-    # data/_reuse_skeleton.flag exists - rematerialize the 33 main cells.
-    import os as _os
-    _flag = _os.path.join("data", "_reuse_skeleton.flag")
-    if _os.path.exists(_flag) and skb.output_path(project).exists():
-        _os.replace(_flag, _flag + ".used")
-        draft = json.loads(skb.output_path(project).read_text(encoding="utf-8"))
-        rep = (draft.get("_setup") or {}).get("report") or {"reused": True}
-        logger.warning("[#{}] fw_skeleton: REUSE existing skeleton.json ({} scenes), no LLM", project.id, len(draft.get("сцены") or []))
-    else:
-        draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
+    draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
     scenes = draft["сцены"]
     cov = skb.coverage(full_vo, scenes)
     draft["_setup"] = {
@@ -1712,7 +1702,7 @@ async def _run_fw_skeleton_node(
         reply_text=(
             f"каркас: {len(scenes)} сцен (по фрагменту), персонажей {len(characters)}, "
             f"предметов {len(draft.get('предметы') or [])}, закадр переписан кодом "
-            f"{rep['zakadr_overwritten']} · model {model}"
+            f"{rep.get('zakadr_overwritten')} · model {model}"
         ),
         gate_status="pass",
     )
@@ -1724,7 +1714,7 @@ async def _run_fw_skeleton_node(
         len(frames),
         len(characters),
         n_chars,
-        rep["zakadr_overwritten"],
+        rep.get("zakadr_overwritten"),
         out_path,
     )
     meta = dict(project.meta or {})

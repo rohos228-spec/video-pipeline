@@ -1232,6 +1232,15 @@ async def _ask_script_files(
     return await xgf.run_under_xlsx_lock(project.id, "script", _gpt)
 
 
+def _min_creature_doors(n: int) -> int:
+    """Пол дверей с существом не выше того, что партия физически может набрать.
+
+    У варианта не больше двух дверей, поэтому n=1 не может дать порог 3.
+    """
+    max_possible = max(0, n) * 2
+    return min(max(3, (max(0, n) * 2) // 3), max_possible)
+
+
 async def _run_nii67_script_variants(
     project: Project,
     *,
@@ -1542,7 +1551,7 @@ async def _run_nii67_script_variants(
                 both_none = len(doors) >= 2 and this_creature == 0 and this_none >= 2
                 remaining_after = n - i
                 ch = str(spec.get("creature_hint") or "")
-                min_creature_doors = max(3, (n * 2) // 3)  # count=5 → ≥3 of 10 door-worlds (~half soft floor)
+                min_creature_doors = _min_creature_doors(n)
                 if ch and not _creature_hint_is_env_only_safe(ch) and this_creature == 0:
                     reject_reason = (
                         "штамп требовал существо, а в сценарии нет существа на дверях "

@@ -2902,16 +2902,17 @@ async def _expand_vo_cells_into_shots_default(
         group = [parent, *children]
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
+            # Пустой кусок остаётся пустым: роль и родителя ставим всё равно.
+            # Весь закадр ячейки в пустой шот не копируем.
             piece = vo_parts[i] if i < len(vo_parts) else ""
-            if not piece:
-                continue
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
             else:
                 fr.start_ts = None
                 fr.end_ts = None
-                fr.voiceover_text = piece
+                if piece:
+                    fr.voiceover_text = piece
             fr.duration_seconds = part_sec
             _set_cs(
                 fr,
