@@ -364,7 +364,7 @@ export function OrchestratorWorkspace() {
             </div>
           </section>
 
-          <aside className="flex w-[340px] shrink-0 flex-col bg-black/30" data-testid="orch-task-panel">
+          <aside className="flex w-[340px] shrink-0 flex-col bg-canvas-bg" data-testid="orch-task-panel">
             <div className="border-b border-input px-4 py-3">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Агенты</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
@@ -372,7 +372,7 @@ export function OrchestratorWorkspace() {
                   <div
                     key={agent.role}
                     data-testid={`orch-agent-${agent.role}`}
-                    className="rounded-lg border border-border bg-white/[0.03] px-2.5 py-2"
+                    className="rounded-lg border border-border bg-card px-2.5 py-2"
                   >
                     <div className="text-[11px] font-medium text-foreground/80">{AGENT_LABEL[agent.role]}</div>
                     <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">{agent.status}</div>
@@ -593,7 +593,7 @@ function NodeResultCard({ step }: { step: StepView }) {
   return (
     <div
       data-testid="orch-node-result"
-      className="mb-3 rounded-xl border border-border bg-white/[0.03] px-3 py-2"
+      className="mb-3 rounded-xl border border-border bg-card px-3 py-2"
     >
       <div className="text-[11px] text-foreground/70">
         {step.action}

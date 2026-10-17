@@ -246,7 +246,7 @@ export function ReportEditor() {
                   type="button"
                   data-testid="orch-report-item"
                   className={`mb-2 w-full rounded-lg border px-2.5 py-2 text-left ${
-                    report.id === selectedId ? "border-primary/50 bg-white/[0.05]" : "border-border"
+                    report.id === selectedId ? "border-primary/50 bg-muted" : "border-border"
                   }`}
                   onClick={() => {
                     void openReport(report.id).catch((err: unknown) => {
@@ -329,7 +329,7 @@ export function ReportEditor() {
             )}
           </section>
 
-          <aside className="flex min-h-0 flex-col border-l border-input bg-black/30">
+          <aside className="flex min-h-0 flex-col border-l border-input bg-canvas-bg" data-testid="orch-report-side">
             <div className="border-b border-input p-3">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Просмотр</div>
               <iframe

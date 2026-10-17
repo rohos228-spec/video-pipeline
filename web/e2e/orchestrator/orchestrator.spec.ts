@@ -741,6 +741,54 @@ test("зона оркестратора рисуется токенами INT", 
   expect(swatch.border).toBe("rgba(255, 255, 255, 0.08)");
 });
 
+test("поверхности оркестратора берут токены INT", async ({ page }) => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src");
+  const banned = /bg-white\/\[0\.03\]|bg-white\/\[0\.05\]|bg-black\/30|bg-black\/40/;
+  const files = [
+    "components/orchestrator/orchestrator-workspace.tsx",
+    "components/orchestrator/orchestrator-panel.tsx",
+    "components/orchestrator/report-editor.tsx",
+  ];
+  for (const rel of files) {
+    expect(readFileSync(path.join(srcRoot, rel), "utf8"), rel).not.toMatch(banned);
+  }
+
+  await openWithToken(page, "idle", "int-surfaces");
+  const chat = await page.evaluate(() => {
+    const paint = (selector: string) => {
+      const el = document.querySelector(selector);
+      return el instanceof HTMLElement ? getComputedStyle(el).backgroundColor : "";
+    };
+    return {
+      card: paint("[data-testid=orch-agent-supervisor]"),
+      canvas: paint("[data-testid=orch-task-panel]"),
+    };
+  });
+  // INT ea6c5926: white/3 поверх фона ≈ rgb(13,13,13) = bg-card;
+  // black/30 поверх фона ≈ rgb(4,4,4) = --canvas-bg 1.5%.
+  expect(chat.card).toBe("rgb(13, 13, 13)");
+  expect(chat.canvas).toBe("rgb(4, 4, 4)");
+
+  await page.goto("/orchestrator/reports?scenario=idle&session=int-surfaces-reports&project=13");
+  await expect(page.getByTestId("orch-report-title")).toHaveText("Разбор сцен");
+  const reports = await page.evaluate(() => {
+    const paint = (selector: string) => {
+      const el = document.querySelector(selector);
+      return el instanceof HTMLElement ? getComputedStyle(el).backgroundColor : "";
+    };
+    const selected = [...document.querySelectorAll("[data-testid=orch-report-item]")].find(
+      (el) => el.className.includes("bg-muted"),
+    );
+    return {
+      selected: selected instanceof HTMLElement ? getComputedStyle(selected).backgroundColor : "",
+      side: paint("[data-testid=orch-report-side]"),
+    };
+  });
+  // white/5 поверх фона ≈ rgb(18,18,18) = bg-muted.
+  expect(reports.selected).toBe("rgb(18, 18, 18)");
+  expect(reports.side).toBe("rgb(4, 4, 4)");
+});
+
 test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
     const paint = () =>
       page.evaluate(() => {

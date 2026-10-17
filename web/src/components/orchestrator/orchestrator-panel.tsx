@@ -707,7 +707,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                       : "сообщение оркестратору…"
               }
               className={cn(
-                "h-9 flex-1 rounded-md border bg-black/40 px-3 text-xs disabled:opacity-40",
+                "h-9 flex-1 rounded-md border bg-background px-3 text-xs disabled:opacity-40",
                 fixBugsMode ? "border-amber-400/50" : "border-border",
               )}
             />
