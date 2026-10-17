@@ -16,9 +16,11 @@ from app.services.montage_board_meta import (
     set_montage_meta,
 )
 from app.services.montage_coverage_ops import (
+    _children_of,
     _clear_child_scene_chain,
     _load_frames,
     _refresh_shots_in_beat,
+    _stamp_deleted_shot,
     delete_coverage_child,
 )
 from app.services.vo_shot_expand import _cs, _flag_attrs, _set_cs, is_shot_child
@@ -244,12 +246,26 @@ async def delete_montage_frame(
             "marked": 1,
         }
 
+    reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, number)
-    mark_frame_deleted(
-        frame,
-        project,
-        "delete_montage_frame: кадр помечен, не удалён; медиа в карантине",
-    )
+    mark_frame_deleted(frame, project, reason)
+    _stamp_deleted_shot(frames, frame, reason)
+    from app.services.frame_tombstones import frame_is_active
+
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    promoted = _promote_first_child(frame, kids)
+    promoted_number: int | None = None
+    if promoted is not None:
+        src_vo = (frame.voiceover_text or "").strip()
+        dst = dict(getattr(promoted, "attrs", None) or {})
+        if src_vo and not str(dst.get("vo_cell_full") or "").strip():
+            dst["vo_cell_full"] = src_vo
+            promoted.attrs = dst
+            _flag_attrs(promoted)
+        if src_vo and not (promoted.voiceover_text or "").strip():
+            promoted.voiceover_text = frame.voiceover_text
+        _refresh_shots_in_beat(frames, promoted)
+        promoted_number = int(promoted.number)
     await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
@@ -265,7 +281,7 @@ async def delete_montage_frame(
         "number": number,
         "deleted": 0,
         "marked": 1,
-        "promoted": None,
+        "promoted": promoted_number,
     }
 
 

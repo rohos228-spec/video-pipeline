@@ -214,7 +214,7 @@ async def test_delete_parent_keeps_children(
     await session.commit()
     assert result["deleted"] == 0
     assert result["marked"] == 1
-    assert result["promoted"] is None
+    assert result["promoted"] == 2
     left = list(
         (
             await session.execute(

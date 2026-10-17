@@ -407,7 +407,15 @@ def _detach_from_coverage_ancestor(
 
 
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
-    kids = _children_of(frames, parent)
+    from app.services.frame_tombstones import frame_is_active
+
+    if not frame_is_active(parent):
+        logger.warning(
+            "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
+            getattr(parent, "number", None),
+        )
+        return
+    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -763,14 +771,21 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover-клей не маппим и не вставляем после него.
+    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
+    а помеченный шот возвращается новым активным кадром.
     """
-    live = [m for m in members if not bool(_cs(m).get("leftover"))]
+    from app.services.frame_tombstones import frame_is_active
+
+    live = [
+        m
+        for m in members
+        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
+    ]
     if not live:
         live = [parent]
-    elif parent not in live:
+    elif parent not in live and frame_is_active(parent):
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1107,6 +1122,11 @@ async def delete_coverage_child(
     quarantine_frame_media(project, int(frame.number))
     mark_frame_deleted(frame, project, reason)
     _stamp_deleted_shot(frames, frame, reason)
+    if parent is not None and int(parent.number) != int(frame.number):
+        from app.services.frame_tombstones import frame_is_active
+
+        if frame_is_active(parent):
+            _refresh_shots_in_beat(frames, parent)
     await session.flush()
     logger.warning(
         "WARN delete_coverage_child: кадр #{} id={} помечен, PromptVersion/FrameText на месте",
@@ -1198,15 +1218,19 @@ async def apply_coverage_scene_action(
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
+    from app.services.frame_tombstones import shot_is_active
+
+    live_kadry = [shot for shot in kadry if shot_is_active(shot)]
+    layout = live_kadry or kadry
     if lock_parent_plan:
-        parent_plan = parent_establishing_plan(kadry[0].get("план"))
+        parent_plan = parent_establishing_plan(layout[0].get("план"))
     else:
-        parent_plan = str(kadry[0].get("план") or "").strip() or "СРЕДНИЙ"
-    kadry[0]["план"] = parent_plan
-    kadry[0]["parent_id"] = None
-    master_id = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
-    kadry[0]["id"] = master_id
-    for shot in kadry[1:]:
+        parent_plan = str(layout[0].get("план") or "").strip() or "СРЕДНИЙ"
+    layout[0]["план"] = parent_plan
+    layout[0]["parent_id"] = None
+    master_id = str(layout[0].get("id") or f"{int(parent.number)}-K1")
+    layout[0]["id"] = master_id
+    for shot in layout[1:]:
         shot["parent_id"] = master_id
     if with_coverage and parse_scene_chain(raw):
         chain_text = raw
@@ -1241,8 +1265,8 @@ async def apply_coverage_scene_action(
     group = _visible_cell_members(parent, members)
     inserted: list[Frame] = []
     remap: dict[int, int] = {}
-    if grow and len(kadry) > len(group):
-        need = len(kadry) - len(group)
+    if grow and len(layout) > len(group):
+        need = len(layout) - len(group)
         group, inserted, remap = await _grow_cell_shots(
             session,
             project,
@@ -1263,10 +1287,10 @@ async def apply_coverage_scene_action(
             len(group),
         )
 
-    used = min(len(kadry), len(group))
-    parent_sid = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
+    used = min(len(layout), len(group))
+    parent_sid = str(layout[0].get("id") or f"{int(parent.number)}-K1")
     for i, member in enumerate(group[:used]):
-        shot = kadry[i]
+        shot = layout[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 
@@ -1416,7 +1440,7 @@ async def apply_coverage_op(
         )
     elif op_type == "coverage_delete":
         from app.services.ensure_frames_from_disk import quarantine_frame_media
-        from app.services.frame_tombstones import mark_frame_deleted
+        from app.services.frame_tombstones import frame_is_active, mark_frame_deleted
 
         parent = _vo_parent_frame(frames, frame)
         is_child = parent is not None and int(parent.number) != int(frame.number)
@@ -1443,6 +1467,8 @@ async def apply_coverage_op(
         quarantine_frame_media(project, int(frame.number))
         mark_frame_deleted(frame, project, reason)
         _stamp_deleted_shot(frames, frame, reason)
+        if parent is not None and frame_is_active(parent):
+            _refresh_shots_in_beat(frames, parent)
 
     await session.flush()
     highlight = slot_key_from_op(op)

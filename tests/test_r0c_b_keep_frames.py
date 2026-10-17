@@ -1216,3 +1216,127 @@ async def test_marked_shot_gets_no_voiceover_and_no_active_frame(warn_log, monke
     assert marked["закадр"] == ""
     assert shot_is_active(marked) is False
     assert any("помеченных шотов" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_delete_then_rebuild_does_not_grow_active_frames(
+    session: AsyncSession, project: Project
+) -> None:
+    """После пометки шота повторная раскладка не создаёт активный Frame."""
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.montage_board_frames import delete_montage_frame
+    from app.services.montage_coverage_ops import (
+        apply_coverage_scene_action,
+        delete_coverage_child,
+    )
+    from app.services.vo_shot_expand import _cs
+
+    session.add(project)
+    await session.flush()
+    parent_uid = "ab" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="голова ячейки",
+        status=FrameStatus.planned,
+        sort_key=10.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K1",
+            },
+            "кадры": [
+                {"id": "1-K1", "закадр": "голова ячейки", "действие": "стоит у стола", "план": "СРЕДНИЙ"},
+                {"id": "1-K2", "закадр": "кусок шота", "действие": "садится", "план": "КРУПНЫЙ"},
+            ],
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="cd" * 12,
+        voiceover_text="кусок шота",
+        status=FrameStatus.planned,
+        sort_key=20.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+                "coverage_parent_id": "1-K1",
+            },
+            "кадры": [
+                {"id": "1-K2", "закадр": "кусок шота", "действие": "садится", "план": "КРУПНЫЙ"}
+            ],
+        },
+    )
+    sibling = Frame(
+        project_id=project.id,
+        number=3,
+        uuid="ef" * 12,
+        voiceover_text="третий",
+        status=FrameStatus.planned,
+        sort_key=30.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K3",
+            }
+        },
+    )
+    session.add_all([parent, child, sibling])
+    await session.flush()
+
+    frames = [parent, child, sibling]
+    await delete_coverage_child(session, project, child, frames)
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    assert [fr.number for fr in rows] == [1, 2, 3]
+    active_before = sum(1 for fr in rows if frame_is_active(fr))
+    assert active_before == 2
+    assert frame_is_active(rows[1]) is False
+
+    kadry = list((rows[0].attrs or {}).get("кадры") or [])
+    await apply_coverage_scene_action(
+        session,
+        project,
+        rows[0],
+        list(rows),
+        "1. комната — стоит у стола",
+        grow=True,
+        kadry=kadry,
+        lock_parent_plan=False,
+    )
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    assert [fr.number for fr in rows] == [1, 2, 3]
+    assert sum(1 for fr in rows if frame_is_active(fr)) == active_before
+    marked = next(fr for fr in rows if fr.number == 2)
+    assert marked.voiceover_text == "кусок шота"
+    assert any(
+        item.get("id") == "1-K2" and item.get("активен") is False
+        for item in (rows[0].attrs or {}).get("кадры") or []
+    )
+
+    parent_row = next(fr for fr in rows if fr.number == 1)
+    result = await delete_montage_frame(session, project, int(parent_row.id))
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    assert [fr.id for fr in rows if fr.number == 1] == [parent_row.id]
+    assert frame_is_active(rows[0]) is False
+    assert result["promoted"] == 3
+    head = next(fr for fr in rows if fr.number == 3)
+    assert _cs(head).get("role") == "vo_parent"
+    assert str((_cs(head).get("vo_cell_full") or head.attrs.get("vo_cell_full") or "")) or head.voiceover_text
