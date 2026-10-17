@@ -667,6 +667,9 @@ function ApprovalCard({
             <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled>
               Reject
             </Button>
+            <Button type="button" size="sm" variant="outline" data-testid="orch-approval-hide" onClick={onClose}>
+              Скрыть
+            </Button>
             <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
               Решение недоступно: сервер не передал id
             </p>

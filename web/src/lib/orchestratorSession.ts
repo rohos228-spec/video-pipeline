@@ -180,6 +180,13 @@ export interface TaskView {
   id: string;
   title: string;
   status: TaskStatus;
+  /**
+   * Сессия, чей статус показан в `status`.
+   * Событие другой сессии пишет только в `statusBySession`.
+   */
+  statusSession: string | null;
+  /** Последний статус по сессии. Чужая сессия не съедает переход своей. */
+  statusBySession: Record<string, TaskStatus>;
   steps: StepView[];
   checkpoints: CheckpointView[];
   validators: ValidatorView[];
@@ -360,6 +367,7 @@ function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, ses
   if (!taskId || !sessionId) return;
   for (const item of state.approvals) {
     if (item.resolved || item.changeId) continue;
+    if (isTerminalBlock(item.reason)) continue;
     if (item.taskId !== taskId || item.sessionId !== sessionId) continue;
     item.resolved = "closed";
   }
@@ -372,10 +380,22 @@ function applyTaskStatus(
   sessionId: string | null,
 ): TaskView {
   const task = ensureTask(state.tasks, taskId);
-  if (task.status !== status) {
-    closeApprovalsWithoutChange(state, taskId, sessionId);
-    task.status = status;
+  if (!sessionId) {
+    if (task.status !== status) task.status = status;
+    return task;
   }
+  if (task.statusBySession[sessionId] === status) return task;
+  task.statusBySession[sessionId] = status;
+  const ownsDisplay = task.statusSession == null || task.statusSession === sessionId;
+  if (ownsDisplay) {
+    task.statusSession = sessionId;
+    if (task.status !== status) {
+      closeApprovalsWithoutChange(state, taskId, sessionId);
+      task.status = status;
+    }
+    return task;
+  }
+  closeApprovalsWithoutChange(state, taskId, sessionId);
   return task;
 }
 
@@ -504,6 +524,8 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
       id,
       title: title || "Задача",
       status: "queued",
+      statusSession: null,
+      statusBySession: {},
       steps: [],
       checkpoints: [],
       validators: [],
@@ -580,6 +602,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     agents: state.agents.map((agent) => ({ ...agent })),
     tasks: state.tasks.map((task) => ({
       ...task,
+      statusBySession: { ...task.statusBySession },
       steps: task.steps.map((step) => ({
         ...step,
         node: step.node ? { ...step.node } : null,

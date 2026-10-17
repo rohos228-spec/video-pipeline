@@ -264,7 +264,10 @@ export function useOrchestratorChat() {
     return () => window.clearTimeout(timer);
   }, [killPhase, killSessionId, killTaskId]);
 
+  const killLock = useRef(false);
   const kill = useCallback(async () => {
+    if (killLock.current) return;
+    killLock.current = true;
     const taskId = state.tasks.at(-1)?.id ?? null;
     const sessionId = boot.session;
     const notice = { taskId, sessionId };
@@ -275,13 +278,13 @@ export function useOrchestratorChat() {
       dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
     };
     try {
-      const result = (await postOrchKill(
+      const result = await postOrchKill(
         cfg,
         { session_id: boot.session, reason: "kill switch из чата" },
         ac.signal,
-      )) as { ok?: boolean; detail?: string; stop_key_set?: boolean } | undefined;
-      const body = result ?? {};
-      if (body.stop_key_set === true && body.ok !== false) {
+      );
+      const body = result.body;
+      if (body?.stop_key_set === true && body.ok !== false) {
         dispatch({
           type: "kill-notice",
           detail: body.detail || "",
@@ -292,8 +295,8 @@ export function useOrchestratorChat() {
         setSendError("");
         return;
       }
-      const missing = body.stop_key_set !== true && body.stop_key_set !== false;
-      fail(body.detail || (missing ? "В ответе нет stop_key_set" : "Стоп-ключ не установлен"));
+      const missing = !body || (body.stop_key_set !== true && body.stop_key_set !== false);
+      fail(body?.detail || (missing ? "В ответе нет stop_key_set" : "Стоп-ключ не установлен"));
     } catch (error) {
       const message = error instanceof Error ? error.message : "kill switch не прошёл";
       if (isAbortError(error)) {
@@ -304,6 +307,7 @@ export function useOrchestratorChat() {
       fail(message);
     } finally {
       window.clearTimeout(timer);
+      killLock.current = false;
     }
   }, [boot.session, cfg, noteAuth, state.tasks]);
 

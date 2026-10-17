@@ -97,9 +97,15 @@ export function readOrchProjectId(): number | null {
   }
 }
 
+/** Управляющие символы и обратный слэш меняют разбор URL. Такие строки не адрес API. */
+function hasUnsafeUrlChars(value: string): boolean {
+  return /[\u0000-\u001F\u007F\\]/.test(value);
+}
+
 function isLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  // URL.hostname для IPv6 уже со скобками (`[::1]`). Голый `::1` парсер не отдаёт.
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
 /**
@@ -108,6 +114,7 @@ function isLoopbackHost(hostname: string): boolean {
  * Userinfo, протокол-относительный адрес и прочие схемы — null.
  */
 export function normalizedOrchEnvApi(value: string): string | null {
+  if (hasUnsafeUrlChars(value)) return null;
   const raw = value.trim();
   if (!raw || raw.startsWith("//")) return null;
   let url: URL;
@@ -137,19 +144,30 @@ function discardedOrchApiLabel(raw: string): string {
   }
 }
 
+/** Один warn на серию отброшенных чтений. Успешный env снова взводит флаг. */
+let discardedOrchApiWarned = false;
+
 function warnDiscardedOrchApi(raw: string): void {
+  if (discardedOrchApiWarned) return;
+  discardedOrchApiWarned = true;
   console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
 }
 
 /** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim();
-  if (!raw) return "";
-  const normalized = normalizedOrchEnvApi(raw);
+  const raw = process.env.NEXT_PUBLIC_ORCH_API || "";
+  if (hasUnsafeUrlChars(raw)) {
+    warnDiscardedOrchApi(raw);
+    return "";
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const normalized = normalizedOrchEnvApi(trimmed);
   if (!normalized) {
     warnDiscardedOrchApi(raw);
     return "";
   }
+  discardedOrchApiWarned = false;
   return normalized;
 }
 
@@ -164,6 +182,7 @@ function normalizeBase(value: string): string {
 
 /** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
 export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
+  if (hasUnsafeUrlChars(value) || hasUnsafeUrlChars(pageOrigin)) return false;
   const raw = normalizeBase(value);
   if (!raw || !pageOrigin) return false;
   if (raw.startsWith("//")) return false;
@@ -250,7 +269,25 @@ async function readError(res: Response): Promise<string> {
   return text.slice(0, 300);
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+/** Тот же конверт, что у postApproval: 204 — `{status:204, body:null}`, не `undefined`. */
+export type OrchHttpResult<T> = {
+  status: number;
+  body: T | null;
+};
+
+async function readJsonObject<T>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  if (!text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text) as T;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<OrchHttpResult<T>> {
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -266,16 +303,23 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
   if (!res.ok) {
     throw new OrchApiError(res.status, await readError(res));
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  if (res.status === 204) return { status: 204, body: null };
+  return { status: res.status, body: await readJsonObject<T>(res) };
 }
 
-export function postOrchMessage(
+function requireJsonBody<T>(result: OrchHttpResult<T>): T {
+  if (result.body == null) throw new OrchApiError(result.status, "пустой ответ");
+  return result.body;
+}
+
+export async function postOrchMessage(
   cfg: OrchClientConfig,
   body: OrchOutboundMessage,
   signal?: AbortSignal,
 ): Promise<OrchMessageAckHttp> {
-  return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
+  return requireJsonBody(
+    await postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal),
+  );
 }
 
 export type ApprovalHttpResult = {
@@ -345,7 +389,13 @@ export function postOrchReject(
   );
 }
 
-export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
+export type OrchKillHttpBody = OrchKillResult & { stop_key_set?: boolean };
+
+export function postOrchKill(
+  cfg: OrchClientConfig,
+  body: OrchKillRequest,
+  signal?: AbortSignal,
+): Promise<OrchHttpResult<OrchKillHttpBody>> {
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
 }
 
@@ -410,29 +460,29 @@ export function getOrchReport(cfg: OrchClientConfig, reportId: number, signal?: 
   return getJson(cfg, `/api/orchestrator/reports/${reportId}`, signal);
 }
 
-export function postCreateReport(
+export async function postCreateReport(
   cfg: OrchClientConfig,
   body: { title: string; project_id: number; sections: ReportSection[]; editable?: boolean },
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, "/api/orchestrator/actions/create_report", body, signal);
+  return requireJsonBody(await postJson(cfg, "/api/orchestrator/actions/create_report", body, signal));
 }
 
-export function postUpdateReport(
+export async function postUpdateReport(
   cfg: OrchClientConfig,
   body: { report_id: number; base_version: number; sections_patch: ReportSection[]; reason?: string },
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, "/api/orchestrator/actions/update_report", body, signal);
+  return requireJsonBody(await postJson(cfg, "/api/orchestrator/actions/update_report", body, signal));
 }
 
-export function postRollbackReport(
+export async function postRollbackReport(
   cfg: OrchClientConfig,
   reportId: number,
   version: number,
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, `/api/orchestrator/reports/${reportId}/rollback`, { version }, signal);
+  return requireJsonBody(await postJson(cfg, `/api/orchestrator/reports/${reportId}/rollback`, { version }, signal));
 }
 
 export interface ParsedSse {
