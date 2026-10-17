@@ -19,6 +19,10 @@ from app.settings import settings
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent
 _NODE_KEY_RE = re.compile(r"^n_[a-z0-9_]+$")
+_ADD_COLUMN_RE = re.compile(
+    r"^[ \t]*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)\b[^;]*;",
+    re.IGNORECASE | re.MULTILINE,
+)
 _MIGRATED: set[str] = set()
 _MIGRATE_LOCK = threading.Lock()
 
@@ -94,7 +98,9 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     for path in sorted(_MIGRATIONS_DIR.glob("*.sql")):
         if path.name in applied:
             continue
-        conn.executescript(path.read_text(encoding="utf-8"))
+        script = _without_existing_columns(conn, path.read_text(encoding="utf-8"))
+        if script.strip():
+            conn.executescript(script)
         conn.execute(
             "INSERT INTO orch_schema_migrations (name, applied_at) VALUES (?, ?)",
             (path.name, utc_now()),
@@ -102,6 +108,22 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         conn.commit()
         done.append(path.name)
     return done
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _without_existing_columns(conn: sqlite3.Connection, sql: str) -> str:
+    """Повторный ALTER после обрыва между файлом и журналом не дублирует колонку."""
+
+    def skip(match: re.Match[str]) -> str:
+        if _has_column(conn, match.group(1), match.group(2)):
+            return ""
+        return match.group(0)
+
+    return _ADD_COLUMN_RE.sub(skip, sql)
 
 
 def node_key_ok(value: str) -> bool:

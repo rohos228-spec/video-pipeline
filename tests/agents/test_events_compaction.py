@@ -34,7 +34,7 @@ async def test_old_events_drop_except_checkpoint_and_approval(runtime) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cap_drops_oldest_ordinary_then_protected(runtime) -> None:
+async def test_cap_drops_oldest_ordinary_and_keeps_protected(runtime) -> None:
     session = "compact-cap"
     for index in range(4):
         await runtime.bus.publish(session, "message", {"n": index})
@@ -51,5 +51,19 @@ async def test_cap_drops_oldest_ordinary_then_protected(runtime) -> None:
     for index in range(4):
         await runtime.bus.publish(protected, "checkpoint", {"n": index})
     hard = compact_events(protected, cap=2)
-    assert hard["deleted_cap"] == 2
-    assert persisted_types(protected) == ["checkpoint", "checkpoint"]
+    assert hard["deleted_cap"] == 0
+    assert persisted_types(protected) == ["checkpoint", "checkpoint", "checkpoint", "checkpoint"]
+
+
+@pytest.mark.asyncio
+async def test_enforce_cap_never_deletes_protected_events(runtime) -> None:
+    session = "compact-protected"
+    for index in range(3):
+        await runtime.bus.publish(session, "message", {"n": index})
+    for index in range(4):
+        await runtime.bus.publish(session, "approval_required", {"n": index})
+    stats = compact_events(session, cap=2)
+    assert stats["deleted_cap"] == 3
+    types = persisted_types(session)
+    assert types.count("message") == 0
+    assert types.count("approval_required") == 4
