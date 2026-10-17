@@ -1424,8 +1424,8 @@ def test_audit_header_counters() -> None:
     assert header["sha"].startswith("3ec7c957")
     assert header["date"] == "2026-10-17"
     assert header["actions"] == 102
-    assert header["keep"] == 93
-    assert header["modify"] == 9
+    assert header["keep"] == 90
+    assert header["modify"] == 12
     assert header["remove"] == 0
     assert header["actions"] == header["keep"] + header["modify"] + header["remove"]
     assert modify_ids == [
@@ -1438,9 +1438,18 @@ def test_audit_header_counters() -> None:
         "montage.upload_voice",
         "montage.upload_music",
         "history.rollback",
+        "montage.delete_frame",
+        "node.clear_check_agent",
+        "storage.clear_files",
     ]
     assert len(modify_ids) == header["modify"]
-    assert header["fs_breach"] == ()
+    assert header["fs_breach"] == (
+        "group.delete",
+        "montage.delete_frame",
+        "node.clear_check_agent",
+        "prompt.delete_master",
+        "storage.clear_files",
+    )
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
 
 
@@ -2224,7 +2233,14 @@ def test_whitelist_has_no_code_exec_tools() -> None:
     header = load_audit_header()
     modify_ids = modify_ids_from_audit()
     assert len(modify_ids) == header["modify"]
-    assert header["fs_breach"] == ()
+    assert header["fs_breach"] == (
+        "group.delete",
+        "montage.delete_frame",
+        "node.clear_check_agent",
+        "prompt.delete_master",
+        "storage.clear_files",
+    )
+    assert set(header["fs_breach"]) <= set(modify_ids)
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
     assert set(header["snapshot_allow"]) <= set(modify_ids)
 
@@ -2248,25 +2264,33 @@ def test_whitelist_has_no_code_exec_tools() -> None:
 
     offenders: list[str] = []
     unexpected: list[str] = []
-    watched = set(modify_ids) | set(header["snapshot_allow"])
+    breach_ids = set(header["fs_breach"])
+    found_breach: set[str] = set()
     for action_id, spec in zip(ids, specs, strict=True):
         fn = _executor(spec)
         if fn is None:
             continue
         if exec_calls_of(fn, label=action_id):
             offenders.append(action_id)
-        if action_id not in watched:
-            continue
         hits = reachable_write_hits(fn, action_id)
         bad = [hit for hit in hits if not hit.allowed]
         if bad:
-            unexpected.append(action_id + ": " + "; ".join(str(hit) for hit in bad))
+            found_breach.add(action_id)
+            if action_id not in breach_ids:
+                unexpected.append(action_id + ": " + "; ".join(str(hit) for hit in bad))
+        elif action_id in breach_ids:
+            unexpected.append(action_id + " в fs_breach, но детектор ничего не запретил")
         if action_id in header["snapshot_allow"]:
             deletes = [hit for hit in hits if hit.snapshot_delete]
             if deletes:
                 unexpected.append(
                     action_id + " удаляет снимок: " + "; ".join(str(hit) for hit in deletes)
                 )
+    if found_breach != breach_ids:
+        unexpected.append(
+            "fs_breach не совпал с детектором: "
+            + ", ".join(sorted(found_breach ^ breach_ids))
+        )
     assert not offenders, (
         "исполнители выглядят как обёртки subprocess/eval/exec/compile: "
         + ", ".join(sorted(offenders))

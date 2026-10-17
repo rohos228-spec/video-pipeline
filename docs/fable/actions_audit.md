@@ -4,10 +4,10 @@ source: #342
 sha: 3ec7c9579716a53ab119cabb340af562cba76b31
 date: 2026-10-17
 actions: 102
-keep: 93
-modify: 9
+keep: 90
+modify: 12
 remove: 0
-fs_breach:
+fs_breach: group.delete,montage.delete_frame,node.clear_check_agent,prompt.delete_master,storage.clear_files
 snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 -->
 
@@ -53,8 +53,8 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 |---|---|
 | Живых действий | 102 |
 | Регистраций в исходнике | 103 (одна снята: ранний `node.run_step`) |
-| keep | 93 |
-| modify | 9 |
+| keep | 90 |
+| modify | 12 |
 | remove | 0 |
 | Риск none | 21 |
 | Риск low | 7 |
@@ -76,8 +76,11 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 7. `montage.upload_voice`
 8. `montage.upload_music`
 9. `history.rollback`
+10. `montage.delete_frame`
+11. `node.clear_check_agent`
+12. `storage.clear_files`
 
-`fs_breach` пуст: вердикты не пересматривались (keep 93, modify 9, remove 0). Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
+`fs_breach`: `group.delete`, `montage.delete_frame`, `node.clear_check_agent`, `prompt.delete_master`, `storage.clear_files`. После детектора HTTP DELETE три keep стали modify: `montage.delete_frame`, `node.clear_check_agent`, `storage.clear_files`. `group.delete` и `prompt.delete_master` уже были modify. Счёт: keep 90, modify 12, remove 0. Каталог `data/action_layer_snapshots/` разрешён только трём id из поля `snapshot_allow` (`montage.upload_voice`, `montage.upload_music`, `history.rollback`). Другое действие при записи туда — отказ. Эти три на #342 делают `shutil.copy2` в `_backup_file` и не удаляют файлы снимков. `shutil.rmtree` запрещён на любом пути. `rag.reindex` в реестре #342 нет; для него заранее разрешены только `{settings.data_dir}/orch_rag.db`, `-wal` и `-shm`.
 
 ## Таблица действий
 
@@ -132,7 +135,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 47 | `montage.merge_scenes` | app/services/action_layer/builtin_montage_more.py:_merge_scenes (спека L904) | Склеивает две соседние ячейки закадра в одну сцену. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 48 | `montage.split_scene` | app/services/action_layer/builtin_montage_more.py:_split_scene (спека L915) | Кадр и все правее становятся новой сценой (первый кадр сцены отделить нельзя). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 49 | `montage.explode_scene` | app/services/action_layer/builtin_montage_more.py:_explode_scene (спека L925) | Каждый видимый кадр ячейки становится отдельной ячейкой закадра. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
-| 50 | `montage.delete_frame` | app/services/action_layer/builtin_montage_more.py:_delete_frame (спека L935) | Удаляет кадр; у головы сцены первый дочерний кадр повышается. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 50 | `montage.delete_frame` | app/services/action_layer/builtin_montage_more.py:_delete_frame (спека L935) | Удаляет кадр; у головы сцены первый дочерний кадр повышается. | high | destructive | (а) косвенно: `ctx.call("DELETE", …/frames/{id})` | modify | Детектор видит HTTP DELETE. Кадр и файлы уходят через API. В R2 удаление кадра не должно быть инструментом оркестратора без отдельного разрешения. |
 | 51 | `montage.swap_slots` | app/services/action_layer/builtin_montage_more.py:_swap_slots (спека L946) | Обмен слотов картинок или видео между любыми кадрами; слоты помечаются устаревшими. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 52 | `montage.move_image` | app/services/action_layer/builtin_montage_more.py:_move_image (спека L957) | Перенос в пустой слот или обмен, если цель занята; промты едут с файлами. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 53 | `montage.delete_image` | app/services/action_layer/builtin_montage_more.py:_delete_image (спека L966) | Файл уходит в old/scenes, запись картинки удаляется, видео кадра помечается устаревшим. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
@@ -154,7 +157,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 69 | `montage.upload_ref` | app/services/action_layer/builtin_wave3.py:_upload_ref (спека L515) | Новый ручной референс кадра (картинка и имя): новый файл, прежние рефы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
 | 70 | `node.upload_file` | app/services/action_layer/builtin_wave3.py:_upload_node_file (спека L527) | Подменяет вход ноды: .xlsx заменяет прежние xlsx ноды (они удаляются) и выключает «брать со стрелок»; в режиме проверки .txt/.md становится агентом проверки. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 71 | `node.upload_check_agent` | app/services/action_layer/builtin_wave3.py:_upload_check_agent (спека L539) | Сохраняет .txt/.md агента проверки ноды, включает режим проверки и источник «агент». | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
-| 72 | `node.clear_check_agent` | app/services/action_layer/builtin_wave3.py:_clear_check_agent (спека L550) | Удаляет загруженные файлы агента проверки ноды: дальше берётся встроенный агент. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 72 | `node.clear_check_agent` | app/services/action_layer/builtin_wave3.py:_clear_check_agent (спека L550) | Удаляет загруженные файлы агента проверки ноды: дальше берётся встроенный агент. | high | destructive | (а) косвенно: `ctx.call("DELETE", …/check-agent)` | modify | Детектор видит HTTP DELETE. Файл агента проверки удаляется через API. В R2 это не инструмент оркестратора. |
 | 73 | `project.pause` | app/services/action_layer/builtin_wave3.py:_pause (спека L559) | Останавливает выполняющуюся ноду и ставит статус paused (прежний статус запоминается). | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
 | 74 | `project.resume` | app/services/action_layer/builtin_wave3.py:_resume (спека L565) | Возвращает статус, с которого проект ушёл в паузу. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
 | 75 | `project.continue_pipeline` | app/services/action_layer/builtin_wave3.py:_continue (спека L578) | Снимает ручной стоп и паузу и продвигает проект на следующий шаг (*_ready -> running), если шаг готов к запуску. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
@@ -181,7 +184,7 @@ snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 | 96 | `project.upload_xlsx` | app/services/action_layer/builtin_wave5.py:_upload_xlsx (спека L484) | Заменяет project.xlsx файлом .xlsx (проверяется сервером) и перечитывает его в базу: поля проекта, закадр и кадры перезаписываются значениями из файла. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 97 | `hero.replace_image` | app/services/action_layer/builtin_wave5.py:_replace_hero (спека L496) | Кладёт картинку (png, jpg, webp) в папку characters проекта под её именем; файл с таким же именем перезаписывается без архива. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
 | 98 | `storage.upload_file` | app/services/action_layer/builtin_wave5.py:_storage_upload (спека L505) | Добавляет файл в хранилище ноды проекта под новым именем с отметкой времени; существующие файлы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
-| 99 | `storage.clear_files` | app/services/action_layer/builtin_wave5.py:_storage_clear (спека L512) | Удаляет все файлы из хранилища ноды проекта. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 99 | `storage.clear_files` | app/services/action_layer/builtin_wave5.py:_storage_clear (спека L512) | Удаляет все файлы из хранилища ноды проекта. | high | destructive | (а) косвенно: `ctx.call("DELETE", …/storage/{node_key}/files)` | modify | Детектор видит HTTP DELETE. Хранилище ноды очищается через API. В R2 это не инструмент оркестратора. |
 | 100 | `history.list_snapshots` | app/services/action_layer/builtin_wave5_history.py:_list_snapshots (спека L428) | Список снимков, которые слой сохранил перед правками закадра, покрытия, полей шота, файлов озвучки и музыки, мастер-промтов: что было, что стало и можно ли откатить. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
 | 101 | `history.rollback` | app/services/action_layer/builtin_wave5_history.py:_rollback (спека L437) | Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла правка. | high | destructive | (а) прямо: при откате file_voice/file_music снова вызывает _backup_file в data/action_layer_snapshots/ (тот же именной allowlist) | modify | Откат нужен. Копия остаётся в каталоге снимков, файлы снимков не удаляются. Вердикт modify сохранён. |
 | 102 | `publish.send` | app/services/action_layer/publish_action.py:_publish_send (спека L194) | Публикует готовый ролик проекта на площадки через профиль MoreLogin с подписью из темы проекта. | high | destructive | (в) косвенно: шаг publish ходит на площадки через MoreLogin; обработчик — только POST внутреннего API | keep | Штатная публикация студии под destructive и подтверждением человека. Обработчик не открывает сокет сам. Вопрос куратору — оставлять ли в whitelist оркестратора. |
@@ -593,3 +596,112 @@ PLAN §2.2.3 и §3.6 оценивали **2–4** call-site (`apply_ops_batches
 ## Что этот документ не делает
 
 Rebase #342, перенос кода в main, патчи `app/services/`, smoke на :8766 и тег `action-layer-v1` — это сам R0b после R0a. Здесь таблица действий, закрытый перечень из 15 мест, инвентаризация чтений, контракт NodeDef и тест-заготовка `tests/actions/test_whitelist_no_exec.py`. Пока реестра в main нет, тест реестра пропускается; детектор exec проверяется на локальных заглушках и падать не должен.
+
+## Прогон детектора по всем 102 действиям
+
+Снято с дерева #342 `3ec7c957` анализатором `tests/actions/test_whitelist_no_exec.py` (`reachable_write_hits`). Вердикт в этой таблице уже после ужесточения: HTTP DELETE переводит действие в modify и в `fs_breach`.
+
+| Действие | Вердикт | Найденные вызовы и пути | Причина |
+|---|---|---|---|
+| `change.apply` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `change.get` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `change.list` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `change.propose` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `change.rollback` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `group.delete` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `group.get` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `group.insert` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `group.list` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `group.save_from_selection` | modify | нет | Вердикт прежний: POST пишет node_groups в git. Детектор HTTP DELETE этого вызова не видит. |
+| `group.shots_report` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `group.update` | modify | нет | Вердикт прежний: PUT переписывает JSON группы в git. Нового запрета детектора нет. |
+| `hero.replace_image` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `history.list_snapshots` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `history.rollback` | modify | Path.mkdir {settings.data_dir}/action_layer_snapshots/dyn (allowed); shutil.copy2 {settings.data_dir}/action_layer_snapshots/dyn/dyn (allowed) | Запись внутри allowlist или каталога снимков для разрешённого id. |
+| `hitl.approve` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `hitl.list_pending` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `hitl.regenerate` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `hitl.reject` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `kill_switch.engage` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `massfactory.start` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `media.get_recovery_assessment` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `media.list_unknown_outcomes` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `media.release_unknown` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `media.resume_poll` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.align_audio` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.apply_queue` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.apply_status` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.cancel_queue_ops` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.delete_child_frame` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.delete_frame` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `montage.delete_image` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.delete_manual_ref` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.delete_video` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.explode_scene` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.generate_scene` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.generate_scene_images` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.get_board` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.get_cost_basis` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.improve_scene` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.insert_frame` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.link_ref` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.list_ref_assets` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.merge_scenes` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.montage_status` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.move_image` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.queue_ops` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.recover_outsee` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.recover_status` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.run_montage` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_anchors` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_assemble_params` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_coverage` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_scene_chain` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_send_to_main_pc` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_video_trim` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_voiceover` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.set_voiceover_span` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.split_scene` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.suggest_scene_variants` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.swap_shots` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.swap_slots` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.unlink_ref` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.upload_image` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.upload_music` | modify | Path.mkdir {settings.data_dir}/action_layer_snapshots/dyn (allowed); shutil.copy2 {settings.data_dir}/action_layer_snapshots/dyn/dyn (allowed) | Запись внутри allowlist или каталога снимков для разрешённого id. |
+| `montage.upload_ref` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.upload_video` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `montage.upload_voice` | modify | Path.mkdir {settings.data_dir}/action_layer_snapshots/dyn (allowed); shutil.copy2 {settings.data_dir}/action_layer_snapshots/dyn/dyn (allowed) | Запись внутри allowlist или каталога снимков для разрешённого id. |
+| `node.clear_check_agent` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `node.get_config` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.get_llm_route` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.get_run_cost_basis` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.reset_from_step` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.run_step` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.set_config` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.set_disabled` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.set_prompt_variant` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.upload_check_agent` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `node.upload_file` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.continue_pipeline` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.create` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.create_child` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.patch_settings` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.pause` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.reload_xlsx` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.resume` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.set_auto_mode` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.stop` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `project.upload_xlsx` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `prompt.create_master` | modify | нет | Вердикт прежний: новый файл варианта промта в git. Детектор DELETE этого PUT не видит. |
+| `prompt.delete_master` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `prompt.get_master` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `prompt.save_master` | modify | нет | Вердикт прежний: PUT мастер-промта в git. Ветка снимка для master_prompt мёртвая, DELETE нет. |
+| `publish.send` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `shot.add_cell` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `shot.edit_cell_voiceover` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `shot.edit_field` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `shot.get_menu` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `step.get_run_cost_basis` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `step.run_step` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
+| `storage.clear_files` | modify | http.delete путь не доказан (denied) | HTTP DELETE: удаление через внутренний API. Вердикт modify, id в fs_breach. |
+| `storage.upload_file` | keep | нет | Детектор не нашёл запись, удаление, SQL DELETE/DROP/TRUNCATE и HTTP DELETE. |
