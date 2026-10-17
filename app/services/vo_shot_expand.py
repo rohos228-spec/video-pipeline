@@ -2014,7 +2014,7 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             plain_vo = _ladder_vo_text(items)
             if len(plain_vo) < 24:
                 continue
-            if not any(s_vo and (plain_vo == s_vo or plain_vo in s_vo) for s_vo in s_vos):
+            if not any(s_vo and plain_vo == s_vo for s_vo in s_vos):
                 continue
             for _idx, members in items:
                 _take(members)
