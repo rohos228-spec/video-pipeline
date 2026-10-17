@@ -404,7 +404,13 @@ async def _assemble_body(
     timeline_mode = "excel-r15"
 
     if per_frame_tts:
-        audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
+        (
+            audio_clips,
+            audio_duration,
+            time_scale,
+            per_frame_audio,
+            mux_audio,
+        ) = await build_assembly_timeline(
             audio_dir,
             audio_path,
             frame_numbers,
@@ -537,7 +543,7 @@ async def _assemble_body(
             logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
             clips,
-            audio_path,
+            mux_audio,
             out_path,
             subtitles_ass=subs_path,
             max_duration=audio_duration,

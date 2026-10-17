@@ -1515,7 +1515,7 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
 
 @pytest.mark.asyncio
 async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> None:
-    """Помеченный кадр в середине не разъезжает клипы и длину звука."""
+    """Помеченный кадр выпадает из списка клипов. Длину файла проверяет соседний тест."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
@@ -1551,7 +1551,7 @@ async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> No
         ),
         patch("app.services.frame_audio.has_all_frame_audio", return_value=False),
     ):
-        clips, master, _scale, per_frame = await build_assembly_timeline(
+        clips, master, _scale, per_frame, mux_audio = await build_assembly_timeline(
             Path("."),
             voice,
             [1, 2, 3],
@@ -1560,9 +1560,64 @@ async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> No
             omit_numbers={2},
         )
     assert per_frame is False
+    assert mux_audio == voice
     assert [c.frame_number for c in clips] == [1, 3]
     assert abs(sum(c.duration for c in clips) - master) < 0.05
     assert clips[1].start_ts == clips[0].end_ts
+
+
+@pytest.mark.asyncio
+async def test_marked_frame_mux_audio_matches_live_clip_duration(tmp_path: Path, warn_log) -> None:
+    """Mux берёт новую дорожку без речи помеченного кадра, не весь voice_full."""
+    import subprocess
+
+    from app.services.frame_audio import build_assembly_timeline
+    from app.services.media_probe import probe_duration
+
+    def tone(path: Path, seconds: float, freq: int) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"sine=frequency={freq}:duration={seconds}",
+                "-c:a", "libmp3lame", "-q:a", "7",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    tone(audio / "frame_001.mp3", 1.0, 440)
+    tone(audio / "frame_002.mp3", 2.0, 880)
+    tone(audio / "frame_003.mp3", 1.5, 660)
+    voice = audio / "voice_full.mp3"
+    tone(voice, 4.5, 220)
+    original = voice.read_bytes()
+    frame_bytes = {
+        n: (audio / f"frame_{n:03d}.mp3").read_bytes() for n in (1, 2, 3)
+    }
+
+    clips, master, _scale, per_frame, mux_audio = await build_assembly_timeline(
+        audio,
+        voice,
+        [1, 2, 3],
+        per_frame_tts=True,
+        omit_numbers={2},
+    )
+    assert per_frame is True
+    assert [c.frame_number for c in clips] == [1, 3]
+    assert mux_audio != voice
+    assert mux_audio.is_file()
+    assert voice.read_bytes() == original
+    for number, data in frame_bytes.items():
+        assert (audio / f"frame_{number:03d}.mp3").read_bytes() == data
+    probed = await probe_duration(mux_audio)
+    clip_sum = sum(c.duration for c in clips)
+    assert abs(probed - clip_sum) < 0.25
+    assert abs(master - clip_sum) < 0.25
+    assert probed < (await probe_duration(voice)) - 1.0
+    assert any("дорожка без помеченных" in line for line in warn_log)
 
 
 @pytest.mark.asyncio
