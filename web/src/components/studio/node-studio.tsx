@@ -780,6 +780,20 @@ export function NodeStudio({
         </div>
         {inTab === "settings" ? (
           <div data-vp-settings className="nodrag flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+            {nodeDisabled ? (
+              <div className="flex flex-col gap-2 rounded-[10px] border border-amber-400/30 px-4 py-3">
+                <p className="text-[13px] text-amber-300">Нода отключена в графе — шаг не запустится.</p>
+                {onEnableNode ? (
+                  <button
+                    type="button"
+                    className="h-9 w-fit rounded-md border border-amber-400/40 px-3 text-[13px] text-amber-200"
+                    onClick={onEnableNode}
+                  >
+                    Включить ноду
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {!NO_LLM_NODE_TYPES.has(nodeType) ? (
             <div className="flex items-center gap-3 rounded-[10px] border border-white/[0.06] px-4 py-3">
               <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">Модель</span>
@@ -809,6 +823,8 @@ export function NodeStudio({
                 {nodeType === "items" && projectId ? <ItemsConfigPanel projectId={projectId} /> : null}
                 {nodeType === "hero" && projectId ? <HeroConfigPanel projectId={projectId} /> : null}
                 {nodeType === "script" && projectId && projectUsesNii67Script(project.data ?? null) ? <Nii67CardPanel projectId={projectId} /> : null}
+                {nodeType === "sfx_plan" && projectId ? <SfxPlanSettingsPanel projectId={projectId} /> : null}
+                {(nodeType === "sfx_gen" || nodeType === "sfx") && projectId ? <SfxGenSettingsPanel projectId={projectId} /> : null}
               </div>
             ) : null}
             {promptStepCode && projectId && nodeKey ? (
@@ -912,7 +928,26 @@ export function NodeStudio({
           </div>
         ) : (
           <div className="nodrag flex min-h-0 flex-auto flex-col overflow-hidden p-3">
-            {showFilesPanel && promptStepCode ? (
+            {showGptTextPanel && projectId != null && activeStepCode ? (
+              <GptTextPanel
+                key={`inline-gpt-${activeSlot?.id}-${activeStepCode}`}
+                projectId={projectId}
+                stepCode={activeStepCode}
+              />
+            ) : showFramePromptsPanel && projectId != null ? (
+              <FramePromptsPanel
+                key={`inline-frame-prompts-${projectId}-${nodeType}`}
+                projectId={projectId}
+                field={nodeType === "videos" ? "animation_prompt" : "image_prompt"}
+              />
+            ) : showFilesPanel && isCheckNode && projectId != null && nodeKey ? (
+              <CheckNodePromptPanel
+                projectId={projectId}
+                nodeKey={nodeKey}
+                resolve={operatorResolve.data}
+                loading={operatorResolve.isLoading}
+              />
+            ) : showFilesPanel && promptStepCode ? (
               <PromptFilesPanel
                 key={`inline-cat-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
                 stepCode={promptStepCode}
@@ -1316,18 +1351,7 @@ export function NodeStudio({
                     <SfxGenSettingsPanel projectId={projectId} />
                   ) : null}
                   {nodeDisabled && (
-                    <div className="flex flex-col gap-2">
-                      <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
-                      {onEnableNode ? (
-                        <button
-                          type="button"
-                          className="h-9 w-fit rounded-md border border-amber-400/40 px-3 text-[13px] text-amber-200"
-                          onClick={onEnableNode}
-                        >
-                          Включить ноду
-                        </button>
-                      ) : null}
-                    </div>
+                    <p className="text-amber-400">Нода отключена в графе — шаг не запустится. Кнопка включения — во встроенном меню ноды.</p>
                   )}
                 </div>
               )}
