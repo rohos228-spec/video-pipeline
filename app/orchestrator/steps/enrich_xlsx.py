@@ -563,26 +563,29 @@ async def _run_four_node_markup_pass(
         encoding="utf-8",
     )
 
+    _db_lock = asyncio.Lock()
+
     async def _apply_batch(payload: dict) -> None:
-        raw_ops = list(payload.get("ops") or [])
-        ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
-        if not ops:
-            logger.warning(
-                "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
-                project.id,
-                footer_kind,
-                apply_kind,
+        async with _db_lock:
+            raw_ops = list(payload.get("ops") or [])
+            ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
+            if not ops:
+                logger.warning(
+                    "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
+                    project.id,
+                    footer_kind,
+                    apply_kind,
+                )
+                return
+            await _db_apply.apply_ops(
+                session,
+                project,
+                ops,
+                export_xlsx=False,
+                node_kind=apply_kind,
             )
-            return
-        await _db_apply.apply_ops(
-            session,
-            project,
-            ops,
-            export_xlsx=False,
-            node_kind=apply_kind,
-        )
-        await session.commit()
-        await session.refresh(project)
+            await session.commit()
+            await session.refresh(project)
 
     logger.info(
         "[#{}] four-node markup {} via {} frames={}",
