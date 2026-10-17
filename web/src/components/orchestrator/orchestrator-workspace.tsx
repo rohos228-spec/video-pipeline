@@ -216,6 +216,9 @@ export function OrchestratorWorkspace() {
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
+          {chat.state.killNotice.lateStopWarning ? (
+            <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
+          ) : null}
           {chat.state.killNotice.phase === "error" ? (
             <Button
               type="button"

@@ -211,6 +211,8 @@ export interface KillNoticeView {
   /** Задача, которую останавливали. Чужой task_id баннер не двигает. */
   taskId: string | null;
   sessionId: string | null;
+  /** Поздний stop_key_set=false. «Остановлено» не откатывается. */
+  lateStopWarning: string;
 }
 
 export interface OrchScreenState {
@@ -377,6 +379,7 @@ function markKill(
     paidBoundary,
     taskId: target?.taskId ?? current?.taskId ?? null,
     sessionId: target?.sessionId ?? current?.sessionId ?? null,
+    lateStopWarning: "",
   };
 }
 
@@ -393,6 +396,13 @@ function noteKillRequested(
     return;
   }
   if (stopKey === false) {
+    if (next.killNotice?.phase === "stopped") {
+      next.killNotice = {
+        ...next.killNotice,
+        lateStopWarning: detail || "Поздний ответ: стоп-ключ не установлен",
+      };
+      return;
+    }
     markKill(next, "error", detail || "Стоп-ключ не установлен", false, target);
     return;
   }
@@ -413,6 +423,7 @@ function noteTaskCancelled(next: OrchScreenState, event: OrchEvent): void {
     paidBoundary: false,
     taskId: notice.taskId,
     sessionId: notice.sessionId,
+    lateStopWarning: "",
   };
 }
 
@@ -512,6 +523,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         phase: action.phase,
         taskId: action.taskId ?? state.killNotice?.taskId ?? null,
         sessionId: action.sessionId ?? state.killNotice?.sessionId ?? null,
+        lateStopWarning: action.phase === "stopped" ? state.killNotice?.lateStopWarning ?? "" : "",
       },
     };
   }

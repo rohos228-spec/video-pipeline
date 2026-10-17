@@ -469,6 +469,31 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
+  test("после Остановлено поздний stop_key_set=false показывает предупреждение", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-late-false");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, stop_key_set: true, detail: "ключ установлен" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await emitBus(page, "kill-late-false", "kill_switch", null, {
+      stop_key_set: false,
+      detail: "поздний отказ ключа",
+    });
+    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(banner).not.toContainText("Стоп-ключ не установлен");
+    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
+  });
+
   test("kill: ответ без stop_key_set показывает ошибку и повтор", async ({ page }) => {
     await openWithToken(page, "idle", "kill-nokey");
     await page.route("**/api/orchestrator/kill", async (route) => {
