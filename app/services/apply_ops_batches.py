@@ -2995,6 +2995,8 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        if allow_empty_ops:
+            api_kw["allow_empty_ops"] = True
         pack_timeout = pack_call_timeout_s(footer_kind)
         await _acquire_pack_send_slot()
         try:
