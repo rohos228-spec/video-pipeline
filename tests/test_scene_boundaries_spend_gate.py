@@ -142,3 +142,72 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
     assert client.posts == 1
     assert len(sleeps) <= 1
     assert all(delay < 15 for delay in sleeps)
+
+
+@pytest.mark.asyncio
+async def test_llm_pack_limit_from_env_default_8(tmp_path, monkeypatch) -> None:
+    """Лимит пачек из LLM_PACK_PARALLEL, иначе 8; до лимита старт одновременный."""
+    import time
+
+    from app.services.apply_ops_batches import run_apply_ops_batched
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    async def _run(limit: str | None) -> tuple[int, list[float]]:
+        if limit is None:
+            monkeypatch.delenv("LLM_PACK_PARALLEL", raising=False)
+        else:
+            monkeypatch.setenv("LLM_PACK_PARALLEL", limit)
+        starts: list[float] = []
+        inflight = 0
+        max_inflight = 0
+        lock = asyncio.Lock()
+
+        async def fake_run(**kwargs):
+            nonlocal inflight, max_inflight
+            async with lock:
+                inflight += 1
+                max_inflight = max(max_inflight, inflight)
+                starts.append(time.monotonic())
+            await asyncio.sleep(0.15)
+            path = kwargs["input_paths"][0]
+            async with lock:
+                inflight -= 1
+            return OperatorApiResult(
+                reply_text='{"ops":[]}',
+                output_paths=[path],
+                apply_ops={"ops": []},
+            )
+
+        monkeypatch.setattr(
+            "app.services.apply_ops_batches.run_operator_api", fake_run
+        )
+        frames = [
+            {"uuid": f"{i:024d}", "voiceover_text": f"vo {i}"} for i in range(10)
+        ]
+        ctx = tmp_path / f"db_{limit or 'default'}.json"
+        ctx.write_text("{}", encoding="utf-8")
+        await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_excel_gpt_fw_script",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=1,
+            dense=True,
+            chunk_size=1,
+            parallel_max=10,
+            stagger_sec=0,
+            allow_empty_ops=True,
+        )
+        return max_inflight, starts
+
+    default_max, default_starts = await _run(None)
+    assert default_max == 8
+    assert max(default_starts[:8]) - min(default_starts[:8]) < 0.08
+
+    capped_max, capped_starts = await _run("3")
+    assert capped_max == 3
+    assert max(capped_starts[:3]) - min(capped_starts[:3]) < 0.08

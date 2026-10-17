@@ -3015,9 +3015,6 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
-_LLM_PACK_PARALLEL = 4
-
-
 def _merge_packed_apply_ops(texts: list[str]) -> str:
     from app.services.db_apply import extract_apply_ops_json
 
@@ -3057,9 +3054,10 @@ async def _chat_packed_parallel(
     """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
     import asyncio
 
+    from app.services.spend_guard import llm_pack_limit
     from app.services.volume_batches import is_db_frames_path
 
-    sem = asyncio.Semaphore(_LLM_PACK_PARALLEL)
+    sem = asyncio.Semaphore(llm_pack_limit())
 
     async def _one(slice_path: Path, idx: int) -> GptChatResult:
         async with sem:
