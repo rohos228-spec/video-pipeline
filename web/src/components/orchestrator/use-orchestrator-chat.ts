@@ -26,6 +26,9 @@ import {
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
+/** Баннер «восстановлено» не висит до конца сессии. */
+const RESTORED_BANNER_MS = 1600;
+
 /** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
 const KILL_CONFIRM_MS = 12_000;
 
@@ -76,6 +79,21 @@ export function useOrchestratorChat() {
     const ac = new AbortController();
     let stopped = false;
     let attempt = 0;
+    let restoredTimer = 0;
+
+    const showOpen = () => {
+      if (stopped) return;
+      if (attempt === 0) {
+        setConn("live");
+        return;
+      }
+      setConn("restored");
+      window.clearTimeout(restoredTimer);
+      restoredTimer = window.setTimeout(() => {
+        if (stopped) return;
+        setConn((phase) => (phase === "restored" ? "live" : phase));
+      }, RESTORED_BANNER_MS);
+    };
 
     const loop = async () => {
       while (!stopped) {
@@ -83,10 +101,7 @@ export function useOrchestratorChat() {
           await consumeOrchStream(cfg, {
             signal: ac.signal,
             lastEventId: lastSeq.current,
-            onOpen: () => {
-              if (stopped) return;
-              setConn(attempt > 0 ? "restored" : "live");
-            },
+            onOpen: showOpen,
             onEvent: (event) => {
               if (stopped) return;
               if (seen.current.has(event.seq)) return;
@@ -124,6 +139,7 @@ export function useOrchestratorChat() {
     void loop();
     return () => {
       stopped = true;
+      window.clearTimeout(restoredTimer);
       ac.abort();
     };
   }, [blocked, cfg, ready, token]);
