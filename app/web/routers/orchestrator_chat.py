@@ -31,6 +31,7 @@ _STREAM_POLL_SEC = 1.0
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=16000)
     mode: MessageMode | None = None
+    project_id: int | None = None
 
 
 def _check_session(session: str) -> str:
@@ -52,7 +53,7 @@ async def post_message(session: str, body: MessageIn) -> dict[str, object]:
     """Принять реплику. Ack уходит в шину до классификации, ответ HTTP её не ждёт."""
     _check_session(session)
     runtime = get_runtime()
-    ack_seq = await runtime.queue.accept(session, body.text, body.mode)
+    ack_seq = await runtime.queue.accept(session, body.text, body.mode, project_id=body.project_id)
     return {"ok": True, "session": session, "ack_seq": ack_seq}
 
 

@@ -10,6 +10,7 @@ import pytest
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.validator_call import run_validator
 from app.orchestrator.contracts import (
+    BLOCK_OUTCOMES,
     VALIDATOR_CONTEXT_DRY_RUN,
     ApprovalReason,
     PlanStep,
@@ -105,7 +106,7 @@ async def test_blocking_budget_waits_instead_of_failing(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("v-budget", "план", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.get(task_id)["status"] == BLOCK_OUTCOMES["budget_exhausted"].value
         assert TaskStatus.failed.value not in [status for _, status in rt.supervisor.history]
         assert actions.calls == []
         approvals = [event for event in rt.bus.replay("v-budget", 0) if event.type == "approval_required"]
@@ -140,7 +141,7 @@ async def test_spend_guard_context_has_run_id_and_missing_run_fails(token: str) 
     try:
         task_id = await rt.supervisor.start_task("v-run", "план", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert rt.tasks.get(task_id)["status"] == BLOCK_OUTCOMES["missing_run_id"].value
         assert TaskStatus.waiting_approval.value not in [status for _, status in rt.supervisor.history]
         reasons = [
             event.payload.get("reason")

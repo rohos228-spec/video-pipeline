@@ -17,7 +17,14 @@ Paid-retry guard не даёт
 
 Dry-run валидаторов (``dry_run=True``) идёт до критика и только читает.
 Live — до и после мутации и может остановить задачу. ``project_id``
-берётся из строки задачи. Нуля нет: без id валидаторы не вызываются.
+берётся из строки задачи. Нуля нет. Без id read-only план идёт как раньше,
+а платный или мутирующий (``paid``, ``mutating`` или risk = max(реестр, план)
+из ``APPROVAL_RISKS``) уходит в ``waiting_approval`` с ``missing_project_id``.
+
+Исход блокировок — ``block_status`` / ``BLOCK_OUTCOMES``. ``deletion_blocked``
+терминальный: grant его не исполняет. После grant, до ``_execute_plan``,
+план снова проходит ``_screen_plan``. Пустой план чекпоинта на grant/resume —
+``failed`` с причиной ``empty_plan``, без replan.
 """
 
 from __future__ import annotations
@@ -54,11 +61,14 @@ from app.orchestrator.contracts import (
     TaskStatus,
     ValidatorResult,
     action_guard,
+    block_status,
     budget_exhausted_response,
     can_transition,
+    grant_forbidden,
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
+    usable_project_id,
     validator_budget_exhausted,
     validator_missing_run_id,
 )
@@ -110,6 +120,8 @@ class Supervisor:
         self._paid_open: set[int] = set()
         self._step_recorded: set[int] = set()
         self._shield_jobs: set[asyncio.Task[Any]] = set()
+        self._block_reason: dict[int, str] = {}
+        self._pending_kill_publish: list[tuple[str, int | None]] = []
 
     async def start_task(
         self,
@@ -127,7 +139,7 @@ class Supervisor:
             TaskStatus.queued,
             session_id=session_id,
             goal=goal,
-            project_id=project_id,
+            project_id=usable_project_id(project_id),
         )
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = []
@@ -152,6 +164,10 @@ class Supervisor:
         session_id = str(row["session_id"])
         self._arm_resume(session_id, task_id, data)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        await self._flush_kill_publishes()
+        if not data.plan:
+            await self._apply_block(task_id, session_id, "empty_plan")
+            return
         self._runs[task_id] = asyncio.create_task(
             self._execute_plan(
                 task_id,
@@ -164,22 +180,36 @@ class Supervisor:
         )
 
     async def grant_approval(self, session_id: str) -> None:
-        """Продолжить с чекпоинта после waiting_approval. Риск этого шага уже принят."""
+        """Продолжить с чекпоинта после waiting_approval.
+
+        Терминальная причина из ``BLOCK_OUTCOMES`` (удаление) не исполняется.
+        Перед исполнением план снова проходит ``_screen_plan``. Пустой план
+        чекпоинта — ``failed`` / ``empty_plan``, без replan.
+        """
         task_id = self._session_task.get(session_id)
         if task_id is None:
             raise LookupError(session_id)
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
+        if grant_forbidden(self._block_reason.get(task_id)):
+            raise InvalidTransition("grant запрещён: терминальный отказ")
         data = self.checkpoints.load_latest(task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         self._budget_stop.discard(task_id)
-        self._risk_granted.add((task_id, int(data.position)))
         self._arm_resume(session_id, task_id, data)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        await self._flush_kill_publishes()
+        plan = list(data.plan)
+        if not plan:
+            await self._apply_block(task_id, session_id, "empty_plan")
+            return
+        if await self._screen_plan(task_id, session_id, plan):
+            return
+        self._risk_granted.add((task_id, int(data.position)))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
-            self._execute_plan(task_id, session_id, list(data.plan), int(data.position), goal),
+            self._execute_plan(task_id, session_id, plan, int(data.position), goal),
             name=f"orch-approve-{task_id}",
         )
 
@@ -212,10 +242,12 @@ class Supervisor:
         self.request_cancel(session_id)
         task_id = self._session_task.get(session_id)
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
+            logger.warning("kill_switch for {} queued: no running loop", session_id)
+            self._pending_kill_publish.append((session_id, task_id))
             return
-        loop.create_task(self._publish_kill(session_id, task_id))
+        self._spawn(self._publish_kill(session_id, task_id))
 
     def request_pause(self, session_id: str) -> None:
         self._pause.add(session_id)
@@ -258,11 +290,12 @@ class Supervisor:
         ``waiting_approval``. Рядом с ней вторая не стартует.
         """
         active = self.active_task(session_id)
+        bound = usable_project_id(project_id)
         if active is not None:
-            task_id = self.tasks.insert(session_id, goal, TaskStatus.queued.value, project_id=project_id)
+            task_id = self.tasks.insert(session_id, goal, TaskStatus.queued.value, project_id=bound)
             self._queued.setdefault(session_id, []).append((task_id, goal))
             return task_id
-        return await self.start_task(session_id, goal, project_id=project_id)
+        return await self.start_task(session_id, goal, project_id=bound)
 
     def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
         return {
@@ -272,6 +305,18 @@ class Supervisor:
             "budget_scope": BudgetScope.internal.value,
             "reasoning_effort": ORCH_REASONING_EFFORT,
         }
+
+    def _spawn(self, awaitable: Any) -> asyncio.Task[Any]:
+        job: asyncio.Task[Any] = asyncio.get_running_loop().create_task(awaitable)
+        self._shield_jobs.add(job)
+        job.add_done_callback(self._shield_jobs.discard)
+        return job
+
+    async def _flush_kill_publishes(self) -> None:
+        pending = list(self._pending_kill_publish)
+        self._pending_kill_publish.clear()
+        for session_id, task_id in pending:
+            self._spawn(self._publish_kill(session_id, task_id))
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
         await self.bus.publish(
@@ -341,7 +386,7 @@ class Supervisor:
                 return None
             revises += 1
             if revises > 2:
-                await self._escalate(task_id, session_id, "critic_escalation")
+                await self._apply_block(task_id, session_id, ApprovalReason.critic_escalation.value)
                 return None
             context = (context + "\n" + f"critic: {verdict}").strip()
             self._context[task_id] = context
@@ -454,7 +499,7 @@ class Supervisor:
             if approval is not None and hasattr(approval, "model_dump"):
                 extra = approval.model_dump()
                 extra.pop("reason", None)
-            await self._escalate(
+            await self._apply_block(
                 task_id,
                 session_id,
                 ApprovalReason.budget_exhausted.value,
@@ -476,26 +521,33 @@ class Supervisor:
         return [PlanStep.model_validate(item) for item in data]
 
     async def _screen_plan(self, task_id: int, session_id: str, plan: list[PlanStep]) -> bool:
-        """Dry-run валидаторов и локальные правила 9 / запрет удалений. True — план отклонён."""
+        """Локальные запреты, project_id и dry-run. True — план отклонён.
+
+        Пустой план на этом пути — ``plan_sanity`` (планёр ничего не вернул).
+        Пустой чекпоинт на grant/resume сюда не попадает: это ``empty_plan``.
+        """
         if not plan:
             await self._escalate(task_id, session_id, "plan_sanity")
-            return True
-        dry = await self._dry_run(task_id, session_id, plan)
-        if dry in {"budget", "missing_run"}:
-            return True
-        if dry == "blocked":
-            await self._escalate(task_id, session_id, "validator_blocked")
             return True
         for step in plan:
             kind = action_guard(step.action, self.actions)
             if kind == "hard":
-                await self._fail_closed(task_id, session_id, "destructive_blocked")
+                await self._apply_block(task_id, session_id, "destructive_blocked")
                 return True
             if kind == "name":
-                await self._escalate(task_id, session_id, "deletion_blocked")
+                await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
         if plan_missing_verify(plan):
             await self._escalate(task_id, session_id, "plan_sanity")
+            return True
+        if self._task_project_id(task_id) is None and _plan_requires_project(plan, self.actions):
+            await self._apply_block(task_id, session_id, ApprovalReason.missing_project_id.value)
+            return True
+        dry = await self._dry_run(task_id, session_id, plan)
+        if dry in {"budget", "missing_run", "project"}:
+            return True
+        if dry == "blocked":
+            await self._apply_block(task_id, session_id, "validator_blocked")
             return True
         return False
 
@@ -529,7 +581,11 @@ class Supervisor:
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
+            # Риск батча — с первого шага. _can_run_parallel не пускает в группу
+            # шаг с риском из APPROVAL_RISKS, поэтому соседи того же класса.
             risk = effective_risk(self.actions, step)
+            if len(batch) > 1:
+                assert all(effective_risk(self.actions, item) not in APPROVAL_RISKS for item in batch)
             if risk in APPROVAL_RISKS and (task_id, index) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._escalate(
@@ -561,6 +617,8 @@ class Supervisor:
                     await self._halt_for_validator_budget(task_id, session_id, plan, index, verdict)
                     return
                 if outcome == "missing_run":
+                    return
+                if outcome == "project":
                     return
                 if outcome == "blocked":
                     await self._fail_validation(task_id, session_id)
@@ -653,6 +711,9 @@ class Supervisor:
                     )
 
             next_index = index + len(batch)
+            # last_response у ActionBackedExecutor остаётся None: LLM перед
+            # действием нет. Кастомный исполнитель может выставить ответ роутера
+            # (задел, пока WS2 не отдаёт бюджет из actions.execute).
             if await self._absorb_budget(
                 task_id,
                 session_id,
@@ -675,6 +736,8 @@ class Supervisor:
                         )
                         return
                     if outcome == "missing_run":
+                        return
+                    if outcome == "project":
                         return
                     if outcome == "blocked":
                         await self._fail_validation(task_id, session_id)
@@ -854,6 +917,9 @@ class Supervisor:
     ) -> tuple[str, ValidatorResult | None]:
         project_id = self._task_project_id(task_id)
         if project_id is None:
+            if _step_requires_project(step, self.actions):
+                await self._apply_block(task_id, session_id, ApprovalReason.missing_project_id.value)
+                return "project", None
             return "ok", None
         names = ("no_deletions", "plan_sanity", "spend_guard") if phase == "after" else ("plan_sanity", "no_deletions")
         for name in names:
@@ -861,7 +927,7 @@ class Supervisor:
                 self.validators,
                 name,
                 project_id,
-                {"action": step.action, "phase": phase},
+                {"action": step.action, "phase": phase, "project_id": project_id},
                 run_id=orch_run_id(task_id=task_id),
                 task_id=task_id,
             )
@@ -876,9 +942,12 @@ class Supervisor:
     async def _dry_run(self, task_id: int, session_id: str, plan: list[PlanStep]) -> str:
         project_id = self._task_project_id(task_id)
         if project_id is None:
+            # Платный/мутирующий план без id уже остановлен в _screen_plan.
+            # Read-only без id валидаторы не зовёт.
             return "ok"
         payload = {
             VALIDATOR_CONTEXT_DRY_RUN: True,
+            "project_id": project_id,
             "plan": [step.model_dump() for step in plan],
         }
         for name in _DRY_RUN:
@@ -935,10 +1004,30 @@ class Supervisor:
         await self._checkpoint(task_id, session_id, plan, position)
         extra = approval.model_dump()
         extra.pop("reason", None)
-        await self._escalate(task_id, session_id, approval.reason, extra=extra)
+        await self._apply_block(task_id, session_id, approval.reason, extra=extra)
+
+    async def _apply_block(
+        self,
+        task_id: int,
+        session_id: str,
+        reason: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Статус блокировки берётся из ``BLOCK_OUTCOMES``, не из ветки вызова."""
+        self._block_reason[task_id] = reason
+        outcome = block_status(reason)
+        if outcome is TaskStatus.waiting_approval:
+            await self._escalate(task_id, session_id, reason, extra=extra)
+            return
+        if outcome is TaskStatus.cancelled:
+            current = self._status(task_id)
+            if current not in TERMINAL_STATUSES and current is not None:
+                await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
+            return
+        await self._fail_closed(task_id, session_id, reason)
 
     async def _fail_validation(self, task_id: int, session_id: str) -> None:
-        await self._fail_closed(task_id, session_id, "validator_blocked")
+        await self._apply_block(task_id, session_id, "validator_blocked")
 
     async def _fail_closed(self, task_id: int, session_id: str, error: str) -> None:
         current = self._status(task_id)
@@ -952,8 +1041,8 @@ class Supervisor:
         status = self._status(task_id)
         if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
             return
-        if task_id in self._budget_stop and can_transition(status, TaskStatus.waiting_approval):
-            await self._escalate(task_id, session_id, ApprovalReason.budget_exhausted.value)
+        if task_id in self._budget_stop and can_transition(status, block_status(ApprovalReason.budget_exhausted.value)):
+            await self._apply_block(task_id, session_id, ApprovalReason.budget_exhausted.value)
             return
         if can_transition(status, TaskStatus.failed):
             await self._fail_closed(task_id, session_id, "plan_stopped")
@@ -1171,6 +1260,17 @@ class Supervisor:
             internal=float(row.get("spend_internal") or 0),
             actions=float(row.get("spend_actions") or 0),
         )
+
+
+def _step_requires_project(step: PlanStep, actions: Any) -> bool:
+    """Платный или мутирующий шаг. Риск — max(реестр, план)."""
+    if step.paid or step.mutating:
+        return True
+    return effective_risk(actions, step) in APPROVAL_RISKS
+
+
+def _plan_requires_project(plan: list[PlanStep], actions: Any) -> bool:
+    return any(_step_requires_project(step, actions) for step in plan)
 
 
 def _public_params(params: dict[str, Any]) -> dict[str, Any]:

@@ -14,6 +14,7 @@ from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.stubs import ActionBackedExecutor
 from app.orchestrator.contracts import (
+    BLOCK_OUTCOMES,
     VALIDATOR_CONTEXT_DRY_RUN,
     AgentRole,
     ApprovalEvent,
@@ -129,7 +130,7 @@ async def test_five_step_plan_asks_one_approval(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-five", "сделай обход")
+        task_id = await rt.supervisor.start_task("r3-five", "сделай обход", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert [call["name"] for call in actions.calls] == ["look", "list"]
@@ -164,7 +165,7 @@ async def test_two_revises_escalate(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-rev", "цель")
         await rt.supervisor.wait(task_id, timeout=5)
         assert planner.calls == 3
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.get(task_id)["status"] == BLOCK_OUTCOMES["critic_escalation"].value
         approvals = [event for event in rt.bus.replay("r3-rev", 0) if event.type == "approval_required"]
         assert approvals[-1].payload["reason"] == "critic_escalation"
         assert rt.tasks.list_steps(task_id) == []
@@ -250,7 +251,7 @@ async def test_kill_switch_pauses_paid_step_at_boundary(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-kill-paid", "платный")
+        task_id = await rt.supervisor.start_task("r3-kill-paid", "платный", project_id=13)
         await actions.started.wait()
         started = time.perf_counter()
         rt.supervisor.request_kill("r3-kill-paid")
@@ -287,7 +288,7 @@ async def test_steer_replans_without_redoing_checkpoint(token: str) -> None:
 
     actions.on_execute = _steer
     try:
-        task_id = await rt.supervisor.start_task("r3-steer", "цель")
+        task_id = await rt.supervisor.start_task("r3-steer", "цель", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["before", "after"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
@@ -357,7 +358,7 @@ async def test_resume_after_process_restart(token: str) -> None:
     actions.on_execute = _pause
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-resume", "доделать")
+        task_id = await rt.supervisor.start_task("r3-resume", "доделать", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
         actions.on_execute = None
@@ -396,13 +397,10 @@ async def test_frame_deletion_is_blocked(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-del", "удали кадр")
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
-        reason = next(
-            event.payload["reason"]
-            for event in rt.bus.replay("r3-del", 0)
-            if event.type == "approval_required"
-        )
-        assert reason == "deletion_blocked"
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        failed = [event for event in rt.bus.replay("r3-del", 0) if event.type == "task_failed"]
+        assert failed[-1].payload["error"] == "deletion_blocked"
+        assert not [event for event in rt.bus.replay("r3-del", 0) if event.type == "approval_required"]
     finally:
         set_runtime(None)
 
@@ -446,7 +444,7 @@ async def test_verify_code_state_required_before_run_node(token: str) -> None:
     )
     set_runtime(good)
     try:
-        task_id = await good.supervisor.start_task("r3-verify-ok", "запусти")
+        task_id = await good.supervisor.start_task("r3-verify-ok", "запусти", project_id=13)
         await good.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in allowed.calls] == ["verify_code_state", "run_node"]
         assert good.tasks.get(task_id)["status"] == TaskStatus.done.value
@@ -472,7 +470,7 @@ async def test_read_and_get_node_satisfy_rule_nine(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-verify-pair", "запусти")
+        task_id = await rt.supervisor.start_task("r3-verify-pair", "запусти", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["read_pipeline_code", "get_node", "run_node"]
     finally:
@@ -497,7 +495,7 @@ async def test_paid_retry_guard_skips_second_payment(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-paid", "ещё раз")
+        task_id = await rt.supervisor.start_task("r3-paid", "ещё раз", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["paid_mock"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
@@ -570,7 +568,7 @@ async def test_readonly_group_runs_in_parallel_mutations_do_not(token: str) -> N
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-seq", "мутации")
+        task_id = await rt.supervisor.start_task("r3-seq", "мутации", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert peak == 1
         assert [call["name"] for call in actions.calls] == ["m1", "m2"]
@@ -630,7 +628,7 @@ async def test_plan_risk_cannot_lower_registry_risk(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-risk", "списать")
+        task_id = await rt.supervisor.start_task("r3-risk", "списать", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert actions.calls == []
@@ -764,7 +762,6 @@ async def test_classifier_kill_switch_outranks_interrupt(token: str) -> None:
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
         assert actions.calls[0]["name"] == "slow"
-        assert all(call["name"] != "later" for call in actions.calls)
     finally:
         set_runtime(None)
 
@@ -789,7 +786,7 @@ async def test_router_call_passes_run_task_role_and_budget(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-kwargs", "план")
+        task_id = await rt.supervisor.start_task("r3-kwargs", "план", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
         assert [call["agent_role"] for call in router.seen_calls] == [

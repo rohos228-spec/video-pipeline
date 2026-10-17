@@ -22,7 +22,11 @@ def effective_risk(actions: Any, step: PlanStep) -> Risk:
     return max_risk(step.risk, registry)
 
 
-async def run_many(executor: Any, steps: list[PlanStep], ctx: dict[str, Any]) -> list[ActionResult]:
+async def run_many(
+    executor: Any,
+    steps: list[PlanStep],
+    ctx: dict[str, Any],
+) -> list[ActionResult | BaseException]:
     """Параллельный прогон read-only шагов. Один шаг — тот же путь."""
 
     async def _one(step: PlanStep) -> ActionResult:

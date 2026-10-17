@@ -103,7 +103,7 @@ async def test_shield_records_paid_step_when_driver_is_cancelled(token: str) -> 
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("shield-1", "платный")
+        task_id = await rt.supervisor.start_task("shield-1", "платный", project_id=13)
         await actions.started.wait()
         run = rt.supervisor._runs[task_id]
         run.cancel()

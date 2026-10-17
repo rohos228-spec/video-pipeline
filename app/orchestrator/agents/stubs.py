@@ -45,6 +45,9 @@ class ActionBackedExecutor:
 
     Перед действием LLM не вызывается: лишний internal-ход съедал суб-бюджет.
     ``router`` остаётся в конструкторе для совместимости и не используется.
+    ``last_response`` здесь всегда ``None``. Супервизор читает его после шага
+    как задел: кастомный исполнитель или будущий WS2 может положить туда
+    ответ роутера с ``budget_exhausted``. Боевой ``actions.execute`` этого не делает.
     """
 
     def __init__(self, actions: Any, router: Any | None = None) -> None:

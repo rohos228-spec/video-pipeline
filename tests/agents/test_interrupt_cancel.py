@@ -76,7 +76,7 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task(session, "платный")
+        task_id = await rt.supervisor.start_task(session, "платный", project_id=13)
         await actions.started.wait()
         await rt.queue.accept(session, "стой")
         pending = [task for task in rt.queue._pending]

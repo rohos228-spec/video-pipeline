@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "ws3-r3.1"
+CONTRACT_VERSION = "ws3-r3.2"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -45,6 +45,14 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "project_id задачи, не 0. Очередь task не стартует рядом с paused. "
         "Исполнитель не зовёт LLM перед действием. "
         "run_validator кладёт run_id и task_id в context. missing_run_id — failed.",
+    ),
+    (
+        "ws3-r3.2",
+        "BLOCK_OUTCOMES: budget_exhausted, critic_escalation, missing_project_id "
+        "→ waiting_approval; deletion_blocked, missing_run_id, empty_plan и прочий "
+        "blocking → failed. Строки revise_limit нет. grant не исполняет удаление "
+        "и пустой чекпоинт (empty_plan → failed, без replan). "
+        "pipeline без run_id — ValueError, как internal. MessageIn.project_id.",
     ),
 )
 
@@ -163,6 +171,7 @@ class ApprovalReason(StrEnum):
     budget_exhausted = "budget_exhausted"
     risk = "risk"
     critic_escalation = "critic_escalation"
+    missing_project_id = "missing_project_id"
 
 
 class Risk(StrEnum):
@@ -285,6 +294,15 @@ def orch_call_tier(requested: str | None) -> str:
     return requested or ORCH_DEFAULT_TIER
 
 
+def usable_project_id(value: int | None) -> int | None:
+    """Положительный id проекта. ``0``, отрицательные и не-int не сохраняются."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) -> str:
     """Непустой id бакета до вызова модели.
 
@@ -300,16 +318,15 @@ def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) ->
 
 
 def require_internal_run_id(run_id: str | None, budget_scope: str | None = None) -> None:
-    """``budget_scope=internal`` (и пропуск scope) требует непустой ``run_id``.
+    """Платный вызов (``internal`` и ``pipeline``) требует непустой ``run_id``.
 
-    ``spent(None)`` нулём не считается и бакет не подменяет: пустой id — ошибка,
-    а не нулевой расход.
+    Пропуск scope считается internal. ``spent(None)`` нулём не считается и бакет
+    не подменяет: пустой id — ошибка, а не нулевой расход. ``pipeline`` без
+    атрибуции — та же ошибка, отдельного безымянного бакета нет.
     """
-    scope = budget_scope or BudgetScope.internal.value
-    if scope != BudgetScope.internal.value:
-        return
+    del budget_scope
     if not isinstance(run_id, str) or not run_id.strip():
-        raise ValueError("internal budget requires run_id")
+        raise ValueError("budget requires run_id")
 
 
 def can_transition(src: TaskStatus, dst: TaskStatus) -> bool:
@@ -577,14 +594,10 @@ class ValidatorRunner(Protocol):
         ``run_validator`` перед вызовом кладёт в context непустые ``run_id``
         и ``task_id``. Без них вызова нет.
 
-        ``blocking=True`` и ``details.reason == "budget_exhausted"``
-        (``details`` может быть dict) — не ``failed``, а ``waiting_approval``
-        с ``ApprovalEvent.reason=budget_exhausted`` и чекпоинтом.
-        ``blocking`` и ``details.reason == "missing_run_id"`` (live spend_guard,
-        когда в context не было run_id и это не dry-run) — ``failed``,
-        не ``waiting_approval``.
-        Остальной blocking прежний: live-проверка → ``failed``,
-        dry-run → ``validator_blocked``.
+        Исход blocking — ``BLOCK_OUTCOMES`` / ``block_status``: супервизор
+        не выбирает статус мимо этой таблицы. ``budget_exhausted`` —
+        ``waiting_approval``. ``missing_run_id`` и прочий blocking
+        (live и dry-run) — ``failed``.
         """
 
 
@@ -608,8 +621,8 @@ class ModelRouter(Protocol):
         ``reasoning_effort``, ``on_delta`` — keyword-only и необязательные.
         ``task_id`` — строка, как у WS5. Собственные вызовы оркестратора
         передают ``budget_scope=internal`` (суб-бюджет $10).
-        ``budget_scope=internal`` без непустого ``run_id`` — ValueError у WS5:
-        ``spent(None)`` не подменяет бакет.
+        ``budget_scope=internal`` и ``budget_scope=pipeline`` без непустого
+        ``run_id`` — ValueError: ``spent(None)`` не подменяет бакет.
 
         До D6 tier хода — ``strong``, ``reasoning_effort=high``
         (``ORCH_DEFAULT_TIER`` / ``ORCH_REASONING_EFFORT``).
@@ -728,11 +741,39 @@ def validator_budget_exhausted(result: Any) -> bool:
 def validator_missing_run_id(result: Any) -> bool:
     """Блокирующий spend_guard: в live-context не было run_id.
 
-    Это ``failed``, не ``waiting_approval``. Dry-run WS1 эту причину не ставит.
+    Исход — ``BLOCK_OUTCOMES["missing_run_id"]`` (``failed``).
+    Dry-run WS1 эту причину не ставит.
     """
     if not bool(getattr(result, "blocking", False)):
         return False
     return validator_details_reason(result) == "missing_run_id"
+
+
+# Причина → исход. Супервизор ставит статус блокировки только через block_status.
+# Строки revise_limit нет: лимит revise — critic_escalation.
+# risk, plan_sanity, critic_reject, steer_not_approved в таблицу не входят:
+# это запрос человека, не blocking валидатора, исход по-прежнему waiting_approval.
+# empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
+BLOCK_OUTCOMES: dict[str, TaskStatus] = {
+    ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
+    ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
+    ApprovalReason.missing_project_id.value: TaskStatus.waiting_approval,
+    "deletion_blocked": TaskStatus.failed,
+    "missing_run_id": TaskStatus.failed,
+    "empty_plan": TaskStatus.failed,
+}
+
+
+def block_status(reason: str) -> TaskStatus:
+    """Исход блокировки. Причины нет в ``BLOCK_OUTCOMES`` — ``failed`` (прочий blocking)."""
+    return BLOCK_OUTCOMES.get(reason, TaskStatus.failed)
+
+
+def grant_forbidden(reason: str | None) -> bool:
+    """Терминальная причина из таблицы: grant этот план не исполняет."""
+    if reason is None or reason not in BLOCK_OUTCOMES:
+        return False
+    return BLOCK_OUTCOMES[reason] in TERMINAL_STATUSES
 
 
 def budget_exhausted_response(response: Any) -> bool:
@@ -750,27 +791,35 @@ def budget_exhausted_response(response: Any) -> bool:
     )
 
 
-_DELETION_MARKERS = ("delete_frame", "delete_scene", "remove", "purge", "drop")
+def _action_segments(action: str) -> set[str]:
+    return {part for part in re.split(r"[._]", (action or "").lower()) if part}
 
 
 def is_deletion_action(action: str) -> bool:
     """Удаление кадра или сцены по имени.
 
-    Точные имена реестра плюс подстроки delete_frame, delete_scene, remove,
-    purge, drop. ``montage.remove_frame``, ``shots.purge``, ``scene.drop``
-    попадают сюда даже без метаданных.
+    Точные имена реестра, подстроки ``delete_frame`` / ``delete_scene``,
+    и сегменты имени (разрыв по ``.`` и ``_``): ``purge``, ``drop``,
+    а ``remove`` только рядом с ``frame`` или ``scene``.
+    ``montage.remove_frame``, ``shots.purge``, ``scene.drop`` попадают.
+    ``dropdown`` и ``remove_watermark`` — нет.
     """
     name = (action or "").strip()
     if name in DELETION_ACTIONS:
         return True
     lowered = name.lower()
-    return any(marker in lowered for marker in _DELETION_MARKERS)
+    if "delete_frame" in lowered or "delete_scene" in lowered:
+        return True
+    parts = _action_segments(name)
+    if parts & {"purge", "drop"}:
+        return True
+    return "remove" in parts and bool(parts & {"frame", "scene"})
 
 
 def action_guard(action: str, registry: Any | None = None) -> str | None:
     """``hard`` — destructive или неизвестное без явного read_only.
 
-    ``name`` — запрет по имени (approval ``deletion_blocked``).
+    ``name`` — запрет по имени (``deletion_blocked`` → failed, grant запрещён).
     ``None`` — действие можно планировать.
 
     Реестр без ``metadata_of`` проверяется только по имени: старые моки
@@ -1260,5 +1309,7 @@ def export_contract_schemas() -> dict[str, Any]:
             "pipeline_forecast_limit_usd": PIPELINE_FORECAST_LIMIT_USD,
             "validator_context_dry_run": VALIDATOR_CONTEXT_DRY_RUN,
             "risk_order": [item.value for item in Risk],
+            "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
+            "default_block_outcome": TaskStatus.failed.value,
         },
     }

@@ -126,6 +126,7 @@ class MessageQueue:
         session_id: str,
         text: str,
         mode: MessageMode | None = None,
+        project_id: int | None = None,
     ) -> int:
         """Записать реплику, опубликовать ack и поставить разбор в фон.
 
@@ -143,7 +144,7 @@ class MessageQueue:
             task_id=task_id,
         )
         job = asyncio.create_task(
-            self._classify(session_id, text, run_id, mode),
+            self._classify(session_id, text, run_id, mode, project_id),
             name=f"orch-classify-{session_id}",
         )
         self._pending.add(job)
@@ -156,6 +157,7 @@ class MessageQueue:
         text: str,
         run_id: str,
         mode: MessageMode | None,
+        project_id: int | None = None,
     ) -> None:
         try:
             if mode is not None:
@@ -187,7 +189,7 @@ class MessageQueue:
                 },
             )
             _set_message_mode(session_id, text, decided.mode.value)
-            await self._apply(session_id, text, decided)
+            await self._apply(session_id, text, decided, project_id)
         except Exception:
             logger.exception("orch classification failed for session {}", session_id)
             await self.bus.publish(
@@ -196,7 +198,13 @@ class MessageQueue:
                 {"mode": MessageMode.append.value, "deterministic": False, "error": "classifier_failed"},
             )
 
-    async def _apply(self, session_id: str, text: str, decided: ClassifyResult) -> None:
+    async def _apply(
+        self,
+        session_id: str,
+        text: str,
+        decided: ClassifyResult,
+        project_id: int | None = None,
+    ) -> None:
         if decided.kill_switch:
             self.supervisor.request_kill(session_id)
             return
@@ -207,7 +215,7 @@ class MessageQueue:
             self.supervisor.request_steer(session_id, text)
             return
         if decided.mode is MessageMode.task:
-            await self.supervisor.submit_task(session_id, text)
+            await self.supervisor.submit_task(session_id, text, project_id=project_id)
             return
         await self._stream_fast(session_id, text, decided.tier or "fast")
 
@@ -241,6 +249,12 @@ class MessageQueue:
         _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
         if budget_exhausted_response(response) and task_id is not None:
             await self.supervisor.absorb_budget(task_id, session_id, response)
+        elif budget_exhausted_response(response):
+            await self.bus.publish(
+                session_id,
+                "approval_required",
+                {"reason": "budget_exhausted", "task_id": None},
+            )
         await self.bus.publish(
             session_id,
             "message",

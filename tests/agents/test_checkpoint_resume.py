@@ -45,7 +45,7 @@ async def test_resume_continues_after_checkpoint(token: str) -> None:
     actions.on_execute = _pause_after_first
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task(session, "доделать")
+        task_id = await rt.supervisor.start_task(session, "доделать", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
         checkpoint = rt.checkpoints.load_latest(task_id)
