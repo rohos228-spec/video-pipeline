@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -655,7 +656,48 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
-  test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
+  test("снимки INT фиксируют фон, границу, текст и шрифт", async ({ page }) => {
+  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../visual/int-reference");
+  const fixture = JSON.parse(readFileSync(path.join(dir, "tokens.json"), "utf8")) as {
+    sha: string;
+    body: { backgroundColor: string; color: string; borderTopColor: string; fontFamily: string };
+  };
+  expect(fixture.sha).toBe("ea6c5926e9f161d542bc6d8acdae55f0d1148e3d");
+  expect(fixture.body.backgroundColor).toBe("rgb(5, 5, 5)");
+  expect(fixture.body.color).toBe("rgb(240, 240, 240)");
+  expect(fixture.body.borderTopColor).toBe("rgba(255, 255, 255, 0.08)");
+  expect(fixture.body.fontFamily.startsWith("Rubik")).toBe(true);
+  for (const name of ["int-studio-orchestrator.png", "int-orchestrator-panel.png"]) {
+    expect(readFileSync(path.join(dir, name)).byteLength).toBeGreaterThan(10_000);
+  }
+
+  await openWithToken(page, "idle", "int-tokens");
+  const live = await page.evaluate(() => {
+    const body = getComputedStyle(document.body);
+    const root = document.querySelector("[data-orch-page]");
+    const rootCs = root instanceof HTMLElement ? getComputedStyle(root) : null;
+    const probe = document.createElement("div");
+    probe.className = "border border-border";
+    document.body.appendChild(probe);
+    const border = getComputedStyle(probe).borderTopColor;
+    probe.remove();
+    return {
+      bg: body.backgroundColor,
+      color: body.color,
+      font: body.fontFamily,
+      rootBg: rootCs?.backgroundColor ?? "",
+      rootFont: rootCs?.fontFamily ?? "",
+      border,
+    };
+  });
+  expect(live.bg).toBe(fixture.body.backgroundColor);
+  expect(live.color).toBe(fixture.body.color);
+  expect(live.rootBg).toBe(fixture.body.backgroundColor);
+  expect(live.rootFont).toBe(live.font);
+  expect(live.border).toBe(fixture.body.borderTopColor);
+});
+
+test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
     const paint = () =>
       page.evaluate(() => {
         const root = document.querySelector("[data-orch-page], [data-testid=orch-reports]");
