@@ -11,7 +11,22 @@ import re
 import unicodedata
 from typing import Any
 
+from loguru import logger
+
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+
+
+def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
+    shot["карантин"] = True
+    shot["пометка"] = reason
+    logger.warning(
+        "WARN {}: кадр {} помечен, не удалён: {}",
+        where,
+        shot.get("id") or shot.get("id_shot") or "?",
+        reason,
+    )
+
 
 SHOT_VO_MIN = 26
 SHOT_VO_MAX = 80
@@ -1175,21 +1190,25 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             warnings.append(f"короткий закадр {n} перенесён в предыдущий кусок (кадр оставлен)")
         i += 1
 
-    # 3) выкинуть только пустые оболочки: без шага, без закадра, без промтов
-    before = len(shots)
-    kept: list[Any] = []
+    # 3) пустые оболочки (без шага, закадра и промтов) помечаем, не выкидываем
+    empty_n = 0
     for s in shots:
+        if not isinstance(s, dict):
+            continue
         if (
-            isinstance(s, dict)
-            and not _vo(s)
+            not _vo(s)
             and not str(s.get("действие") or "").strip()
             and not any(str(s.get(k) or "").strip() for k in s if str(k).startswith("промт"))
         ):
-            continue
-        kept.append(s)
-    if len(kept) < before:
-        warnings.append(f"удалили пустые оболочки без шага {before - len(kept)} шт")
-        shots[:] = kept
+            if not s.get("карантин"):
+                _mark_shot_kept(
+                    s,
+                    "пустая оболочка без шага, закадра и промтов — кадр сохранён",
+                    where="repair_shot_vo_lengths",
+                )
+                empty_n += 1
+    if empty_n:
+        warnings.append(f"помечены пустые оболочки без шага {empty_n} шт")
 
     glued = " ".join(_vo(s) for s in shots if _vo(s))
     if norm_vo and glued and " ".join(glued.split()) != norm_vo:
