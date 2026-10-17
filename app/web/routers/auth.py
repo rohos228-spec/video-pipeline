@@ -71,14 +71,6 @@ def _me(req: Request):
     return u
 
 
-@router.post("/logout")
-async def logout(request: Request, response: Response) -> dict:
-    token = auth_sessions._extract_bearer(request)
-    auth_sessions.revoke_session_token(token)
-    response.delete_cookie("vp_session", path="/")
-    return {"ok": True}
-
-
 @router.get("/status")
 async def auth_status(request: Request) -> dict:
     u = ua.user_for_session(_extract_bearer(request))
