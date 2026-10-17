@@ -1,0 +1,317 @@
+# Аудит действий Action Layer (заготовка R0b)
+
+Статус: заготовка WS2 до merge R0b. Код оркестратора в этот PR не входит.
+Дата сверки: 2026-10-17.
+Источник реестра: PR #342, форк `nikitasolonukha/video-pipeline`, ветка `orchestrator-observe-v1`, sha `3ec7c9579716a53ab119cabb340af562cba76b31`.
+База main на момент аудита: `c53a238b`. Тега `pipeline-base-v1` в репозитории нет, R0a (housepc → main) не влит. Rebase #342 не делался.
+
+План: `docs/fable/PLAN.md` в ветке `fable-context` (§2.2 этап 0b, §3.6, §6, §9 WS2).
+
+## Как считали
+
+Живой реестр собирает `ensure_builtin_actions()` в `app/services/action_layer/spec.py`: montage → group → wave3 → change → media → wave5 → publish.
+
+В исходниках **103** вызова `ActionSpec` / `S(...)`. `register_wave3()` делает `registry.unregister("node.run_step")` и регистрирует платную версию с заявкой стоимости (`builtin_wave3.py:682`). Ранняя спека в `builtin_group.py:540` в живой реестр не попадает. `register_wave5()` дополнительно снимает и заново вешает `project.resume` и `project.continue_pipeline` (потолок кредитов) и оборачивает часть исполнителей журналом `builtin_wave5_history.wrap_catalog`.
+
+Итог живого реестра: **102** действия. Это совпадает с `docs/ACTION_LAYER.md` на той же голове («сейчас 102»). Расхождения с числом 102 нет. Расхождение с ожидаемыми именами плана — в §расхождения.
+
+Критерий exec-подобности (§2.2.2), как он применён здесь:
+
+- **(а) прямо** — обработчик или его обёртка history сам пишет файл вне `data/reports/` и `data/node_overrides/`.
+- **(а) косвенно** — обработчик только вызывает внутренний API (`ActionContext.call`, httpx с `ASGITransport` на своё приложение), а эндпоинт студии пишет файл репозитория (`templates/`, `prompts/`, `node_groups/*.json`).
+- **(б)** — в обработчике есть `subprocess` / `eval` / `compile` / `exec` / `os.system`. По всем 102 исполнителям такого вызова нет.
+- **(в)** — сетевой вызов обработчика мимо LLM-провайдера и внутреннего API. Прямых нет. Вызовы площадок и провайдеров идут уже внутри шага студии.
+
+Запись проекта, медиа и БД через внутренний API сама по себе не считается exec-инструментом: это штатное управление пайплайном под approval / spend / change_control. Иначе из реестра выпали бы почти все мутации, ради которых слой и существует.
+
+Риск в таблице — шкала плана (`none` / `low` / `medium` / `high`). Рядом — ярус реестра #342 (`read` / `local_safe` / `paid` / `destructive`).
+
+Вердикт:
+
+- **keep** — действие остаётся в whitelist.
+- **modify** — в R2 сузить запись (путь или механизм), само действие не выкидывать.
+- **remove** — физически убрать из реестра. Таких среди 102 нет.
+
+## Сводка
+
+| | число |
+|---|---|
+| Живых действий | 102 |
+| Регистраций в исходнике | 103 (одна снята: ранний `node.run_step`) |
+| keep | 93 |
+| modify | 9 |
+| remove | 0 |
+| Риск none | 21 |
+| Риск low | 7 |
+| Риск medium | 29 |
+| Риск high | 45 |
+
+### remove
+
+Пусто. В реестре нет `edit_files`, `run_tests`, `exec`, `shell`, `write_file` и нет обёрток subprocess. Эти инструменты живут в легаси `db_browser.py` (см. ниже), не в Action Layer.
+
+### modify
+
+1. `prompt.save_master`
+2. `prompt.create_master`
+3. `prompt.delete_master`
+4. `group.save_from_selection`
+5. `group.update`
+6. `group.delete`
+7. `montage.upload_voice`
+8. `montage.upload_music`
+9. `history.rollback`
+
+## Таблица действий
+
+| # | Действие | Файл / обработчик | Что делает | Риск | Реестр | Exec §2.2.2 | Вердикт | Почему |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `change.list` | app/services/action_layer/builtin_change.py:_list (спека L136) | Предложения изменений настроек и промптов: статус, уровень, цель, diff. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 2 | `change.get` | app/services/action_layer/builtin_change.py:_get (спека L143) | По proposal_id: предложение целиком (diff, digest, статус, текущая версия цели). | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 3 | `change.propose` | app/services/action_layer/builtin_change.py:_propose (спека L151) | Записывает предложение: T0 совет, T1 параметр или выбор готового варианта из явного списка, T2 новый текст промпта проекта (новый вариант, общие файлы не трогаются), T3 запись для разработчика (код не применяется никогда). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 4 | `change.apply` | app/services/action_layer/builtin_change.py:_apply (спека L168) | Перепроверяет уровень, allow-list, digest и базовую версию, пишет версию и значение, читает обратно; при расхождении возвращает прежнее. | high | destructive | нет | keep | Инфраструктура change_control #342. Propose обещает не трогать общие файлы. subprocess нет. Действие остаётся; если apply всё же пишет git-шаблон, в R2 цель промта уводится в node_store, id не удаляется. |
+| 5 | `change.rollback` | app/services/action_layer/builtin_change.py:_rollback (спека L188) | Возвращает прежнюю версию значения цели новой строкой версии; история не удаляется. | high | destructive | нет | keep | Откат change_control той же инфраструктурой, что apply. subprocess нет. id остаётся. |
+| 6 | `project.stop` | app/services/action_layer/builtin_group.py:_stop_project (спека L366) | Глобальный стоп проекта: прерывает активный шаг, генерацию и задачи монтажа. | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 7 | `shot.get_menu` | app/services/action_layer/builtin_group.py:_shot_get_menu (спека L374) | Ячейки закадра и шоты. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 8 | `shot.edit_cell_voiceover` | app/services/action_layer/builtin_group.py:_shot_edit_cell (спека L380); живой executor — обёртка builtin_wave5_history._wrap_executor | Записывает текст закадра ячейки в БД. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 9 | `shot.add_cell` | app/services/action_layer/builtin_group.py:_shot_add_cell (спека L389) | Новая пустая ячейка перед ячейкой с индексом before_index (без индекса в конец), дробный sort_key. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 10 | `shot.edit_field` | app/services/action_layer/builtin_group.py:_shot_edit_field (спека L399); живой executor — обёртка builtin_wave5_history._wrap_executor | Действие, персонажи, стык, сцена, площадка, крупность, движение или промты шота: запись в БД без запуска генерации. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 11 | `group.list` | app/services/action_layer/builtin_group.py:_group_list (спека L411) | Встроенные и пользовательские группы нод. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 12 | `group.get` | app/services/action_layer/builtin_group.py:_group_get (спека L416) | Полный spec группы: ноды, связи, промты. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 13 | `group.shots_report` | app/services/action_layer/builtin_group.py:_group_shots_report (спека L422) | Читает готовый HTML-отчёт ноды fw_report (первые 3000 символов). | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 14 | `group.insert` | app/services/action_layer/builtin_group.py:_group_insert (спека L428) | Добавляет ноды группы, связи, промт-варианты и флаги в канвас проекта. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 15 | `group.save_from_selection` | app/services/action_layer/builtin_group.py:_group_from_selection (спека L439) | Записывает выбранные ноды канваса как новую пользовательскую группу (файл в node_groups/). | medium | local_safe | (а) косвенно: POST /node-groups/from-selection пишет node_groups/<id>.json в корень репозитория | modify | Пользовательская группа коммитится файлом в git. Оркестратор не должен писать этот каталог; хранение — вне git либо отдельным решением куратора. |
+| 16 | `group.update` | app/services/action_layer/builtin_group.py:_group_update (спека L455) | Название, описание или категория пользовательской группы. | medium | local_safe | (а) косвенно: PUT /node-groups/{id} переписывает JSON группы в репозитории | modify | Та же запись файла репо, что у group.save_from_selection. До решения по каталогу групп — не в whitelist как есть. |
+| 17 | `group.delete` | app/services/action_layer/builtin_group.py:_group_delete (спека L468) | Удаляет файл пользовательской группы. | high | destructive | (а) косвенно: DELETE /node-groups/{id} удаляет файл группы из репозитория | modify | Удаление файла репозитория. Встроенные группы и так защищены; пользовательский JSON оркестратор не стирает. |
+| 18 | `node.get_config` | app/services/action_layer/builtin_group.py:_node_get_config (спека L480) | Роль, режим выхода, виды выхода, режим проверки и признак принудительного Vibecode. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 19 | `node.get_llm_route` | app/services/action_layer/builtin_group.py:_node_get_llm_route (спека L486) | Для нод script_frames_qc выбор модели игнорируется: всегда Vibecode «GPT 5.6 Sol». | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 20 | `node.set_config` | app/services/action_layer/builtin_group.py:_node_set_config (спека L492) | Роль, режим и виды выхода, «брать со стрелок», снимок и режим проверки. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 21 | `node.set_prompt_variant` | app/services/action_layer/builtin_group.py:_node_set_prompt_variant (спека L517) | Привязывает файл промта к слоту ноды в этом проекте (meta). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 22 | `node.set_disabled` | app/services/action_layer/builtin_group.py:_node_set_disabled (спека L530) | Пишет ноду в meta.disabled_nodes проекта или убирает оттуда. | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 23 | `node.reset_from_step` | app/services/action_layer/builtin_group.py:_node_reset (спека L553) | Стирает результаты шага и всех шагов ниже по конвейеру и пересчитывает статус проекта. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 24 | `media.get_recovery_assessment` | app/services/action_layer/builtin_media_recovery.py:_assessment (спека L125) | Читает журнал платных задач и файлы: есть ли открытая задача Kie для докачивания, готовый файл, провалившаяся задача или неизвестный исход отправки, и что из этого допускает надзор. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 25 | `media.resume_poll` | app/services/action_layer/builtin_media_recovery.py:_resume (спека L132) | Спрашивает Kie про уже отправленную задачу (клипы, предметы, музыка) и скачивает готовый результат. | medium | local_safe | нет в обработчике; сеть провайдера идёт внутренним API студии (не отдельный HTTP действия) | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 26 | `media.list_unknown_outcomes` | app/services/action_layer/builtin_media_recovery.py:_unknown_list (спека L143) | Показывает ключи проекта (клипы, картинки, предметы, музыка), у которых прошлая платная отправка в Kie или Outsee не имеет известного исхода и поэтому блокирует повтор: провайдер, возраст блокировки и окно, на которое она действует. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 27 | `media.release_unknown` | app/services/action_layer/builtin_media_recovery.py:_release (спека L152) | Решение человека после сверки кабинета провайдера (Kie или Outsee): снимает блокировку повторной платной отправки по одному ключу этого провайдера. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 28 | `montage.get_board` | app/services/action_layer/builtin_montage.py:_get_board (спека L181) | Кадры, закадр, очередь правок и устаревшие видео. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 29 | `montage.apply_status` | app/services/action_layer/builtin_montage.py:_apply_status (спека L187) | Состояние фоновой задачи apply: идёт ли, сколько операций сделано. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 30 | `montage.montage_status` | app/services/action_layer/builtin_montage.py:_montage_status (спека L192) | Состояние фоновой задачи пересборки видео (озвучка и сборка). | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 31 | `montage.recover_status` | app/services/action_layer/builtin_montage.py:_recover_status (спека L197) | Состояние фоновой задачи подбора готовых карточек из галереи. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 32 | `montage.set_voiceover` | app/services/action_layer/builtin_montage.py:_set_voiceover (спека L202); живой executor — обёртка builtin_wave5_history._wrap_executor | Записывает текст закадра кадра в БД. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 33 | `montage.set_coverage` | app/services/action_layer/builtin_montage.py:_set_coverage (спека L214); живой executor — обёртка builtin_wave5_history._wrap_executor | Роль, крупность, ракурс, движение, стык, свет или действие кадра: запись в БД без запуска генерации (картинка в очередь автоматически не ставится). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 34 | `montage.queue_ops` | app/services/action_layer/builtin_montage.py:_queue_ops (спека L230) | Дописывает операции перегенерации в очередь доски (одноимённые заменяются). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 35 | `montage.swap_shots` | app/services/action_layer/builtin_montage.py:_swap_shots_default (спека L250) | Меняет картинки и/или видео и промты шотов кадра. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 36 | `montage.cancel_queue_ops` | app/services/action_layer/builtin_montage_more.py:_cancel_queue_ops (спека L736) | Удаляет выбранные операции из очереди доски или всю очередь. | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 37 | `montage.apply_queue` | app/services/action_layer/builtin_montage_more.py:_apply_queue (спека L751) | Применить правки очереди (генерация) | high | destructive+paid | нет в обработчике; сеть провайдера идёт внутренним API студии (не отдельный HTTP действия) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 38 | `montage.improve_scene` | app/services/action_layer/builtin_montage_more.py:_improve_scene (спека L776) | Улучшить сцену (LLM + картинки кадров) | high | destructive+paid | нет в обработчике; LLM провайдера идёт внутренним API (исключение §2.2.2в) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 39 | `montage.generate_scene_images` | app/services/action_layer/builtin_montage_more.py:_generate_scene_images (спека L799) | Сгенерировать картинки сцены | high | destructive+paid | нет в обработчике; сеть провайдера идёт внутренним API студии (не отдельный HTTP действия) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 40 | `montage.generate_scene` | app/services/action_layer/builtin_montage_more.py:_generate_scene (спека L817) | Один вызов LLM пишет сцены ячейки по заказу оператора; replace_ns пересобирает только выбранные куски цепочки. | high | destructive+paid | нет в обработчике; LLM провайдера идёт внутренним API (исключение §2.2.2в) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 41 | `montage.suggest_scene_variants` | app/services/action_layer/builtin_montage_more.py:_suggest_variants (спека L834) | Один вызов LLM возвращает варианты действия, формата сцены или якорей. | high | paid+paid | нет в обработчике; LLM провайдера идёт внутренним API (исключение §2.2.2в) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 42 | `montage.set_scene_chain` | app/services/action_layer/builtin_montage_more.py:_set_scene_chain (спека L844); живой executor — обёртка builtin_wave5_history._wrap_executor | Режет цепочку «действие1 → действие2 → ...» на шоты ячейки без LLM. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 43 | `montage.set_anchors` | app/services/action_layer/builtin_montage_more.py:_set_anchors (спека L857); живой executor — обёртка builtin_wave5_history._wrap_executor | Якоря режут закадр ячейки по кадрам. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 44 | `montage.set_voiceover_span` | app/services/action_layer/builtin_montage_more.py:_set_vo_span (спека L871) | Закрепляет за сценой фрагмент закадра или снимает закрепление (clear). | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 45 | `montage.delete_child_frame` | app/services/action_layer/builtin_montage_more.py:_delete_child (спека L882) | Удаляет дочерний шот (не голову сцены). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 46 | `montage.insert_frame` | app/services/action_layer/builtin_montage_more.py:_insert_frame (спека L893) | kind=parent: новая ячейка закадра после кадра (или в начало); kind=child: шот в ту же сцену. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 47 | `montage.merge_scenes` | app/services/action_layer/builtin_montage_more.py:_merge_scenes (спека L904) | Склеивает две соседние ячейки закадра в одну сцену. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 48 | `montage.split_scene` | app/services/action_layer/builtin_montage_more.py:_split_scene (спека L915) | Кадр и все правее становятся новой сценой (первый кадр сцены отделить нельзя). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 49 | `montage.explode_scene` | app/services/action_layer/builtin_montage_more.py:_explode_scene (спека L925) | Каждый видимый кадр ячейки становится отдельной ячейкой закадра. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 50 | `montage.delete_frame` | app/services/action_layer/builtin_montage_more.py:_delete_frame (спека L935) | Удаляет кадр; у головы сцены первый дочерний кадр повышается. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 51 | `montage.swap_slots` | app/services/action_layer/builtin_montage_more.py:_swap_slots (спека L946) | Обмен слотов картинок или видео между любыми кадрами; слоты помечаются устаревшими. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 52 | `montage.move_image` | app/services/action_layer/builtin_montage_more.py:_move_image (спека L957) | Перенос в пустой слот или обмен, если цель занята; промты едут с файлами. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 53 | `montage.delete_image` | app/services/action_layer/builtin_montage_more.py:_delete_image (спека L966) | Файл уходит в old/scenes, запись картинки удаляется, видео кадра помечается устаревшим. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 54 | `montage.delete_video` | app/services/action_layer/builtin_montage_more.py:_delete_video (спека L979) | Файл клипа уходит в old/videos, запись видео удаляется. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 55 | `montage.set_video_trim` | app/services/action_layer/builtin_montage_more.py:_set_video_trim (спека L989) | Пишет start/end (секунды) обрезки слота видео в настройки доски; влияет на следующую сборку. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 56 | `montage.list_ref_assets` | app/services/action_layer/builtin_montage_more.py:_list_ref_assets (спека L1000) | Персонажи и предметы проекта, которые можно приложить кадру. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 57 | `montage.link_ref` | app/services/action_layer/builtin_montage_more.py:_link_ref (спека L1004) | Привязывает файл из ref-assets к кадру; файл не копируется. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 58 | `montage.unlink_ref` | app/services/action_layer/builtin_montage_more.py:_unlink_ref (спека L1013) | Скрывает персонажа/предмет из рефов ячейки. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 59 | `montage.delete_manual_ref` | app/services/action_layer/builtin_montage_more.py:_delete_manual_ref (спека L1021) | Убирает ручной реф кадра; если файл был загружен для этого кадра, он удаляется с диска (приложенный готовый ассет остаётся). | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 60 | `montage.recover_outsee` | app/services/action_layer/builtin_montage_more.py:_recover_outsee (спека L1034) | Забрать правки из галереи Outsee | high | destructive | нет в обработчике; сеть провайдера идёт внутренним API студии (не отдельный HTTP действия) | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 61 | `montage.run_montage` | app/services/action_layer/builtin_montage_more.py:_run_montage (спека L1045) | Смонтировать видео (озвучка + сборка) | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 62 | `montage.align_audio` | app/services/action_layer/builtin_montage_more.py:_align_audio (спека L1058) | Разбор аудио (таймкоды кадров) | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 63 | `montage.set_assemble_params` | app/services/action_layer/builtin_montage_more.py:_set_assemble_params (спека L1068) | Хвост после озвучки, громкость музыки, субтитры, пропуск первых секунд. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 64 | `montage.get_cost_basis` | app/services/action_layer/builtin_montage_more.py:_get_cost_basis (спека L1080) | Текущие генераторы и разрешения, как их берёт регенерация панели, их цена по каталогу Kie (или признак «цена неизвестна») и число операций в очереди. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 65 | `montage.upload_voice` | app/services/action_layer/builtin_wave3.py:_upload_voice (спека L470); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как audio/voice_full.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: обёртка history (_backup_file) копирует прежний файл в data/action_layer_snapshots/, это вне data/reports/ и data/node_overrides/ | modify | Сам аплоад идёт внутренним API. Каталог снимка перенести в allowlist (вопрос куратору) либо в data/reports/. Действие загрузки не удалять. |
+| 66 | `montage.upload_music` | app/services/action_layer/builtin_wave3.py:_upload_music (спека L483); живой executor — обёртка builtin_wave5_history._wrap_executor | Сохраняет файл как music/bgm.<расширение> и запоминает путь в настройках проекта. | high | destructive | (а) прямо: та же обёртка _backup_file пишет копию музыки в data/action_layer_snapshots/ | modify | Как montage.upload_voice: сузить путь снимка, загрузку через внутренний API оставить. |
+| 67 | `montage.upload_image` | app/services/action_layer/builtin_wave3.py:_upload_image (спека L493) | Кладёт PNG в слот кадра (shot 1/2, slot=parent для still родителя): прежняя картинка слота архивируется в old/, видео кадра помечается устаревшим. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 68 | `montage.upload_video` | app/services/action_layer/builtin_wave3.py:_upload_video (спека L504) | Кладёт MP4 в слот видео кадра: прежний клип архивируется в old/, пометка «устарело» снимается. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 69 | `montage.upload_ref` | app/services/action_layer/builtin_wave3.py:_upload_ref (спека L515) | Новый ручной референс кадра (картинка и имя): новый файл, прежние рефы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 70 | `node.upload_file` | app/services/action_layer/builtin_wave3.py:_upload_node_file (спека L527) | Подменяет вход ноды: .xlsx заменяет прежние xlsx ноды (они удаляются) и выключает «брать со стрелок»; в режиме проверки .txt/.md становится агентом проверки. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 71 | `node.upload_check_agent` | app/services/action_layer/builtin_wave3.py:_upload_check_agent (спека L539) | Сохраняет .txt/.md агента проверки ноды, включает режим проверки и источник «агент». | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 72 | `node.clear_check_agent` | app/services/action_layer/builtin_wave3.py:_clear_check_agent (спека L550) | Удаляет загруженные файлы агента проверки ноды: дальше берётся встроенный агент. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 73 | `project.pause` | app/services/action_layer/builtin_wave3.py:_pause (спека L559) | Останавливает выполняющуюся ноду и ставит статус paused (прежний статус запоминается). | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 74 | `project.resume` | app/services/action_layer/builtin_wave3.py:_resume (спека L565) | Возвращает статус, с которого проект ушёл в паузу. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 75 | `project.continue_pipeline` | app/services/action_layer/builtin_wave3.py:_continue (спека L578) | Снимает ручной стоп и паузу и продвигает проект на следующий шаг (*_ready -> running), если шаг готов к запуску. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 76 | `project.set_auto_mode` | app/services/action_layer/builtin_wave3.py:_set_auto_mode (спека L590) | Переключатель «Автопродвижение» (project.auto_mode). | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 77 | `project.reload_xlsx` | app/services/action_layer/builtin_wave3.py:_reload_xlsx (спека L604) | Импортирует project.xlsx в БД: поля проекта, закадр, промты и атрибуты кадров перезаписываются значениями из файла, недостающие кадры создаются. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 78 | `montage.set_send_to_main_pc` | app/services/action_layer/builtin_wave3.py:_set_send_to_main_pc (спека L614) | Включает или выключает флаг assemble.send_to_main_pc. | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 79 | `prompt.get_master` | app/services/action_layer/builtin_wave3.py:_get_master (спека L626) | Текст общего промта шага (первые 20000 символов), длина и sha256. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 80 | `prompt.save_master` | app/services/action_layer/builtin_wave3.py:_save_master (спека L633); живой executor — обёртка builtin_wave5_history._wrap_executor | Пишет общий файл промта шага: правка действует на ВСЕ проекты. | high | destructive | (а) косвенно: PUT внутреннего API перезаписывает файл мастер-промта в репозитории (templates/node_groups или prompts/), сразу для всех проектов | modify | D3: git-шаблоны read-only. Запись промта ноды — в node_store (БД), не в файл репо. |
+| 81 | `prompt.create_master` | app/services/action_layer/builtin_wave3.py:_create_master (спека L651) | Новый файл варианта промта шага (общий для всех проектов). | medium | local_safe | (а) косвенно: создаёт новый файл варианта промта в репозитории, общий для всех проектов | modify | Новый вариант промта не должен появляться файлом в git. В R2 — версия в node_store. |
+| 82 | `prompt.delete_master` | app/services/action_layer/builtin_wave3.py:_delete_master (спека L662) | Удаляет файл варианта промта шага (общий для всех проектов, default удалять нельзя). | high | destructive | (а) косвенно: DELETE внутреннего API удаляет файл промта из репозитория для всех проектов | modify | Удаление git-шаблона оркестратору запрещено. Снятие версии — только в БД node_store. |
+| 83 | `node.get_run_cost_basis` | app/services/action_layer/builtin_wave3.py:_get_run_cost_basis (спека L674) | Для нод Каркас, Площадка, Шоты, QC: пачки, худшее число запросов к модели и токены на запрос по реальным данным проекта и файлам промтов. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 84 | `node.run_step` | app/services/action_layer/builtin_wave3.py:_run_node_step (спека L682) | Явный старт шага ноды (режим resume): убивает активную генерацию проекта и перезаписывает в БД выход ноды по всем ячейкам. | high | destructive+paid | нет в обработчике; LLM провайдера идёт внутренним API (исключение §2.2.2в) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 85 | `step.get_run_cost_basis` | app/services/action_layer/builtin_wave5.py:_get_step_cost_basis (спека L355) | Для шагов картинок, видео, озвучки, музыки, сборки и LLM-промтов: сколько генераций по доске, какие значения заявить в step.run_step и верхняя оценка в кредитах. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 86 | `step.run_step` | app/services/action_layer/builtin_wave5.py:_run_media_step (спека L364) | Ручной запуск шага (режим resume): картинки, видео, озвучка, музыка, финальная сборка, промты картинок и анимации. | high | destructive+paid | нет в обработчике; сеть провайдера идёт внутренним API студии (не отдельный HTTP действия) | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 87 | `hitl.list_pending` | app/services/action_layer/builtin_wave5.py:_list_pending (спека L383) | Запросы подтверждения проекта (HITL), по которым решение ещё не принято: id, вид и кадр. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 88 | `hitl.approve` | app/services/action_layer/builtin_wave5.py:_decide('approve') (спека L388) | Принимает результат: кадр получает статус одобренного. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 89 | `hitl.reject` | app/services/action_layer/builtin_wave5.py:_decide('reject') (спека L399) | Отклоняет результат: кадр получает статус failed, проект может уйти на паузу. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 90 | `hitl.regenerate` | app/services/action_layer/builtin_wave5.py:_decide('regenerate') (спека L408) | Возвращает кадр на перегенерацию: воркер заново сгенерирует картинку или клип и потратит деньги. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 91 | `project.create` | app/services/action_layer/builtin_wave5.py:_create_project (спека L423) | Новый проект с названием, темой и режимом героя. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 92 | `project.create_child` | app/services/action_layer/builtin_wave5.py:_create_child (спека L435) | Дочерний проект: настройки, промты и тексты родителя, без озвучки, Excel и результатов. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 93 | `project.patch_settings` | app/services/action_layer/builtin_wave5.py:_patch_settings (спека L442) | Название, тема, режим героя, модель и разрешение картинок и видео, формат кадра. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 94 | `massfactory.start` | app/services/action_layer/builtin_wave5.py:_mass_start (спека L459) | Очередь тем: первый дочерний проект стартует с плана, остальные идут по очереди сами. | high | destructive+paid | нет | keep | Платный шаг пайплайна через внутренний API. subprocess/eval нет. Оставляем под approval, spend и paid-retry. |
+| 95 | `kill_switch.engage` | app/services/action_layer/builtin_wave5.py:_kill_engage (спека L476) | Включает глобальный аварийный стоп: платные и разрушающие шаги слоя перестают выполняться. | low | local_safe | нет | keep | Флаг управления проектом через внутренний API. Записи вне allowlist и исполнения кода нет. |
+| 96 | `project.upload_xlsx` | app/services/action_layer/builtin_wave5.py:_upload_xlsx (спека L484) | Заменяет project.xlsx файлом .xlsx (проверяется сервером) и перечитывает его в базу: поля проекта, закадр и кадры перезаписываются значениями из файла. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 97 | `hero.replace_image` | app/services/action_layer/builtin_wave5.py:_replace_hero (спека L496) | Кладёт картинку (png, jpg, webp) в папку characters проекта под её именем; файл с таким же именем перезаписывается без архива. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 98 | `storage.upload_file` | app/services/action_layer/builtin_wave5.py:_storage_upload (спека L505) | Добавляет файл в хранилище ноды проекта под новым именем с отметкой времени; существующие файлы не затрагиваются. | medium | local_safe | нет | keep | Локальная мутация проекта через внутренний API. (а)(б)(в) в обработчике нет. |
+| 99 | `storage.clear_files` | app/services/action_layer/builtin_wave5.py:_storage_clear (спека L512) | Удаляет все файлы из хранилища ноды проекта. | high | destructive | нет | keep | Разрушительная мутация данных проекта через внутренний API, не shell и не файл git-шаблона. Оставляем под approval. |
+| 100 | `history.list_snapshots` | app/services/action_layer/builtin_wave5_history.py:_list_snapshots (спека L428) | Список снимков, которые слой сохранил перед правками закадра, покрытия, полей шота, файлов озвучки и музыки, мастер-промтов: что было, что стало и можно ли откатить. | none | read | нет | keep | Только чтение через внутренний API. Прямых (а)(б)(в) нет. |
+| 101 | `history.rollback` | app/services/action_layer/builtin_wave5_history.py:_rollback (спека L437) | Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла правка. | high | destructive | (а) прямо: при откате file_voice/file_music снова вызывает _backup_file в data/action_layer_snapshots/ | modify | Откат нужен. Меняется только каталог копии, не семантика отката через тот же внутренний эндпоинт. |
+| 102 | `publish.send` | app/services/action_layer/publish_action.py:_publish_send (спека L194) | Публикует готовый ролик проекта на площадки через профиль MoreLogin с подписью из темы проекта. | high | destructive | (в) косвенно: шаг publish ходит на площадки через MoreLogin; обработчик — только POST внутреннего API | keep | Штатная публикация студии под destructive и подтверждением человека. Обработчик не открывает сокет сам. Вопрос куратору — оставлять ли в whitelist оркестратора. |
+
+
+## Инструменты правки кода и исполнения
+
+В реестре 102 действий их нет. Проверены точные id: `edit_files`, `run_tests`, `exec`, `shell`, `write_file`, а также вызовы `subprocess`, `eval`, `compile`, `exec`, `os.system` в телах исполнителей `app/services/action_layer/builtin_*.py` и `publish_action.py`.
+
+Запрет оркестратору на правку кода студии (правило 8 плана) этим реестром не нарушается. Дыра — старый чат, не Action Layer.
+
+Обёртка history (`shutil.copy2` в `_backup_file`) — это копирование файла данных, не запуск процесса. Она попала в modify по признаку (а), не по (б).
+
+## §node_store — точки загрузки шаблонов нод
+
+Искали в `app/services/` на main (`c53a238b`) и на #342 (`3ec7c957`) чтения `templates/node_groups/**` и `prompts/templates`.
+
+### `prompts/templates`
+
+Строки `prompts/templates` нет ни на main, ни на #342. Каталога с таким именем нет. В закрытый перечень она не входит.
+
+### `templates/node_groups/**` на main
+
+Каталога нет. В `app/services/` нет ни одной ссылки на этот путь. `scene_skeleton_batches.py` нет ни на main, ни на #342. `apply_ops_batches.py` на обоих деревьях есть и **не читает** шаблоны нод: он разбирает ops.
+
+Ожидание плана («2–4 call-site: `apply_ops_batches.py`, `scene_skeleton_batches.py`, общий prompt-loader») на main не выполняется: первых двух чтений нет, общий загрузчик читает другие деревья (см. смежные).
+
+### Закрытый перечень исключений из freeze (только #342)
+
+Это места, где код **читает байты** файла, и путь может быть `templates/node_groups/script_frames_qc/<имя>.md`. Патч R2 (замена чтения на `node_store.resolve_node()`, ≤ 20 строк, ревью WS1) разрешён только здесь. Любой другой файл `app/services/` не трогать.
+
+Общий резолвер на #342: `prompt_library.node_group_prompts_dir` (`app/services/prompt_library.py:148`) возвращает `корень/templates/node_groups/<group_id>`. `resolve_script_frames_qc_prompt_path` (`:239`) для имён группы берёт этот каталог, а для `scene_skeleton_agent` и `action` — не его, а `prompts/scene_design/` (словарь `SCRIPT_FRAMES_QC_SHARED_PROMPTS`, `:130`).
+
+| # | Файл | Функция | Строка | Как читается |
+|---|---|---|---|---|
+| 1 | `app/services/prompt_library.py` | `read_prompt` | 514 | `p.read_text`; `p` из `resolve_excel_gpt_prompt_path`. Для имён script_frames_qc кроме двух shared — файл в `templates/node_groups/script_frames_qc/`. Единая точка для `read_resolved_project_prompt` (`:884`) и `get_project_prompt` (`:972`) |
+| 2 | `app/services/montage_action_gpt.py` | `load_action_prompt` | 168 | `resolve_excel_gpt_prompt_path("main_action_from_bits_ru", group_id="script_frames_qc").read_text` |
+| 3 | `app/services/montage_scene_improve.py` | `load_group_prompt` | 196 | `resolve_script_frames_qc_prompt_path(name).read_text`. Вызовы: `:477` (`script_writer_ru`), `:1637` (`shots_qc_ru`) |
+| 4 | `app/services/change_control/targets.py` | `PromptHandler._effective` | 115 | `path.read_text` после `resolve_excel_gpt_prompt_path` (`:105`) |
+| 5 | `app/services/change_control/targets.py` | `PromptHandler.describe` | 128 | то же чтение текста промта |
+| 6 | `app/services/change_control/targets.py` | `PromptHandler._variant_text` | 170 | `path.read_text` варианта |
+| 7 | `app/services/revisions.py` | `_file_entry` | 250 | `path.read_bytes` (sha256). Зовёт `resolved_prompt_inputs` (`:282`), путь резолвится на `:279` |
+| 8 | `app/services/action_layer/builtin_wave3.py` | `_load_basis` | 355 | `resolve_script_frames_qc_prompt_path(expected).read_text` — длина промта для `node.get_run_cost_basis`, не текст в LLM |
+
+На main этих восьми мест нет: файлы `montage_action_gpt.py`, `montage_scene_improve.py`, `change_control/targets.py`, `node_rules.py` и каталог `action_layer/` отсутствуют, а `read_prompt` (`app/services/prompt_library.py:354`) и `resolved`-обёртка (`:589`) читают `prompts/<шаг>/` и при устаревшей локальной копии — `templates/excel_gpt_agents/` (`excel_gpt_template_dir`, `:123`). Ветки в `templates/node_groups` у main нет.
+
+Рядом, но **не** в перечне (байты `templates/node_groups` не читают):
+
+- `prompt_library.node_group_prompts_dir` (`:148`) и `script_frames_qc_prompt_relpath` (`:236`) — только собирают путь.
+- `prompt_library.list_group_owned_prompts` (`:225`) — `is_file()`, без чтения текста.
+- `prompt_library.write_prompt` (`:531–537`) — **пишет** `templates/node_groups` для имён группы. Это не чтение. Вопрос куратору, входит ли запись в исключение freeze.
+- `node_rules.PROMPT_DIR` (`app/services/node_rules.py:9`) и описание группы в `node_groups.py:441` — строки в метаданных, файл не открывается.
+- `gpt_operator.collect_source_prompts` (`app/services/gpt_operator.py:247`) — зовёт `read_resolved_project_prompt`. Патчить надо `read_prompt`, не этот вызов.
+
+### Смежные загрузчики (оба дерева, другие пути)
+
+Их нет в закрытом перечне. Без решения куратора R2 их не патчит.
+
+| Дерево | Файл | Функция | Строка | Откуда читает |
+|---|---|---|---|---|
+| main и #342 | `app/services/scene_design/agents.py` | `prompts_dir` | 195 | `prompts/scene_design` (`PROMPTS_SUBDIR`, `:13`) |
+| main и #342 | `app/services/scene_design/agents.py` | `load_prompt` | 241 | сначала `step_dir("excel_gpt")/*.md` (`read_text` на `:255` и `:259`), иначе `prompts/scene_design/<agent>.md` (`:264`), плюс include (`:274`) |
+| main и #342 | `app/services/scene_design/runner.py` | вызовы `load_prompt` | main: 364, 851; #342: 452, 949 | через `load_prompt` |
+| main и #342 | `app/services/scene_design/skeleton.py` | вызов `load_prompt` | 1569 | скелет, `prompts/scene_design` или excel_gpt-вариант |
+| main и #342 | `app/services/prompt_library.py` | `excel_gpt_template_dir` | 123 | `templates/excel_gpt_agents` |
+| main и #342 | `app/services/prompt_composer.py` | корни | 33–36 | `prompts/blocks`, `prompts/steps`, `prompts/styles` — не `prompts/templates` |
+
+`load_prompt` на #342 отличается от main на одну строку (diff `agents.py` — `1 insertion`). Путь чтения тот же.
+
+## §db_browser — легаси чата (удаление в R2 / R6)
+
+Файл на main: `app/web/routers/db_browser.py` (целиком владение WS2). На #342 тот же файл отличается на +97/−8 строк; режимы `fix_bugs` / `diagnose_only` и ключи `edit_files` / `run_tests` есть уже на main. Ниже — строки main.
+
+Режим **`fix_bugs`** (удалить в R2 вместе с `edit_files` / `run_tests`):
+
+- флаг запроса `fix_bugs: bool = False` — около `:2386`;
+- детектор `_is_fix_bugs_mode` — `:819` (флаг API или маркер «режим фикс багов» в тексте);
+- при включении в промпт уходит требование чинить через `edit_files` + `run_tests` — `:2454`;
+- разбор JSON-действий модели — цикл с `:2523`.
+
+Ключи кода, которые этот цикл исполняет (`_CODE_ACT_KEYS`, `:2517`):
+
+| Ключ | Строки | Куда уходит |
+|---|---|---|
+| `read_file` | 2671–2698 | `app.services.code_autofix.read_file` |
+| `edit_files` | 2699–2718 | `code_autofix.apply_edits` — запись файлов репозитория |
+| `run_tests` | 2720–2745 | `code_autofix.run_tests` |
+| `git_commit_push` | 2746–2790 | `app.services.git_ops.commit_and_push` |
+
+`code_autofix.run_tests` (`app/services/code_autofix.py:191`) вызывает `subprocess.run` (`:203`). `code_autofix.py:5` импортирует `subprocess`. Это и есть запрещённая оркестратору обёртка исполнения. В реестр Action Layer она не входит. В R2 убирается вместе с `fix_bugs`, иначе дыра останется рядом с whitelist.
+
+Режим **`diagnose_only`** (пометить deprecated в R2, удалить в R6):
+
+- детектор `_is_diagnose_only_question` — `:827`. Если сообщение похоже на «почини код» или включён `fix_bugs`, режим не включается;
+- при diagnose-only ключи из `_CODE_ACT_KEYS` пропускаются (`:2525`), в ответ не должны попадать правки кода;
+- пост-фильтр пузыря — `:2825`.
+
+Рядом в том же цикле остаются действия чата, не названные планом, но тоже опасные для оркестратора: `git_commit_push`, `delete_projects`, `remove_node`. Их судьбу надо подтвердить куратору (вопрос ниже). План явно требует убрать `fix_bugs` + `edit_files` / `run_tests` и позже весь `diagnose_only`.
+
+## Конфликтная зона будущего rebase #342 на main
+
+Сравнение `git diff c53a238b 3ec7c957 -- app/orchestrator`. Реестр, approvals, spend и change_control лежат в `app/services/action_layer/` и `app/services/change_control/`, **не** в `app/orchestrator/`. В `app/orchestrator/` инфраструктура Action Layer почти не пересекается с main: новый файл один.
+
+Правило §2.2.1: инфраструктура Action Layer — в пользу #342; логика пайплайна и вызовы сервисов — в пользу housepc/main (после R0a — в пользу уже влитого main). Каждый файл ниже всё равно смотрит человек.
+
+| Файл | Кто добавил отличие | Куда решать |
+|---|---|---|
+| `app/orchestrator/node_spec.py` | только #342 (407 строк), на main файла нет | **#342**. Контракт ноды: `allowed_actions`, approval, managed. Это инфраструктура наблюдения/Action Layer, не логика шага. Конфликта содержимого с main нет, файл берётся целиком |
+| `app/orchestrator/auto_advance.py` | оба; на #342 вставка `actions_v1.managed_project_enabled` / `check_managed_start` около `:795` | **смешанный**. Тело продвижения пайплайна — main/housepc. Хуки managed-режима — из #342, вручную, не затирать слепо |
+| `app/orchestrator/pipeline.py` | оба; #342 открывает окно `balance_adapters` вокруг шага | **main/housepc** для хода шагов. Вставку учёта баланса сверить отдельно: это не реестр действий |
+| `app/orchestrator/graph/planner.py` | оба; развилка excel_gpt / overflow | **main/housepc**. Это граф канваса, не planner Action Layer (`app/services/action_layer/planner.py` на main отсутствует и при rebase приезжает целиком из #342) |
+| `app/orchestrator/steps/enrich_xlsx.py` | оба, крупнейший diff; на #342 вызов `actions_v1.continue_managed_image` около `:971` | **смешанный**: логика enrich — main/housepc, вызов managed — кусок #342 |
+| `app/orchestrator/steps/publish.py` | оба; на #342 `actions_v1.get_permission` около `:359` | **смешанный**: сборка публикации — main/housepc, проверка permission — #342 |
+| `app/orchestrator/steps/assemble.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_audio.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_hero.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_image_prompts.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_images.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_items.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_music.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_sfx.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/generate_videos.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/make_animation_prompts.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/make_script.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/plan_sfx.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/scene_design.py` | оба | **main/housepc** |
+| `app/orchestrator/steps/split_frames.py` | оба | **main/housepc** |
+
+Файлы `app/orchestrator/`, одинаковые на обеих головах (в diff не вошли, конфликта нет): `__init__.py`, `default_graph.py`, `node_registry.py`, `graph/__init__.py`, `graph/validate.py`, `steps/__init__.py`, `steps/make_plan.py`. Уникальных файлов только на main в этом каталоге нет.
+
+До rebase R0a в main ещё нет housepc-правок `app/orchestrator/*`. Когда R0a вольётся, конфликт надо пересчитать против тега `pipeline-base-v1`, не против сегодняшнего `c53a238b`: housepc мог разойтись с этим main в тех же step-файлах.
+
+`app/services/**` в этот аудит как конфликт rebase не разбирался построчно: freeze сервисов — зона WS1 до конца R0a. Исключение R2 — только таблица §node_store.
+
+## Расхождения и вопросы куратору
+
+1. Число действий **102**, не «около». Источник расхождения «103 в исходнике / 102 в реестре» — снятый `node.run_step` из `builtin_group.py`. В таблицу он не включён.
+2. План §6.1 пишет, что в 102 уже есть `get_project_state`, `list_nodes` / `get_node`, `get_scenes` / `get_shots`, `get_run_logs`, `get_spend_report`. **Их нет.** Ближайшие чтения: `node.get_config`, `node.get_llm_route`, `group.list`, `group.get`, `shot.get_menu`, `group.shots_report`, `montage.get_board`, `node.get_run_cost_basis`, `step.get_run_cost_basis`, `montage.get_cost_basis`, `history.list_snapshots`. Нужны ли отдельные действия под именами плана, или достаточно этих?
+3. План §6.2 говорит, что `run_node` уже есть в реестре #342 (`POST .../steps/excel_gpt/run?node_key=&only_node=true&mode=resume`). Имени `run_node` нет. Роль выполняют `node.run_step` (excel_gpt, платно, destructive) и `step.run_step` (шаг конвейера). `stop_node` / `resume_node` тоже нет: стоп ближе к `project.stop` и `kill_switch.engage`, продолжение — к `project.resume` / `project.continue_pipeline` / `node.run_step` с resume. Подтвердить, что 11 новых действий плана садятся рядом, а не переименовывают эти id.
+4. `prompts/templates` не существует. `apply_ops_batches.py` и отсутствующий `scene_skeleton_batches.py` шаблоны нод не читают. Закрытый перечень — 8 чтений байт на #342 (таблица §node_store), на main он пуст. Расширять ли перечень на `prompts/scene_design` (`load_prompt`) и `templates/excel_gpt_agents`? Иначе ноды скелета и площадки, чьи промты лежат в `prompts/scene_design` (shared map), node_store не увидит.
+5. Включать ли в исключение freeze **запись** `prompt_library.write_prompt` (`:531` на #342)? Чтение без записи оставит второй путь мимо node_store.
+6. Каталог снимков `data/action_layer_snapshots/` (modify у `montage.upload_voice`, `montage.upload_music`, `history.rollback`): переносить в `data/reports/` или явно дописать третьим allowlist-каталогом? Сейчас это единственная прямая запись ФС внутри обработчиков реестра.
+7. `publish.send` оставлен keep: обработчик не ходит в сеть сам, но шаг публикует ролик на площадки. Оставлять в whitelist оркестратора?
+8. `media.release_unknown` оставлен keep (признаков exec нет), но снимает блокировку неизвестного исхода платной отправки. Не забрать ли его у оркестратора отдельно от критерия §2.2.2?
+9. В `db_browser.py` рядом с `edit_files` / `run_tests` исполняются `git_commit_push`, `delete_projects`, `remove_node`. План называет только `fix_bugs` и два ключа. Удалять ли весь набор кодовых ключей одним коммитом R2?
+10. Rebase #342 на текущий main затронет 19 общих файлов `app/orchestrator/` плюс новый `node_spec.py`. После merge R0a цифру пересчитать. Инфраструктура слоя (`app/services/action_layer/**`, change_control, spend) на main отсутствует и приезжает из #342 без пары на main — это не конфликт содержимого, пока housepc туда не писал.
+
+## Что этот документ не делает
+
+Rebase #342, перенос кода в main, патчи `app/services/`, smoke на :8766 и тег `action-layer-v1` — это сам R0b после R0a. Здесь только таблица, перечень call-site и тест-заготовка `tests/actions/test_whitelist_no_exec.py`. Пока реестра в main нет, тест реестра пропускается; детектор exec проверяется на локальных заглушках и падать не должен.
