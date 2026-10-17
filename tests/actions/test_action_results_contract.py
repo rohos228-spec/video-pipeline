@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.1": "e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d",
+    "ws2-r2.2": "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013",
 }
 
 
@@ -52,6 +52,10 @@ def test_schema_export_sha256_is_pinned_to_version() -> None:
     payload = json.loads(raw)
     assert payload["version"] == CONTRACT_VERSION
     assert _SCHEMA_SHA256[CONTRACT_VERSION] == digest
+    text = _MD.read_text(encoding="utf-8")
+    assert f"Версия: `{CONTRACT_VERSION}`" in text
+    assert digest in text
+    assert "Изменения r2.1 → r2.2" in text
 
 
 def test_unknown_name_is_paid_and_destructive() -> None:

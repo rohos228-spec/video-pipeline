@@ -1,6 +1,13 @@
 # Контракт результатов действий R2 (моки WS4)
 
-Версия: `ws2-r2.1` (`CONTRACT_VERSION` в `app/orchestrator/actions/contracts.py`).
+Версия: `ws2-r2.2` (`CONTRACT_VERSION` в `app/orchestrator/actions/contracts.py`).
+sha256 схемы: `26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013`.
+
+## Изменения r2.1 → r2.2
+
+- `EditResult.version` строго больше `base_version`. Равные номера не проходят.
+- `snapshot_id` и `archive_ref` не бывают пустой строкой или строкой из пробелов.
+- Непустой `skipped` у `EditResult` и `SoftDeleteResult` даёт `partial: true`.
 
 Это только схемы. Исполнителей, записи в node_store и HTTP здесь нет.
 Имена взяты из плана `fable-context` §6 и из `docs/fable/actions_audit.md`.
