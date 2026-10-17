@@ -654,4 +654,38 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
+
+  test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
+    const paint = () =>
+      page.evaluate(() => {
+        const root = document.querySelector("[data-orch-page], [data-testid=orch-reports]");
+        if (!(root instanceof HTMLElement)) return null;
+        const rootCs = getComputedStyle(root);
+        const bodyCs = getComputedStyle(document.body);
+        return {
+          font: rootCs.fontFamily,
+          bodyFont: bodyCs.fontFamily,
+          bg: rootCs.backgroundColor,
+          bodyBg: bodyCs.backgroundColor,
+          className: root.className,
+        };
+      });
+
+    await openWithToken(page, "idle", "inherit-chat");
+    const chat = await paint();
+    expect(chat).not.toBeNull();
+    expect(chat!.font).toBe(chat!.bodyFont);
+    expect(chat!.bg).toBe(chat!.bodyBg);
+    expect(chat!.className).toContain("bg-background");
+    expect(chat!.className).not.toMatch(/font-/);
+
+    await page.goto("/orchestrator/reports?scenario=idle&session=inherit-reports&project=13");
+    await expect(page.getByTestId("orch-reports")).toBeVisible();
+    const reports = await paint();
+    expect(reports).not.toBeNull();
+    expect(reports!.font).toBe(reports!.bodyFont);
+    expect(reports!.bg).toBe(reports!.bodyBg);
+    expect(reports!.className).toContain("bg-background");
+    expect(reports!.className).not.toMatch(/font-/);
+  });
 });
