@@ -122,3 +122,37 @@ test("клавиатура: Enter во время IME не отправляет"
   await expect(composer).toHaveValue("");
 });
 
+test("клавиатура: Kill switch Tab, фокус и один Enter-запрос", async ({ page }) => {
+  const kills: number[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/orchestrator/kill", async (route) => {
+    kills.push(Date.now());
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, stop_key_set: true, detail: "" }),
+    });
+  });
+  await openWithToken(page, "idle", "kbd-kill");
+  const kill = page.getByTestId("orch-kill");
+  await tabTo(page, kill);
+  await expectFocusVisible(kill);
+  await page.keyboard.press("Enter");
+  const confirm = page.getByTestId("orch-kill-confirm");
+  await expect(confirm).toBeVisible();
+  await tabUntil(page, confirm);
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  const banner = page.getByTestId("orch-kill-status");
+  await expect(banner).toContainText("Останавливаю…");
+  expect(kills).toHaveLength(1);
+  release();
+  await expect(banner).toContainText("Остановлено");
+  expect(kills).toHaveLength(1);
+});
+
