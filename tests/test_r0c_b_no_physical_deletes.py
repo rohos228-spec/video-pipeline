@@ -340,3 +340,57 @@ async def test_collapse_shot_children_marks_child_and_keeps_rows(
     assert parent_again.voiceover_text == "альфа бета"
     assert any("collapse" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_rebuild_keeps_live_frame_edges(session: AsyncSession, warn_log) -> None:
+    """Было: delete(FrameEdge).where(type=='next') в rebuild_vo_cells_from_shots.
+
+    Связь двух живых кадров остаётся той же строкой. Связь с leftover
+    помечается archived:next, а не стирается. type=continues не трогается.
+    """
+    project = await _project(session, "live-edges")
+    keep = _frame(project, 1, "keep-edge", "Живой закадр первого.", sort_key=1.0)
+    nxt = _frame(project, 2, "next-edge", "Живой закадр второго.", sort_key=2.0)
+    orphan = Frame(
+        project_id=project.id,
+        number=3,
+        uuid="orphan-edge",
+        voiceover_text="",
+        sort_key=3.0,
+        attrs={},
+    )
+    session.add_all([keep, nxt, orphan])
+    await session.flush()
+    live = FrameEdge(
+        project_id=project.id,
+        from_frame_id=keep.id,
+        to_frame_id=nxt.id,
+        type="next",
+    )
+    side = FrameEdge(
+        project_id=project.id,
+        from_frame_id=keep.id,
+        to_frame_id=nxt.id,
+        type="continues",
+    )
+    stale = FrameEdge(
+        project_id=project.id,
+        from_frame_id=nxt.id,
+        to_frame_id=orphan.id,
+        type="next",
+    )
+    session.add_all([live, side, stale])
+    await session.commit()
+    live_id, side_id, stale_id = int(live.id), int(side.id), int(stale.id)
+
+    await rebuild_vo_cells_from_shots(session, project, [keep, nxt, orphan])
+    await session.commit()
+
+    kept_live = await session.get(FrameEdge, live_id)
+    kept_side = await session.get(FrameEdge, side_id)
+    kept_stale = await session.get(FrameEdge, stale_id)
+    assert kept_live is not None and kept_live.type == "next"
+    assert kept_side is not None and kept_side.type == "continues"
+    assert kept_stale is not None and kept_stale.type == "archived:next"
+    assert any("archived:next" in line for line in warn_log)
+

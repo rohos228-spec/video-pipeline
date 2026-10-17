@@ -2318,8 +2318,13 @@ async def rebuild_vo_cells_from_shots(
     project: Project,
     frames: list[Any],
 ) -> tuple[list[Any], dict[str, Any]]:
-    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete."""
-    from sqlalchemy import delete, select
+    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete.
+
+    Связи ``FrameEdge.type == "next"`` между живыми кадрами не стираются.
+    Было: ``delete(FrameEdge).where(type == "next")`` на весь проект, затем
+    новые строки. Теперь лишняя связь помечается ``archived:next``.
+    """
+    from sqlalchemy import select
 
     from app.models import FrameEdge, FrameText
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
@@ -2366,13 +2371,46 @@ async def rebuild_vo_cells_from_shots(
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     work = [f for f in ordered if _is_pipeline_frame(f)]
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            FrameEdge.type == "next",
-        )
+    desired = {
+        (int(a.id), int(b.id))
+        for a, b in zip(work, work[1:])
+        if getattr(a, "id", None) and getattr(b, "id", None)
+    }
+    existing_edges = list(
+        (
+            await session.execute(
+                select(FrameEdge).where(FrameEdge.project_id == project.id)
+            )
+        ).scalars()
     )
+    have: set[tuple[int, int]] = set()
+    for edge in existing_edges:
+        pair = (int(edge.from_frame_id), int(edge.to_frame_id))
+        typ = (edge.type or "next").strip()
+        if typ == "next" and pair in desired and pair not in have:
+            have.add(pair)
+            continue
+        if typ == "archived:next" and pair in desired and pair not in have:
+            edge.type = "next"
+            have.add(pair)
+            continue
+        if typ != "next":
+            continue
+        edge.type = "archived:next"
+        logger.warning(
+            "WARN [#{}] rebuild VO cells: FrameEdge id={} {}→{} был "
+            "delete(type=='next'); помечен archived:next, строка сохранена",
+            project.id,
+            edge.id,
+            edge.from_frame_id,
+            edge.to_frame_id,
+        )
     for a, b in zip(work, work[1:]):
+        if getattr(a, "id", None) is None or getattr(b, "id", None) is None:
+            continue
+        pair = (int(a.id), int(b.id))
+        if pair in have:
+            continue
         session.add(
             FrameEdge(
                 project_id=project.id,
@@ -2381,6 +2419,7 @@ async def rebuild_vo_cells_from_shots(
                 type="next",
             )
         )
+        have.add(pair)
     await session.flush()
     work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
     existing_vo: dict[int, Any] = {}
