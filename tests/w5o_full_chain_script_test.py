@@ -403,7 +403,7 @@ def test_findings_point_at_lines_that_still_say_that(mod):
         "F10-D8": [("app/web/routers/projects.py", "pulled = await _heal_get_runtime_from_master(session, p)"),
                    ("app/project_db.py", "— берём master")],
         "F10-D7": [("app/orchestrator/steps/enrich_xlsx.py", "def _hold_pipeline_after_excel_gpt"),
-                   ("prompts/05_excel_gpt/default.md", "{{VAR:EXCEL_GPT_TASK}}")],
+                   ("prompts/05_excel_gpt/default.md", "по умолчанию «ПЛАН»")],
     }
     ids = {f["id"] for f in mod.FINDINGS}
     assert set(checks) <= ids
