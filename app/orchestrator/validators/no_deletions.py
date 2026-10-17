@@ -14,6 +14,7 @@ from app.orchestrator.validators.entities import (
     scene_id,
     scene_kadry,
     scene_number,
+    text_of,
 )
 from app.orchestrator.validators.result import make_result
 from app.orchestrator.validators.snapshot import load_project_snapshot
@@ -220,7 +221,7 @@ def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
                     id=fid,
                 ),
             )
-        if _anonymous_live(after_frames) < _anonymous_live(frames):
+        for text in sorted(_anonymous_texts(frames) - _anonymous_texts(after_frames)):
             _append(
                 violations,
                 seen,
@@ -228,7 +229,7 @@ def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
                     code="frame_deleted",
                     severity="error",
                     path=f"scenes/{entity}/кадры" if entity else "кадры",
-                    id="",
+                    id=text,
                 ),
             )
     return sorted_violations(violations)
@@ -304,8 +305,25 @@ def _match_scene(
     return None
 
 
-def _anonymous_live(frames: list[Any]) -> int:
-    return sum(1 for frame in frames if frame_id(frame) is None and not frame_is_exempt(frame))
+def _anonymous_texts(frames: list[Any]) -> set[str]:
+    """Уникальный текст кадров без id. Число копий одного текста не важно."""
+
+    found: set[str] = set()
+    for frame in frames:
+        if frame_id(frame) is not None or frame_is_exempt(frame):
+            continue
+        found.add(_anonymous_text(frame))
+    return found
+
+
+def _anonymous_text(frame: Any) -> str:
+    if isinstance(frame, dict):
+        for key in ("закадр", "voiceover", "vo", "text", "текст", "действие"):
+            text = text_of(frame.get(key))
+            if text:
+                return text
+        return ""
+    return text_of(frame)
 
 
 def _character_delete_id(op: Any) -> str | None:
