@@ -73,7 +73,17 @@ export const BUG_MODE_CODE_NOTE =
   "оркестратор ищет причину и запускает шаги пайплайна, но код не меняет, пока настройку не включат на сервере.";
 
 export function OrchestratorPanel({ projectId }: Props) {
-  const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
+  const [openStored, setOpenStored] = usePersistedState("vp-orchestrator-open", true);
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [touched, setTouched] = useState(false);
+  const open = openStored && !(narrow && !touched);
+  const setOpen = useCallback(
+    (v: boolean) => {
+      setTouched(true);
+      setOpenStored(v);
+    },
+    [setOpenStored],
+  );
   const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", false);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
