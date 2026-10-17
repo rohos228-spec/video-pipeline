@@ -129,6 +129,7 @@ class Supervisor:
         self._shield_jobs: set[asyncio.Task[Any]] = set()
         self._block_reason: dict[int, str] = {}
         self._pending_kill_publish: list[tuple[str, int | None]] = []
+        self._pending_queue_cancel: list[tuple[str, int]] = []
         self._approved: dict[int, str] = {}
 
     async def start_task(
@@ -315,14 +316,23 @@ class Supervisor:
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
+        queued = list(self._queued.pop(session_id, []))
         task_id = self._session_task.get(session_id)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("kill_switch for {} queued: no running loop", session_id)
             self._pending_kill_publish.append((session_id, task_id))
+            self._pending_queue_cancel.extend((session_id, queued_id) for queued_id, _goal in queued)
             return
+        for queued_id, _goal in queued:
+            self._spawn(self._cancel_queued(session_id, queued_id))
         self._spawn(self._publish_kill(session_id, task_id))
+
+    async def _cancel_queued(self, session_id: str, task_id: int) -> None:
+        """Задача, стоявшая в очереди на момент kill, не должна стартовать позже."""
+        if self._status(task_id) is TaskStatus.queued:
+            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
 
     def request_pause(self, session_id: str) -> None:
         self._pause.add(session_id)
@@ -392,6 +402,10 @@ class Supervisor:
         self._pending_kill_publish.clear()
         for session_id, task_id in pending:
             self._spawn(self._publish_kill(session_id, task_id))
+        queued = list(self._pending_queue_cancel)
+        self._pending_queue_cancel.clear()
+        for session_id, task_id in queued:
+            self._spawn(self._cancel_queued(session_id, task_id))
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
         await self.bus.publish(
