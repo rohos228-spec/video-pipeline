@@ -328,6 +328,17 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("agent_status без task_id обновляет агента и не создаёт задачу", async ({ page }) => {
+    await openWithToken(page, "looseagent", "loose-agent");
+    await page.getByTestId("orch-composer").fill("разбери вне задачи");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-agent-classifier")).toContainText("running");
+    await expect(page.getByTestId("orch-agent-classifier")).toContainText("вне задачи");
+    await expect(page.getByTestId("orch-agent-summarizer")).toContainText("done");
+    await expect(page.getByTestId("orch-agent-summarizer")).toContainText("сводка вне задачи");
+    await expect(page.getByTestId("orch-task-status")).toHaveText("нет задачи");
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");

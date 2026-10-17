@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget | looseagent
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -759,7 +759,26 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
+  if (scenario === "looseagent") {
+    void runLooseAgent(session, id);
+    return;
+  }
   void runStream(session, id);
+}
+
+async function runLooseAgent(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", null, {
+    agent: "classifier",
+    status: "running",
+    detail: "вне задачи",
+  });
+  emit(session, "agent_status", null, {
+    agent: "summarizer",
+    status: "done",
+    detail: "сводка вне задачи",
+  });
 }
 
 async function runMissingProject(session, taskId) {
