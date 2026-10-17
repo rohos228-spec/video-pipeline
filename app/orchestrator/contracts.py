@@ -803,6 +803,7 @@ BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
     ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
     ApprovalReason.missing_project_id.value: TaskStatus.waiting_approval,
+    "paid_unknown_outcome": TaskStatus.waiting_approval,
     "plan_sanity": TaskStatus.waiting_approval,
     "critic_reject": TaskStatus.waiting_approval,
     "steer_not_approved": TaskStatus.waiting_approval,

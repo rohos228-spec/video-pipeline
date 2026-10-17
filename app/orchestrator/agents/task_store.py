@@ -214,6 +214,21 @@ class TaskStore:
         finally:
             conn.close()
 
+    def list_open(self) -> list[dict[str, Any]]:
+        """Нетерминальные задачи. Порядок — по id, чтобы рестарт был стабильным."""
+        conn = connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM orch_tasks
+                WHERE status NOT IN ('done', 'failed', 'cancelled')
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
+
     def list_steps(self, task_id: int) -> list[dict[str, Any]]:
         conn = connect()
         try:
