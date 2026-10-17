@@ -37,8 +37,10 @@ from app.services.vo_shot_expand import rebuild_vo_cells_from_shots
 from app.web.routers.db_browser import (
     delete_edge,
     delete_entity,
+    delete_text,
     restore_edge,
     restore_entity,
+    restore_text,
 )
 
 
@@ -541,6 +543,47 @@ async def test_db_browser_entity_and_edge_need_confirm_and_restore(
     assert await session.get(FrameEdge, edge.id) is not None
     assert any("Entity id=" in line for line in warn_log)
     assert any("FrameEdge id=" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_delete_text_marks_and_restores(session: AsyncSession, warn_log) -> None:
+    """Было: ``await session.delete(t)`` в ``delete_text``."""
+    project = await _project(session, "text-mark")
+    frame = _frame(project, 1, "text-frame", "кадр", sort_key=1.0)
+    session.add(frame)
+    await session.flush()
+    row = FrameText(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind="voiceover",
+        text="живой закадр",
+    )
+    session.add(row)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as denied:
+        await delete_text(row.id, confirm=False, session=session)
+    assert denied.value.status_code == 400
+    kept = await session.get(FrameText, row.id)
+    assert kept is not None
+    assert kept.kind == "voiceover"
+    assert kept.text == "живой закадр"
+
+    marked = await delete_text(row.id, confirm=True, session=session)
+    assert marked["archived"] is True
+    stored = await session.get(FrameText, row.id)
+    assert stored is not None
+    assert stored.kind == "archived:voiceover"
+    assert stored.text == "живой закадр"
+
+    restored = await restore_text(row.id, session=session)
+    assert restored["kind"] == "voiceover"
+    assert restored["archived"] is False
+    back = await session.get(FrameText, row.id)
+    assert back is not None
+    assert back.kind == "voiceover"
+    assert back.text == "живой закадр"
+    assert any("FrameText id=" in line for line in warn_log)
 
 
 @pytest.mark.asyncio

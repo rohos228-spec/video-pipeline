@@ -3047,16 +3047,57 @@ async def add_text(
     return {"id": t.id, "kind": t.kind}
 
 
+_TEXT_ARCHIVED = "archived:"
+
+
+def _text_marked(row: FrameText) -> bool:
+    return (row.kind or "").startswith(_TEXT_ARCHIVED)
+
+
 @router.delete("/texts/{text_id}")
 async def delete_text(
-    text_id: int, session: AsyncSession = Depends(get_text_session)
+    text_id: int,
+    confirm: bool = Query(False),
+    session: AsyncSession = Depends(get_text_session),
+) -> dict:
+    """Пометить текст кадра. Было: ``await session.delete(t)``."""
+    t = await session.get(FrameText, text_id)
+    if t is None:
+        raise HTTPException(404, "текст не найден")
+    if not confirm:
+        raise HTTPException(400, "нужно подтверждение: confirm=true")
+    if not _text_marked(t):
+        marked = _TEXT_ARCHIVED + (t.kind or "voiceover")
+        if len(marked) > 32:
+            raise HTTPException(400, "kind слишком длинный для пометки")
+        t.kind = marked
+        logger.warning(
+            "WARN db_browser: FrameText id={} помечен kind={}, строка сохранена",
+            t.id,
+            t.kind,
+        )
+    await commit_with_retry(session)
+    return {"ok": True, "id": t.id, "kind": t.kind, "archived": True}
+
+
+@router.post("/texts/{text_id}/restore")
+async def restore_text(
+    text_id: int,
+    session: AsyncSession = Depends(get_text_session),
 ) -> dict:
     t = await session.get(FrameText, text_id)
     if t is None:
         raise HTTPException(404, "текст не найден")
-    await session.delete(t)
+    if _text_marked(t):
+        restored = (t.kind or "")[len(_TEXT_ARCHIVED) :] or "voiceover"
+        t.kind = restored[:32]
     await commit_with_retry(session)
-    return {"ok": True}
+    logger.warning(
+        "WARN db_browser: FrameText id={} восстановлен kind={}, строка была на месте",
+        t.id,
+        t.kind,
+    )
+    return {"ok": True, "id": t.id, "kind": t.kind, "archived": False}
 
 
 class PromptBody(BaseModel):
