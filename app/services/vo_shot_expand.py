@@ -1146,19 +1146,10 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
         hits = sum(1 for k in nonempty if k in earlier)
         threshold = max(3, (len(members) + 3) // 4)
         parent_key = _norm_vo_key(str(getattr(parent, "voiceover_text", "") or ""))
+        # Только полный закадр. Совпадение первых 40 символов детачило
+        # другую ячейку и срезало её лестницу до одного кадра.
         same_opening = bool(
-            first_parent_key
-            and parent_key
-            and (
-                parent_key == first_parent_key
-                or (
-                    len(first_parent_key) >= 24
-                    and (
-                        parent_key.startswith(first_parent_key[:40])
-                        or first_parent_key.startswith(parent_key[:40])
-                    )
-                )
-            )
+            first_parent_key and parent_key and parent_key == first_parent_key
         )
         huge = len(members) >= 16 and hits >= threshold
         replica = bool(earlier) and (same_opening or huge)
@@ -1174,13 +1165,14 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             pattrs = dict(getattr(parent, "attrs", None) or {})
             planned = planned_shots_from_attrs(parent)
             if planned:
-                pattrs["кадры"] = planned[:1]
+                stored = [dict(s) for s in planned]
+                pattrs["кадры_archived"] = stored
+                pattrs["кадры"] = [dict(s) for s in stored]
             vo = str(getattr(parent, "voiceover_text", "") or "").strip()
             if vo:
                 pattrs["vo_cell_full"] = vo
             parent.attrs = pattrs
             _flag_attrs(parent)
-            _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:
             first_parent_key = parent_key
