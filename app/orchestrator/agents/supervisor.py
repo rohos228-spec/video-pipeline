@@ -129,6 +129,8 @@ class Supervisor:
         self._budget_stop: set[int] = set()
         self._shield_orphaned: set[int] = set()
         self._paid_open: set[int] = set()
+        self._paid_outcome_hold: set[int] = set()
+        self._pending_paid_unknown: list[tuple[str, int]] = []
         self._step_recorded: set[int] = set()
         self._shield_jobs: set[asyncio.Task[Any]] = set()
         self._block_reason: dict[int, str] = {}
@@ -302,11 +304,24 @@ class Supervisor:
         self._remember_paid(task_id)
 
     def request_cancel(self, session_id: str) -> None:
-        """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть."""
+        """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
+
+        Платный шаг уже в полёте не откатывается: задача уходит в
+        ``waiting_approval`` с причиной ``paid_outcome_unknown``.
+        """
         self._cancel.add(session_id)
         task_id = self._session_task.get(session_id)
         if task_id is not None:
             self.tasks.set_flag(task_id, cancel_requested=1)
+        if task_id is not None and task_id in self._paid_open:
+            self._paid_outcome_hold.add(task_id)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                self._pending_paid_unknown.append((session_id, task_id))
+                return
+            self._spawn(self._mark_paid_outcome_unknown(session_id, task_id))
+            return
         inflight = self._unpaid.get(session_id)
         if inflight is not None and not inflight.done():
             inflight.cancel()
@@ -314,7 +329,8 @@ class Supervisor:
     def request_kill(self, session_id: str) -> None:
         """Kill switch: неплатное — сразу, новые действия запрещены.
 
-        Платный шаг этим вызовом не обрывается: пауза на его границе.
+        Платный шаг уже в полёте не откатывается: задача уходит в
+        ``waiting_approval`` с причиной ``paid_outcome_unknown``.
         Стоп-ключ узла здесь не ставится. Событие несёт ``stop_key_set=false``
         и ``stop_key=pending``.
         """
@@ -410,6 +426,10 @@ class Supervisor:
         self._pending_queue_cancel.clear()
         for session_id, task_id in queued:
             self._spawn(self._cancel_queued(session_id, task_id))
+        pending_paid = list(self._pending_paid_unknown)
+        self._pending_paid_unknown.clear()
+        for session_id, task_id in pending_paid:
+            self._spawn(self._mark_paid_outcome_unknown(session_id, task_id))
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
         await self.bus.publish(
@@ -851,6 +871,11 @@ class Supervisor:
                 )
                 return
 
+            if task_id in self._paid_outcome_hold and any(item.paid for item, _ in started):
+                if self._status(task_id) is TaskStatus.executing:
+                    await self._mark_paid_outcome_unknown(session_id, task_id)
+                return
+
             paid_in_batch = False
             rejected = False
             for offset, (item, result) in enumerate(zip(started, results, strict=True)):
@@ -1023,7 +1048,7 @@ class Supervisor:
         index: int,
     ) -> None:
         """Сторож: платный шаг дожил после отмены внешней задачи — записать результат."""
-        if done.cancelled() or task_id not in self._shield_orphaned:
+        if done.cancelled() or task_id not in self._shield_orphaned or task_id in self._paid_outcome_hold:
             return
         try:
             exc = done.exception()
@@ -1335,6 +1360,25 @@ class Supervisor:
             if isinstance(stored, dict) and _public_params(stored) == ident:
                 return row
         return None
+
+    async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
+        """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
+        if task_id not in self._paid_outcome_hold:
+            return
+        status = self._status(task_id)
+        if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+            return
+        action = ""
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) == "running" and row.get("paid"):
+                action = str(row.get("action_name") or "")
+                break
+        await self._apply_block(
+            task_id,
+            session_id,
+            "paid_outcome_unknown",
+            extra={"action": action} if action else None,
+        )
 
     async def _hold_paid_unknown(self, task_id: int, session_id: str, step: PlanStep) -> None:
         await self._apply_block(

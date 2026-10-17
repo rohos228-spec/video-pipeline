@@ -1,7 +1,8 @@
-"""Interrupt: неплатный шаг отменяется, платный доживает до границы."""
+"""Interrupt: неплатный шаг отменяется, платный в полёте — paid_outcome_unknown."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -80,14 +81,18 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
         await actions.started.wait()
         await rt.queue.accept(session, "стой")
         await rt.queue.drain()
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
+        for _ in range(50):
+            if rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value:
+                break
+            await asyncio.sleep(0.02)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        approvals = [event for event in rt.bus.replay(session, 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "paid_outcome_unknown"
+        assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
         actions.release.set()
         await rt.supervisor.wait(task_id, timeout=5)
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
-        assert rt.tasks.list_steps(task_id)[0]["status"] == "done"
-        assert rt.tasks.list_steps(task_id)[0]["change_id"] == "chg-paid"
-        checkpoint = rt.checkpoints.load_latest(task_id)
-        assert checkpoint is not None
-        assert "chg-paid" in checkpoint.change_ids
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
+        assert rt.tasks.list_steps(task_id)[0]["change_id"] in {None, ""}
     finally:
         set_runtime(None)

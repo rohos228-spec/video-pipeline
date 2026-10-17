@@ -265,16 +265,22 @@ async def test_kill_switch_pauses_paid_step_at_boundary(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-kill-paid", "платный", project_id=13)
         await actions.started.wait()
         rt.supervisor.request_kill("r3-kill-paid")
-        await _await_bus(notes, lambda event: event.type == "kill_switch")
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
+        seen: dict[str, Any] = {}
+        while "kill_switch" not in seen or "approval" not in seen:
+            event = await asyncio.wait_for(notes.get(), 5)
+            if event.type == "kill_switch":
+                seen["kill_switch"] = event
+            if event.type == "approval_required" and event.payload.get("reason") == "paid_outcome_unknown":
+                seen["approval"] = event
+        assert seen["kill_switch"].payload["stop_key_set"] is False
+        assert seen["kill_switch"].payload["stop_key"] == "pending"
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
         actions.release.set()
-        await _await_bus(
-            notes,
-            lambda event: event.type == "agent_status" and event.payload.get("status") == TaskStatus.paused.value,
-        )
         await rt.supervisor.wait(task_id, timeout=5)
         rt.bus.unsubscribe("r3-kill-paid", notes)
-        assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
         assert [call["name"] for call in actions.calls] == ["paid_mock"]
     finally:
         set_runtime(None)

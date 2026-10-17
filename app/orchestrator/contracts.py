@@ -842,6 +842,7 @@ BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     "critic_reject": TaskStatus.waiting_approval,
     "steer_not_approved": TaskStatus.waiting_approval,
     "unknown_cost": TaskStatus.waiting_approval,
+    "paid_outcome_unknown": TaskStatus.waiting_approval,
     "deletion_blocked": TaskStatus.failed,
     "missing_run_id": TaskStatus.failed,
     "empty_plan": TaskStatus.failed,
