@@ -180,8 +180,18 @@ class FixedPlanner:
     def __init__(self, steps: list[PlanStep]) -> None:
         self.steps = list(steps)
 
-    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
-        del goal, context
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        del goal, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
         return list(self.steps)
 
 
@@ -189,6 +199,16 @@ class ScriptedCritic:
     def __init__(self, verdicts: list[str]) -> None:
         self.verdicts = list(verdicts)
 
-    async def review(self, plan: list[PlanStep], context: str = "", **_call: Any) -> str:
-        del plan, context
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        del plan, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
         return self.verdicts.pop(0)

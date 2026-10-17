@@ -18,14 +18,17 @@ from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.contracts import (
     BLOCK_OUTCOMES,
     ActionMetadata,
+    ActionResult,
     ApprovalEvent,
     LLMResponse,
+    MessageMode,
     PlanStep,
     TaskStatus,
     ValidatorResult,
     block_status,
     is_deletion_action,
     orch_run_id,
+    paid_step_identity,
 )
 from app.orchestrator.db.migrations import connect
 from app.web.routers.orchestrator_chat import router as chat_router
@@ -80,8 +83,6 @@ class _BoomActions(MockActions):
         self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
         if name == "bad":
             raise RuntimeError("boom")
-        from app.orchestrator.contracts import ActionResult
-
         return ActionResult(ok=True, data={"name": name}, change_id=f"chg-{name}", cost=0.0)
 
 
@@ -148,9 +149,7 @@ async def test_internal_call_without_run_id_raises() -> None:
 @pytest.mark.asyncio
 async def test_classify_reserves_session_run_before_the_model(runtime) -> None:
     await runtime.queue.accept("pre-run", "сделай что-нибудь")
-    pending = list(runtime.queue._pending)
-    if pending:
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    await runtime.queue.drain()
     assert runtime.router.last_classify["run_id"] == orch_run_id(session_id="pre-run")
     assert runtime.router.last_call["run_id"] == orch_run_id(session_id="pre-run")
     assert runtime.router.classify_calls == 1
@@ -455,9 +454,7 @@ async def test_message_mode_task_steer_interrupt_append_and_garbage(token: str) 
     headers = {"Authorization": f"Bearer {TEST_TOKEN}"}
     try:
         async def _flush() -> None:
-            pending = list(rt.queue._pending)
-            if pending:
-                await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+            await rt.queue.drain()
 
         task_id = await rt.supervisor.start_task("mode-s", "держи")
         await actions.started.wait()
@@ -632,9 +629,7 @@ async def test_message_project_id_reaches_validator_context(token: str) -> None:
                 headers=headers,
             )
         assert created.status_code == 200
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         task_id = next(iter(rt.supervisor._runs))
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["project_id"] == 13
@@ -760,12 +755,245 @@ async def test_append_budget_without_task_publishes(token: str) -> None:
     set_runtime(rt)
     try:
         await rt.queue.accept("r3-append-budget", "который час?")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         approvals = [event for event in rt.bus.replay("r3-append-budget", 0) if event.type == "approval_required"]
         assert approvals[-1].payload["reason"] == "budget_exhausted"
         assert approvals[-1].payload["task_id"] is None
         assert rt.supervisor.active_task("r3-append-budget") is None
+    finally:
+        set_runtime(None)
+
+
+class _GrantSteerPlanner:
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
+        del goal
+        if "другое" in context:
+            return [PlanStep(action="other", risk="high", mutating=True)]
+        return [
+            PlanStep(action="first", risk="high", mutating=True),
+            PlanStep(action="tail", paid=False),
+        ]
+
+
+class _FailOk(MockActions):
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
+        self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
+        self.started.set()
+        return ActionResult(
+            ok=name != "bad",
+            data={"name": name},
+            change_id=f"chg-{name}",
+            cost=3.0 if name == "bad" else 0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_grant_then_steer_requires_approval_for_a_different_action(token: str) -> None:
+    del token
+    actions = MockActions(risks={"first": "high", "other": "high", "tail": "none"})
+    session = "r3-grant-steer"
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=_GrantSteerPlanner(),
+    )
+    set_runtime(rt)
+
+    async def _steer(name: str, params: dict[str, Any], ctx: dict[str, Any]) -> None:
+        del params, ctx
+        if name == "first":
+            rt.supervisor.request_steer(session, "сделай другое")
+
+    actions.on_execute = _steer
+    first = PlanStep(action="first", risk="high", mutating=True)
+    other = PlanStep(action="other", risk="high", mutating=True)
+    assert rt.supervisor._risk_grant_key(1, 0, first) != rt.supervisor._risk_grant_key(1, 0, other)
+    try:
+        task_id = await rt.supervisor.start_task(session, "цель", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        await rt.supervisor.grant_approval(session)
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["first"]
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        approvals = [event for event in rt.bus.replay(session, 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "risk"
+        assert approvals[-1].payload["action"] == "other"
+        assert all(key[0] != task_id for key in rt.supervisor._risk_granted)
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_budget_stop_blocks_the_next_paid_step(token: str) -> None:
+    del token
+    actions = MockActions()
+    session = "r3-mid-budget"
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="free", paid=False),
+                PlanStep(action="charge", paid=True, mutating=True),
+            ]
+        ),
+    )
+    set_runtime(rt)
+
+    async def _halt(name: str, params: dict[str, Any], ctx: dict[str, Any]) -> None:
+        del params, ctx
+        if name == "free":
+            task_id = rt.supervisor._session_task[session]
+            await rt.supervisor.absorb_budget(task_id, session, _budget_response(), position=1)
+
+    actions.on_execute = _halt
+    try:
+        task_id = await rt.supervisor.start_task(session, "бюджет", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["free"]
+        assert rt.tasks.get(task_id)["status"] == BLOCK_OUTCOMES["budget_exhausted"].value
+        assert "charge" not in [row["action_name"] for row in rt.tasks.list_steps(task_id)]
+        approvals = [event for event in rt.bus.replay(session, 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "budget_exhausted"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_failed_action_is_not_done_or_paid(token: str) -> None:
+    del token
+    actions = _FailOk()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="bad", paid=True, mutating=True),
+                PlanStep(action="later", paid=True, mutating=True),
+            ]
+        ),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-ok-false", "сбой", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["bad"]
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert rt.tasks.get(task_id)["error"] == "action_rejected"
+        rows = rt.tasks.list_steps(task_id)
+        assert [row["action_name"] for row in rows] == ["bad"]
+        assert rows[0]["status"] == "failed"
+        assert not rows[0]["change_id"]
+        assert "chg-bad" not in rt.supervisor._change_ids.get(task_id, [])
+        assert paid_step_identity("bad", {}) not in rt.supervisor._paid_done.get(task_id, set())
+        assert float(rt.tasks.get(task_id)["spend_actions"] or 0) == 3.0
+        finished = [event for event in rt.bus.replay("r3-ok-false", 0) if event.type == "step_finished"]
+        assert finished[-1].payload["ok"] is False
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_deletion_with_mutating_false_is_blocked(token: str) -> None:
+    del token
+    actions = MockActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="montage.delete_frame", mutating=False)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-del-flag", "удалить")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["status"] == BLOCK_OUTCOMES["deletion_blocked"].value
+        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_unknown_action_without_metadata_is_destructive(token: str) -> None:
+    del token
+    actions = MockActions(risks={"look": "none"})
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="mystery", mutating=False)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-mystery", "неизвестно")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_plan_mutating_false_does_not_loosen_registry(token: str) -> None:
+    del token
+    actions = _MetaActions()
+    actions.meta["edit"] = ActionMetadata(risk="low", read_only=False, destructive=False)
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="edit", mutating=False)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-tighten", "правка")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["error"] == "destructive_blocked"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_kill_phrase_overrides_explicit_mode(token: str) -> None:
+    del token
+    rt = build_runtime(actions=MockActions(), validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(rt)
+    try:
+        await rt.queue.accept("r3-kill-mode", "аварийный стоп", mode=MessageMode.append)
+        await rt.queue.drain()
+        assert rt.router.classify_calls == 0
+        classification = next(event for event in rt.bus.replay("r3-kill-mode", 0) if event.type == "classification")
+        assert classification.payload["kill_switch"] is True
+        assert classification.payload["mode"] == MessageMode.interrupt.value
+        assert "r3-kill-mode" in rt.supervisor._kill
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_apply_error_does_not_publish_a_second_classification(token: str) -> None:
+    del token
+    rt = build_runtime(actions=MockActions(), validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(rt)
+
+    async def _boom(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise RuntimeError("apply")
+
+    rt.queue._apply = _boom
+    try:
+        await rt.queue.accept("r3-cls-once", "что?")
+        await rt.queue.drain()
+        classifications = [event for event in rt.bus.replay("r3-cls-once", 0) if event.type == "classification"]
+        assert len(classifications) == 1
+        assert "error" not in classifications[0].payload
     finally:
         set_runtime(None)

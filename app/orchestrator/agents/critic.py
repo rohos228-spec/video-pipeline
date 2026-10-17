@@ -3,6 +3,8 @@
 Сначала детерминированные проверки (удаления, правило 9, прогноз spend),
 затем strong-вердикт роутера. Правила из rag.retrieve попадают в system.
 ≤2 revise считает супервизор и эскалирует reason=critic_escalation.
+Без роутера вердикт не approve: отказ, если детерминированные проверки
+молчат. Автоодобрение при ``router=None`` — ошибка конфигурации.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 from loguru import logger
 
 from app.orchestrator.agents.llm_call import router_call
-from app.orchestrator.agents.planner import _retrieve
+from app.orchestrator.agents.retrieve import retrieve
 from app.orchestrator.contracts import (
     PIPELINE_FORECAST_LIMIT_USD,
     AgentRole,
@@ -32,11 +34,21 @@ class PlanCritic:
         self.rag = rag
         self.last_response: Any = None
 
-    async def review(self, plan: list[PlanStep], context: str = "", **call: Any) -> str:
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
         self.last_response = None
         rules: list[Chunk] = []
         if self.rag is not None:
-            rules = await _retrieve(self.rag, context or "critic", ["rules"], 8)
+            rules = await retrieve(self.rag, context or "critic", ["rules"], 8)
         if plan_deletions(plan):
             return "reject"
         if plan_missing_verify(plan):
@@ -44,7 +56,7 @@ class PlanCritic:
         if forecast_cost(plan) > PIPELINE_FORECAST_LIMIT_USD:
             return "revise"
         if self.router is None:
-            return "approve"
+            return "reject"
         response = await router_call(
             self.router,
             "strong",
@@ -56,11 +68,11 @@ class PlanCritic:
                 },
             ],
             stream=False,
-            run_id=call.get("run_id"),
-            task_id=call.get("task_id"),
-            agent_role=call.get("agent_role") or AgentRole.critic.value,
-            budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
-            reasoning_effort=call.get("reasoning_effort"),
+            run_id=run_id,
+            task_id=task_id,
+            agent_role=agent_role or AgentRole.critic.value,
+            budget_scope=budget_scope or BudgetScope.internal.value,
+            reasoning_effort=reasoning_effort,
         )
         self.last_response = response
         return _parse_verdict(getattr(response, "text", "") or "")

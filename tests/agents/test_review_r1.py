@@ -147,9 +147,7 @@ async def test_stream_uses_on_delta_and_strong_high(runtime) -> None:
     runtime.router.deltas = ["раз", " два"]
     runtime.router.answer = "не эта нарезка"
     await runtime.queue.accept("delta-1", "который час?")
-    pending = list(runtime.queue._pending)
-    if pending:
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    await runtime.queue.drain()
     text = "".join(
         event.payload.get("text", "")
         for event in runtime.bus.replay("delta-1", 0)

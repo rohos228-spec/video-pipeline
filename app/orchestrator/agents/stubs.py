@@ -22,7 +22,18 @@ from app.orchestrator.contracts import (
 
 
 class StubPlanner:
-    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        del run_id, task_id, agent_role, budget_scope, reasoning_effort
         return [
             PlanStep(
                 action="noop",
@@ -35,8 +46,18 @@ class StubPlanner:
 
 
 class StubCritic:
-    async def review(self, plan: list[PlanStep], context: str = "", **_call: Any) -> str:
-        del plan, context
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        del plan, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
         return "approve"
 
 

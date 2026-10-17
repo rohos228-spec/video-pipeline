@@ -24,7 +24,13 @@ Live — до и после мутации и может остановить з
 Исход блокировок — ``block_status`` / ``BLOCK_OUTCOMES``. ``deletion_blocked``
 терминальный: grant его не исполняет. После grant, до ``_execute_plan``,
 план снова проходит ``_screen_plan``. Пустой план чекпоинта на grant/resume —
-``failed`` с причиной ``empty_plan``, без replan.
+намеренно ``failed`` с причиной ``empty_plan``, без replan: исполнять нечего.
+``missing_project_id`` после grant снова ждёт: id задним числом не пишется.
+
+Грант риска — ключ (задача, индекс, действие, публичные params) и сбрасывается
+при ``save_plan`` / steer. Бюджет проверяется на каждой итерации плана и перед
+платным шагом. ``ok=False`` пишет шаг ``failed`` и не кладёт его в paid-retry.
+Read-only и удаление смотрит реестр; флаги плана только ужесточают.
 """
 
 from __future__ import annotations
@@ -68,6 +74,7 @@ from app.orchestrator.contracts import (
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
+    step_is_readonly,
     usable_project_id,
     validator_budget_exhausted,
     validator_missing_run_id,
@@ -112,7 +119,7 @@ class Supervisor:
         self._session_task: dict[str, int] = {}
         self._change_ids: dict[int, list[str]] = {}
         self._context: dict[int, str] = {}
-        self._risk_granted: set[tuple[int, int]] = set()
+        self._risk_granted: set[tuple[int, int, str]] = set()
         self._paid_done: dict[int, set[str]] = {}
         self._queued: dict[str, list[tuple[int, str]]] = {}
         self._budget_stop: set[int] = set()
@@ -182,9 +189,13 @@ class Supervisor:
     async def grant_approval(self, session_id: str) -> None:
         """Продолжить с чекпоинта после waiting_approval.
 
-        Терминальная причина из ``BLOCK_OUTCOMES`` (удаление) не исполняется.
+        Терминальная причина из ``BLOCK_OUTCOMES`` не исполняется.
         Перед исполнением план снова проходит ``_screen_plan``. Пустой план
-        чекпоинта — ``failed`` / ``empty_plan``, без replan.
+        чекпоинта — намеренно ``failed`` / ``empty_plan``, без replan.
+        ``missing_project_id`` не терминальный, но экран снова остановит
+        задачу: записать ``project_id`` после старта нечем.
+        Грант риска покрывает только шаг чекпоинта и только это действие
+        с этими публичными params.
         """
         task_id = self._session_task.get(session_id)
         if task_id is None:
@@ -206,7 +217,9 @@ class Supervisor:
             return
         if await self._screen_plan(task_id, session_id, plan):
             return
-        self._risk_granted.add((task_id, int(data.position)))
+        position = int(data.position)
+        if position < len(plan):
+            self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
             self._execute_plan(task_id, session_id, plan, int(data.position), goal),
@@ -234,9 +247,11 @@ class Supervisor:
             inflight.cancel()
 
     def request_kill(self, session_id: str) -> None:
-        """Kill switch §3.3: неплатное — сразу, новые действия запрещены, стоп-ключ взведён.
+        """Kill switch: неплатное — сразу, новые действия запрещены.
 
         Платный шаг этим вызовом не обрывается: пауза на его границе.
+        Стоп-ключ узла здесь не ставится. Событие несёт ``stop_key_set=false``
+        и ``stop_key=pending``.
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
@@ -322,7 +337,7 @@ class Supervisor:
         await self.bus.publish(
             session_id,
             "kill_switch",
-            {"stop_key_set": True, "only_node": True, "task_id": task_id},
+            {"stop_key_set": False, "stop_key": "pending", "only_node": True, "task_id": task_id},
             task_id=task_id,
         )
 
@@ -415,7 +430,7 @@ class Supervisor:
                 ),
             )
         )
-        self.tasks.save_plan(task_id, plan)
+        self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None
         return plan
@@ -551,6 +566,46 @@ class Supervisor:
             return True
         return False
 
+    def _forget_risk_grants(self, task_id: int) -> None:
+        self._risk_granted = {key for key in self._risk_granted if key[0] != task_id}
+
+    def _risk_grant_key(self, task_id: int, index: int, step: PlanStep) -> tuple[int, int, str]:
+        return (task_id, index, paid_step_identity(step.action, step.params))
+
+    def _save_plan(self, task_id: int, plan: list[PlanStep], position: int | None = None) -> None:
+        """Новый план сбрасывает гранты риска этой задачи."""
+        self._forget_risk_grants(task_id)
+        if position is None:
+            self.tasks.save_plan(task_id, plan)
+            return
+        self.tasks.save_plan(task_id, plan, position=position)
+
+    async def _stop_if_budget(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        index: int,
+    ) -> bool:
+        """Останов по суб-бюджету. Уже ждущая или терминальная задача не переводится повторно."""
+        if task_id not in self._budget_stop:
+            return False
+        status = self._status(task_id)
+        if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+            return True
+        await self._checkpoint(task_id, session_id, plan, index)
+        status = self._status(task_id)
+        if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+            return True
+        try:
+            await self._apply_block(task_id, session_id, ApprovalReason.budget_exhausted.value)
+        except InvalidTransition:
+            status = self._status(task_id)
+            if status is TaskStatus.waiting_approval or status in TERMINAL_STATUSES:
+                return True
+            raise
+        return True
+
     async def _execute_plan(
         self,
         task_id: int,
@@ -562,6 +617,8 @@ class Supervisor:
         self._remember_paid(task_id)
         index = start
         while index < len(plan):
+            if await self._stop_if_budget(task_id, session_id, plan, index):
+                return
             if await self._hold_for_approval(task_id, session_id, plan, index):
                 return
             if session_id in self._pause and session_id not in self._kill:
@@ -581,12 +638,13 @@ class Supervisor:
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
-            # Риск батча — с первого шага. _can_run_parallel не пускает в группу
-            # шаг с риском из APPROVAL_RISKS, поэтому соседи того же класса.
+            # Группа собирается только из read-only. Чужой шаг в батче — сбой,
+            # не assert: под python -O assert исчез бы и шаг ушёл бы в исполнение.
+            if len(batch) > 1 and any(not step_is_readonly(item, self.actions) for item in batch):
+                await self._fail_closed(task_id, session_id, "parallel_risk")
+                return
             risk = effective_risk(self.actions, step)
-            if len(batch) > 1:
-                assert all(effective_risk(self.actions, item) not in APPROVAL_RISKS for item in batch)
-            if risk in APPROVAL_RISKS and (task_id, index) not in self._risk_granted:
+            if risk in APPROVAL_RISKS and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._escalate(
                     task_id,
@@ -607,10 +665,12 @@ class Supervisor:
                 index += 1
                 continue
 
-            if step.paid:
+            if any(item.paid for item in batch):
+                if await self._stop_if_budget(task_id, session_id, plan, index):
+                    return
                 await self._checkpoint(task_id, session_id, plan, index)
             for item in batch:
-                if not item.mutating:
+                if step_is_readonly(item, self.actions):
                     continue
                 outcome, verdict = await self._validate(task_id, session_id, item, "before")
                 if outcome == "budget":
@@ -687,10 +747,6 @@ class Supervisor:
                         logger.warning("orch step {} failed in group: {}", done_step.action, result)
                     else:
                         await self._record(task_id, session_id, done_step, step_id, result, index)
-                        if done_step.paid:
-                            self._paid_done.setdefault(task_id, set()).add(
-                                paid_step_identity(done_step.action, done_step.params)
-                            )
                 await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="step_failed")
                 await self.bus.publish(
                     session_id,
@@ -701,14 +757,29 @@ class Supervisor:
                 return
 
             paid_in_batch = False
+            rejected = False
             for offset, (item, result) in enumerate(zip(started, results, strict=True)):
                 done_step, step_id = item
-                await self._record(task_id, session_id, done_step, step_id, result, index + offset)
                 if done_step.paid:
                     paid_in_batch = True
-                    self._paid_done.setdefault(task_id, set()).add(
-                        paid_step_identity(done_step.action, done_step.params)
+                if not await self._record(task_id, session_id, done_step, step_id, result, index + offset):
+                    rejected = True
+            if rejected:
+                current = self._status(task_id)
+                if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
+                    await self._set_status(
+                        task_id,
+                        TaskStatus.failed,
+                        session_id=session_id,
+                        error="action_rejected",
                     )
+                    await self.bus.publish(
+                        session_id,
+                        "task_failed",
+                        {"error": "action_rejected", "action": step.action},
+                        task_id=task_id,
+                    )
+                return
 
             next_index = index + len(batch)
             # last_response у ActionBackedExecutor остаётся None: LLM перед
@@ -724,7 +795,7 @@ class Supervisor:
 
             for offset, (item, _result) in enumerate(zip(started, results, strict=True)):
                 done_step, _step_id = item
-                if done_step.mutating:
+                if not step_is_readonly(done_step, self.actions):
                     outcome, verdict = await self._validate(task_id, session_id, done_step, "after")
                     if outcome == "budget":
                         await self._halt_for_validator_budget(
@@ -763,6 +834,8 @@ class Supervisor:
             if await self._hold_for_approval(task_id, session_id, plan, index):
                 return
 
+        if await self._stop_if_budget(task_id, session_id, plan, index):
+            return
         await self._set_status(task_id, TaskStatus.done, session_id=session_id)
         await self.bus.publish(session_id, "task_done", {"task_id": task_id}, task_id=task_id)
 
@@ -782,7 +855,7 @@ class Supervisor:
         if revised is None:
             await self._settle_stopped(task_id, session_id)
             return None
-        self.tasks.save_plan(task_id, revised, position=0)
+        self._save_plan(task_id, revised, position=0)
         if await self._screen_plan(task_id, session_id, revised):
             return None
         await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
@@ -892,12 +965,13 @@ class Supervisor:
         return True
 
     def _write_step_done(self, task_id: int, step: PlanStep, step_id: int, result: Any) -> None:
+        ok = bool(getattr(result, "ok", False))
         cost = float(getattr(result, "cost", 0) or 0)
-        change_id = getattr(result, "change_id", None)
-        self.tasks.finish_step(step_id, "done", change_id, cost)
-        if change_id:
+        change_id = getattr(result, "change_id", None) if ok else None
+        self.tasks.finish_step(step_id, "done" if ok else "failed", change_id, cost)
+        if ok and change_id:
             self._change_ids.setdefault(task_id, []).append(str(change_id))
-        if step.paid:
+        if ok and step.paid:
             self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
         if cost:
             if step.paid:
@@ -1067,9 +1141,11 @@ class Supervisor:
         step_id: int,
         result: Any,
         position: int,
-    ) -> None:
+    ) -> bool:
+        """True — шаг успешен или уже записан. ``ok=False`` не done и не paid-retry."""
+        ok = bool(getattr(result, "ok", False))
         if not self._claim_step(step_id):
-            return
+            return True
         self._write_step_done(task_id, step, step_id, result)
         await self.bus.publish(
             session_id,
@@ -1082,6 +1158,7 @@ class Supervisor:
             },
             task_id=task_id,
         )
+        return ok
 
     def _skip_reason(
         self,
@@ -1137,7 +1214,12 @@ class Supervisor:
         for row in self.tasks.list_steps(task_id):
             if str(row.get("status")) != "done" or not row.get("paid"):
                 continue
-            params = json.loads(row.get("params_json") or "{}")
+            try:
+                params = json.loads(row.get("params_json") or "{}")
+            except json.JSONDecodeError:
+                params = {}
+            if not isinstance(params, dict):
+                params = {}
             found.add(paid_step_identity(str(row.get("action_name") or ""), params))
 
     async def _checkpoint(
@@ -1224,6 +1306,9 @@ class Supervisor:
     async def _start_queued(self, session_id: str, finished_id: int) -> None:
         """Дренаж только после терминального статуса.
 
+        Очередь живёт в памяти процесса. Строки ``queued`` в БД после рестарта
+        сами не поднимаются.
+
         ``paused`` и ``waiting_approval`` очередь не отпускают: ``resume`` и
         ``grant_approval`` продолжают ту же задачу, вторая рядом не стартует.
         """
@@ -1263,10 +1348,8 @@ class Supervisor:
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:
-    """Платный или мутирующий шаг. Риск — max(реестр, план)."""
-    if step.paid or step.mutating:
-        return True
-    return effective_risk(actions, step) in APPROVAL_RISKS
+    """Не read-only по реестру, либо план ужесточил шаг (paid / mutating / риск)."""
+    return not step_is_readonly(step, actions)
 
 
 def _plan_requires_project(plan: list[PlanStep], actions: Any) -> bool:
@@ -1294,4 +1377,4 @@ def _readonly_batch(plan: list[PlanStep], index: int, actions: Any) -> list[Plan
 
 
 def _can_run_parallel(step: PlanStep, actions: Any) -> bool:
-    return not step.mutating and not step.paid and effective_risk(actions, step) not in APPROVAL_RISKS
+    return step_is_readonly(step, actions)

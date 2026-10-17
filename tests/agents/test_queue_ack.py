@@ -31,9 +31,7 @@ async def test_ack_before_classification_and_under_two_seconds(runtime) -> None:
     assert all(event.type != "classification" for event in runtime.bus.replay("ack-1", 0))
 
     runtime.router.gate.set()
-    pending = list(runtime.queue._pending)
-    if pending:
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    await runtime.queue.drain()
     types = [event.type for event in runtime.bus.replay("ack-1", 0)]
     assert types[0] == "ack"
     assert "classification" in types
@@ -55,9 +53,7 @@ async def test_ack_before_classification_and_under_two_seconds(runtime) -> None:
 async def test_stop_word_is_deterministic_interrupt(runtime) -> None:
     await runtime.queue.accept("ack-2", "отмена")
     await asyncio.sleep(0)
-    pending = list(runtime.queue._pending)
-    if pending:
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    await runtime.queue.drain()
     assert runtime.router.classify_calls == 0
     events = runtime.bus.replay("ack-2", 0)
     ack = next(event for event in events if event.type == "ack")
@@ -87,9 +83,7 @@ async def test_question_without_task_streams_without_touching_plan(token: str) -
         while actions.ticks < 1:
             await asyncio.sleep(0.01)
         await rt.queue.accept("ack-3", "который час?")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         assert router.classify_calls == 0
         assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
         text = "".join(

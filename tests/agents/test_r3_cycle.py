@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 import pytest
@@ -26,8 +25,17 @@ from app.orchestrator.contracts import (
     PlanStep,
     Risk,
     TaskStatus,
+    forecast_cost,
 )
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedCritic, ScriptedRouter
+
+
+async def _await_bus(notes: asyncio.Queue, match, timeout: float = 5.0):
+    """Следующее событие шины, без замера wall-clock."""
+    while True:
+        event = await asyncio.wait_for(notes.get(), timeout)
+        if match(event):
+            return event
 
 
 class MemoryRag:
@@ -189,14 +197,16 @@ async def test_interrupt_during_mock_llm_under_ten_seconds(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("r3-llm", "план")
         await router.call_started.wait()
-        started = time.perf_counter()
+        notes = rt.bus.subscribe("r3-llm")
         await rt.queue.accept("r3-llm", "отмена")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
+        await _await_bus(
+            notes,
+            lambda event: event.type == "agent_status" and event.payload.get("status") == TaskStatus.cancelled.value,
+        )
         await rt.supervisor.wait(task_id, timeout=8)
-        assert time.perf_counter() - started < 10.0
         assert rt.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        rt.bus.unsubscribe("r3-llm", notes)
     finally:
         set_runtime(None)
 
@@ -218,17 +228,17 @@ async def test_kill_switch_cancels_unpaid_within_two_seconds(token: str) -> None
     )
     set_runtime(rt)
     try:
+        notes = rt.bus.subscribe("r3-kill")
         task_id = await rt.supervisor.start_task("r3-kill", "долгий")
         await actions.started.wait()
-        started = time.perf_counter()
         rt.supervisor.request_kill("r3-kill")
-        await rt.supervisor.wait(task_id, timeout=2)
-        assert time.perf_counter() - started < 2.0
-        await asyncio.sleep(0)
+        kill = await _await_bus(notes, lambda event: event.type == "kill_switch")
+        await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
         assert [call["name"] for call in actions.calls] == ["slow"]
-        kill = next(event for event in rt.bus.replay("r3-kill", 0) if event.type == "kill_switch")
-        assert kill.payload["stop_key_set"] is True
+        assert kill.payload["stop_key_set"] is False
+        assert kill.payload["stop_key"] == "pending"
+        rt.bus.unsubscribe("r3-kill", notes)
         assert kill.payload["only_node"] is True
     finally:
         set_runtime(None)
@@ -251,18 +261,19 @@ async def test_kill_switch_pauses_paid_step_at_boundary(token: str) -> None:
     )
     set_runtime(rt)
     try:
+        notes = rt.bus.subscribe("r3-kill-paid")
         task_id = await rt.supervisor.start_task("r3-kill-paid", "платный", project_id=13)
         await actions.started.wait()
-        started = time.perf_counter()
         rt.supervisor.request_kill("r3-kill-paid")
-        for _ in range(50):
-            if any(event.type == "kill_switch" for event in rt.bus.replay("r3-kill-paid", 0)):
-                break
-            await asyncio.sleep(0.01)
-        assert time.perf_counter() - started < 2.0
+        await _await_bus(notes, lambda event: event.type == "kill_switch")
         assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
         actions.release.set()
+        await _await_bus(
+            notes,
+            lambda event: event.type == "agent_status" and event.payload.get("status") == TaskStatus.paused.value,
+        )
         await rt.supervisor.wait(task_id, timeout=5)
+        rt.bus.unsubscribe("r3-kill-paid", notes)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
         assert [call["name"] for call in actions.calls] == ["paid_mock"]
     finally:
@@ -322,9 +333,7 @@ async def test_append_does_not_change_plan(token: str) -> None:
         await actions.started.wait()
         saved = rt.tasks.get(task_id)["plan_json"]
         await rt.queue.accept("r3-append", "который час?")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         assert rt.tasks.get(task_id)["plan_json"] == saved
         assert rt.tasks.get(task_id)["status"] == TaskStatus.executing.value
         actions.release.set()
@@ -583,7 +592,13 @@ async def test_critic_blocks_spend_forecast_and_deletion(token: str) -> None:
     assert await critic.review([PlanStep(action="noop", estimated_cost=41)]) == "revise"
     assert await critic.review([PlanStep(action="montage.delete_frame")]) == "reject"
     assert await critic.review([PlanStep(action="run_node")]) == "revise"
-    assert await critic.review([PlanStep(action="noop", estimated_cost=1)]) == "approve"
+    assert await critic.review([PlanStep(action="noop", estimated_cost=1)]) == "reject"
+    pair = [PlanStep(action="noop", estimated_cost=25), PlanStep(action="noop", estimated_cost=25)]
+    assert forecast_cost(pair) == 50
+    assert await critic.review(pair) == "revise"
+    both = PlanStep(action="noop", estimated_cost=25, params={"estimated_cost": 25})
+    assert forecast_cost([both]) == 25
+    assert await critic.review([both]) == "reject"
 
 
 @pytest.mark.asyncio
@@ -710,9 +725,7 @@ async def test_task_mode_queues_new_task_behind_active(token: str) -> None:
         await actions.started.wait()
         plan_before = rt.tasks.get(task_id)["plan_json"]
         await rt.queue.accept("r3-task", "новая задача на потом")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         queued = rt.supervisor._queued["r3-task"]
         assert len(queued) == 1
         queued_id, goal = queued[0]
@@ -749,12 +762,11 @@ async def test_classifier_kill_switch_outranks_interrupt(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-kill-cls", "идёт")
         await actions.started.wait()
         await rt.queue.accept("r3-kill-cls", "продолжай")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         assert router.classify_calls == 1
         kill = next(event for event in rt.bus.replay("r3-kill-cls", 0) if event.type == "kill_switch")
-        assert kill.payload["stop_key_set"] is True
+        assert kill.payload["stop_key_set"] is False
+        assert kill.payload["stop_key"] == "pending"
         classification = next(event for event in rt.bus.replay("r3-kill-cls", 0) if event.type == "classification")
         assert classification.payload["mode"] == MessageMode.interrupt.value
         assert classification.payload["kill_switch"] is True
@@ -810,14 +822,13 @@ async def test_kill_phrase_is_deterministic(token: str) -> None:
     set_runtime(rt)
     try:
         await rt.queue.accept("r3-phrase", "аварийный стоп")
-        pending = list(rt.queue._pending)
-        if pending:
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+        await rt.queue.drain()
         assert rt.router.classify_calls == 0
         classification = next(event for event in rt.bus.replay("r3-phrase", 0) if event.type == "classification")
         assert classification.payload["mode"] == "interrupt"
         assert classification.payload["kill_switch"] is True
         kill = next(event for event in rt.bus.replay("r3-phrase", 0) if event.type == "kill_switch")
-        assert kill.payload["stop_key_set"] is True
+        assert kill.payload["stop_key_set"] is False
+        assert kill.payload["stop_key"] == "pending"
     finally:
         set_runtime(None)

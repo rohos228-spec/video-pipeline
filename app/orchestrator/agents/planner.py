@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from typing import Any
 
 from app.orchestrator.agents.llm_call import router_call
+from app.orchestrator.agents.retrieve import retrieve
 from app.orchestrator.contracts import AgentRole, BudgetScope, Chunk, PlanStep
 
 
@@ -32,8 +32,18 @@ class RouterPlanner:
         self.rag = rag or NullRetriever()
         self.last_response: Any = None
 
-    async def make_plan(self, goal: str, context: str = "", **call: Any) -> list[PlanStep]:
-        rules = await _retrieve(self.rag, goal or context or "plan", ["rules"], 8)
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        rules = await retrieve(self.rag, goal or context or "plan", ["rules"], 8)
         system = _system_prompt(rules)
         user = goal if not context else f"{goal}\n\n{context}"
         response = await router_call(
@@ -44,11 +54,11 @@ class RouterPlanner:
                 {"role": "user", "content": user},
             ],
             stream=False,
-            run_id=call.get("run_id"),
-            task_id=call.get("task_id"),
-            agent_role=call.get("agent_role") or AgentRole.planner.value,
-            budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
-            reasoning_effort=call.get("reasoning_effort"),
+            run_id=run_id,
+            task_id=task_id,
+            agent_role=agent_role or AgentRole.planner.value,
+            budget_scope=budget_scope or BudgetScope.internal.value,
+            reasoning_effort=reasoning_effort,
         )
         self.last_response = response
         return parse_plan(getattr(response, "text", "") or "")
@@ -87,14 +97,3 @@ def _system_prompt(rules: list[Chunk]) -> str:
     return "\n".join(lines)
 
 
-async def _retrieve(rag: Any, query: str, corpora: list[str], top_k: int) -> list[Chunk]:
-    result = rag.retrieve(query, corpora, top_k)
-    if inspect.isawaitable(result):
-        result = await result
-    chunks: list[Chunk] = []
-    for item in result or []:
-        if isinstance(item, Chunk):
-            chunks.append(item)
-        else:
-            chunks.append(Chunk.model_validate(item))
-    return chunks

@@ -131,7 +131,8 @@ class MessageQueue:
         """Записать реплику, опубликовать ack и поставить разбор в фон.
 
         ``run_id`` резервируется здесь, до ``classify`` и ``call``.
-        Явный ``mode`` не классифицируется: неизвестное значение отсекает HTTP.
+        Явный ``mode`` не классифицируется, кроме фразы kill switch:
+        она перебивает mode. Неизвестное значение mode отсекает HTTP.
         Возвращает seq события ack. Не ждёт разбор.
         """
         task_id = self.supervisor.active_task(session_id)
@@ -151,6 +152,13 @@ class MessageQueue:
         job.add_done_callback(self._pending.discard)
         return ack.seq
 
+    async def drain(self, timeout: float = 2.0) -> None:
+        """Дождаться разборов, которые уже стоят в фоне."""
+        pending = [job for job in list(self._pending) if not job.done()]
+        if not pending:
+            return
+        await asyncio.wait_for(asyncio.gather(*pending), timeout)
+
     async def _classify(
         self,
         session_id: str,
@@ -159,8 +167,12 @@ class MessageQueue:
         mode: MessageMode | None,
         project_id: int | None = None,
     ) -> None:
+        published = False
         try:
-            if mode is not None:
+            forced = classify_deterministic(text)
+            if forced is not None and forced.kill_switch:
+                decided = forced
+            elif mode is not None:
                 decided = ClassifyResult(
                     tier=ORCH_DEFAULT_TIER,
                     mode=mode,
@@ -168,7 +180,7 @@ class MessageQueue:
                     confidence=1.0,
                 )
             else:
-                decided = classify_deterministic(text)
+                decided = forced
                 if decided is None:
                     task_id = self.supervisor.active_task(session_id)
                     decided = await self.router.classify(
@@ -188,10 +200,13 @@ class MessageQueue:
                     "kill_switch": decided.kill_switch,
                 },
             )
+            published = True
             _set_message_mode(session_id, text, decided.mode.value)
             await self._apply(session_id, text, decided, project_id)
         except Exception:
             logger.exception("orch classification failed for session {}", session_id)
+            if published:
+                return
             await self.bus.publish(
                 session_id,
                 "classification",

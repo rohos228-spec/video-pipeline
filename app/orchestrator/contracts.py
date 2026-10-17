@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "ws3-r3.2"
+CONTRACT_VERSION = "ws3-r3.3"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -53,6 +53,18 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "blocking → failed. Строки revise_limit нет. grant не исполняет удаление "
         "и пустой чекпоинт (empty_plan → failed, без replan). "
         "pipeline без run_id — ValueError, как internal. MessageIn.project_id.",
+    ),
+    (
+        "ws3-r3.3",
+        "Planner.make_plan и Critic.review: keyword-only run_id, task_id, "
+        "agent_role, budget_scope, reasoning_effort (как у ModelRouter.call; "
+        "task_id — str | int | None, роутер приводит к строке). "
+        "Грант риска ключуется действием и публичными params и сбрасывается "
+        "при save_plan. Цикл исполнения проверяет бюджет на каждой итерации "
+        "и перед платным шагом. ok=False — failed, не done и не paid-retry. "
+        "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
+        "таблица действий); флаги плана только ужесточают. Пока metadata_of "
+        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
     ),
 )
 
@@ -664,13 +676,41 @@ class Retriever(Protocol):
 
 
 class Planner(Protocol):
-    async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
-        """План через router + правила из ``rag.retrieve``."""
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        """План через router + правила из ``rag.retrieve``.
+
+        Keyword-only kwargs — те же, что у ``ModelRouter.call``, кроме
+        ``on_delta``. ``task_id`` здесь ``str | int | None``: супервизор
+        передаёт int, реализация приводит его к строке перед роутером.
+        """
 
 
 class Critic(Protocol):
-    async def review(self, plan: list[PlanStep], context: str = "") -> str:
-        """Вердикт approve | revise | reject."""
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        """Вердикт approve | revise | reject.
+
+        Keyword-only kwargs совпадают с ``Planner.make_plan``.
+        """
 
 
 class StepExecutor(Protocol):
@@ -803,6 +843,10 @@ def is_deletion_action(action: str) -> bool:
     а ``remove`` только рядом с ``frame`` или ``scene``.
     ``montage.remove_frame``, ``shots.purge``, ``scene.drop`` попадают.
     ``dropdown`` и ``remove_watermark`` — нет.
+
+    Это эвристика по имени, пока нет ``metadata_of``. ``drop`` / ``purge``
+    заденут и ``drop_cache``. ``erase`` / ``wipe`` / ``truncate`` сюда не входят:
+    их закроет реестр WS2.
     """
     name = (action or "").strip()
     if name in DELETION_ACTIONS:
@@ -816,14 +860,39 @@ def is_deletion_action(action: str) -> bool:
     return "remove" in parts and bool(parts & {"frame", "scene"})
 
 
+_MISSING = object()
+
+
+def action_unknown(action: str, registry: Any | None) -> bool:
+    """Имени нет в реестре.
+
+    ``metadata_of`` — источник, когда метод есть: ``None`` значит неизвестно.
+    Пока его нет (R2): закрытый словарь ``risks`` без ключа, реестр без
+    ``risk_of``, или реестра нет вовсе. Открытый мок (``risks is None``)
+    считает любое имя известным как ``Risk.none`` — тестовые планы живут.
+    """
+    if registry is None:
+        return True
+    metadata_of = getattr(registry, "metadata_of", None)
+    if metadata_of is not None:
+        return metadata_of(action) is None
+    risks = getattr(registry, "risks", _MISSING)
+    if risks is None:
+        return False
+    if isinstance(risks, dict):
+        return action not in risks
+    return True
+
+
 def action_guard(action: str, registry: Any | None = None) -> str | None:
-    """``hard`` — destructive или неизвестное без явного read_only.
+    """``hard`` — destructive или неизвестное.
 
     ``name`` — запрет по имени (``deletion_blocked`` → failed, grant запрещён).
     ``None`` — действие можно планировать.
 
-    Реестр без ``metadata_of`` проверяется только по имени: старые моки
-    не становятся разрушительными целиком.
+    Флаги плана (``mutating``, ``read_only``) сюда не входят: они не ослабляют
+    реестр. Удаление по имени блокируется даже если план сказал ``mutating=False``.
+    Пока нет ``metadata_of``, неизвестное имя — destructive.
     """
     metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
     meta = metadata_of(action) if metadata_of is not None else None
@@ -831,11 +900,44 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
         return "hard"
     if is_deletion_action(action):
         return "name"
-    if metadata_of is None:
+    if metadata_of is not None:
+        if meta is None or getattr(meta, "read_only", None) is not True:
+            return "hard"
         return None
-    if meta is None or getattr(meta, "read_only", None) is not True:
+    if action_unknown(action, registry):
         return "hard"
     return None
+
+
+def registry_is_readonly(action: str, registry: Any | None) -> bool:
+    """Read-only решает реестр, не план.
+
+    Удаление и неизвестное имя — не read-only. Явный ``metadata.read_only``
+    нужен, когда ``metadata_of`` есть. Риск реестра из ``APPROVAL_RISKS`` тоже
+    не read-only. Открытый мок без метаданных и с ``Risk.none`` — read-only.
+    """
+    if is_deletion_action(action) or action_unknown(action, registry):
+        return False
+    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
+    if metadata_of is not None:
+        meta = metadata_of(action)
+        if meta is None or bool(getattr(meta, "destructive", False)):
+            return False
+        if getattr(meta, "read_only", None) is not True:
+            return False
+    risk_of = getattr(registry, "risk_of", None) if registry is not None else None
+    if risk_of is None:
+        return True
+    return coerce_risk(risk_of(action)) not in APPROVAL_RISKS
+
+
+def step_is_readonly(step: PlanStep, registry: Any | None) -> bool:
+    """Реестр решает read-only. ``paid`` / ``mutating`` / риск плана только ужесточают."""
+    if not registry_is_readonly(step.action, registry):
+        return False
+    if step.paid or step.mutating:
+        return False
+    return coerce_risk(step.risk) not in APPROVAL_RISKS
 
 
 def plan_deletions(plan: list[PlanStep]) -> list[str]:
@@ -858,10 +960,13 @@ def plan_missing_verify(plan: list[PlanStep]) -> bool:
 
 
 def forecast_cost(plan: list[PlanStep]) -> float:
+    """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды."""
     total = 0.0
     for step in plan:
-        total += float(step.estimated_cost or 0)
-        total += float(step.params.get("estimated_cost") or 0)
+        if step.estimated_cost:
+            total += float(step.estimated_cost)
+        else:
+            total += float(step.params.get("estimated_cost") or 0)
     return total
 
 
