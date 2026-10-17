@@ -228,17 +228,22 @@ export function OrchestratorWorkspace() {
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
-          {chat.state.killNotice.phase === "error" ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="mt-2 h-7 text-[11px]"
-              data-testid="orch-kill-retry"
-              onClick={() => void chat.kill()}
-            >
-              Повторить
-            </Button>
+          {chat.state.killNotice.phase === "error" || chat.state.killNotice.lateStopWarning ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {chat.state.killNotice.lateStopWarning ? (
+                <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                data-testid="orch-kill-retry"
+                onClick={() => void chat.kill()}
+              >
+                Повторить
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -685,7 +690,7 @@ function ApprovalCard({
         {showCost ? ` · ~$${approval.costEstimate}` : ""}
       </div>
       {paidOutcome ? (
-        approval.serverId ? (
+        approval.changeId ? (
           <PaidOutcomeActions
             pending={pending}
             restartOffered={approval.restartOffered}
@@ -711,17 +716,28 @@ function ApprovalCard({
             }}
           />
         ) : (
-          <p className="mt-2 text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" data-testid="orch-paid-done" disabled>
+              {PAID_OUTCOME_COPY.done}
+            </Button>
+            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-retry" disabled>
+              {PAID_OUTCOME_COPY.retry}
+            </Button>
+            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-deny" disabled>
+              {PAID_OUTCOME_COPY.deny}
+            </Button>
+            <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+              Решение недоступно: сервер не передал id
+            </p>
+          </div>
         )
       ) : (
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           {terminal ? (
             <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
               Закрыть
             </Button>
-          ) : approval.serverId ? (
+          ) : approval.changeId ? (
             <>
               <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
                 Approve
@@ -731,9 +747,17 @@ function ApprovalCard({
               </Button>
             </>
           ) : (
-            <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-              Нет approval_id от сервера — подтвердить нельзя.
-            </p>
+            <>
+              <Button type="button" size="sm" data-testid="orch-approve" disabled>
+                Approve
+              </Button>
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled>
+                Reject
+              </Button>
+              <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+                Решение недоступно: сервер не передал id
+              </p>
+            </>
           )}
         </div>
       )}

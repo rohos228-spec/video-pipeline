@@ -4,10 +4,10 @@
  *
  * `decision` закреплён: approve | retry_step | deny.
  *
- * Имена сверены с #358 @ 08fb355f78946806350912a72fd4daf24326aa8f
- * (`origin/cursor/ws3-nonblocking-350`, 2026-10-17 20:36 МСК — HEAD уже новее cbd77ec9,
- * дедлайн 21:00 ещё не наступил). Источник: `ApprovalDecisionBody`,
+ * Имена сверены с #358 @ b599033f0f30537574e28c3b3bcea89a58672896
+ * (`origin/cursor/ws3-nonblocking-350`). Источник: `ApprovalDecisionBody`,
  * `approval_required.forecast_usd` / `decisions` / `retry_armed`.
+ * `change_id` и `orch-appr-<task_id>-<n>` в payload `paid_outcome_unknown` нет.
  *
  * TODO(ws3-358): HTTP-роутера `grant_approval` в #358 нет. Мок принимает то же
  * тело на POST `.../approvals/{id}/approve`. Если WS3 опубликует другой путь,

@@ -2,7 +2,14 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import { orchAuthHeaders, orchTestModeEnabled } from "../../src/lib/orchestratorApi";
+import {
+  bearerTargetAllowed,
+  envOrchApiBase,
+  isSameOriginApiBase,
+  orchAuthHeaders,
+  orchTestModeEnabled,
+  resolveOrchApiBase,
+} from "../../src/lib/orchestratorApi";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -43,6 +50,114 @@ test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   } finally {
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
     else process.env.NEXT_PUBLIC_ORCH_TEST = previous;
+  }
+});
+
+test("isSameOriginApiBase отвергает //evil, userinfo и javascript", () => {
+  const pageOrigin = "https://host";
+  expect(isSameOriginApiBase("//evil.com", "https://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("//evil.com/api", "https://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("https://user@host", pageOrigin)).toBe(false);
+  expect(isSameOriginApiBase("https://user@host/api", pageOrigin)).toBe(false);
+  expect(isSameOriginApiBase("http://localhost@evil.com", "http://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("http://localhost@evil.com/api", "http://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("javascript:", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("javascript:alert(1)", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("javascript:/api", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("/api", pageOrigin)).toBe(true);
+  expect(isSameOriginApiBase("https://host/api", pageOrigin)).toBe(true);
+});
+
+test("отброшенный NEXT_PUBLIC_ORCH_API пишет warn без секрета", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((item) => String(item)).join(" "));
+  };
+  const secret = "super-secret-token";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = `http://user:${secret}@evil.com/api?token=${secret}`;
+    expect(envOrchApiBase()).toBe("");
+    const text = warnings.join("\n");
+    expect(text).toContain("NEXT_PUBLIC_ORCH_API отброшен");
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("user:");
+
+    warnings.length = 0;
+    process.env.NEXT_PUBLIC_ORCH_API = "";
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toEqual([]);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    expect(envOrchApiBase()).toBe("https://api.example.com");
+    expect(warnings).toEqual([]);
+  } finally {
+    console.warn = original;
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
+test("валидатор NEXT_PUBLIC_ORCH_API возвращает нормализованный URL", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const pageOrigin = "http://127.0.0.1:3100";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799?x=1#frag";
+    expect(envOrchApiBase()).toBe("http://127.0.0.1:8799");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("http://127.0.0.1:8799");
+    expect(bearerTargetAllowed(envOrchApiBase(), pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "HTTP://LOCALHOST:8799/";
+    expect(envOrchApiBase()).toBe("http://localhost:8799");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("http://localhost:8799");
+
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com/orch/?q=1";
+    expect(envOrchApiBase()).toBe("https://api.example.com/orch");
+    expect(resolveOrchApiBase(null, pageOrigin)).toBe("https://api.example.com/orch");
+    expect(bearerTargetAllowed("https://api.example.com/orch", pageOrigin)).toBe(true);
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
+test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const pageOrigin = "http://127.0.0.1:3100";
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    expect(envOrchApiBase()).toBe("https://api.example.com");
+    expect(bearerTargetAllowed("https://api.example.com", pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799";
+    expect(envOrchApiBase()).toBe("http://127.0.0.1:8799");
+    expect(bearerTargetAllowed("http://127.0.0.1:8799", pageOrigin)).toBe(true);
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://localhost:8799/";
+    expect(envOrchApiBase()).toBe("http://localhost:8799");
+
+    process.env.NEXT_PUBLIC_ORCH_API = "http://[::1]:8799";
+    expect(envOrchApiBase()).toBe("http://[::1]:8799");
+
+    const rejected = [
+      "http://evil.com",
+      "http://evil.com/api",
+      "https://user@evil.com",
+      "http://127.0.0.1:8799@evil.com",
+      "//evil.com",
+      "javascript:alert(1)",
+      "http://127.0.0.1.evil.com",
+    ];
+    for (const value of rejected) {
+      process.env.NEXT_PUBLIC_ORCH_API = value;
+      expect(envOrchApiBase(), value).toBe("");
+      expect(resolveOrchApiBase(null, pageOrigin), value).toBe("");
+      expect(bearerTargetAllowed(value, pageOrigin), value).toBe(false);
+    }
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
   }
 });
 
@@ -470,6 +585,31 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
+  test("после Остановлено поздний stop_key_set=false показывает предупреждение", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-late-false");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, stop_key_set: true, detail: "ключ установлен" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await emitBus(page, "kill-late-false", "kill_switch", null, {
+      stop_key_set: false,
+      detail: "поздний отказ ключа",
+    });
+    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(banner).not.toContainText("Стоп-ключ не установлен");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+  });
+
   test("kill: ответ без stop_key_set показывает ошибку и повтор", async ({ page }) => {
     await openWithToken(page, "idle", "kill-nokey");
     await page.route("**/api/orchestrator/kill", async (route) => {
@@ -646,6 +786,105 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("200 и прочие 2xx без тела не закрывают карточку", async ({ page }) => {
+    for (const status of [200, 202]) {
+      await openWithToken(page, "approval", `empty-${status}`);
+      await page.route("**/api/orchestrator/approvals/**/approve", async (route) => {
+        await route.fulfill({ status, body: "" });
+      });
+      await page.getByTestId("orch-composer").fill("запусти ноду");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await expect(page.getByTestId("orch-approval-error")).toContainText("сервер не подтвердил");
+      await expect(page.getByTestId("orch-approve")).toBeEnabled();
+      await page.unroute("**/api/orchestrator/approvals/**/approve");
+    }
+  });
+
+  test("204 на approve, deny и повтор закрывает карточку без ошибки", async ({ page }) => {
+    const fulfill204 = async (route: { fulfill: (opts: { status: number; body: string }) => Promise<void> }) => {
+      await route.fulfill({ status: 204, body: "" });
+    };
+
+    await openWithToken(page, "approval", "approve-204");
+    await page.route("**/api/orchestrator/approvals/**/approve", fulfill204);
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await page.unroute("**/api/orchestrator/approvals/**/approve");
+
+    await openWithToken(page, "approval", "deny-204");
+    await page.route("**/api/orchestrator/approvals/**/reject", fulfill204);
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await page.unroute("**/api/orchestrator/approvals/**/reject");
+
+    await openWithToken(page, "approvefail", "retry-204");
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("approve failed");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.route("**/api/orchestrator/approvals/**/approve", fulfill204);
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+  });
+
+  test("чужой change_id не закрывает карточку, свой закрывает", async ({ page }) => {
+    await openWithToken(page, "idle", "chg-close");
+    await emitBus(page, "chg-close", "approval_required", 1, {
+      change_id: "chg-own",
+      approval_id: "appr-other",
+      title: "Своя карточка",
+      reason: "нужно решение",
+      risk: "low",
+      action: "run_node",
+    });
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toContainText("Своя карточка");
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "foreign-seen",
+      decision: "approved",
+      change_id: "chg-foreign",
+      approval_id: "appr-other",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-seen");
+    await expect(card).toBeVisible();
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "missing-id",
+      decision: "approved",
+      approval_id: "appr-other",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("missing-id");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "own-seen",
+      decision: "approved",
+      change_id: "chg-own",
+      approval_id: "appr-other",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-seen");
+    await expect(card).toHaveCount(0);
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");
@@ -810,6 +1049,100 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-paid-retry")).toBeDisabled();
     await expect(page.getByTestId("orch-paid-retry-hint")).toContainText("Сервер не поддерживает перезапуск");
     await page.getByTestId("orch-paid-retry").click({ force: true });
+    expect(posts).toEqual([]);
+  });
+
+  test("бюджет без change_id: решение не уходит, карточка закрывается статусом своей задачи", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/approvals\/.+\/(approve|reject)/.test(req.url())) {
+        posts.push(req.url());
+      }
+    });
+    await openWithToken(page, "budgetnoid", "budget-noid");
+    await page.getByTestId("orch-composer").fill("ещё бюджет");
+    await page.getByTestId("orch-send").click();
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-reject")).toBeDisabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveText("Решение недоступно: сервер не передал id");
+    await expect(page.getByTestId("orch-kill")).toBeEnabled();
+
+    await emitBus(page, "budget-noid", "agent_status", 2, {
+      agent: "supervisor",
+      status: "foreign-task",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-task");
+    await expect(card).toBeVisible();
+
+    await emitBus(
+      page,
+      "budget-noid",
+      "agent_status",
+      1,
+      { agent: "supervisor", status: "foreign-session", task_status: "paused" },
+      "other-session",
+    );
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-session");
+    await expect(card).toBeVisible();
+
+    await emitBus(page, "budget-noid", "agent_status", 1, {
+      agent: "supervisor",
+      status: "own-move",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-move");
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    expect(posts).toEqual([]);
+
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    await expect(page.getByTestId("orch-kill-status")).toBeVisible();
+    expect(posts).toEqual([]);
+  });
+
+  test("paid_outcome_unknown без change_id: решение не уходит и карточка закрывается статусом задачи", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/approvals\/.+\/approve/.test(req.url())) posts.push(req.url());
+    });
+    await openWithToken(page, "idle", "paid-noid");
+    await emitBus(page, "paid-noid", "approval_required", 1, {
+      reason: "paid_outcome_unknown",
+      action: "run_node",
+      forecast_usd: 2.4,
+      decisions: [
+        { decision: "approve", label: "Шаг выполнен, продолжить" },
+        { decision: "retry_step", label: "Перезапустить шаг" },
+        { decision: "deny", label: "Остановить задачу" },
+      ],
+    });
+    await expect(page.getByTestId("orch-paid-outcome")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-done")).toBeDisabled();
+    await expect(page.getByTestId("orch-paid-retry")).toBeDisabled();
+    await expect(page.getByTestId("orch-paid-deny")).toBeDisabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveText("Решение недоступно: сервер не передал id");
+    await expect(page.getByTestId("orch-kill")).toBeEnabled();
+    expect(posts).toEqual([]);
+
+    await emitBus(page, "paid-noid", "agent_status", 2, {
+      agent: "supervisor",
+      status: "foreign-task",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-task");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+
+    await emitBus(page, "paid-noid", "agent_status", 1, {
+      agent: "supervisor",
+      status: "own-move",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-move");
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     expect(posts).toEqual([]);
   });
 });

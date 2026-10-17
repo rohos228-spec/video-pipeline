@@ -5,13 +5,13 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid409 | paid422 | paidgrant409
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
- * Сверено с #358 @ 08fb355f: forecast_usd, decisions, retry_grant (флаг, не токен).
+ * Сверено с #358 @ b599033f: forecast_usd, decisions, retry_grant (флаг, не токен).
  * TODO(ws3-358): HTTP-пути grant в #358 нет, мок держит POST .../approve.
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
@@ -380,6 +380,7 @@ async function runApproval(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "appr-1",
+    change_id: "appr-1",
     title: "Запустить run_node",
     reason: "Платный шаг, риск high. Лимит прогона $50.",
     risk: "high",
@@ -483,7 +484,7 @@ async function runReconnect(session, taskId) {
   emit(session, "task_done", taskId, { summary: "" });
 }
 
-async function runBudget(session, taskId) {
+async function runBudget(session, taskId, withChangeId = true) {
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(20);
   emit(session, "classification", taskId, classPayload("append", "лимит бюджета"));
@@ -495,13 +496,15 @@ async function runBudget(session, taskId) {
     detail: "budget_exhausted",
   });
   const approvalId = "chg-budget-d4";
-  emit(session, "approval_required", taskId, {
-    change_id: approvalId,
+  const payload = {
     reason: "budget_exhausted",
     action: "run_node",
     risk: "high",
     title: "Добавить суб-бюджет",
-  });
+  };
+  if (withChangeId) payload.change_id = approvalId;
+  emit(session, "approval_required", taskId, payload);
+  if (!withChangeId) return;
   const decision = await new Promise((resolve) => {
     session.approvalWait = { id: approvalId, resolve };
   });
@@ -742,8 +745,8 @@ function startScenario(session, scenario, text, mode) {
     void runApproval(session, id);
     return;
   }
-  if (scenario === "budget") {
-    void runBudget(session, id);
+  if (scenario === "budget" || scenario === "budgetnoid") {
+    void runBudget(session, id, scenario === "budget");
     return;
   }
   if (scenario === "kill") {

@@ -164,6 +164,10 @@ export interface ApprovalView {
   id: string;
   /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
   serverId: boolean;
+  /** ApprovalEvent.change_id. Событие закрывает карточку только этим значением. */
+  changeId: string | null;
+  /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
+  sessionId: string | null;
   taskId: string | null;
   title: string;
   reason: string;
@@ -214,6 +218,8 @@ export interface KillNoticeView {
   /** Задача, которую останавливали. Чужой task_id баннер не двигает. */
   taskId: string | null;
   sessionId: string | null;
+  /** Поздний stop_key_set=false. «Остановлено» не откатывается. */
+  lateStopWarning: string;
 }
 
 export interface OrchScreenState {
@@ -339,10 +345,43 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
   return null;
 }
 
-function closeServerApproval(state: OrchScreenState, id: string, decision: "approved" | "rejected"): void {
-  const item = state.approvals.find((entry) => entry.id === id && entry.serverId);
+/** change_id решения. Чужой или пустой id карточку не закрывает. */
+function approvalChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
+}
+
+function closeServerApproval(state: OrchScreenState, changeId: string, decision: "approved" | "rejected"): void {
+  const item = state.approvals.find((entry) => entry.serverId && entry.changeId === changeId);
   if (!item || item.resolved) return;
   item.resolved = decision;
+}
+
+/** Карточка без change_id закрывается только сменой статуса своей задачи и сессии. */
+function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, sessionId: string | null): void {
+  if (!taskId || !sessionId) return;
+  for (const item of state.approvals) {
+    if (item.resolved || item.changeId) continue;
+    if (item.taskId !== taskId || item.sessionId !== sessionId) continue;
+    item.resolved = "closed";
+  }
+}
+
+function applyTaskStatus(
+  state: OrchScreenState,
+  taskId: string,
+  status: TaskStatus,
+  sessionId: string | null,
+): TaskView {
+  const task = ensureTask(state.tasks, taskId);
+  if (task.status !== status) {
+    closeApprovalsWithoutChange(state, taskId, sessionId);
+    task.status = status;
+  }
+  return task;
 }
 
 function isTerminalKillStatus(value: string): boolean {
@@ -371,6 +410,7 @@ function markKill(
     paidBoundary,
     taskId: target?.taskId ?? current?.taskId ?? null,
     sessionId: target?.sessionId ?? current?.sessionId ?? null,
+    lateStopWarning: "",
   };
 }
 
@@ -387,6 +427,13 @@ function noteKillRequested(
     return;
   }
   if (stopKey === false) {
+    if (next.killNotice?.phase === "stopped") {
+      next.killNotice = {
+        ...next.killNotice,
+        lateStopWarning: detail || "Поздний ответ: стоп-ключ не установлен",
+      };
+      return;
+    }
     markKill(next, "error", detail || "Стоп-ключ не установлен", false, target);
     return;
   }
@@ -407,25 +454,43 @@ function noteTaskCancelled(next: OrchScreenState, event: OrchEvent): void {
     paidBoundary: false,
     taskId: notice.taskId,
     sessionId: notice.sessionId,
+    lateStopWarning: "",
   };
 }
 
-function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
-  const status = asTaskStatus(str(payload.task_status));
-  if (taskId && status) {
-    ensureTask(state.tasks, taskId).status = status;
-  }
+function absorbLlmSignal(
+  state: OrchScreenState,
+  taskId: string | null,
+  payload: Record<string, unknown>,
+  seq: number,
+  sessionId: string | null,
+): void {
+  const reported = asTaskStatus(str(payload.task_status));
   const approval = payload.approval;
-  if (!approval || typeof approval !== "object") return;
-  const body = approval as Record<string, unknown>;
-  const reason = str(body.reason);
-  if (!reason) return;
+  const body = approval && typeof approval === "object" ? (approval as Record<string, unknown>) : null;
+  const reason = body ? str(body.reason) : "";
+  let nextStatus = reported;
+  if (reason && isTerminalBlock(reason)) {
+    nextStatus = blockOutcome(reason) ?? "failed";
+  } else if (
+    reason &&
+    (reported === "waiting_approval" || blockOutcome(reason) === "waiting_approval" || reason === "budget_exhausted")
+  ) {
+    nextStatus = "waiting_approval";
+  }
+  if (taskId && nextStatus) {
+    const task = applyTaskStatus(state, taskId, nextStatus, sessionId);
+    if (reason && isTerminalBlock(reason)) task.error = reason;
+  }
+  if (!reason || !body) return;
   const fromServer = approvalServerKey(body);
   const id = fromServer ?? `local-llm-${seq}`;
   if (!state.approvals.some((item) => item.id === id)) {
     state.approvals.push({
       id,
       serverId: fromServer != null,
+      changeId: approvalChangeId(body),
+      sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
@@ -436,13 +501,6 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
       restartOffered: readPaidOutcomeRestartOffered(body),
       resolved: null,
     });
-  }
-  if (taskId && isTerminalBlock(reason)) {
-    const task = ensureTask(state.tasks, taskId);
-    task.status = blockOutcome(reason) ?? "failed";
-    task.error = reason;
-  } else if (taskId && (status === "waiting_approval" || blockOutcome(reason) === "waiting_approval" || reason === "budget_exhausted")) {
-    ensureTask(state.tasks, taskId).status = "waiting_approval";
   }
 }
 
@@ -507,6 +565,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         phase: action.phase,
         taskId: action.taskId ?? state.killNotice?.taskId ?? null,
         sessionId: action.sessionId ?? state.killNotice?.sessionId ?? null,
+        lateStopWarning: action.phase === "stopped" ? state.killNotice?.lateStopWarning ?? "" : "",
       },
     };
   }
@@ -542,8 +601,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   const taskId = taskKey(event.task_id);
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const decidedId = serverApprovalId(payload.approval_id);
-    if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+    const changeId = approvalChangeId(payload);
+    if (decided && changeId) closeServerApproval(next, changeId, decided);
   }
 
   if (event.type === "ack") {
@@ -572,14 +631,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
       }
     }
-    absorbLlmSignal(next, taskId, payload, event.seq);
+    absorbLlmSignal(next, taskId, payload, event.seq, event.session_id || null);
     return next;
   }
 
   if (event.type === "message") {
     const text = str(payload.text);
     if (text && str(payload.role) !== "user") appendToken(next, taskId, text);
-    absorbLlmSignal(next, taskId, payload, event.seq);
+    absorbLlmSignal(next, taskId, payload, event.seq, event.session_id || null);
     return next;
   }
 
@@ -603,15 +662,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const taskStatusRaw = str(payload.task_status);
     if (isTerminalKillStatus(taskStatusRaw)) noteTaskCancelled(next, event);
     if (!taskId) return next;
-    const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
+    ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(taskStatusRaw);
-    if (taskStatus) task.status = taskStatus;
+    if (taskStatus) applyTaskStatus(next, taskId, taskStatus, event.session_id || null);
     return next;
   }
 
   if ((event.type === "step_started" || event.type === "step_finished") && taskId) {
     const task = ensureTask(next.tasks, taskId);
-    if (event.type === "step_started" && task.status === "queued") task.status = "executing";
+    if (event.type === "step_started" && task.status === "queued") {
+      applyTaskStatus(next, taskId, "executing", event.session_id || null);
+    }
     const stepId = str(payload.step_id, `step-${event.seq}`);
     let step = task.steps.find((item) => item.id === stepId);
     if (!step) {
@@ -671,15 +732,27 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "approval_required") {
     const body = payload as ApprovalPayload & Record<string, unknown>;
+    const reason = str(body.reason);
+    const sessionId = event.session_id || null;
+    if (taskId) {
+      if (isTerminalBlock(reason)) {
+        const task = applyTaskStatus(next, taskId, blockOutcome(reason) ?? "failed", sessionId);
+        task.error = reason;
+      } else {
+        applyTaskStatus(next, taskId, "waiting_approval", sessionId);
+      }
+    }
     const fromServer = approvalServerKey(body);
     const id = fromServer ?? `local-${event.seq}`;
     if (!next.approvals.some((item) => item.id === id)) {
       next.approvals.push({
         id,
         serverId: fromServer != null,
+        changeId: approvalChangeId(body),
+        sessionId,
         taskId,
         title: str(body.title, "Нужно подтверждение"),
-        reason: str(body.reason),
+        reason,
         risk: str(body.risk, "medium"),
         action: str(body.action),
         costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
@@ -688,35 +761,25 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         resolved: null,
       });
     }
-    if (taskId) {
-      const task = ensureTask(next.tasks, taskId);
-      const reason = str(body.reason);
-      if (isTerminalBlock(reason)) {
-        task.status = blockOutcome(reason) ?? "failed";
-        task.error = reason;
-      } else {
-        task.status = "waiting_approval";
-      }
-    }
     return next;
   }
 
   if (event.type === "task_done" && taskId) {
-    const task = ensureTask(next.tasks, taskId);
-    task.status = "done";
+    const task = applyTaskStatus(next, taskId, "done", event.session_id || null);
     task.summary = str(payload.summary);
     return next;
   }
 
   if (event.type === "task_failed" && taskId) {
-    const task = ensureTask(next.tasks, taskId);
-    task.status = "failed";
+    const task = applyTaskStatus(next, taskId, "failed", event.session_id || null);
     const error = str(payload.error, str(payload.summary, "задача упала"));
     task.error = error;
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
       next.approvals.push({
         id: `block-${event.seq}`,
         serverId: false,
+        changeId: null,
+        sessionId: event.session_id || null,
         taskId,
         title: "",
         reason: error,

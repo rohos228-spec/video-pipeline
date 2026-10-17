@@ -18,6 +18,7 @@ import {
   readOrchToken,
   sleepWithSignal,
   writeOrchToken,
+  type ApprovalHttpResult,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
 import {
@@ -36,11 +37,18 @@ export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 /** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
 const KILL_CONFIRM_MS = 12_000;
 
-function approvalPostAccepted(
-  result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
-  approvalId: string,
-): boolean {
-  if (!result || result.ok === false || result.matched === false) return false;
+function approvalPostAccepted(result: ApprovalHttpResult, approvalId: string): boolean {
+  if (result.status === 204) return true;
+  if (result.status < 200 || result.status >= 300) return false;
+  const body = result.body;
+  if (!body) return false;
+  if (body.ok === false || body.matched === false) return false;
+  if (typeof body.approval_id === "string" && body.approval_id !== approvalId) return false;
+  return true;
+}
+
+function paidPostAccepted(result: PaidOutcomeDecisionResult, approvalId: string): boolean {
+  if (!result.ok || result.matched === false) return false;
   if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
   return true;
 }
@@ -213,8 +221,8 @@ export function useOrchestratorChat() {
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
         return;
       }
       decisionLock.current = true;
@@ -266,8 +274,8 @@ export function useOrchestratorChat() {
       };
       if (decisionLock.current) return rejected;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
         return rejected;
       }
       decisionLock.current = true;
@@ -279,7 +287,7 @@ export function useOrchestratorChat() {
           task_id: taskId,
           decision,
         });
-        if (!approvalPostAccepted(result, approvalId)) {
+        if (!paidPostAccepted(result, approvalId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return { ...result, ok: false, retryReady: false };
         }
@@ -312,8 +320,8 @@ export function useOrchestratorChat() {
     async (approvalId: string, taskId: string | null) => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
         return;
       }
       decisionLock.current = true;
@@ -324,7 +332,7 @@ export function useOrchestratorChat() {
           approval_id: approvalId,
           task_id: taskId,
         });
-        if (!approvalPostAccepted(result, approvalId)) {
+        if (!paidPostAccepted(result, approvalId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }

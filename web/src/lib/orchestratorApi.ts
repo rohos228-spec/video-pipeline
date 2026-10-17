@@ -107,9 +107,60 @@ export function readOrchProjectId(): number | null {
   }
 }
 
-/** Абсолютный хост API из сборки. Пусто — относительный `/api/...` на том же origin. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * `NEXT_PUBLIC_ORCH_API`: https на любом хосте, http только на localhost / 127.0.0.1 / [::1].
+ * Возвращает origin + pathname без query, hash и хвостового слэша.
+ * Userinfo, протокол-относительный адрес и прочие схемы — null.
+ */
+export function normalizedOrchEnvApi(value: string): string | null {
+  const raw = value.trim();
+  if (!raw || raw.startsWith("//")) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password) return null;
+  const loopback = url.protocol === "http:" && isLoopbackHost(url.hostname);
+  if (url.protocol !== "https:" && !loopback) return null;
+  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  return `${url.origin}${path}`;
+}
+
+/** В лог — только origin. Userinfo, query и неразобранная строка не печатаются. */
+function discardedOrchApiLabel(raw: string): string {
+  try {
+    const url = new URL(raw.trim());
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.origin;
+  } catch {
+    return "некорректный адрес";
+  }
+}
+
+function warnDiscardedOrchApi(raw: string): void {
+  console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
+}
+
+/** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  return (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim();
+  if (!raw) return "";
+  const normalized = normalizedOrchEnvApi(raw);
+  if (!normalized) {
+    warnDiscardedOrchApi(raw);
+    return "";
+  }
+  return normalized;
 }
 
 function queryApiOverrideEnabled(): boolean {
@@ -121,20 +172,26 @@ function normalizeBase(value: string): string {
   return value.trim().replace(/\/$/, "");
 }
 
-/** Same-origin `/api` или `/api/...`. `//host` — чужой origin, не путь. */
+/** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
 export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
   const raw = normalizeBase(value);
   if (!raw || !pageOrigin) return false;
-  if (raw.startsWith("/") && !raw.startsWith("//")) {
+  if (raw.startsWith("//")) return false;
+  if (raw.startsWith("/")) {
     return raw === "/api" || raw.startsWith("/api/");
   }
+  let url: URL;
+  let page: URL;
   try {
-    const url = new URL(raw);
-    if (url.origin !== new URL(pageOrigin).origin) return false;
-    return url.pathname === "/api" || url.pathname.startsWith("/api/");
+    url = new URL(raw);
+    page = new URL(pageOrigin);
   } catch {
     return false;
   }
+  if (url.username || url.password) return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.origin !== page.origin) return false;
+  return url.pathname === "/api" || url.pathname.startsWith("/api/");
 }
 
 /**
@@ -150,7 +207,7 @@ export function resolveOrchApiBase(queryApi: string | null, pageOrigin: string):
   return envOrchApiBase();
 }
 
-/** Пустая база, env-хост или same-origin `/api/...`. Чужой origin — нет. */
+/** Пустая база, разрешённый env-хост или same-origin `/api/...`. Чужой origin — нет. */
 export function bearerTargetAllowed(apiBase: string, pageOrigin = ""): boolean {
   const base = normalizeBase(apiBase);
   if (!base) return true;
@@ -251,8 +308,53 @@ export function postOrchMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
-export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
+export type ApprovalHttpResult = {
+  status: number;
+  body: { ok?: boolean; matched?: boolean; approval_id?: string } | null;
+};
+
+/** Approve/reject. Пустое тело — успех только при status === 204. Остальные 2xx без тела — не успех. */
+async function postApproval(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const res = await fetch(apiUrl(cfg.apiBase, path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (res.status === 401) {
+    throw new OrchApiError(401, "401 — токен не принят");
+  }
+  if (!res.ok) {
+    throw new OrchApiError(res.status, await readError(res));
+  }
+  if (res.status === 204) return { status: 204, body: null };
+  const text = await res.text();
+  if (!text.trim()) return { status: res.status, body: null };
+  try {
+    const parsed = JSON.parse(text) as ApprovalHttpResult["body"];
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { status: res.status, body: null };
+    }
+    return { status: res.status, body: parsed };
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+export function postOrchApprove(
+  cfg: OrchClientConfig,
+  body: OrchApprovalDecision,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  return postApproval(
     cfg,
     `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
     body,
@@ -260,8 +362,12 @@ export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecisio
   );
 }
 
-export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
+export function postOrchReject(
+  cfg: OrchClientConfig,
+  body: OrchApprovalDecision,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  return postApproval(
     cfg,
     `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
     body,
