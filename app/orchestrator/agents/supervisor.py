@@ -3,8 +3,9 @@
 R3: planner → dry-run валидаторов → critic (≤2 revise, затем
 waiting_approval reason=critic_escalation) → executor только через
 actions.execute. Read-only одной parallel_group идут параллельно,
-мутации — последовательно. Чекпоинт после каждой мутации. Риск
-medium/high — approval_required до шага. Paid-retry guard не даёт
+мутации — последовательно. Чекпоинт после каждой мутации. Approval —
+по max(риск реестра, подсказка плана): план не понижает риск.
+Paid-retry guard не даёт
 повторно оплатить тот же шаг. Interrupt отменяет неплатный ход,
 платный ждёт границы. Kill switch запрещает новые действия и взводит
 стоп-ключ, не разрывая платный шаг mid-flight.
@@ -18,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.orchestrator.agents.executor import run_many
+from app.orchestrator.agents.executor import effective_risk, run_many
 from app.orchestrator.agents.stubs import (
     ActionBackedExecutor,
     StubCritic,
@@ -322,15 +323,16 @@ class Supervisor:
                 plan, index = steered
                 continue
 
-            batch = _readonly_batch(plan, index)
+            batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
-            if step.risk in APPROVAL_RISKS and (task_id, index) not in self._risk_granted:
+            risk = effective_risk(self.actions, step)
+            if risk in APPROVAL_RISKS and (task_id, index) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._escalate(
                     task_id,
                     session_id,
                     "risk",
-                    extra={"action": step.action, "risk": step.risk},
+                    extra={"action": step.action, "risk": risk.value, "plan_risk": step.risk},
                 )
                 return
 
@@ -671,27 +673,21 @@ class Supervisor:
         )
 
 
-def _readonly_batch(plan: list[PlanStep], index: int) -> list[PlanStep]:
+def _readonly_batch(plan: list[PlanStep], index: int, actions: Any) -> list[PlanStep]:
     step = plan[index]
     group = step.parallel_group
-    if (
-        not group
-        or step.mutating
-        or step.paid
-        or step.risk in APPROVAL_RISKS
-    ):
+    if not group or not _can_run_parallel(step, actions):
         return [step]
     batch = [step]
     cursor = index + 1
     while cursor < len(plan):
         nxt = plan[cursor]
-        if (
-            nxt.parallel_group != group
-            or nxt.mutating
-            or nxt.paid
-            or nxt.risk in APPROVAL_RISKS
-        ):
+        if nxt.parallel_group != group or not _can_run_parallel(nxt, actions):
             break
         batch.append(nxt)
         cursor += 1
     return batch
+
+
+def _can_run_parallel(step: PlanStep, actions: Any) -> bool:
+    return not step.mutating and not step.paid and effective_risk(actions, step) not in APPROVAL_RISKS

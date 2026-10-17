@@ -12,7 +12,9 @@ from app.orchestrator.contracts import (
     LLMUsage,
     MessageMode,
     PlanStep,
+    Risk,
     ValidatorResult,
+    registry_risk,
 )
 
 
@@ -102,12 +104,20 @@ class ScriptedRouter:
 
 
 class MockActions:
-    def __init__(self) -> None:
+    def __init__(self, risks: dict[str, str] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.ticks = 0
         self.on_execute = None
+        # None — открытый мок: все имена известны как none, старые тесты не эскалируют.
+        # Словарь — закрытый реестр: нет ключа → high.
+        self.risks = dict(risks) if risks is not None else None
+
+    def risk_of(self, action_name: str) -> Risk:
+        if self.risks is None:
+            return Risk.none
+        return registry_risk(action_name, self.risks)
 
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
         self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})

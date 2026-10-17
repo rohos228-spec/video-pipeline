@@ -142,6 +142,15 @@ class ApprovalReason(StrEnum):
     critic_escalation = "critic_escalation"
 
 
+class Risk(StrEnum):
+    """Риск действия. Порядок — от слабого к сильному: план не понижает реестр."""
+
+    none = "none"
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 class ReportKind(StrEnum):
     report = "report"
     nodes_snapshot = "nodes_snapshot"
@@ -411,9 +420,10 @@ class ClassifyResult(BaseModel):
 class PlanStep(BaseModel):
     """Шаг плана R3: whitelist-действие, параметры, ожидаемый результат.
 
-    ``risk`` medium/high останавливает исполнителя на ``waiting_approval``
-    (reason=risk) до выполнения шага. ``parallel_group`` — независимые
-    read-only шаги с одним именем группы можно выполнять параллельно.
+    ``risk`` — только подсказка планировщика. Approval решает executor
+    по max(риск из реестра действий, этот риск): план не может понизить
+    реестр. ``parallel_group`` — независимые read-only шаги с одним
+    именем группы можно выполнять параллельно.
     ``estimated_cost`` — прогноз spend для критика, не фактическая оплата.
     """
 
@@ -449,7 +459,20 @@ class CheckpointData(BaseModel):
 
 class ActionExecutor(Protocol):
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
-        """WS2: ``actions.execute``."""
+        """WS2: ``actions.execute``.
+
+        WS2 дополнительно проверяет approval внутри ``execute`` и не
+        выполняет действие, если риск реестра не подтверждён. Супервизор
+        останавливается раньше: ``PlanStep.risk`` — подсказка, порог берётся
+        как max(реестр, план).
+        """
+
+    def risk_of(self, action_name: str) -> Risk:
+        """Риск действия из реестра WS2.
+
+        Неизвестное имя → ``Risk.high`` (``registry_risk``). План не может
+        понизить этот риск.
+        """
 
 
 # Ключ context для dry-run до критика. Согласовано с WS1: валидатор только читает.
@@ -545,6 +568,30 @@ DELETION_ACTIONS: frozenset[str] = frozenset(
 )
 APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
 PIPELINE_FORECAST_LIMIT_USD = 40.0
+_RISK_RANK: dict[Risk, int] = {Risk.none: 0, Risk.low: 1, Risk.medium: 2, Risk.high: 3}
+
+
+def coerce_risk(value: Any) -> Risk:
+    """Строка плана или значение реестра. Неизвестная метка → ``high``."""
+    text = str(getattr(value, "value", value) or "").strip().lower()
+    try:
+        return Risk(text)
+    except ValueError:
+        return Risk.high
+
+
+def registry_risk(action_name: str, registry: dict[str, Any] | None) -> Risk:
+    """Риск из реестра действий. Имени нет в реестре → ``Risk.high``."""
+    if not registry or action_name not in registry:
+        return Risk.high
+    return coerce_risk(registry[action_name])
+
+
+def max_risk(*values: Any) -> Risk:
+    """Больший из рисков. Пустой набор → ``high``."""
+    if not values:
+        return Risk.high
+    return max((coerce_risk(item) for item in values), key=lambda item: _RISK_RANK[item])
 
 
 def is_deletion_action(action: str) -> bool:
@@ -1015,6 +1062,7 @@ def export_contract_schemas() -> dict[str, Any]:
             "BudgetScope": [v.value for v in BudgetScope],
             "RouterImpl": [v.value for v in RouterImpl],
             "ChunkCorpus": [v.value for v in ChunkCorpus],
+            "Risk": [v.value for v in Risk],
             "EventType": list(EVENT_TYPES),
         },
         "fsm": {src.value: sorted(dst.value for dst in allowed) for src, allowed in FSM_TRANSITIONS.items()},
@@ -1024,5 +1072,6 @@ def export_contract_schemas() -> dict[str, Any]:
             "approval_risks": sorted(APPROVAL_RISKS),
             "pipeline_forecast_limit_usd": PIPELINE_FORECAST_LIMIT_USD,
             "validator_context_dry_run": VALIDATOR_CONTEXT_DRY_RUN,
+            "risk_order": [item.value for item in Risk],
         },
     }

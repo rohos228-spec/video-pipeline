@@ -12,7 +12,14 @@ import pytest
 from app.orchestrator.agents.critic import PlanCritic
 from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
-from app.orchestrator.contracts import VALIDATOR_CONTEXT_DRY_RUN, Chunk, ChunkCorpus, PlanStep, TaskStatus
+from app.orchestrator.contracts import (
+    VALIDATOR_CONTEXT_DRY_RUN,
+    Chunk,
+    ChunkCorpus,
+    PlanStep,
+    Risk,
+    TaskStatus,
+)
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedCritic, ScriptedRouter
 
 
@@ -596,6 +603,36 @@ async def test_dry_run_before_critic_sets_read_only_flag(token: str) -> None:
         live = [call for call in validators.calls if call not in dry]
         assert live
         assert all(call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is not True for call in live)
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_plan_risk_cannot_lower_registry_risk(token: str) -> None:
+    del token
+    actions = MockActions(risks={"charge": "high"})
+    assert actions.risk_of("charge") is Risk.high
+    assert actions.risk_of("unknown_action") is Risk.high
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="charge", risk="low", mutating=True, expected="pay")]
+        ),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-risk", "списать")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert actions.calls == []
+        approvals = [event for event in rt.bus.replay("r3-risk", 0) if event.type == "approval_required"]
+        assert len(approvals) == 1
+        assert approvals[0].payload["reason"] == "risk"
+        assert approvals[0].payload["risk"] == Risk.high.value
+        assert approvals[0].payload["plan_risk"] == "low"
+        assert approvals[0].payload["action"] == "charge"
     finally:
         set_runtime(None)
 

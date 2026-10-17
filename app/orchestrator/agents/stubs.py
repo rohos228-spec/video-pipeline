@@ -14,6 +14,7 @@ from app.orchestrator.contracts import (
     LLMResponse,
     MessageMode,
     PlanStep,
+    Risk,
     ValidatorResult,
 )
 
@@ -51,7 +52,12 @@ class ActionBackedExecutor:
 
 
 class UnlinkedActions:
-    """Мок-заглушка, пока WS2 не отдал ``actions.execute``."""
+    """Мок-заглушка, пока WS2 не отдал ``actions.execute``.
+
+    ``risk_of`` здесь ``none``: реестра ещё нет, и stub-план ``noop`` не
+    должен вставать на approval. Боевой WS2 для неизвестного имени
+    возвращает ``Risk.high`` (``registry_risk``).
+    """
 
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
         del params, task_ctx
@@ -61,6 +67,10 @@ class UnlinkedActions:
             change_id=None,
             cost=0.0,
         )
+
+    def risk_of(self, action_name: str) -> Risk:
+        del action_name
+        return Risk.none
 
 
 class UnlinkedValidators:

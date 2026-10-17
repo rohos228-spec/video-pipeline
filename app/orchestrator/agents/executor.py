@@ -9,7 +9,17 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.orchestrator.contracts import ActionResult, PlanStep
+from app.orchestrator.contracts import ActionResult, PlanStep, Risk, max_risk
+
+
+def effective_risk(actions: Any, step: PlanStep) -> Risk:
+    """Approval-риск шага: max(реестр действий, подсказка плана).
+
+    Нет ``risk_of`` — действие неизвестно, риск ``high``. План не понижает реестр.
+    """
+    risk_of = getattr(actions, "risk_of", None)
+    registry = Risk.high if risk_of is None else risk_of(step.action)
+    return max_risk(step.risk, registry)
 
 
 async def run_many(executor: Any, steps: list[PlanStep], ctx: dict[str, Any]) -> list[ActionResult]:
