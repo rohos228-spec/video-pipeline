@@ -328,6 +328,60 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
+def _shot_stable_key(shot: dict[str, Any]) -> str | None:
+    """Устойчивый ключ шота: id лестницы, иначе номер ``порядок``."""
+    for key in ("id", "id_shot", "shot_id"):
+        val = str(shot.get(key) or "").strip()
+        if val:
+            return f"id:{val}"
+    for key in ("порядок", "номер", "number"):
+        raw = shot.get(key)
+        if raw not in (None, ""):
+            return f"n:{str(raw).strip()}"
+    return None
+
+
+def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
+    """Новый список ``кадры`` не выбрасывает старые шоты.
+
+    Совпавшие по id или номеру обновляются и остаются активными.
+    Шотов, которых в новом списке нет, остаются в хвосте с ``активен: False``
+    (так их видит ``shot_is_active``).
+    """
+    if not isinstance(new, list):
+        return new
+    incoming: list[Any] = []
+    seen: set[str] = set()
+    for shot in new:
+        if not isinstance(shot, dict):
+            incoming.append(shot)
+            continue
+        item = dict(shot)
+        if item.get("активен") is False:
+            item.pop("активен", None)
+        incoming.append(item)
+        key = _shot_stable_key(item)
+        if key:
+            seen.add(key)
+    if not isinstance(old, list):
+        return incoming
+    kept: list[Any] = []
+    for shot in old:
+        if not isinstance(shot, dict):
+            if shot not in incoming:
+                kept.append(shot)
+            continue
+        key = _shot_stable_key(shot)
+        if key and key in seen:
+            continue
+        if key is None and any(isinstance(item, dict) and item == shot for item in incoming):
+            continue
+        marked = dict(shot)
+        marked["активен"] = False
+        kept.append(marked)
+    return [*incoming, *kept]
+
+
 def _coerce_structured_attr(value: Any) -> Any:
     """Биты/кадры — JSON-массив или объект, не строка Excel."""
     if value is None:
@@ -1587,7 +1641,10 @@ async def apply_ops(
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            value = _coerce_structured_attr(fields[attr_key])
+            if attr_key == "кадры":
+                value = _merge_kadry_keep_missing(attrs.get("кадры"), value)
+            attrs[attr_key] = value
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
