@@ -14,6 +14,7 @@ class PromptHistory:
 
     def __init__(self) -> None:
         self.texts: dict[tuple[str, str], str] = {}
+        self.versions: dict[tuple[str, str], int] = {}
         self.snapshots: list[dict] = []
 
     def read(self, step_code: str, name: str) -> str:
@@ -22,10 +23,18 @@ class PromptHistory:
             raise KeyError("промт не найден")
         return self.texts[key]
 
-    def save_master(self, *, step_code: str, name: str, content: str) -> dict:
+    def save_master(
+        self, *, step_code: str, name: str, content: str, expected_version: int
+    ) -> dict:
         key = (step_code, name)
+        current = self.versions.get(key, 0)
+        if current != int(expected_version):
+            raise VersionConflict(
+                f"версия мастер-промта {expected_version} устарела, текущая {current}"
+            )
         before = self.texts.get(key, "")
         self.texts[key] = content
+        self.versions[key] = current + 1
         row = {
             "id": len(self.snapshots) + 1,
             "action": "prompt.save_master",
