@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.orchestrator.actions.contracts import (
     CONTRACT_VERSION,
     ActionResult,
+    EditResult,
     ReportResult,
     SoftDeleteResult,
     metadata_of,
@@ -25,7 +26,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "bcff54f25ad4f5807794b3e9c93f156c79fb456ddab012e32e07dd305cb6543f",
+    "ws2-r2.0": "712645e80e6b2447bf49a440d9b74a3618c2bd9bdf98f532420912de3861d290",
 }
 
 
@@ -143,6 +144,28 @@ def test_restore_action_supports_deleted_kind() -> None:
                 restore_action="history.rollback",
                 snapshot_id="snap-1",
             )
+
+
+def _edit_payload(**extra: object) -> dict:
+    payload = {
+        "action": "edit_node_prompt",
+        "change_id": "orch-appr-1-1",
+        "node_ref": {"project_id": 1, "node_id": "n_scene_writer", "kind": "prompt"},
+        "diff": {"unified": "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n"},
+        "open_url": "/api/projects/1",
+        "reversible": True,
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_edit_result_requires_before_or_snapshot() -> None:
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload())
+    with_before = EditResult.model_validate(_edit_payload(before={"prompt_template": "было"}))
+    with_snap = EditResult.model_validate(_edit_payload(snapshot_id="snap-1"))
+    assert with_before.before == {"prompt_template": "было"}
+    assert with_snap.snapshot_id == "snap-1"
 
 
 def test_suggest_scene_variants_tier_is_paid() -> None:

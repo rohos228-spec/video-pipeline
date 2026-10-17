@@ -130,6 +130,7 @@ class EditResult(BaseModel):
     node_ref: NodeRef
     before: Any = None
     after: Any = None
+    snapshot_id: str | None = None
     diff: Diff
     open_url: str = Field(min_length=1)
     reversible: bool
@@ -145,6 +146,12 @@ class EditResult(BaseModel):
         if value not in metadata_registry():
             raise ValueError("action вне реестра")
         return value
+
+    @model_validator(mode="after")
+    def _before_or_snapshot(self) -> EditResult:
+        if self.before is None and not self.snapshot_id:
+            raise ValueError("нужен before или snapshot_id")
+        return self
 
 
 class ReportResult(BaseModel):

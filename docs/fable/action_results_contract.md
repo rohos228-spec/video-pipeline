@@ -45,7 +45,8 @@
 | `node_ref.project_id` | id проекта |
 | `node_ref.node_id` | для `node` / `prompt` / `params` — `node_key`; для `report` — id отчёта строкой |
 | `node_ref.kind` | `node` / `prompt` / `params` / `report` |
-| `before` / `after` | значение до и после; у создания `before` равен `null` |
+| `before` / `after` | значение до и после. Без `before` нужен `snapshot_id` |
+| `snapshot_id` | снимок прежнего значения, если `before` не передан |
 | `diff` | ровно одна форма: `unified` (текст) или `fields` (ключ → `{before, after}`) |
 | `open_url` | куда чат открывает результат |
 | `reversible` | откат тем же change_control возможен |
@@ -165,6 +166,7 @@ DOM отчёта на месте не правится.
     "change_id": "orch-appr-13-1",
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "node"},
     "before": null,
+    "snapshot_id": "snap-13-1",
     "after": {"title": "Сцены", "group": "script_frames_qc"},
     "diff": {"fields": {"title": {"before": null, "after": "Сцены"}}},
     "open_url": "/api/projects/13",
