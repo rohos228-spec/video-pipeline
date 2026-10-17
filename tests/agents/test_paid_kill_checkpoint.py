@@ -57,3 +57,40 @@ async def test_paid_kill_checkpoint_keeps_step_change_id(token: str) -> None:
         assert [call["name"] for call in actions.calls] == ["charge"]
     finally:
         set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_paid_outcome_mark_stays_waiting_approval(token: str) -> None:
+    """Cancel и сразу release: второй mark не роняет задачу в failed."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(
+                    action="charge",
+                    params={"_wait": True, "_cost": 1, "_change_id": "chg-race"},
+                    paid=True,
+                    mutating=True,
+                    estimated_cost=1,
+                ),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("paid-race", "платный", project_id=13)
+        await actions.started.wait()
+        runtime.supervisor.request_cancel("paid-race")
+        actions.release.set()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["error"] is None
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        assert float(runtime.tasks.get(task_id)["spend_actions"] or 0) == 1.0
+        assert runtime.tasks.list_steps(task_id)[0]["change_id"] == "chg-race"
+    finally:
+        set_runtime(None)

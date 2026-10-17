@@ -177,6 +177,7 @@ class Supervisor:
         self._shield_orphaned: set[int] = set()
         self._paid_open: set[int] = set()
         self._paid_outcome_hold: set[int] = set()
+        self._paid_unknown_marking: set[int] = set()
         self._pending_paid_unknown: list[tuple[str, int]] = []
         self._step_recorded: set[int] = set()
         self._shield_jobs: set[asyncio.Task[Any]] = set()
@@ -1973,23 +1974,35 @@ class Supervisor:
             await self._checkpoint(task_id, session_id, plan, index)
 
     async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
-        """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
+        """Kill или interrupt во время платного шага: исход неизвестен, отката нет.
+
+        Спавн из ``request_cancel`` и повторный вызов после ``shield`` не
+        должны оба дойти до ``waiting_approval -> waiting_approval``.
+        """
         if task_id not in self._paid_outcome_hold:
             return
-        status = self._status(task_id)
-        if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+        if task_id in self._paid_unknown_marking:
+            while task_id in self._paid_unknown_marking:
+                await asyncio.sleep(0)
             return
-        action = ""
-        for row in self.tasks.list_steps(task_id):
-            if str(row.get("status")) == "running" and row.get("paid"):
-                action = str(row.get("action_name") or "")
-                break
-        await self._apply_block(
-            task_id,
-            session_id,
-            "paid_outcome_unknown",
-            extra={"action": action} if action else None,
-        )
+        self._paid_unknown_marking.add(task_id)
+        try:
+            status = self._status(task_id)
+            if status is None or status in TERMINAL_STATUSES or status is TaskStatus.waiting_approval:
+                return
+            action = ""
+            for row in self.tasks.list_steps(task_id):
+                if str(row.get("status")) == "running" and row.get("paid"):
+                    action = str(row.get("action_name") or "")
+                    break
+            await self._apply_block(
+                task_id,
+                session_id,
+                "paid_outcome_unknown",
+                extra={"action": action} if action else None,
+            )
+        finally:
+            self._paid_unknown_marking.discard(task_id)
 
     def _remember_paid(self, task_id: int) -> None:
         found = self._paid_done.setdefault(task_id, set())
@@ -2308,6 +2321,9 @@ class Supervisor:
         await self.bus.publish(session_id, "approval_required", body, task_id=task_id)
         # Статус пишется синхронно в начале _set_status, до следующего await:
         # подписчик события уже видит waiting_approval, а replay после статуса — событие.
+        if self._status(task_id) is TaskStatus.waiting_approval:
+            await self._persist_appr_mark(task_id, session_id)
+            return
         await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
         await self._persist_appr_mark(task_id, session_id)
 
