@@ -24,7 +24,7 @@ from app.orchestrator.rag.store import RagStore, chunk_id_for
 from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
 _RRF_K = 60
-_AGGREGATES = ("none", "prompt_pool", "prompt_expand")
+_AGGREGATES = ("none", "prompt_pool", "prompt_expand", "expand_tail")
 _RERANK_FUSIONS = frozenset({"replace", "rrf"})
 
 
@@ -166,6 +166,8 @@ class RagEngine:
         Эмбеддинги чанков и повторных запросов берутся из кэша процесса.
         ``aggregate=prompt_pool`` склеивает части одного промпта внутри пула.
         ``aggregate=prompt_expand`` поднимает все части такого промпта.
+        ``aggregate=expand_tail`` оставляет top-5 как ``none`` и заполняет
+        позиции 6–8 остальными частями промптов из top-5.
         ``rerank_fusion=rrf`` не отдаёт порядок реранкеру: RRF с BM25.
         ``bm25_protect`` — во сколько раз топ-1 BM25 должен обгонять топ-2,
         чтобы остаться первым. 0 выключает защиту.
@@ -184,7 +186,7 @@ class RagEngine:
         if bm25_scope not in {"full", "head"}:
             raise ValueError("bm25_scope должен быть full или head")
         if aggregate not in _AGGREGATES:
-            raise ValueError("aggregate должен быть none, prompt_pool или prompt_expand")
+            raise ValueError("aggregate должен быть none, prompt_pool, prompt_expand или expand_tail")
         if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
             raise ValueError("веса RRF должны быть > 0")
         if rerank_fusion not in _RERANK_FUSIONS:
@@ -429,6 +431,60 @@ def _doc_key(chunk: Chunk) -> str:
     return f"chunk:{chunk.chunk_id}"
 
 
+def _expand_tail(
+    ordered: list[str],
+    scores: dict[str, float],
+    by_id: dict[str, Chunk],
+) -> list[str]:
+    """Top-5 совпадает с ``none``. Позиции 6–8 — остальные части тех же промптов.
+
+    Порядок соседей тот же, что у ``prompt_expand``: промпт с большей оценкой
+    в top-5 раньше, внутри промпта части по убыванию оценки. Если соседей
+    меньше трёх, хвост добирается следующими чанками ``none``.
+    """
+    if not ordered:
+        return ordered
+    head = list(ordered[:5])
+    seen = set(head)
+    doc_score: dict[str, float] = {}
+    for chunk_id in head:
+        chunk = by_id.get(chunk_id)
+        if chunk is None or chunk.corpus != "prompts":
+            continue
+        key = _doc_key(chunk)
+        score = float(scores.get(chunk_id, 0.0))
+        doc_score[key] = score if key not in doc_score else max(doc_score[key], score)
+    members: dict[str, list[str]] = {key: [] for key in doc_score}
+    for chunk in by_id.values():
+        if chunk.corpus != "prompts":
+            continue
+        bucket = members.get(_doc_key(chunk))
+        if bucket is not None and chunk.chunk_id not in seen:
+            bucket.append(chunk.chunk_id)
+
+    def part_order(chunk_id: str) -> tuple[float, str]:
+        return (-float(scores.get(chunk_id, float("-inf"))), chunk_id)
+
+    siblings: list[str] = []
+    for key in sorted(doc_score, key=lambda item: (-doc_score[item], item)):
+        for chunk_id in sorted(members.get(key, []), key=part_order):
+            if chunk_id in seen or chunk_id not in by_id:
+                continue
+            seen.add(chunk_id)
+            siblings.append(chunk_id)
+    tail = siblings[:3]
+    for chunk_id in ordered:
+        if len(tail) == 3:
+            break
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        tail.append(chunk_id)
+    rest = [chunk_id for chunk_id in siblings[3:] if chunk_id not in set(tail)]
+    rest.extend(chunk_id for chunk_id in ordered if chunk_id not in seen and chunk_id not in rest)
+    return head + tail + rest
+
+
 def _aggregate_parts(
     ordered: list[str],
     scores: dict[str, float],
@@ -436,6 +492,8 @@ def _aggregate_parts(
     mode: str,
 ) -> list[str]:
     """Склеивает части одного промпта. Правила и каталог остаются отдельными чанками."""
+    if mode == "expand_tail":
+        return _expand_tail(ordered, scores, by_id)
     if mode == "none" or not ordered:
         return ordered
     doc_score: dict[str, float] = {}
