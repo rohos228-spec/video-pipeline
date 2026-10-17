@@ -872,6 +872,7 @@ class Supervisor:
                 return
 
             if task_id in self._paid_outcome_hold and any(item.paid for item, _ in started):
+                await self._capture_unknown_paid(task_id, session_id, started, results, plan, index)
                 if self._status(task_id) is TaskStatus.executing:
                     await self._mark_paid_outcome_unknown(session_id, task_id)
                 return
@@ -1360,6 +1361,34 @@ class Supervisor:
             if isinstance(stored, dict) and _public_params(stored) == ident:
                 return row
         return None
+
+    async def _capture_unknown_paid(
+        self,
+        task_id: int,
+        session_id: str,
+        started: list[tuple[PlanStep, int]],
+        results: list[Any],
+        plan: list[PlanStep],
+        index: int,
+    ) -> None:
+        """Исход платного шага неизвестен, но сдача и стоимость уже есть."""
+        noted = False
+        for (done_step, step_id), result in zip(started, results, strict=True):
+            if not done_step.paid or isinstance(result, BaseException):
+                continue
+            cost = float(getattr(result, "cost", 0) or 0)
+            raw_id = getattr(result, "change_id", None)
+            change_id = str(raw_id) if raw_id else None
+            self.tasks.note_running_outcome(step_id, change_id, cost)
+            if change_id:
+                bucket = self._change_ids.setdefault(task_id, [])
+                if change_id not in bucket:
+                    bucket.append(change_id)
+            if cost:
+                self.tasks.add_spend(task_id, actions=cost)
+            noted = True
+        if noted:
+            await self._checkpoint(task_id, session_id, plan, index)
 
     async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
         """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
