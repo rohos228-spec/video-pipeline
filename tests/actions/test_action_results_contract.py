@@ -306,6 +306,20 @@ def test_partial_edit_lists_skipped_items() -> None:
         )
 
 
+def test_skipped_implies_partial() -> None:
+    edited = EditResult.model_validate(_edit_payload(before={"a": 1}, skipped=["shot-2"]))
+    deleted = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        action="montage.delete_frame",
+        marked=True,
+        restore_action="frame.restore",
+        snapshot_id="snap-1",
+        skipped=["frame-9"],
+    )
+    assert edited.partial is True
+    assert deleted.partial is True
+
+
 def test_snapshot_ref_not_blank() -> None:
     for blank in ("", " ", " \n\t"):
         with pytest.raises(ValidationError):

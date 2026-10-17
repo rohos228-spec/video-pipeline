@@ -181,6 +181,8 @@ class EditResult(BaseModel):
             raise ValueError("нужен before или snapshot_id")
         if self.version <= self.base_version:
             raise ValueError("version должна быть больше base_version")
+        if self.skipped:
+            self.partial = True
         if self.partial and not self.skipped:
             raise ValueError("partial требует список skipped")
         return self
@@ -287,6 +289,8 @@ class SoftDeleteResult(BaseModel):
             raise ValueError("restore_action не восстанавливает этот kind")
         if self.restore_action not in metadata_registry():
             raise ValueError("restore_action вне реестра")
+        if self.skipped:
+            self.partial = True
         if self.partial and not self.skipped:
             raise ValueError("partial требует список skipped")
         return self
