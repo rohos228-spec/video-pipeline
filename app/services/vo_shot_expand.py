@@ -2789,12 +2789,14 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
         # Ensure parent carries full ladder (QC SoT).
+        # Сравнение с сырым списком: хвост активен: False не считается новой записью.
         pattrs = dict(getattr(parent, "attrs", None) or {})
-        if planned_shots_from_attrs(parent) != planned:
-            pattrs["кадры"] = merge_kadry_keep_missing(
-                pattrs.get("кадры"),
-                [dict(s) for s in planned if isinstance(s, dict)],
-            )
+        merged_parent = merge_kadry_keep_missing(
+            pattrs.get("кадры"),
+            [dict(s) for s in planned if isinstance(s, dict)],
+        )
+        if merged_parent != pattrs.get("кадры"):
+            pattrs["кадры"] = merged_parent
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1

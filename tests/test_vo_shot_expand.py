@@ -1092,6 +1092,54 @@ def test_sync_qc_keeps_ids_missing_from_mirror(
     assert "child-extra" in caplog.text
 
 
+def test_sync_qc_second_pass_returns_zero() -> None:
+    """Хвост с активен: False не заставляет повторный sync_qc писать снова."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import sync_qc_kadry_onto_coverage_frames
+
+    parent_uid = "11" * 12
+    child_uid = "22" * 12
+    parent = SimpleNamespace(
+        number=1,
+        sort_key=1.0,
+        uuid=parent_uid,
+        voiceover_text="Первая.",
+        attrs={
+            "кадры": [
+                {"id": "1-S1-K1", "сцена": 1, "план": "общий", "место": "двор",
+                 "действие": "стоит", "закадр": "Первая."},
+                {"id": "1-S1-K2", "сцена": 1, "план": "средний", "место": "двор",
+                 "действие": "шаг", "закадр": "Вторая."},
+                {"id": "orphan", "действие": "смотрит", "закадр": "хвост родителя"},
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent", "parent_uuid": parent_uid, "shot_index": 1,
+                "shots_in_beat": 2, "scene_split": 1, "сцена": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        sort_key=2.0,
+        uuid=child_uid,
+        voiceover_text="Вторая.",
+        attrs={
+            "кадры": [
+                {"id": "1-S1-K2", "сцена": 1, "план": "средний", "место": "двор",
+                 "действие": "шаг", "закадр": "Вторая."},
+            ],
+            "camera_subdivide": {
+                "role": "shot", "parent_uuid": parent_uid, "shot_index": 2,
+                "shots_in_beat": 2, "scene_split": 1, "сцена": 1,
+            },
+        },
+    )
+    frames = [parent, child]
+    sync_qc_kadry_onto_coverage_frames(frames)
+    assert sync_qc_kadry_onto_coverage_frames(frames) == 0
+
+
 def test_sync_qc_child_mirror_previously_inactive_warns_or_revives(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
