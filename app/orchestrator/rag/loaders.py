@@ -459,9 +459,8 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     phrase = _role_phrase(node)
     if phrase:
         header = f"{header} {phrase}"
-    # До 8 секций ##, без склейки в 3 ведра: иначе вектор секции тонет в чужом тексте.
-    # PLAN §5.2: один промпт — 1–3 чанка. Разметка контура B знает только s0–s2.
-    parts = split_prompt(template, max_parts=3)
+    # До 8 частей по ##. Склейка в 3 ведра снята: секция не должна тонуть в чужом тексте.
+    parts = split_prompt(template, max_parts=8)
     docs: list[SourceDoc] = []
     for part_key, body in parts:
         docs.append(

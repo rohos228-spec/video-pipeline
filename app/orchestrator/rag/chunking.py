@@ -1,4 +1,4 @@
-"""Нарезка корпусов: 1 правило = 1 чанк; промпт — до 3 частей; история — окна."""
+"""Нарезка корпусов: 1 правило = 1 чанк; промпт — до 8 частей; история — окна."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def split_rules(text: str, *, source_id: str) -> list[SourceDoc]:
     return docs
 
 
-def split_prompt(text: str, *, max_parts: int = 3) -> list[tuple[str, str]]:
+def split_prompt(text: str, *, max_parts: int = 8) -> list[tuple[str, str]]:
     """Режет промпт по заголовкам ``##`` и укладывает в не больше ``max_parts`` частей."""
     body = text.strip()
     if not body:
