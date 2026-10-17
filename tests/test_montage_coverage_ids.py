@@ -251,7 +251,7 @@ def test_detach_replica_keeps_ids_cut_from_ladder(caplog) -> None:
     assert replica_ids["replica-only"]["активен"] is False
     assert replica_ids["replica-only"]["закадр"] == "только на реплике"
     assert replica_ids["early-k2"]["активен"] is False
-    assert "replica-only" in caplog.text
+    assert "detach_duplicate_vo_replica_cells" in caplog.text
 
 
 def test_detach_replica_marks_all_shots_inactive_or_consumers_skip_leftover() -> None:
