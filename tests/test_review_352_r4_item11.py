@@ -99,3 +99,59 @@ async def test_curl_non_json_is_not_retried(monkeypatch, tmp_path) -> None:
     (tmp_path / "h").write_text("h", encoding="utf-8")
     with pytest.raises(OutseeSubmitUncertain, match="не JSON"):
         await _post_generate_via_curl("/api/v1/images/generate", {"prompt": "x"})
+
+
+class _VideoClient:
+    posts: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, *args, **kwargs):
+        type(self).posts.append("httpx")
+        raise httpx.ReadTimeout("read timed out")
+
+
+@pytest.mark.asyncio
+async def test_video_read_timeout_is_one_paid_post(monkeypatch, tmp_path) -> None:
+    """Видео-путь: таймаут после POST не уходит в лестницу повторных оплат."""
+    import app.bots.outsee_http as oh
+
+    _VideoClient.posts = []
+    monkeypatch.setattr(oh, "_headers", lambda: {"Authorization": "Bearer test"})
+    monkeypatch.setattr(oh.httpx, "AsyncClient", _VideoClient)
+    monkeypatch.setattr(oh, "outsee_api_configured", lambda: True)
+
+    async def _prep(*_a, **_k):
+        return _a[1]
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", _prep)
+    monkeypatch.setattr(mod, "sleep_cancellable", _no_sleep)
+    monkeypatch.setattr(
+        "app.services.api_tracker_hook.check_api_allowed",
+        lambda **_k: None,
+    )
+
+    with pytest.raises(OutseeSubmitUncertain):
+        await mod.generate_video_with_retries(
+            None,
+            None,
+            prompt="тихий двор, камера медленно едет",
+            out_path=tmp_path / "clip.mp4",
+            max_attempts_per_prompt=3,
+            gpt_rewrite=False,
+            model_slug="veo-3-1-lite",
+            aspect_ratio="9:16",
+            resolution="720p",
+            project_id=13,
+        )
+    assert _VideoClient.posts == ["httpx"]

@@ -1226,8 +1226,13 @@ async def apply_coverage_scene_action(
     group = _visible_cell_members(parent, members)
     inserted: list[Frame] = []
     remap: dict[int, int] = {}
-    if grow and len(layout) > len(group):
-        need = len(layout) - len(group)
+    # Кэп только на рост без готового покрытия. Уже лежащие кадры и
+    # attrs["кадры"] не режем: фикс D хранит полный список, включая хвост.
+    grow_target = len(layout)
+    if not with_coverage:
+        grow_target = min(grow_target, MAX_IMPROVE_SHOTS)
+    if grow and grow_target > len(group):
+        need = grow_target - len(group)
         group, inserted, remap = await _grow_cell_shots(
             session,
             project,
