@@ -357,11 +357,19 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
+            code = int(proc.returncode)
             logger.warning(
                 "outsee_api.generate curl failed code={} err={}",
-                proc.returncode,
+                code,
                 (stderr or b"")[:200],
             )
+            # 6/7 — хост не резолвится / нет соединения: POST ещё не ушёл.
+            # 28 и прочие — тело уже могло уйти, повтор создаст второй платёж.
+            if code not in (6, 7):
+                raise OutseeApiError(
+                    f"Outsee generate curl: code {code}",
+                    context={"path": path, "curl_code": code},
+                )
             return None
         try:
             data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
@@ -377,7 +385,10 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
                 context={"path": path, "code": str(err.get("code") or "")},
             )
         if data.get("id") is None:
-            return None
+            raise OutseeApiError(
+                "Outsee generate curl: нет id",
+                context={"path": path},
+            )
         logger.info(
             "outsee_api.submitted via curl path={} id={} status={}",
             path,

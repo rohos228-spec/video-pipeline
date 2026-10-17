@@ -1146,19 +1146,10 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
         hits = sum(1 for k in nonempty if k in earlier)
         threshold = max(3, (len(members) + 3) // 4)
         parent_key = _norm_vo_key(str(getattr(parent, "voiceover_text", "") or ""))
+        # Только полный закадр. Совпадение первых 40 символов детачило
+        # другую ячейку и срезало её лестницу до одного кадра.
         same_opening = bool(
-            first_parent_key
-            and parent_key
-            and (
-                parent_key == first_parent_key
-                or (
-                    len(first_parent_key) >= 24
-                    and (
-                        parent_key.startswith(first_parent_key[:40])
-                        or first_parent_key.startswith(parent_key[:40])
-                    )
-                )
-            )
+            first_parent_key and parent_key and parent_key == first_parent_key
         )
         huge = len(members) >= 16 and hits >= threshold
         replica = bool(earlier) and (same_opening or huge)
@@ -1174,13 +1165,14 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             pattrs = dict(getattr(parent, "attrs", None) or {})
             planned = planned_shots_from_attrs(parent)
             if planned:
-                pattrs["кадры"] = planned[:1]
+                stored = [dict(s) for s in planned]
+                pattrs["кадры_archived"] = stored
+                pattrs["кадры"] = [dict(s) for s in stored]
             vo = str(getattr(parent, "voiceover_text", "") or "").strip()
             if vo:
                 pattrs["vo_cell_full"] = vo
             parent.attrs = pattrs
             _flag_attrs(parent)
-            _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:
             first_parent_key = parent_key
@@ -1922,8 +1914,24 @@ def _ladder_cell_key(frame: Any) -> str:
     return ""
 
 
+def _ladder_vo_text(items: list[tuple[int, list[Any]]]) -> str:
+    parts: list[str] = []
+    for _idx, members in items:
+        for fr in members:
+            vo = _norm_vo_key(str(getattr(fr, "voiceover_text", "") or ""))
+            if vo and vo not in parts:
+                parts.append(vo)
+    return " ".join(parts)
+
+
 def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
-    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
+    """Вторая лестница той же ячейки и той же сцены (``1-K7`` рядом с ``1-S3-K*``).
+
+    Ключ — префикс ячейки плюс номер сцены. Тот же локальный номер сцены
+    в другой ячейке leftover не становится. Безымянная K-лестница снимается
+    только если её закадр уже есть у S-лестницы этой сцены (старый хвост
+    после renumber, префикс уже другой).
+    """
     groups = _group_by_parent(frames)
     seen: set[int] = set()
     ladders: dict[tuple[str, int], list[tuple[int, list[Any]]]] = {}
@@ -1970,9 +1978,9 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             if item is keep:
                 continue
             _take(item[1])
-    # Старый ``1-K7`` после renumber живёт рядом с ``3-S2-K*``: префикс
-    # уже не совпадает, но это вторая лестница той же сцены. S-лестницу
-    # оставляем, безымянную K-лестницу снимаем.
+    # Префикс после renumber расходится (``1-K7`` рядом с ``3-S2-K*``).
+    # Снимаем только повтор того же закадра, не другую ячейку с тем же
+    # локальным номером сцены.
     by_scene: dict[int, list[list[tuple[int, list[Any]]]]] = {}
     for (_cell, sc), items in ladders.items():
         by_scene.setdefault(int(sc), []).append(items)
@@ -1988,7 +1996,13 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             (s_groups if has_s else plain).append(items)
         if not s_groups or not plain:
             continue
+        s_vos = [_ladder_vo_text(items) for items in s_groups]
         for items in plain:
+            plain_vo = _ladder_vo_text(items)
+            if len(plain_vo) < 24:
+                continue
+            if not any(s_vo and (plain_vo == s_vo or plain_vo in s_vo) for s_vo in s_vos):
+                continue
             for _idx, members in items:
                 _take(members)
     return extra
@@ -2583,21 +2597,32 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             members[0],
         )
-        planned = planned_for_parent_expand(
-            parent, planned_shots_from_attrs(parent)
-        )
-        if not planned:
+        full = [
+            dict(s)
+            for s in planned_shots_from_attrs(parent)
+            if isinstance(s, dict)
+        ]
+        source = planned_for_parent_expand(parent, full)
+        if not source:
             continue
-        planned = _repair_door_actions(parent, planned)
+        planned = _repair_door_actions(parent, source)
         ordered = list(members)
         ordered.sort(
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
-        # Ensure parent carries full ladder (QC SoT).
-        pattrs = dict(getattr(parent, "attrs", None) or {})
-        if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
-            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+        # Подмножество своей сцены идёт в meta кадров ячейки.
+        # На родителе остаётся полная лестница: шоты соседних сцен не стираем.
+        for src, shot in zip(source, planned):
+            if not isinstance(shot, dict):
+                continue
+            idx = next((i for i, item in enumerate(full) if item is src), None)
+            if idx is None:
+                continue
+            full[idx] = dict(shot)
+        previous = planned_shots_from_attrs(parent)
+        if previous != full:
+            pattrs = dict(getattr(parent, "attrs", None) or {})
+            pattrs["кадры"] = full
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1

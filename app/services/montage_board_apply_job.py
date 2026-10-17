@@ -163,6 +163,13 @@ def spawn_apply_job(
                 async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
+                        from app.services.montage_board_apply import merge_kept_ops
+
+                        board = montage_meta(project)
+                        board["pending_ops"] = merge_kept_ops(
+                            list(board.get("pending_ops") or []), held
+                        )
+                        set_montage_meta(project, board)
                         # pending_ops уже сужается в apply_montage_board — не
                         # затираем полной исходной очередью (иначе re-gen готового).
                         _set_job(
@@ -183,10 +190,15 @@ def spawn_apply_job(
                 async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
+                        from app.services.montage_board_apply import merge_kept_ops
+
                         board = montage_meta(project)
                         if pending_ops and not board.get("pending_ops"):
                             board["pending_ops"] = list(pending_ops)
-                            set_montage_meta(project, board)
+                        board["pending_ops"] = merge_kept_ops(
+                            list(board.get("pending_ops") or []), held
+                        )
+                        set_montage_meta(project, board)
                         _set_job(
                             project,
                             {"status": "error", "error": str(exc), "finished_at": _utc_now()},

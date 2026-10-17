@@ -57,5 +57,6 @@ def test_style_agent_vibecode_fallback_is_visible(monkeypatch) -> None:
     assert events[-1]["line"] == line
     patch = style_job_substitution_patch(line)
     assert patch["job"]["model_substitution"] == line
-    assert "style_job_substitution_patch" in inspect.getsource(_run_job)
-    assert "model_substitution" in inspect.getsource(_run_job)
+    src = inspect.getsource(_run_job)
+    assert "нет маршрута 52pay" in src
+    assert "style_job_substitution_patch" not in src

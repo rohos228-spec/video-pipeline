@@ -3299,13 +3299,19 @@ async def chat(
             on_delta=on_delta,
         )
 
-    from app.services.llm_override import current_text_model_id
+    from app.services.llm_override import current_override, current_text_model_id
     from app.services.pay52_routes import resolve_text
 
     use_model = (
         model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
     ).strip()
     routed = resolve_text(use_model)
+    ov_now = current_override()
+    if routed is None and ov_now is not None and ov_now.provider == "52pay":
+        raise GptApiError(
+            f"нет маршрута 52pay для модели {use_model}",
+            context={"error_kind": "no_pay52_route", "model": use_model},
+        )
     if routed is not None:
         use_model = routed.api_model
         headers = routed.headers()

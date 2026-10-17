@@ -967,6 +967,9 @@ async def stage_action(
         try:
             reply = await ask(ask_text)
         except Exception as exc:  # noqa: BLE001
+            from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+            reraise_if_spend_blocked(exc)
             reply = ""
             note = f"GPT: {type(exc).__name__}: {exc}"[:160]
             break
@@ -1431,6 +1434,9 @@ async def stage_shots(
     try:
         reply = await ask(prompt)
     except Exception as exc:  # noqa: BLE001
+        from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+        reraise_if_spend_blocked(exc)
         reply = ""
         note = f"GPT: {type(exc).__name__}: {exc}"[:160]
     fields = _ops_fields(reply, str(parent.uuid or ""))
@@ -1721,6 +1727,9 @@ async def stage_qc(
                 )
             )
         except Exception as exc:  # noqa: BLE001
+            from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+            reraise_if_spend_blocked(exc)
             reply = ""
             notes.append(f"GPT QC: {type(exc).__name__}"[:80])
         raw = _ops_fields(reply, str(parent.uuid or "")).get("кадры")

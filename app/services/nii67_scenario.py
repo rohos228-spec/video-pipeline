@@ -1183,6 +1183,9 @@ async def _generate_door(
             except AssertionError:
                 raise
             except Exception as exc:
+                from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+                reraise_if_spend_blocked(exc)
                 logger.warning(
                     "nii67 scenario: {} attempt {} provider try {} failed ({})",
                     door_id, attempt, net_try + 1, type(exc).__name__,

@@ -726,7 +726,8 @@ export function StreamsPicker({ projectId }: { projectId: number }) {
   const meta = (project.data?.meta || {}) as Record<string, unknown>;
   const cur = Number(meta.outsee_streams ?? meta.img_streams ?? 2);
   const save = useMutation({
-    mutationFn: (n: number) => api.patchProject(projectId, { meta: { ...meta, img_streams: n, outsee_streams: n } }),
+    mutationFn: (n: number) =>
+      api.patchProject(projectId, { meta: { img_streams: n, outsee_streams: n } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["project", projectId] }),
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -738,7 +739,7 @@ export function StreamsPicker({ projectId }: { projectId: number }) {
           <button
             key={n}
             type="button"
-            disabled={save.isPending}
+            disabled={save.isPending || !project.isSuccess}
             onClick={() => save.mutate(n)}
             className={cn("h-8 w-8 border text-[13px] first:rounded-l-md last:rounded-r-md", n === cur ? "border-white bg-white text-black" : "border-white/15 text-white/70 hover:text-white")}
           >

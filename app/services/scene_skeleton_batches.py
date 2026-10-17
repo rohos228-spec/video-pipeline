@@ -3,7 +3,7 @@
 База персонажей — один запрос на все фрагменты границ. Сцены — три пачки,
 разрезы только между этими фрагментами. Закадр сцены = фрагмент (пишет код).
 Модель — с ноды (``bind_project_llm``), вызов через ``gpt_api.chat``
-(группа script_frames_qc → vibecode через VPS).
+(группа script_frames_qc → 52pay gpt-5.6-sol, без тихого vibecode).
 """
 
 from __future__ import annotations

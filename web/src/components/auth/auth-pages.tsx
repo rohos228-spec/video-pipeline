@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { safeAuthNext } from "@/lib/safe-next";
 import { ArrowLeft, Check, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail, MailCheck, User, AtSign, ImageIcon } from "lucide-react";
 
 export const AUTH_TOKEN_KEY = "vp-auth-token";
@@ -158,7 +159,9 @@ export function LoginPage() {
   const [login, setLogin] = useState(""); const [pw, setPw] = useState("");
   const [err, setErr] = useState<string | null>(null); const [loading, setLoading] = useState(false); const [ok, setOk] = useState(false);
   const [touched, setTouched] = useState(false);
-  const next = typeof window !== "undefined" ? new URLSearchParams(location.search).get("next") || "/profile" : "/profile";
+  const next = typeof window !== "undefined"
+    ? safeAuthNext(new URLSearchParams(location.search).get("next"))
+    : "/profile";
   const reset = typeof window !== "undefined" && new URLSearchParams(location.search).get("reset") === "1";
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setTouched(true); setErr(null);
