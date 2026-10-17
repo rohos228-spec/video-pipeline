@@ -2744,6 +2744,32 @@ def _scene_plan_entries(
     return out
 
 
+def apply_only_cells_hook(
+    project_dir: Path,
+    project_id: int,
+    node_key: str,
+    all_frames: list[dict[str, Any]],
+    pending: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Точечный список ячеек: только VP_ONLY_CELLS=1 и файл этого проекта."""
+    import os
+
+    if os.environ.get("VP_ONLY_CELLS") != "1":
+        return pending
+    path = Path(project_dir) / f"_only_cells_{project_id}_{node_key}.json"
+    if not path.is_file():
+        return pending
+    want = {str(item) for item in json.loads(path.read_text(encoding="utf-8"))}
+    path.replace(path.with_name(path.name + ".used"))
+    logger.warning(
+        "[#{}] apply_ops only_cells node={}: {} cells",
+        project_id,
+        node_key,
+        len(want),
+    )
+    return [f for f in all_frames if str(f.get("uuid") or "") in want]
+
+
 async def run_apply_ops_batched(
     *,
     project_dir: Path,
@@ -2793,15 +2819,10 @@ async def run_apply_ops_batched(
         skip_if_field=skip_if_field,
         force_full=force_full,
     )
-    # 2026-10-11: one-shot targeted rerun of specific cells (data/_only_cells_<node>.json = [uuid,...]).
     try:
-        import json as _j, os as _os
-        _oc = _os.path.join("data", f"_only_cells_{node_key}.json")
-        if _os.path.exists(_oc):
-            _want = set(_j.load(open(_oc, encoding="utf-8")))
-            _os.replace(_oc, _oc + ".used")
-            pending = [f for f in all_frames if str(f.get("uuid") or "") in _want]
-            logger.warning("[#{}] apply_ops only_cells node={}: {} cells", project_id, node_key, len(pending))
+        pending = apply_only_cells_hook(
+            project_dir, project_id, node_key, all_frames, pending
+        )
     except Exception as _e:  # noqa: BLE001
         logger.warning("only_cells filter failed: {}", _e)
     if not pending:
