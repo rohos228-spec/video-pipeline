@@ -205,15 +205,16 @@ def test_hard_caps_block() -> None:
 
 
 def test_numeric_string_amounts_stay_valid() -> None:
+    """Перевёрнут: числовая строка в потолке больше не принимается."""
+
     result = _run_reader(
         1,
         {"forecast_usd": {"actions": "1.5"}, "run_id": "run-1"},
         {**_totals(run_spent_usd=1.0), "run_cap_usd": "50"},
     )
-    assert result.passed is True
-    assert result.details["reason"] == "ok"
-    assert result.details["forecast_usd"]["actions"] == 1.5
-    assert result.details["forecast_usd"]["run"] == 1.5
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "invalid_amount"
 
 
 def test_exact_hard_cap_still_passes_and_internal_does_not() -> None:
@@ -230,12 +231,16 @@ def test_exact_hard_cap_still_passes_and_internal_does_not() -> None:
 
 
 def test_disabled_cap_zero_does_not_fire() -> None:
+    """Перевёрнут: потолок 0 блокирует, а не выключает проверку."""
+
     result = _run_reader(
         1,
         {"run_id": "run-1"},
         {**_totals(internal_spent_usd=50, daily_spent_usd=999), "internal_cap_usd": 0, "daily_cap_usd": 0},
     )
-    assert result.passed is True
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "invalid_amount"
 
 
 def test_reader_is_mocked_and_dry_run_does_not_charge() -> None:
@@ -439,6 +444,34 @@ def test_garbage_spend_numbers_do_not_count() -> None:
             "actions_spent_usd": float("inf"),
         },
     )
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "invalid_amount"
+    assert validator_budget_exhausted(result) is False
+
+
+@pytest.mark.parametrize(
+    ("slot", "bad"),
+    [
+        ("spent", "10"),
+        ("spent", "0"),
+        ("spent", "1.5"),
+        ("spent", "inf"),
+        ("cap", "50"),
+        ("cap", "0"),
+        ("cap", "1.5"),
+        ("cap", 0),
+        ("cap", 0.0),
+        ("cap", -1),
+    ],
+)
+def test_string_amounts_and_non_positive_caps_block(slot: str, bad: object) -> None:
+    totals = _totals(run_spent_usd=1.0)
+    if slot == "spent":
+        totals["run_spent_usd"] = bad  # type: ignore[assignment]
+    else:
+        totals["run_cap_usd"] = bad  # type: ignore[assignment]
+    result = _run_reader(1, {"run_id": "run-1"}, totals)
     assert result.passed is False
     assert result.blocking is True
     assert result.details["reason"] == "invalid_amount"

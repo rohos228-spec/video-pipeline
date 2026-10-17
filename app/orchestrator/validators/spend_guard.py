@@ -27,14 +27,14 @@
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
 
 Потолки плана, если источник их не передал: $200 сутки / $100 проект /
-$50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` выключен
-(как ``caps()`` в #342). Прогноз ``context["forecast_usd"]`` прибавляется
-к прочитанному до вызова и никуда не записывается. Если ключи
-``run`` / ``project`` / ``daily`` не переданы явно, в эти потолки входит
-сумма ``internal`` + ``actions``. Нечисло, inf, NaN, отрицательное и
-явный ``None`` в расходе, потолке, прогнозе или сумме — не 0, а
-``blocking`` с ``reason=invalid_amount``. Конечные числа ``>= 0`` и
-числовые строки, которые принимает ``float``, остаются как были.
+$50 запуск / $10 internal / $40 действия. Явный потолок ``<= 0`` не
+выключает проверку: это ``blocking`` с ``reason=invalid_amount``.
+Прогноз ``context["forecast_usd"]`` прибавляется к прочитанному до вызова
+и никуда не записывается. Если ключи ``run`` / ``project`` / ``daily``
+не переданы явно, в эти потолки входит сумма ``internal`` + ``actions``.
+Нечисло, inf, NaN, отрицательное, явный ``None`` и любая строка в трате
+или потолке — не 0, а ``blocking`` с ``reason=invalid_amount``.
+Конечные числа ``>= 0`` в тратах остаются как были.
 
 ``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
 или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
@@ -353,7 +353,7 @@ def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | Non
             spent[key] = _field_amount(raw, key, default=0.0)
             known.add(key)
         for key, default in _CAP_DEFAULTS.items():
-            caps[key] = _field_amount(raw, key, default=default)
+            caps[key] = _field_cap(raw, key, default=default)
         sources.append(action_source)
         internal_source = action_source
     pipeline_from_totals = False
@@ -546,7 +546,7 @@ def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:
     except TypeError as exc:
         raise _SpendReadError("spent") from exc
     budget_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
-    budget = CAP_INTERNAL_USD if budget_raw is None else _require_amount(budget_raw, field="internal_budget_usd")
+    budget = CAP_INTERNAL_USD if budget_raw is None else _require_cap(budget_raw, field="internal_budget_usd")
     return {"spent_usd": spent, "budget_usd": budget, "budget_exhausted": False}
 
 
@@ -563,10 +563,10 @@ def _read_ledger_totals(ledger: Any, run_id: str | None) -> dict[str, Any] | Non
     if not isinstance(raw, Mapping):
         return None
     if "internal_limit_usd" in raw:
-        limit = _require_amount(raw.get("internal_limit_usd"), field="internal_limit_usd")
+        limit = _require_cap(raw.get("internal_limit_usd"), field="internal_limit_usd")
     else:
         limit_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
-        limit = CAP_INTERNAL_USD if limit_raw is None else _require_amount(limit_raw, field="internal_budget_usd")
+        limit = CAP_INTERNAL_USD if limit_raw is None else _require_cap(limit_raw, field="internal_budget_usd")
     out: dict[str, Any] = {
         "spent_usd": _field_amount(raw, "internal_spent_usd", default=0.0),
         "budget_usd": limit,
@@ -757,10 +757,23 @@ def _payload_amount(payload: Mapping[str, Any], key: str, *, default: float) -> 
     return _require_amount(payload.get(key), field=f"payload.{key}")
 
 
-def _require_amount(value: Any, *, field: str) -> float:
-    """Конечное число >= 0. Числовая строка допустима, мусор — нет."""
+def _field_cap(raw: Mapping[str, Any], key: str, *, default: float) -> float:
+    if key not in raw:
+        return default
+    return _require_cap(raw.get(key), field=key)
 
-    if value is None or isinstance(value, bool):
+
+def _require_cap(value: Any, *, field: str) -> float:
+    number = _require_amount(value, field=field)
+    if number <= 0:
+        raise _InvalidAmount(field)
+    return number
+
+
+def _require_amount(value: Any, *, field: str) -> float:
+    """Конечное число >= 0. Строка, даже числовая, — ошибка."""
+
+    if value is None or isinstance(value, bool | str):
         raise _InvalidAmount(field)
     try:
         number = float(value)
