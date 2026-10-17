@@ -49,7 +49,8 @@ function routerImpl(): string {
 }
 
 function parseFrames(chunk: string, sentAt: number): { events: BusEvent[]; rest: string } {
-  const parts = chunk.split("\n\n");
+  // sse-starlette разделяет кадры через CRLF. Одинокий \r в хвосте не трогаем.
+  const parts = chunk.replace(/\r\n/g, "\n").split("\n\n");
   const rest = parts.pop() ?? "";
   const events: BusEvent[] = [];
   const receivedAt = Date.now();

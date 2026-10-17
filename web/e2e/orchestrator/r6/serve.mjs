@@ -74,7 +74,7 @@ const probe = execFileSync(
 );
 const routerImpl = probe.trim().split("\n").at(-1) || "unknown";
 writeFileSync(path.join(dataDir, "router-impl.txt"), `${routerImpl}\n`, { mode: 0o600 });
-console.log(`orch-r6 router=${routerImpl} port=${port} ref=${sha}`);
+console.error(`orch-r6 router=${routerImpl} port=${port} ref=${sha}`);
 
 const child = spawn(
   python,
@@ -85,7 +85,7 @@ const child = spawn(
 function pipe(stream) {
   stream.setEncoding("utf8");
   stream.on("data", (chunk) => {
-    process.stdout.write(redact(chunk));
+    process.stderr.write(redact(chunk));
   });
 }
 pipe(child.stdout);
