@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.project_root import find_project_root
 from app.services.db_v2 import insert_frame_after
+from app.services.frame_tombstones import frame_is_active
 from app.services.scene_design.chronology import _norm, frame_offsets
 from app.services.scene_design.context_builder import frame_seconds
 
@@ -332,24 +333,33 @@ def _is_shot_child(fr: Frame) -> bool:
 
 
 def already_subdivided(frames: list[Frame]) -> bool:
-    """True только если уже есть дочерние шоты (shot_index>1)."""
-    return any(_is_shot_child(f) for f in frames)
+    """True только если уже есть живые дочерние шоты (shot_index>1).
+
+    Помеченный ``удалён`` ребёнок строку не занимает в живой дроблёнке:
+    повторный camera_subdivide не должен пропускаться из-за архива.
+    """
+    return any(_is_shot_child(f) and frame_is_active(f) for f in frames)
 
 
 async def collapse_shot_children(
     session: AsyncSession, project: Project
 ) -> dict[str, Any]:
-    """Удалить SET-детей, оставить VO-родителей.
+    """Пометить SET-детей, оставить VO-родителей живыми.
 
-    Перед удалением склеиваем фрагменты закадра группы обратно на родителя
+    Перед пометкой склеиваем фрагменты закадра группы обратно на родителя
     (после дроби родитель несёт только свой кусок текста ячейки).
 
-    Нужно перед повторным scene_design: иначе camera_subdivide skip
-    («already has shot children») и кадры размножаются.
-    """
-    from sqlalchemy import delete, or_
+    Было: ``delete(FrameText)`` / ``delete(PromptVersion)`` /
+    ``delete(Artifact)`` / ``delete(FrameEdge)`` / ``delete(Frame)``
+    по ``child_ids``. Строки остаются: ``удалён`` + ``активен: False``.
 
-    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
+    Нужно перед повторным scene_design: живых детей больше нет, поэтому
+    camera_subdivide не пропускается («already has shot children»).
+    """
+    from app.services.frame_tombstones import (
+        mark_frame_deleted,
+        park_marked_frame_numbers,
+    )
 
     frames = list(
         (
@@ -360,11 +370,16 @@ async def collapse_shot_children(
             )
         ).scalars()
     )
-    child_ids = [fr.id for fr in frames if _is_shot_child(fr)]
-    # Восстановить полный текст ячейки на родителе ДО удаления детей:
+    child_ids = [
+        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(fr)
+    ]
+    # Восстановить полный текст ячейки на родителе ДО пометки детей:
     # после дроби родитель несёт только свой фрагмент — склеиваем группу.
+    # Уже помеченные дети в склейку не входят, чтобы не задвоить текст.
     by_parent: dict[str, list[Frame]] = {}
     for fr in frames:
+        if _is_shot_child(fr) and not frame_is_active(fr):
+            continue
         meta = _subdivide_attr(fr)
         pu = str(meta.get("parent_uuid") or "").strip()
         if pu:
@@ -394,36 +409,40 @@ async def collapse_shot_children(
         if fr.start_ts is not None and fr.end_ts is not None:
             fr.duration_seconds = round(float(fr.end_ts) - float(fr.start_ts), 2)
         parents_cleared += 1
+    marked = 0
     if child_ids:
-        await session.execute(
-            delete(FrameText).where(FrameText.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(PromptVersion).where(PromptVersion.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(Artifact).where(Artifact.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(FrameEdge).where(
-                FrameEdge.project_id == project.id,
-                or_(
-                    FrameEdge.from_frame_id.in_(child_ids),
-                    FrameEdge.to_frame_id.in_(child_ids),
-                ),
+        id_set = set(child_ids)
+        for i, fr in enumerate(frames):
+            if fr.id not in id_set:
+                continue
+            mark_frame_deleted(
+                fr,
+                project,
+                "collapse_shot_children: SET-ребёнок помечен, строка сохранена",
             )
-        )
-        await session.execute(delete(Frame).where(Frame.id.in_(child_ids)))
+            fr.sort_key = 1_000_000_000_000.0 + i
+            marked += 1
         await session.flush()
-        await renumber_frames_by_sort_key(session, project)
-    logger.info(
-        "[#{}] camera_subdivide collapse: deleted={} parents_cleared={}",
-        project.id,
-        len(child_ids),
-        parents_cleared,
-    )
+        ordered = await renumber_frames_by_sort_key(session, project)
+        park_marked_frame_numbers(ordered, project)
+        await session.flush()
+    if marked:
+        logger.warning(
+            "WARN [#{}] camera_subdivide collapse: помечено={} parents_cleared={} "
+            "строки сохранены",
+            project.id,
+            marked,
+            parents_cleared,
+        )
+    else:
+        logger.info(
+            "[#{}] camera_subdivide collapse: marked=0 parents_cleared={}",
+            project.id,
+            parents_cleared,
+        )
     return {
-        "deleted_shots": len(child_ids),
+        "deleted_shots": 0,
+        "marked_shots": marked,
         "parents_cleared": parents_cleared,
         "voiceover_untouched": True,
     }

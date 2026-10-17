@@ -239,3 +239,104 @@ async def test_truncate_vo_marks_tail_and_keeps_related_rows(
     assert edge is not None
     assert any("truncate_vo" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_collapse_shot_children_marks_child_and_keeps_rows(
+    session: AsyncSession, warn_log
+) -> None:
+    """Было: delete(Frame/FrameText/FrameEdge) по child_ids в collapse_shot_children."""
+    project = await _project(session, "collapse-shots")
+    parent = _frame(
+        project,
+        1,
+        "parent-1",
+        "альфа",
+        sort_key=1.0,
+        attrs={"camera_subdivide": {"parent_uuid": "parent-1", "shot_index": 1}},
+    )
+    child = _frame(
+        project,
+        2,
+        "child-1",
+        "бета",
+        sort_key=2.0,
+        attrs={"camera_subdivide": {"parent_uuid": "parent-1", "shot_index": 2}},
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    session.add(
+        FrameText(
+            project_id=project.id,
+            frame_id=child.id,
+            kind="voiceover",
+            text="бета",
+        )
+    )
+    session.add(
+        PromptVersion(
+            project_id=project.id,
+            frame_id=child.id,
+            kind="img",
+            version=1,
+            text="промт ребёнка",
+        )
+    )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            frame_id=child.id,
+            kind=ArtifactKind.scene_video,
+            uuid=str(uuid.uuid4()),
+            path="/tmp/child.mp4",
+        )
+    )
+    session.add(
+        FrameEdge(
+            project_id=project.id,
+            from_frame_id=parent.id,
+            to_frame_id=child.id,
+            type="next",
+        )
+    )
+    await session.commit()
+    child_id = int(child.id)
+
+    report = await collapse_shot_children(session, project)
+    await session.commit()
+
+    live_parent = (
+        await session.execute(select(Frame).where(Frame.uuid == "parent-1"))
+    ).scalar_one()
+    kept_child = await session.get(Frame, child_id)
+    assert kept_child is not None
+    assert kept_child.attrs.get("удалён") is True
+    assert kept_child.attrs.get("активен") is False
+    assert live_parent.voiceover_text == "альфа бета"
+    assert report["deleted_shots"] == 0
+    assert report["marked_shots"] == 1
+    assert (
+        await session.execute(select(FrameText).where(FrameText.frame_id == child_id))
+    ).scalars().first() is not None
+    assert (
+        await session.execute(
+            select(PromptVersion).where(PromptVersion.frame_id == child_id)
+        )
+    ).scalars().first() is not None
+    assert (
+        await session.execute(select(Artifact).where(Artifact.frame_id == child_id))
+    ).scalars().first() is not None
+    assert (
+        await session.execute(select(FrameEdge).where(FrameEdge.to_frame_id == child_id))
+    ).scalars().first() is not None
+    ordered = list(
+        (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars()
+    )
+    assert already_subdivided(ordered) is False
+    again = await collapse_shot_children(session, project)
+    assert again["marked_shots"] == 0
+    parent_again = (
+        await session.execute(select(Frame).where(Frame.uuid == "parent-1"))
+    ).scalar_one()
+    assert parent_again.voiceover_text == "альфа бета"
+    assert any("collapse" in line for line in warn_log)
+
