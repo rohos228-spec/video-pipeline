@@ -174,7 +174,10 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
         strong_timeout_s=float(timeouts.get("strong", 300)),
         retries=int(data.get("retries", 2)),
         backoff_base_s=float(data.get("backoff_base_s", 1.0)),
-        internal_budget_usd=float(spend.get("internal_sub_budget_usd", 10)),
+        internal_budget_usd=_finite_usd(
+            spend.get("internal_sub_budget_usd", 10),
+            name="internal_sub_budget_usd",
+        ),
         pipeline_budget_usd=_pipeline_budget_usd(spend, apply_env=apply_env),
         classifier_threshold=float(classifier.get("confidence_threshold", 0.8)),
         classifier_temperature=float(classifier.get("temperature", 0)),

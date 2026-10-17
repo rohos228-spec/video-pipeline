@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.orchestrator.routing.config import load_config
+from app.orchestrator.routing.config import default_config_path, load_config
 
 
 def test_pipeline_budget_defaults_to_40(monkeypatch):
@@ -33,6 +33,16 @@ def test_pipeline_budget_rejects_zero_and_true(monkeypatch, raw):
     monkeypatch.setenv("ORCH_PIPELINE_BUDGET_USD", raw)
     with pytest.raises(ValueError, match="ORCH_PIPELINE_BUDGET_USD"):
         load_config(apply_env=True)
+
+
+@pytest.mark.parametrize("raw", [".nan", ".inf", "-.inf", "-1", "true"])
+def test_internal_budget_rejects_non_finite(tmp_path, raw):
+    text = default_config_path().read_text(encoding="utf-8")
+    text = text.replace("internal_sub_budget_usd: 10.0", f"internal_sub_budget_usd: {raw}", 1)
+    path = tmp_path / "routes.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="internal_sub_budget_usd"):
+        load_config(path, apply_env=False)
 
 
 def test_pipeline_yaml_bool_and_missing_key(monkeypatch):
