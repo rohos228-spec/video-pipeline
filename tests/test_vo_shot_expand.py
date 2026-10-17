@@ -1092,6 +1092,99 @@ def test_sync_qc_keeps_ids_missing_from_mirror(
     assert "child-extra" in caplog.text
 
 
+def test_sync_qc_child_mirror_previously_inactive_warns_or_revives(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """QC снова назначает неактивный шот: пометка не снимается, есть WARN mirror_inactive."""
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.vo_shot_expand import sync_qc_kadry_onto_coverage_frames
+
+    parent_uid = "31" * 12
+    child_uid = "32" * 12
+    parent = SimpleNamespace(
+        number=1,
+        sort_key=1.0,
+        uuid=parent_uid,
+        voiceover_text="Первая.",
+        status="image_prompt_ready",
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-S1-K1",
+                    "сцена": 1,
+                    "план": "общий",
+                    "место": "двор",
+                    "действие": "стоит",
+                    "закадр": "Первая.",
+                },
+                {
+                    "id": "1-S1-K2",
+                    "сцена": 1,
+                    "план": "средний",
+                    "место": "двор",
+                    "действие": "шаг",
+                    "закадр": "Вторая.",
+                },
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_index": 1,
+                "shots_in_beat": 2,
+                "scene_split": 1,
+                "сцена": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        sort_key=2.0,
+        uuid=child_uid,
+        voiceover_text="Вторая.",
+        status="image_prompt_ready",
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-S1-K2",
+                    "сцена": 1,
+                    "план": "средний",
+                    "место": "двор",
+                    "действие": "шаг",
+                    "закадр": "Вторая.",
+                    "активен": False,
+                }
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_index": 2,
+                "shots_in_beat": 2,
+                "scene_split": 1,
+                "сцена": 1,
+            },
+        },
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        sync_qc_kadry_onto_coverage_frames([parent, child])
+    finally:
+        logger.remove(sink)
+    child_ids = {s["id"]: s for s in child.attrs["кадры"]}
+    assert "1-S1-K2" in child_ids
+    assert child_ids["1-S1-K2"]["активен"] is False
+    assert child_ids["1-S1-K2"]["закадр"] == "Вторая."
+    assert not any(shot_is_active(s) for s in child.attrs["кадры"])
+    assert child.status == "image_prompt_ready"
+    assert any(shot_is_active(s) for s in parent.attrs["кадры"] if s["id"] == "1-S1-K2")
+    assert "mirror_inactive" in caplog.text
+    assert child_uid in caplog.text
+    assert "1-S1-K2" in caplog.text
+
+
 def test_relink_skips_existing_parent_child() -> None:
     from types import SimpleNamespace
 

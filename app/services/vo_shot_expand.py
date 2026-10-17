@@ -2656,7 +2656,7 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
     vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
     Id, которого нет в новом плане, остаётся в ``кадры[]`` с ``активен: False``.
     """
-    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
 
     updated = 0
     work = [f for f in frames if _is_pipeline_frame(f)]
@@ -2702,15 +2702,33 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             _apply_shot_meta(fr, shot)
             # Зеркало ребёнка — один живой шот. Прочие id остаются неактивными.
+            # Старый неактивный шот не оживает: если живых в зеркале не осталось — WARN.
             if fr is not parent and is_shot_child(fr):
                 cattrs = dict(getattr(fr, "attrs", None) or {})
-                cattrs["кадры"] = merge_kadry_keep_missing(
+                merged = merge_kadry_keep_missing(
                     cattrs.get("кадры"),
                     [dict(shot)],
                 )
+                cattrs["кадры"] = merged
                 # раскладка already set by _apply_shot_meta on attrs
                 fr.attrs = cattrs
                 _flag_attrs(fr)
+                if not any(shot_is_active(item) for item in merged):
+                    frame_id = str(getattr(fr, "uuid", "") or "") or str(
+                        getattr(fr, "number", "") or "?"
+                    )
+                    shot_id = str(
+                        shot.get("id")
+                        or shot.get("id_shot")
+                        or shot.get("shot_id")
+                        or "?"
+                    )
+                    logger.warning(
+                        "WARN mirror_inactive: кадр {} шот {} — "
+                        "в зеркале живого кадра нет активного шота, пометка не снята",
+                        frame_id,
+                        shot_id,
+                    )
             after_plan = str(_cs(fr).get("план") or "")
             after_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             if before_plan != after_plan or before_lay != after_lay:
