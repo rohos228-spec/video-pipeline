@@ -2115,12 +2115,15 @@ class Supervisor:
         payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
         if extra:
             payload.update(extra)
-        if current is not None and can_transition(current, TaskStatus.waiting_approval):
-            # Событие раньше статуса: опрос waiting_approval уже видит change_id.
-            await self.publish_approval_required(session_id, payload, task_id=task_id, reuse=False)
+        if current is None or not can_transition(current, TaskStatus.waiting_approval):
             await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
             return
+        body = await self._assign_change_id(session_id, task_id, payload, reuse=False)
+        await self.bus.publish(session_id, "approval_required", body, task_id=task_id)
+        # Статус пишется синхронно в начале _set_status, до следующего await:
+        # подписчик события уже видит waiting_approval, а replay после статуса — событие.
         await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
+        await self._persist_appr_mark(task_id, session_id)
 
     async def _set_status(
         self,
