@@ -11,6 +11,8 @@ from app.services.action_layer.builtin_montage_more import (
     _FRAME_NO, _PRE_NO_ALIGN, _SHOT, _pre_frame_numbers)
 from app.services.action_layer.context import (
     ActionCallError, ActionContext, source_to_upload, validate_source_params)
+from app.services.action_layer.soft_restore import (
+    precondition_restore_ref, prompt_restore_master, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec, CostEstimate,
     JobState, Precondition)
@@ -678,6 +680,19 @@ def _specs() -> list[ActionSpec]:
           preconditions=(Precondition("not_default", "Это не default", _pre_not_default),
                          Precondition("prompt_exists", "Промт существует", _pre_prompt_exists)),
           tags=("prompt", "global")),
+        S(id="prompt.restore_master", title_ru="Вернуть мастер-промт из снимка",
+          description_ru="Записывает прежний текст общего промта по snapshot_id "
+                         "(или archive_ref). Файл общий для всех проектов, поэтому нужно "
+                         "подтверждение. Другие промты не удаляются.",
+          params_schema=restore_params_schema(project=False), executor=prompt_restore_master,
+          risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+          scope="global",
+          destructive_effects=lambda p: (
+              "ГЛОБАЛЬНО: общий файл мастер-промта возвращается из снимка для всех проектов; "
+              "подтверждение нужно, другие файлы не удаляются."),
+          preconditions=(Precondition(
+              "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref),),
+          tags=("prompt", "global", "restore")),
         S(id="node.get_run_cost_basis", title_ru="Верхняя оценка прогона текстовой ноды",
           description_ru="Для нод Каркас, Площадка, Шоты, QC: пачки, худшее число запросов к "
                          "модели и токены на запрос по реальным данным проекта и файлам промтов. "

@@ -68,7 +68,7 @@ async def _status(env, pid, status, **meta):
 
 
 def test_new_actions_registered_with_expected_tier_and_money_flags() -> None:
-    assert len(registry) == 102
+    assert len(registry) == 105
     for aid, (tier, spends) in NEW_IDS.items():
         spec = registry.get(aid)
         assert (spec.risk, spec.spends_money) == (tier, spends), aid
@@ -80,7 +80,7 @@ def test_new_actions_registered_with_expected_tier_and_money_flags() -> None:
 
 def test_prompt_actions_are_global_scope() -> None:
     for aid in ("prompt.get_master", "prompt.save_master", "prompt.create_master",
-                "prompt.delete_master"):
+                "prompt.delete_master", "prompt.restore_master"):
         spec = registry.get(aid)
         assert spec.scope == "global" and "project_id" not in spec.params_schema["properties"]
     assert registry.get("montage.upload_voice").scope == "project"

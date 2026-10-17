@@ -64,10 +64,13 @@ def test_paid_have_estimators_and_destructive_have_effects_text() -> None:
 def test_register_more_rejects_duplicates_all_or_nothing() -> None:
     fresh = ActionRegistry()
     bm.register_more(fresh)
-    assert len(fresh) == len(EXPECTED)
+    restore = fresh.get("frame.restore")
+    assert (restore.risk, restore.spends_money, restore.destructive, restore.reversible,
+            restore.idempotent, restore.is_job) == ("destructive", False, True, True, True, False)
+    assert len(fresh) == len(EXPECTED) + 1
     with pytest.raises(Exception):
         bm.register_more(fresh)
-    assert len(fresh) == len(EXPECTED)
+    assert len(fresh) == len(EXPECTED) + 1
 
 
 def test_schemas_are_strict_and_reject_unknown_fields() -> None:

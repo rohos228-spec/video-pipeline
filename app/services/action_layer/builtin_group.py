@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 from app.services.action_layer.context import ActionCallError, ActionContext
+from app.services.action_layer.soft_restore import (
+    group_restore, precondition_restore_ref, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec,
     CostEstimate, JobState, Precondition)
@@ -513,6 +515,19 @@ def _specs() -> list[ActionSpec]:
             preconditions=(Precondition("group_custom", "Группа пользовательская",
                                         _group_is_custom),),
             tags=("group",)),
+        ActionSpec(
+            id="group.restore", title_ru="Вернуть пользовательскую группу из снимка",
+            description_ru="Восстанавливает файл пользовательской группы по snapshot_id "
+                           "(или archive_ref). Встроенные группы не затрагиваются.",
+            params_schema=restore_params_schema(project=False), executor=group_restore,
+            risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+            scope="global",
+            destructive_effects=lambda p: (
+                "Файл пользовательской группы возвращается из снимка; подтверждение нужно, "
+                "другие группы не удаляются."),
+            preconditions=(Precondition(
+                "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref),),
+            tags=("group", "restore")),
 
         ActionSpec(
             id="node.get_config", title_ru="Настройки ноды «Работа с GPT»",

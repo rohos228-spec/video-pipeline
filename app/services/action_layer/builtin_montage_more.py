@@ -7,6 +7,8 @@ from typing import Any
 from app.services.action_layer.builtin_montage import (
     _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
 from app.services.action_layer.context import ActionCallError, ActionContext
+from app.services.action_layer.soft_restore import (
+    frame_restore, precondition_restore_ref, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
     ActionSpec, CostEstimate, JobState, Precondition)
@@ -1086,6 +1088,18 @@ def _specs() -> list[ActionSpec]:
                          "Нужно для заявки в платных действиях.",
           params_schema=_obj({}, []), executor=_get_cost_basis, risk=RISK_READ, idempotent=True,
           preconditions=(_PRE_PROJECT,), tags=("montage", "cost")),
+        S(id="frame.restore", title_ru="Вернуть кадр из снимка",
+          description_ru="Снимает отметку удаления и возвращает кадр в таблицу и в кадры[] "
+                         "по snapshot_id (или archive_ref). Шот снова активен. Сцены не "
+                         "пересобираются, файлы не удаляются.",
+          params_schema=restore_params_schema(project=True), executor=frame_restore,
+          risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+          destructive_effects=lambda p: (
+              "Кадр возвращается из снимка в таблицу и в кадры[]; подтверждение нужно, "
+              "файлы проекта не удаляются."),
+          preconditions=(_PRE_PROJECT, Precondition(
+              "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref)),
+          tags=("montage", "frames", "restore")),
     ]
 
 
