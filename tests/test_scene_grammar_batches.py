@@ -97,11 +97,12 @@ def test_checkpoint_roundtrip_and_need_shots(tmp_path: Path) -> None:
 
 
 def test_diagnose_truncated_and_empty_arrays() -> None:
+    # R0a: незакрытый JSON грамматики сцен — обрыв, не частичный ok.
     reason, data = diagnose_apply_ops_text(
         '{"characters":[],"scenes":[{"id_scene":"scene_01","shots":[{"id_shot":"x"'
     )
-    assert reason == "ok"
-    assert isinstance(data, dict) and data.get("_salvaged_partial") is True
+    assert reason == "json_truncated"
+    assert data is None
     reason_t, data_t = diagnose_apply_ops_text('{"scenes":[{"id_scene"')
     assert reason_t == "json_truncated"
     assert data_t is None
