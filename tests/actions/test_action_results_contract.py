@@ -174,6 +174,36 @@ def _edit_payload(**extra: object) -> dict:
     return payload
 
 
+def test_approval_metadata_matches_metadata_of() -> None:
+    payload = {
+        "action": "prompt.delete_master",
+        "metadata": metadata_of("prompt.delete_master").model_dump(),
+        "reason": "пометка",
+        "preview": {"change": "файл остаётся", "estimate": 0},
+    }
+    ApprovalRequired.model_validate(payload)
+    lowered = {
+        **payload,
+        "metadata": {**payload["metadata"], "destructive": False, "paid": False, "risk": "low"},
+    }
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(lowered)
+    unknown = {
+        "action": "not_in_registry",
+        "metadata": {
+            "name": "not_in_registry",
+            "risk": "low",
+            "read_only": True,
+            "destructive": False,
+            "paid": False,
+        },
+        "reason": "обход",
+        "preview": {"change": "что-то", "estimate": None},
+    }
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(unknown)
+
+
 def test_paid_approval_estimate_positive_or_flagged() -> None:
     def build(name: str, estimate: float | None) -> dict:
         return {

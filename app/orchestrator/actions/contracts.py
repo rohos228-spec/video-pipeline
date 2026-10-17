@@ -216,6 +216,11 @@ class ApprovalRequired(BaseModel):
             raise ValueError("оценка не бывает отрицательной")
         if self.metadata.paid and estimate is not None and estimate <= 0:
             raise ValueError("платная оценка должна быть больше 0 или отсутствовать")
+        expected = metadata_of(self.metadata.name)
+        if self.metadata != expected:
+            raise ValueError("metadata не совпадает с реестром")
+        if self.action != self.metadata.name:
+            raise ValueError("action не совпадает с metadata.name")
         return self
 
 
