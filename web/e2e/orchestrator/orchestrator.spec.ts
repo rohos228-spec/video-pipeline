@@ -3,9 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  acceptsOrchContractVersion,
   bearerTargetAllowed,
   envOrchApiBase,
   isSameOriginApiBase,
+  noteOrchContractVersion,
   orchAuthHeaders,
   orchKillMessageBody,
   orchKillUsesMessageField,
@@ -16,6 +18,7 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
+import { ORCH_CONTRACT_VERSION, ORCH_EVENT_TYPES } from "../../src/lib/orchestratorTypes";
 import {
   PAID_OUTCOME_BODY_FIELDS,
   paidOutcomeDecisionBody,
@@ -34,6 +37,120 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупреждения", () => {
+  expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
+  expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);
+  expect(acceptsOrchContractVersion(ORCH_CONTRACT_VERSION)).toBe(true);
+  expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(false);
+  expect(ORCH_EVENT_TYPES).toContain("approval_decided");
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    noteOrchContractVersion("ws3-r3.3");
+    noteOrchContractVersion("ws3-r3.3.1");
+    expect(warnings).toEqual([]);
+    noteOrchContractVersion("ws3-r9");
+    noteOrchContractVersion("ws3-r9");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("ws3-r9");
+  } finally {
+    console.warn = original;
+  }
+});
+
+test("approval_decided закрывает карточку по своему change_id", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "decided",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        action: "run_node",
+        forecast_usd: 2.4,
+        retry_armed: false,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  const foreign = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "decided",
+      payload: { change_id: "orch-appr-9-1", decision: "deny", task_id: 1 },
+    },
+  });
+  expect(foreign.approvals[0]?.resolved).toBeNull();
+
+  const denied = reduceOrchScreen(foreign, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 4,
+      session_id: "decided",
+      payload: { change_id: "orch-appr-1-1", decision: "deny", task_id: 1 },
+    },
+  });
+  expect(denied.approvals[0]?.resolved).toBe("rejected");
+
+  const retryOpened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "retry",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        retry_armed: false,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  const retryDecided = reduceOrchScreen(retryOpened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "retry",
+      payload: { change_id: "orch-appr-1-1", decision: "retry_step", task_id: 1 },
+    },
+  });
+  expect(retryDecided.approvals[0]?.resolved).toBe("closed");
+  const forecast = reduceOrchScreen(retryDecided, {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 4,
+      session_id: "retry",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        forecast_usd: 2.4,
+        retry_armed: true,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  expect(forecast.approvals).toHaveLength(1);
+  expect(forecast.approvals[0]?.resolved).toBeNull();
+  expect(forecast.approvals[0]?.retryArmed).toBe(true);
+  expect(forecast.approvals[0]?.forecast).toBe(2.4);
+});
 
 test("первое approval_required несёт change_id, forecast_usd и retry_armed false", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
@@ -1392,6 +1509,7 @@ test.describe("orchestrator chat", () => {
       ["paid404foreign", "foreign change_id"],
       ["paid409", "change_id already decided"],
       ["paid409stale", "change_id is not current"],
+      ["paid409transition", "invalid transition"],
       ["paid422", "approval unprocessable"],
     ] as const;
     for (const [scenario, detail] of cases) {

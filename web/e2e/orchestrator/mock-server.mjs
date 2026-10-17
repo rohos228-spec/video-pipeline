@@ -9,7 +9,7 @@
  *   | killfield | killfieldfalse | killfieldlate | killfieldhang | killfield401
  *   | project422 | project409 | project401
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
+ *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid409transition | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -902,6 +902,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paid404nostep" ||
     scenario === "paid409" ||
     scenario === "paid409stale" ||
+    scenario === "paid409transition" ||
     scenario === "paid422" ||
     scenario === "paidgrant409" ||
     scenario === "paidnoarmed" ||
@@ -1114,6 +1115,10 @@ async function handleChatApprove(req, res, url, sessionId) {
   }
   if (scenario === "paid409") {
     sendJson(res, 409, { detail: "change_id already decided" });
+    return;
+  }
+  if (scenario === "paid409transition") {
+    sendJson(res, 409, { detail: "invalid transition" });
     return;
   }
   if (scenario === "paid409stale" || (scenario === "paidgrant409" && retryGrant)) {

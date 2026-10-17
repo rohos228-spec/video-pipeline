@@ -511,7 +511,7 @@ def _self_test() -> int:
         "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
-        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.3\"",
+        "export const ORCH_CONTRACT_VERSION = ",
         '"missing_project_id"',
         "export const BLOCK_OUTCOMES",
         '"deletion_blocked"',
@@ -539,6 +539,18 @@ def _self_test() -> int:
     missing_live = [item for item in live_need if item not in live]
     if missing_live:
         print("self-test failed on live contracts, missing:", ", ".join(missing_live), file=sys.stderr)
+        return 1
+    # DEFAULT_CONTRACT_REF не двигаем. Клиент принимает и ws3-r3.3, и ws3-r3.3.1.
+    version_line = next(
+        (line for line in live.splitlines() if line.startswith("export const ORCH_CONTRACT_VERSION = ")),
+        "",
+    )
+    accepted_versions = {
+        'export const ORCH_CONTRACT_VERSION = "ws3-r3.3";',
+        'export const ORCH_CONTRACT_VERSION = "ws3-r3.3.1";',
+    }
+    if version_line not in accepted_versions:
+        print("self-test failed, contract version not accepted:", version_line, file=sys.stderr)
         return 1
     forbidden = [item for item in ("overridden_in_db", "Финальное решение куратора", "active_version?:") if item in live]
     if forbidden:

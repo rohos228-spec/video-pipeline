@@ -369,7 +369,22 @@ function approvalChangeId(body: Record<string, unknown>): string | null {
   return serverApprovalId((nested as Record<string, unknown>).change_id);
 }
 
-function closeServerApproval(state: OrchScreenState, changeId: string, decision: "approved" | "rejected"): void {
+function approvalDecidedResolution(
+  body: Record<string, unknown>,
+): "approved" | "rejected" | "closed" | null {
+  if (!Object.prototype.hasOwnProperty.call(body, "decision")) return null;
+  const value = body.decision;
+  if (value == null || value === "approve" || value === "approved") return "approved";
+  if (value === "deny" || value === "rejected" || value === "reject") return "rejected";
+  if (value === "retry_step") return "closed";
+  return null;
+}
+
+function closeServerApproval(
+  state: OrchScreenState,
+  changeId: string,
+  decision: "approved" | "rejected" | "closed",
+): void {
   const item = state.approvals.find((entry) => entry.serverId && entry.changeId === changeId);
   if (!item || item.resolved) return;
   item.resolved = decision;
@@ -691,6 +706,12 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   };
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
+  if (event.type === "approval_decided") {
+    const changeId = approvalChangeId(payload);
+    const resolution = approvalDecidedResolution(payload);
+    if (changeId && resolution) closeServerApproval(next, changeId, resolution);
+    return next;
+  }
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
     const changeId = approvalChangeId(payload);
@@ -878,6 +899,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       existing.restartOffered = incoming.restartOffered;
       existing.retryArmed = incoming.retryArmed;
       existing.serverId = existing.serverId || incoming.serverId;
+      if (incoming.retryArmed) existing.resolved = null;
     }
     return next;
   }
