@@ -1062,4 +1062,28 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     expect(posts).toEqual([]);
   });
+
+  test("kill: двойной клик пока запрос в полёте — один POST", async ({ page }) => {
+    let posts = 0;
+    await openWithToken(page, "idle", "kill-dbl");
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      posts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, stop_key_set: true, detail: "ключ установлен" }),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").waitFor();
+    await page.evaluate(() => {
+      const button = document.querySelector("[data-testid='orch-kill-confirm']");
+      if (!(button instanceof HTMLButtonElement)) throw new Error("нет кнопки подтверждения");
+      button.click();
+      button.click();
+    });
+    await expect(page.getByTestId("orch-kill-status")).toHaveAttribute("data-kill-phase", "stopped");
+    expect(posts).toBe(1);
+  });
 });

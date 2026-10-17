@@ -264,7 +264,10 @@ export function useOrchestratorChat() {
     return () => window.clearTimeout(timer);
   }, [killPhase, killSessionId, killTaskId]);
 
+  const killLock = useRef(false);
   const kill = useCallback(async () => {
+    if (killLock.current) return;
+    killLock.current = true;
     const taskId = state.tasks.at(-1)?.id ?? null;
     const sessionId = boot.session;
     const notice = { taskId, sessionId };
@@ -304,6 +307,7 @@ export function useOrchestratorChat() {
       fail(message);
     } finally {
       window.clearTimeout(timer);
+      killLock.current = false;
     }
   }, [boot.session, cfg, noteAuth, state.tasks]);
 
