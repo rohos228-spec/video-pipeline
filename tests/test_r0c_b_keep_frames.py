@@ -361,6 +361,39 @@ def test_fill_kadry_keeps_unmatched_shots_and_source_fields(warn_log) -> None:
     assert any("WARN fill_kadry_from_catalog" in line for line in warn_log)
 
 
+def test_fill_kadry_keeps_later_scenes_when_chain_is_empty(warn_log) -> None:
+    """Пустая цепь не выбрасывает шоты сцен 2..N."""
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    incoming = [
+        {
+            "id": "s1",
+            "сцена": 1,
+            "действие": "Герой долго стоит у стола и смотрит в окно.",
+            "закадр": "один",
+        },
+        {
+            "id": "s2",
+            "сцена": 2,
+            "действие": "Герой долго смотрит в окно и садится.",
+            "закадр": "два",
+            "реплика": "алло",
+        },
+    ]
+    filled = fill_kadry_from_catalog(
+        incoming,
+        "герой просто стоит у стола",
+        cell_number=1,
+    )
+    assert len(filled) >= len(incoming)
+    kept = next(s for s in filled if s.get("id") == "s2")
+    assert kept["карантин"] is True
+    assert kept["активен"] is False
+    assert "сцена 2" in str(kept.get("пометка") or "")
+    assert kept.get("реплика") == "алло"
+    assert any("WARN fill_kadry_from_catalog" in line for line in warn_log)
+
+
 def test_drop_extra_stops_at_required_and_keeps_ids(warn_log) -> None:
     from app.services.shot_templates import _drop_extra_shots
 

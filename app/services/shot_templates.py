@@ -1020,6 +1020,18 @@ def fill_kadry_from_catalog(
             )
             scene_acc.append(shot)
         out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
+    seen_ns = {int(scene["n"]) for scene in scenes}
+    for n, group in by_scene.items():
+        if int(n) in seen_ns:
+            continue
+        for sh in group:
+            if not sh.get("карантин"):
+                _mark_shot_kept(
+                    sh,
+                    f"сцена {n} вне цепи — кадр сохранён",
+                    where="fill_kadry_from_catalog",
+                )
+            unmatched.append(sh)
     if not out:
         leftover: list[dict[str, Any]] = []
         for sh in incoming:
