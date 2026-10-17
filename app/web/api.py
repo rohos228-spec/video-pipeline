@@ -220,20 +220,20 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("montage job reconcile failed (non-fatal)")
 
+    try:
+        from app.orchestrator.agents.runtime import get_runtime
+
+        recovered = await get_runtime().start()
+        if recovered:
+            logger.info("orchestrator recovered tasks {}", recovered)
+    except Exception:  # noqa: BLE001
+        logger.exception("orchestrator restart recovery failed (non-fatal)")
+
     if settings.vps_relay_base_url:
         logger.warning(
             "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
             settings.vps_relay_base_url,
         )
-
-    try:
-        from app.orchestrator.agents.runtime import get_runtime
-
-        recovered = await get_runtime().supervisor.recover_after_restart()
-        if recovered:
-            logger.info("orchestrator recovered tasks {}", recovered)
-    except Exception:  # noqa: BLE001
-        logger.exception("orchestrator restart recovery failed (non-fatal)")
 
     try:
         yield

@@ -33,6 +33,10 @@ class Runtime:
         if job is not None:
             await job.shutdown()
 
+    async def start(self) -> list[int]:
+        """Старт процесса: продолжить задачи, оставшиеся после рестарта."""
+        return await self.supervisor.recover_after_restart()
+
 
 def build_runtime(
     *,

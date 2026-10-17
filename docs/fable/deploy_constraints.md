@@ -57,8 +57,9 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 ## `POST /api/orchestrator/chat/{session_id}/approve`
 
 Тот же Bearer `ORCH_API_TOKEN`, что и у остальных `/api/orchestrator/**`.
-Роут добавлен к проводу ещё на `ws3-r3.3` и остаётся на `ws3-r3.4`. Тело
-`ApproveIn` в `export_contract_schemas()` не входит. `ApprovalDecision`,
+Версия контракта — `ws3-r3.4`, она включает `ws3-r3.3.1`: событие `approval_decided`
+входит в экспорт (`EventType` и retention вместе с `checkpoint` и
+`approval_required`). Тело `ApproveIn` в экспорт не входит. `ApprovalDecision`,
 `ApprovalDecisionBody` и `rules.approval_decision_labels` входят в экспорт
 вместе с версией `ws3-r3.4`.
 
@@ -71,8 +72,10 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 - `retry_grant`: bool, по умолчанию `false`.
 
 Роут вызывает `grant_approval(session_id, decision, retry_grant=..., change_id=...)`.
-`ApprovalGrantError` отдаётся тем же HTTP-кодом (404 или 409). `detail` — короткая
-причина без токена и без секретов. Нет задачи у сессии — 404 `not found`.
+`ApprovalGrantError` отдаётся тем же HTTP-кодом (404 или 409). `InvalidTransition`
+(повторный grant, когда задача уже не в `waiting_approval`) — **409**
+`invalid transition`, запись не начинается. `detail` — короткая причина без токена
+и без секретов. Нет задачи у сессии — 404 `not found`.
 
 Неизвестное `decision`, лишнее поле или неверный тип тела — **422**. Строка задачи
 при этом не меняется.
