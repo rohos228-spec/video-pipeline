@@ -19,14 +19,38 @@ from app.orchestrator.validators import (
 from app.orchestrator.validators import result as result_mod
 from app.orchestrator.validators.spend_guard import set_spend_reader
 
+_VO_LENGTH = "app.orchestrator.validators.vo_length"
 
-def test_package_import_does_not_require_vo_length() -> None:
+
+def _hide_vo_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``None`` в sys.modules: импорт останавливается, файл на диске не читается."""
+
+    monkeypatch.setitem(sys.modules, _VO_LENGTH, None)
+
+
+class _QuietSpend:
+    def read_totals(self, *, project_id: int, run_id: str | None = None) -> dict[str, float]:
+        del project_id, run_id
+        return {
+            "daily_spent_usd": 0.0,
+            "project_spent_usd": 0.0,
+            "run_spent_usd": 0.0,
+            "internal_spent_usd": 0.0,
+            "actions_spent_usd": 0.0,
+        }
+
+
+def test_package_import_does_not_require_vo_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hide_vo_length(monkeypatch)
     assert "vo_length" in registered_names()
     assert vo_length_available() is False
-    assert "app.orchestrator.validators.vo_length" not in sys.modules
+    assert sys.modules[_VO_LENGTH] is None
 
 
-def test_vo_length_by_name_is_unavailable_not_an_import_error() -> None:
+def test_vo_length_by_name_is_unavailable_not_an_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide_vo_length(monkeypatch)
     result = run("vo_length", 1, {})
     assert result.name == "vo_length"
     assert result.passed is False
@@ -34,18 +58,8 @@ def test_vo_length_by_name_is_unavailable_not_an_import_error() -> None:
     assert result.details["reason"] == "unavailable"
 
 
-def test_all_ignores_missing_vo_length() -> None:
-    class _QuietSpend:
-        def read_totals(self, *, project_id: int, run_id: str | None = None) -> dict[str, float]:
-            del project_id, run_id
-            return {
-                "daily_spent_usd": 0.0,
-                "project_spent_usd": 0.0,
-                "run_spent_usd": 0.0,
-                "internal_spent_usd": 0.0,
-                "actions_spent_usd": 0.0,
-            }
-
+def test_all_ignores_missing_vo_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hide_vo_length(monkeypatch)
     set_spend_reader(_QuietSpend())
     try:
         result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True, "run_id": "all-dry"})
@@ -60,6 +74,31 @@ def test_all_ignores_missing_vo_length() -> None:
     assert dumped["pass"] is True
     names = [item["name"] for item in dumped["details"]["results"]]
     assert names == list(registered_names())
+
+
+def test_all_runs_vo_length_when_module_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Фейковый vo_length с check_vo_lengths входит в прогон all, не в unavailable."""
+
+    seen: list[list[str]] = []
+    module = types.ModuleType(_VO_LENGTH)
+
+    def check_vo_lengths(fragments: list[str]) -> list[str]:
+        seen.append(list(fragments))
+        return []
+
+    module.check_vo_lengths = check_vo_lengths
+    monkeypatch.setitem(sys.modules, _VO_LENGTH, module)
+    set_spend_reader(_QuietSpend())
+    try:
+        result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True, "run_id": "all-vo"})
+    finally:
+        set_spend_reader(None)
+    assert seen == [[]]
+    assert "vo_length" not in result.details["unavailable"]
+    vo = next(item for item in result.details["results"] if item["name"] == "vo_length")
+    assert vo["pass"] is True
+    assert vo["details"]["available"] is True
+    assert result.passed is True
 
 
 def test_unknown_validator() -> None:

@@ -114,6 +114,17 @@ def test_wide_rewrites_prompt_and_ids() -> None:
     assert local_ensure_wide_before_dialogue([]) == []
 
 
+def _install_grammar(monkeypatch: pytest.MonkeyPatch, module: types.ModuleType) -> None:
+    """И sys.modules, и атрибут пакета: ``import a.b.c`` читает атрибут, не кэш."""
+
+    name = "app.services.scene_shot_grammar"
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, name, module)
+    import app.services as services
+
+    monkeypatch.setattr(services, "scene_shot_grammar", module, raising=False)
+
+
 def test_upstream_grammar_is_preferred_when_importable(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType("app.services.scene_shot_grammar")
 
@@ -125,7 +136,7 @@ def test_upstream_grammar_is_preferred_when_importable(monkeypatch: pytest.Monke
 
     module.merge_trivial_shots = merge_trivial_shots
     module.ensure_wide_before_dialogue = ensure_wide_before_dialogue
-    monkeypatch.setitem(sys.modules, "app.services.scene_shot_grammar", module)
+    _install_grammar(monkeypatch, module)
     assert upstream_grammar() is module
     assert merge_notes([{"id": "a"}]) == ["from-upstream"]
     assert wide_notes([{"id": "a"}]) == []
@@ -134,7 +145,7 @@ def test_upstream_grammar_is_preferred_when_importable(monkeypatch: pytest.Monke
     assert shots_of({"кадры": [{"id": "k"}]}) == [{"id": "k"}]
 
     bare = types.ModuleType("app.services.scene_shot_grammar")
-    monkeypatch.setitem(sys.modules, "app.services.scene_shot_grammar", bare)
+    _install_grammar(monkeypatch, bare)
     assert upstream_grammar() is None
 
 
