@@ -26,7 +26,10 @@ RULES = {
 
 
 def test_loader_uses_a_repo_relative_rules_path() -> None:
-    docs = load_rules(Path("/workspace") / "docs" / "fable" / "user_rules.md")
+    rules_path = ROOT / "docs" / "fable" / "user_rules.md"
+    docs = load_rules(rules_path)
+    assert rules_path.is_file()
+    assert rules_path.is_relative_to(ROOT)
     assert docs
     assert {doc.source_id for doc in docs} == {RULES_SOURCE_ID}
     assert not RULES_SOURCE_ID.startswith("/")
