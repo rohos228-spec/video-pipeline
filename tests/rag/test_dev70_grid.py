@@ -99,3 +99,22 @@ def test_focus_diagnosis_is_dev70_and_names_the_displacing_chunks() -> None:
     assert "hold-12" in note
     assert "camera" in note and "action" in note and "script" in note
     assert "prompt_pool" in note
+
+
+def test_committed_dev70_grid_keeps_the_only_hit_pass() -> None:
+    from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
+
+    document = json.loads(GRID_PATH.read_text(encoding="utf-8"))
+    assert document["set"] == "dev-70"
+    assert document["rerank_pool"] == 12
+    assert len(document["configs"]) == 4
+    samples = document["prod_p95_s"]
+    assert len(samples) == 3
+    assert all(float(sample) <= 1.2 for sample in samples)
+    hits = {row["key"]: row["hit_at_5"] for row in document["configs"]}
+    assert hits["none-rrf-0.5-1.5"] >= 0.9
+    assert hits["prompt-pool-rrf-0.5-1.5"] < 0.9
+    assert hits["prompt-expand-rrf-0.5-1.5"] < 0.9
+    assert hits["none-no-rerank"] < 0.9
+    chosen, _why = choose_default(grid_runs_for_choice(document["configs"], prod_p95_s=max(samples)))
+    assert chosen == "none-rrf-0.5-1.5"
