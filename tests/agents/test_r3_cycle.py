@@ -272,8 +272,8 @@ async def test_kill_switch_pauses_paid_step_at_boundary(token: str) -> None:
                 seen["kill_switch"] = event
             if event.type == "approval_required" and event.payload.get("reason") == "paid_outcome_unknown":
                 seen["approval"] = event
-        assert seen["kill_switch"].payload["stop_key_set"] is False
-        assert seen["kill_switch"].payload["stop_key"] == "pending"
+        assert seen["kill_switch"].payload["stop_key_set"] is True
+        assert seen["kill_switch"].payload["stop_key"] == "project_13.stop"
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert rt.tasks.list_steps(task_id)[0]["status"] == "running"
         actions.release.set()

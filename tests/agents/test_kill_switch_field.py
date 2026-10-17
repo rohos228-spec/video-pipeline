@@ -88,8 +88,8 @@ async def test_kill_switch_field_overrides_append_and_stops_unpaid(token: str) -
         assert armed[0].payload["mode"] == MessageMode.interrupt.value
         kill = _kills(runtime, session)
         assert len(kill) == 1
-        assert kill[0].payload["stop_key_set"] is False
-        assert kill[0].payload["stop_key"] == "pending"
+        assert kill[0].payload["stop_key_set"] is True
+        assert kill[0].payload["stop_key"] == "project_13.stop"
         assert kill[0].payload["only_node"] is True
         await runtime.supervisor.wait(task_id, timeout=5)
         assert runtime.tasks.get(task_id)["status"] == "cancelled"

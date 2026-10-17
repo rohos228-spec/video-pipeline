@@ -512,8 +512,10 @@ class Supervisor:
 
         Платный шаг уже в полёте не откатывается: задача уходит в
         ``waiting_approval`` с причиной ``paid_outcome_unknown``.
-        Стоп-ключ узла здесь не ставится. Событие несёт ``stop_key_set=false``
-        и ``stop_key=pending``. Возвращает задачу публикации, если цикл уже
+        Если у задачи есть ``project_id``, сразу зовётся ``request_stop``:
+        файл ``project_{id}.stop``. Событие тогда несёт ``stop_key_set=true``
+        и имя этого файла. Без проекта ключ остаётся ``pending``.
+        Возвращает задачу публикации, если цикл уже
         есть: очередь её дожидается, иначе запись sqlite могла бы отстать
         от ``drain``. Без цикла событие остаётся в очереди до resume/grant.
         """
@@ -1020,12 +1022,20 @@ class Supervisor:
             self._spawn(self._mark_paid_outcome_unknown(session_id, task_id))
 
     async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
-        await self.bus.publish(
-            session_id,
-            "kill_switch",
-            {"stop_key_set": False, "stop_key": "pending", "only_node": True, "task_id": task_id},
-            task_id=task_id,
-        )
+        payload: dict[str, Any] = {
+            "stop_key_set": False,
+            "stop_key": "pending",
+            "only_node": True,
+            "task_id": task_id,
+        }
+        project_id = self._task_project_id(task_id) if task_id is not None else None
+        if project_id is not None:
+            from app.services.step_cancel import request_stop, stop_flag_path
+
+            request_stop(project_id, reason="orchestrator_kill")
+            payload["stop_key_set"] = True
+            payload["stop_key"] = stop_flag_path(project_id).name
+        await self.bus.publish(session_id, "kill_switch", payload, task_id=task_id)
 
     async def _drive(self, task_id: int, session_id: str, goal: str) -> None:
         try:

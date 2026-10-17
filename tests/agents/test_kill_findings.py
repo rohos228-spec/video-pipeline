@@ -8,6 +8,7 @@ import pytest
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.contracts import ActionResult, PlanStep, TaskStatus
+from app.services.step_cancel import clear_stop, is_stop_requested
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
 
@@ -62,4 +63,35 @@ async def test_interrupt_waits_for_mutating_unpaid_step(token: str) -> None:
         row = runtime.tasks.list_steps(task_id)[0]
         assert row["change_id"] == "chg-write"
     finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_kill_sets_node_stop_key(token: str) -> None:
+    """Kill с проектом сразу зовёт request_stop и шлёт stop_key_set=true.
+
+    Ключ — имя файла ``project_{id}.stop`` из ``app.services.step_cancel``.
+    """
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="slow", params={"_block": True, "_seconds": 30})]),
+    )
+    set_runtime(runtime)
+    session = "kill-1c"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "стой", project_id=13)
+        await actions.started.wait()
+        runtime.supervisor.request_kill(session)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        kill = next(event for event in runtime.bus.replay(session, 0) if event.type == "kill_switch")
+        assert kill.payload["stop_key_set"] is True
+        assert kill.payload["stop_key"] == "project_13.stop"
+        assert kill.payload["only_node"] is True
+        assert is_stop_requested(13)
+    finally:
+        clear_stop(13)
         set_runtime(None)
