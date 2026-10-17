@@ -12,18 +12,27 @@ from app.services import xlsx_step_runners as xsr
 from app.storage import for_project as _sheet_for_project
 
 
+def active_split_frames(frames: list[Frame]) -> list[Frame]:
+    """Помеченные кадры не считаются и не уходят в экспорт разбивки."""
+    from app.services.frame_tombstones import frame_is_active
+
+    return [fr for fr in frames if frame_is_active(fr)]
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     if project.status is not ProjectStatus.splitting:
         return
     logger.info("[#{}] split_frames (db-first) starting", project.id)
 
-    existing_frames = (
-        await session.execute(
-            select(Frame)
-            .where(Frame.project_id == project.id)
-            .order_by(Frame.number)
-        )
-    ).scalars().all()
+    existing_frames = active_split_frames(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+    )
     meta = dict(project.meta or {})
     if len(existing_frames) >= 2 and meta.get("split_completed"):
         logger.info(
@@ -55,13 +64,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     # Без DB→xlsx после replace_frames снимок остаётся на старых ~N колонках
     # (проект #33: DB=133, xlsx/UI=80).
     try:
-        frames_for_export = (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars().all()
+        frames_for_export = active_split_frames(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+        )
         if len(frames_for_export) >= 2:
             exported = db_apply.export_project_xlsx(project, list(frames_for_export))
             logger.info(
@@ -93,13 +104,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             e,
         )
 
-    frames = (
-        await session.execute(
-            select(Frame)
-            .where(Frame.project_id == project.id)
-            .order_by(Frame.number)
-        )
-    ).scalars().all()
+    frames = active_split_frames(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+    )
     if len(frames) < 2:
         raise RuntimeError(
             f"после replace_frames в БД кадров {len(frames)} (нужно ≥2)"

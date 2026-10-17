@@ -869,6 +869,10 @@ def _is_pipeline_frame(frame: Any) -> bool:
     attrs = getattr(frame, "attrs", None)
     if isinstance(attrs, dict) and attrs.get("from_disk_media"):
         return False
+    from app.services.frame_tombstones import frame_is_active
+
+    if not frame_is_active(frame):
+        return False
     return True
 
 

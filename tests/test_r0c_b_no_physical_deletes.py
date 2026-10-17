@@ -654,3 +654,101 @@ async def _models_text() -> str:
 
     return Path("app/models.py").read_text(encoding="utf-8")
 
+
+def test_pipeline_frame_skips_marked() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import _is_pipeline_frame
+
+    live = SimpleNamespace(uuid="abc", attrs={})
+    marked = SimpleNamespace(uuid="abc", attrs={"удалён": True, "активен": False})
+    inactive = SimpleNamespace(uuid="abc", attrs={"активен": False})
+    assert _is_pipeline_frame(live) is True
+    assert _is_pipeline_frame(marked) is False
+    assert _is_pipeline_frame(inactive) is False
+
+
+@pytest.mark.asyncio
+async def test_split_frames_ignores_marked_rows(session: AsyncSession, monkeypatch) -> None:
+    """Помеченный кадр не входит в пропуск GPT, экспорт и финальный счётчик."""
+    from types import SimpleNamespace
+
+    from app.models import ProjectStatus
+    from app.orchestrator.steps.split_frames import active_split_frames, run
+
+    project = await _project(session, "split-marked")
+    project.status = ProjectStatus.splitting
+    project.meta = {"split_completed": True}
+    marked = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="dead-2",
+        voiceover_text="старый",
+        attrs={"удалён": True, "активен": False},
+    )
+    session.add(marked)
+    await session.flush()
+
+    async def _gpt_ran(_project):
+        raise RuntimeError("gpt-ran")
+
+    monkeypatch.setattr(
+        "app.orchestrator.steps.split_frames.xsr.run_split_xlsx", _gpt_ran
+    )
+    with pytest.raises(RuntimeError, match="gpt-ran"):
+        await run(session, project)
+
+    live = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="live-1",
+        voiceover_text="живой",
+        attrs={},
+    )
+    session.add(live)
+    project.meta = {}
+    project.status = ProjectStatus.splitting
+    await session.flush()
+    assert [fr.uuid for fr in active_split_frames([live, marked])] == ["live-1"]
+
+    exported: dict[str, list] = {}
+
+    async def _fake_split(_project):
+        return SimpleNamespace(apply_ops=[{"target": "noop"}], frames_spec=None)
+
+    async def _fake_apply(*_a, **_k):
+        return {"updated": 0}
+
+    def _fake_export(_project, frames):
+        exported["ids"] = [fr.id for fr in frames]
+        return {"frames": len(frames), "cells": 0}
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(
+        "app.orchestrator.steps.split_frames.xsr.run_split_xlsx", _fake_split
+    )
+    monkeypatch.setattr("app.services.db_apply.apply_ops", _fake_apply)
+    monkeypatch.setattr("app.services.db_apply.export_project_xlsx", _fake_export)
+    monkeypatch.setattr("app.services.agent_harness.harness_gate_or_raise", _noop)
+
+    with pytest.raises(RuntimeError, match="кадров 1"):
+        await run(session, project)
+    assert "ids" not in exported
+
+    extra = Frame(
+        project_id=project.id,
+        number=3,
+        uuid="live-3",
+        voiceover_text="ещё живой",
+        attrs={},
+    )
+    session.add(extra)
+    project.status = ProjectStatus.splitting
+    await session.flush()
+
+    await run(session, project)
+    assert exported["ids"] == [live.id, extra.id]
+    assert project.status is ProjectStatus.frames_ready
+
