@@ -2156,6 +2156,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
     родителя и своими кусками. Склейка кусков всех ячеек = закадр исходной
     ячейки. Лишние слоты сверх ``кадры[]`` — на удаление.
     """
+    from app.services.frame_tombstones import merge_kadry_keep_missing
     from app.services.plan_shot2 import (
         SHOT2_PROMPT_ATTR,
         SHOT2_VIDEO_PROMPT_ATTR,
@@ -2288,13 +2289,17 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     # Дочерний шот сцены: свой кадр, свой кусок закадра.
                     # shot2-промт не трогаем — картинка из PNG родителя.
                     # Пустой шот не затирает уже лежащие кадры[].
+                    # Шот с id не выкидывает чужие id: хвост остаётся неактивным.
                     shot_id = ""
                     if isinstance(shot, dict):
                         shot_id = str(
                             shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
                         ).strip()
                     if shot and shot_id:
-                        attrs["кадры"] = [shot]
+                        attrs["кадры"] = merge_kadry_keep_missing(
+                            attrs.get("кадры"),
+                            [shot],
+                        )
                     else:
                         logger.warning(
                             "WARN promote_shots_to_vo_cells: у кадра {} нет шота, "

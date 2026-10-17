@@ -781,6 +781,74 @@ def test_promote_child_without_shot_keeps_old_kadry(
     assert "кадры[] оставлены" in caplog.text
 
 
+def test_promote_keeps_child_extra_shots_inactive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Шоты ребёнка, которых нет в лестнице родителя, остаются с активен: False."""
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    parent_uuid = "a" * 24
+    ladder = [
+        {"id": "1-K1", "сцена": 1, "план": "ОБЩИЙ", "действие": "вошёл"},
+        {"id": "1-K2", "сцена": 1, "план": "СРЕДНИЙ", "действие": "открыл"},
+    ]
+
+    def frame(uuid: str, role: str, index: int, kadry: list[dict], text: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            number=index,
+            uuid=uuid,
+            voiceover_text=text,
+            image_prompt="",
+            animation_prompt="",
+            duration_seconds=None,
+            status=None,
+            attrs={
+                "кадры": [dict(item) for item in kadry],
+                "vo_cell_full": "вошёл и открыл дверь",
+                "camera_subdivide": {
+                    "role": role,
+                    "parent_uuid": parent_uuid,
+                    "shot_index": index,
+                    "сцена": 1,
+                },
+            },
+        )
+
+    parent = frame(parent_uuid, "vo_parent", 1, ladder, "вошёл и открыл дверь")
+    child = frame(
+        "b" * 24,
+        "shot",
+        2,
+        [
+            dict(ladder[1]),
+            {"id": "1-K3", "сцена": 1, "план": "КРУПНЫЙ", "действие": "смотрит"},
+            {"id": "1-K4", "сцена": 1, "план": "ДЕТАЛЬ", "действие": "молчит"},
+        ],
+        "кусок",
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        promote_shots_to_vo_cells([parent, child])
+    finally:
+        logger.remove(sink)
+    by_id = {s["id"]: s for s in child.attrs["кадры"]}
+    assert set(by_id) == {"1-K2", "1-K3", "1-K4"}
+    assert by_id["1-K3"]["активен"] is False
+    assert by_id["1-K4"]["активен"] is False
+    assert by_id["1-K3"]["действие"] == "смотрит"
+    assert by_id["1-K4"]["действие"] == "молчит"
+    assert shot_is_active(by_id["1-K2"])
+    parent_ids = {s["id"]: s for s in parent.attrs["кадры"]}
+    assert shot_is_active(parent_ids["1-K1"])
+    assert shot_is_active(parent_ids["1-K2"])
+    assert "1-K3" in caplog.text and "1-K4" in caplog.text
+
+
 def test_promote_parent_id_keeps_shot_children() -> None:
     """Без ``сцена``, но с parent_id: K2 остаётся shot той же ячейки."""
     from types import SimpleNamespace
