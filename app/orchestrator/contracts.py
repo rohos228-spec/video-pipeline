@@ -331,13 +331,15 @@ def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) ->
 
 
 def require_internal_run_id(run_id: str | None, budget_scope: str | None = None) -> None:
-    """Платный вызов (``internal`` и ``pipeline``) требует непустой ``run_id``.
+    """Платный вызов требует scope ``internal|pipeline`` и непустой ``run_id``.
 
-    Пропуск scope считается internal. ``spent(None)`` нулём не считается и бакет
-    не подменяет: пустой id — ошибка, а не нулевой расход. ``pipeline`` без
+    Пропуск scope (``None``) считается internal. Явный неизвестный scope —
+    ``ValueError`` до проверки ``run_id`` и до вызова модели: набор тот же,
+    что у WS5. Пустой id — ошибка, а не нулевой расход. ``pipeline`` без
     атрибуции — та же ошибка, отдельного безымянного бакета нет.
     """
-    del budget_scope
+    if budget_scope is not None and budget_scope not in {BudgetScope.internal.value, BudgetScope.pipeline.value}:
+        raise ValueError("budget_scope must be internal|pipeline")
     if not isinstance(run_id, str) or not run_id.strip():
         raise ValueError("budget requires run_id")
 
