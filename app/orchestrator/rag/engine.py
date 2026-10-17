@@ -146,9 +146,14 @@ class RagEngine:
             return ""
         return path.read_text(encoding="utf-8")
 
-    def reindex(self, corpus: str | None = None) -> ReindexResult | dict[str, ReindexResult]:
+    def reindex(
+        self,
+        corpus: str | None = None,
+        *,
+        timeout: float = 120,
+    ) -> ReindexResult | dict[str, ReindexResult]:
         corpora = self._corpora_arg(corpus)
-        return self._worker.submit(lambda: self._reindex_many(corpora))
+        return self._worker.submit(lambda: self._reindex_many(corpora), timeout=timeout)
 
     def retrieve(
         self,

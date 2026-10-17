@@ -1346,7 +1346,8 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
         reranker = build_reranker("bge-m3", max_length=CONTOUR_B_RERANK_MAX_LENGTH, eval_mode=True)
         engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
         try:
-            engine.reindex(["rules", "nodes", "prompts"])
+            print("reindex start", flush=True)
+            engine.reindex(["rules", "nodes", "prompts"], timeout=900)
             print("index chunks", len(_index_catalog(engine)), flush=True)
             passes: list[dict[str, dict[str, float]]] = []
             for index in range(PASS_COUNT):

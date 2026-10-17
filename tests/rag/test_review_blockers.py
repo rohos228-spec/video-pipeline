@@ -75,6 +75,28 @@ def _patch_onnx(monkeypatch: pytest.MonkeyPatch, captured: list[object], seeds: 
     monkeypatch.setattr(ort, "InferenceSession", _capture)
 
 
+def test_eval_reindex_can_raise_the_worker_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.orchestrator.rag.engine import RagEngine
+
+    engine = RagEngine(
+        db_path=tmp_path / "orch_rag.db",
+        rules_path=tmp_path / "no-rules.md",
+        scan_git=False,
+    )
+    seen: dict[str, float] = {}
+
+    def _submit(fn, *, timeout: float = 120):  # noqa: ANN001
+        seen["timeout"] = timeout
+        return fn()
+
+    monkeypatch.setattr(engine._worker, "submit", _submit)
+    try:
+        engine.reindex("rules", timeout=900)
+    finally:
+        engine.close()
+    assert seen["timeout"] == 900
+
+
 def test_eval_mode_sessions_use_one_thread_and_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[object] = []
     seeds: list[int] = []
