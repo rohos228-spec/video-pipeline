@@ -306,6 +306,39 @@ def test_partial_edit_lists_skipped_items() -> None:
         )
 
 
+def test_snapshot_ref_not_blank() -> None:
+    for blank in ("", " ", " \n\t"):
+        with pytest.raises(ValidationError):
+            EditResult.model_validate(_edit_payload(before={"a": 1}, snapshot_id=blank))
+        with pytest.raises(ValidationError):
+            SoftDeleteResult(
+                change_id="orch-appr-1-1",
+                action="montage.delete_frame",
+                marked=True,
+                restore_action="frame.restore",
+                snapshot_id=blank,
+                archive_ref="old/scenes/1",
+            )
+        with pytest.raises(ValidationError):
+            SoftDeleteResult(
+                change_id="orch-appr-1-1",
+                action="group.delete",
+                marked=True,
+                restore_action="group.restore",
+                snapshot_id="snap-1",
+                archive_ref=blank,
+            )
+    EditResult.model_validate(_edit_payload(snapshot_id="snap-1"))
+    kept = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        action="group.delete",
+        marked=True,
+        restore_action="group.restore",
+        archive_ref="old/scenes/1",
+    )
+    assert kept.archive_ref == "old/scenes/1"
+
+
 def test_edit_result_version_after_base() -> None:
     with pytest.raises(ValidationError):
         EditResult.model_validate(_edit_payload(before={"a": 1}, version=1, base_version=5))

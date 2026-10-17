@@ -131,6 +131,14 @@ def _check_change_id(value: str) -> str:
     return value
 
 
+def _nonblank_ref(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("ссылка на снимок пуста")
+    return value
+
+
 class EditResult(BaseModel):
     """Правка ноды, промта, параметров или отчёта."""
 
@@ -161,6 +169,11 @@ class EditResult(BaseModel):
         if value not in metadata_registry():
             raise ValueError("action вне реестра")
         return value
+
+    @field_validator("snapshot_id")
+    @classmethod
+    def _snapshot_id(cls, value: str | None) -> str | None:
+        return _nonblank_ref(value)
 
     @model_validator(mode="after")
     def _before_or_snapshot(self) -> EditResult:
@@ -255,6 +268,11 @@ class SoftDeleteResult(BaseModel):
     @classmethod
     def _change_id(cls, value: str) -> str:
         return _check_change_id(value)
+
+    @field_validator("snapshot_id", "archive_ref")
+    @classmethod
+    def _refs(cls, value: str | None) -> str | None:
+        return _nonblank_ref(value)
 
     @model_validator(mode="after")
     def _snapshot_ref(self) -> SoftDeleteResult:
