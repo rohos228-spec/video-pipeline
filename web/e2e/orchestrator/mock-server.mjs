@@ -5,7 +5,8 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | budget | kill | reconnect | idle | plan | critic | killmsg
+ *   stream | interrupt | approval | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
  * {type, task_id:number|null, payload, seq, session_id}.
@@ -37,6 +38,9 @@ function sessionOf(id) {
       clients: new Set(),
       messageCount: 0,
       currentTaskId: null,
+      activeTaskId: null,
+      activeDone: true,
+      queue: [],
       killed: false,
       approvalWait: null,
       reconnectDropped: false,
@@ -553,9 +557,135 @@ async function runKillMessage(session, taskId) {
   });
 }
 
-function startScenario(session, scenario, text) {
+async function drainQueue(session) {
+  const next = session.queue.shift();
+  if (!next || session.killed) return;
+  session.activeTaskId = next.id;
+  session.currentTaskId = next.id;
+  session.activeDone = false;
+  emit(session, "agent_status", next.id, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: next.text,
+    detail: "стартовала после текущей",
+  });
+  emit(session, "step_started", next.id, {
+    step_id: `q-${next.id}`,
+    title: "стартовала после текущей",
+    action: "read_pipeline_code",
+    paid: false,
+  });
+  emit(session, "step_finished", next.id, { step_id: `q-${next.id}`, title: "стартовала после текущей", ok: true });
+  emit(session, "task_done", next.id, { summary: "стартовала после текущей" });
+  session.activeDone = true;
+}
+
+async function runHeldTask(session, taskId) {
+  session.activeTaskId = taskId;
+  session.activeDone = false;
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "текущая задача"));
+  emit(session, "agent_status", taskId, {
+    agent: "executor",
+    status: "running",
+    task_status: "executing",
+    title: "Текущая",
+    detail: "идёт",
+  });
+  emit(session, "step_started", taskId, {
+    step_id: "hold",
+    title: "идёт текущая",
+    action: "read_pipeline_code",
+    paid: false,
+  });
+  await sleep(2500);
+  if (session.killed) return;
+  emit(session, "step_finished", taskId, { step_id: "hold", title: "идёт текущая", ok: true });
+  emit(session, "agent_status", taskId, {
+    agent: "executor",
+    status: "done",
+    task_status: "done",
+    title: "Текущая",
+    detail: "готова",
+  });
+  emit(session, "task_done", taskId, { summary: "текущая готова" });
+  session.activeDone = true;
+  await drainQueue(session);
+}
+
+async function acceptTaskMode(session, text) {
+  if (session.activeTaskId && !session.activeDone) {
+    const id = (session.taskSeq = (session.taskSeq || 0) + 1);
+    session.queue.push({ id, text });
+    emit(session, "ack", id, ackPayload(session));
+    await sleep(20);
+    emit(session, "classification", id, {
+      mode: "task",
+      tier: "fast",
+      deterministic: true,
+      confidence: 1,
+      detail: "встаёт в очередь за текущей",
+    });
+    emit(session, "agent_status", id, {
+      agent: "supervisor",
+      status: "queued",
+      task_status: "queued",
+      title: text,
+      detail: "в очереди за текущей",
+    });
+    return;
+  }
+  const id = (session.taskSeq = (session.taskSeq || 0) + 1);
+  session.currentTaskId = id;
+  session.activeTaskId = id;
+  session.activeDone = false;
+  emit(session, "ack", id, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", id, classPayload("task", "нет текущей, стартует сразу"));
+  emit(session, "agent_status", id, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: text,
+    detail: "стартовала после текущей",
+  });
+  emit(session, "task_done", id, { summary: "стартовала после текущей" });
+  session.activeDone = true;
+}
+
+async function runLlmBudget(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "ход модели"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: "Ход LLM",
+    detail: "router.call",
+  });
+  emit(session, "message", taskId, {
+    role: "assistant",
+    text: "Ход сохранён, внутренний бюджет выбран.",
+    task_status: "waiting_approval",
+    approval: {
+      approval_id: "ap-llm-budget",
+      reason: "budget_exhausted",
+      action: "router.call",
+      risk: "high",
+    },
+  });
+}
+
+function startScenario(session, scenario, text, mode) {
   session.messageCount += 1;
   session.lastEcho = text;
+  if (mode === "task") {
+    void acceptTaskMode(session, text);
+    return;
+  }
   if (scenario === "interrupt" && session.messageCount > 1) {
     runInterruptFollowup(session, session.currentTaskId, text);
     return;
@@ -595,6 +725,14 @@ function startScenario(session, scenario, text) {
   }
   if (scenario === "killmsg") {
     void runKillMessage(session, id);
+    return;
+  }
+  if (scenario === "task") {
+    void runHeldTask(session, id);
+    return;
+  }
+  if (scenario === "llmbudget") {
+    void runLlmBudget(session, id);
     return;
   }
   if (scenario === "idle") {
@@ -861,7 +999,7 @@ const server = http.createServer(async (req, res) => {
     }
     const session = sessionOf(decodeURIComponent(parts[3]));
     const scenario = scenarioOf(req, url);
-    startScenario(session, scenario, text);
+    startScenario(session, scenario, text, body.mode);
     sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
     return;
   }

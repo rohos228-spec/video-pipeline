@@ -147,10 +147,37 @@ test.describe("orchestrator chat", () => {
     await openWithToken(page, "killmsg", "killmsg-1");
     await page.getByTestId("orch-composer").fill("останови всё");
     await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-classification")).toContainText("остановка");
     await expect(page.getByTestId("orch-classification")).toContainText("kill switch из сообщения");
-    await expect(page.getByTestId("orch-classification")).toContainText("interrupt");
+    await expect(page.getByTestId("orch-classification")).not.toContainText("interrupt");
     await expect(page.getByTestId("orch-kill-status")).toContainText(/из сообщения/i);
     await expect(page.getByTestId("orch-kill-status")).toContainText(/платный шаг остановится на границе/i);
+  });
+
+  test("task: новая задача встаёт в очередь и стартует после текущей", async ({ page }) => {
+    await openWithToken(page, "task", "task-1");
+    await expect(page.getByTestId("orch-mode-task-hint")).toContainText("очередь за текущей");
+    await page.getByTestId("orch-composer").fill("текущая работа");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("Текущая");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("выполнение");
+    await page.getByTestId("orch-mode-task").check();
+    await page.getByTestId("orch-composer").fill("следующая задача");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-classification")).toContainText("task");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("в очереди");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("Текущая");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("следующая задача");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("стартовала после текущей");
+  });
+
+  test("budget_exhausted приходит из LLMResponse и показывает карточку", async ({ page }) => {
+    await openWithToken(page, "llmbudget", "llm-budget-1");
+    await page.getByTestId("orch-composer").fill("ещё один ход");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-transcript")).toContainText("внутренний бюджет выбран");
+    await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
+    await expect(page.getByTestId("orch-task-status").first()).toContainText("подтверждения");
   });
 
   test("401: пустой токен, отказ, затем верный токен", async ({ page }) => {

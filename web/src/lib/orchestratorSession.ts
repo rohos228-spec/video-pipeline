@@ -260,10 +260,38 @@ function str(value: unknown, fallback = ""): string {
 }
 
 /** WS3: task_id — integer. В стейте карточки ключ строковый. */
-function taskKey(value: number | string | null | undefined): string | null {
+function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
   return null;
+}
+
+function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
+  const status = str(payload.task_status);
+  if (taskId && status) {
+    ensureTask(state.tasks, taskId).status = status as TaskStatus;
+  }
+  const approval = payload.approval;
+  if (!approval || typeof approval !== "object") return;
+  const body = approval as Record<string, unknown>;
+  const reason = str(body.reason);
+  if (!reason) return;
+  const id = str(body.approval_id, `appr-llm-${seq}`);
+  if (!state.approvals.some((item) => item.id === id)) {
+    state.approvals.push({
+      id,
+      taskId: taskKey(body.task_id) || taskId,
+      title: str(body.title, "Нужно подтверждение"),
+      reason,
+      risk: str(body.risk),
+      action: str(body.action),
+      costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      resolved: null,
+    });
+  }
+  if (taskId && (status === "waiting_approval" || reason === "budget_exhausted")) {
+    ensureTask(state.tasks, taskId).status = "waiting_approval";
+  }
 }
 
 function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
@@ -358,7 +386,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "classification") {
     const mode = str(payload.mode) as ClassificationPayload["mode"];
-    if (mode === "interrupt" || mode === "steer" || mode === "append") {
+    if (mode === "interrupt" || mode === "steer" || mode === "append" || mode === "task") {
       const killSwitch = payload.kill_switch === true;
       next.classification = {
         mode,
@@ -371,6 +399,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         next.killNotice = "сработал из сообщения. Платный шаг остановится на границе";
       }
     }
+    absorbLlmSignal(next, taskId, payload, event.seq);
+    return next;
+  }
+
+  if (event.type === "message") {
+    const text = str(payload.text);
+    if (text && str(payload.role) !== "user") appendToken(next, taskId, text);
+    absorbLlmSignal(next, taskId, payload, event.seq);
     return next;
   }
 

@@ -130,9 +130,14 @@ export interface ClassificationPayload {
   detail?: string;
 }
 
-/** POST /api/orchestrator/chat/{session}/message — MessageIn в WS3. */
+/**
+ * POST /api/orchestrator/chat/{session}/message.
+ * MessageIn в WS3 пока только ``text``. ``mode`` UI шлёт для MessageMode.task
+ * (новая задача в очередь); мок его учитывает.
+ */
 export interface OrchOutboundMessage {
   text: string;
+  mode?: MessageMode;
 }
 
 /** Ответ post_message: ack уходит в шину, HTTP его не ждёт. */
@@ -418,6 +423,9 @@ def _self_test() -> int:
         "risk?: string;",
         '"critic_escalation"',
         '"kill_switch"',
+        '"task"',
+        "task_status?: TaskStatus | null;",
+        "approval?: ApprovalEvent | null;",
         f"git show {DEFAULT_CONTRACT_REF}:{CONTRACT_GIT_PATH}",
         "export const LLM_PROVIDER",
     ]

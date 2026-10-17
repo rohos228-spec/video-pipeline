@@ -46,6 +46,7 @@ function statusBadgeVariant(status: string): "default" | "success" | "warning" |
 export function OrchestratorWorkspace() {
   const chat = useOrchestratorChat();
   const [draft, setDraft] = useState("");
+  const [taskMode, setTaskMode] = useState(false);
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenOpen, setTokenOpen] = useState(false);
   const [killOpen, setKillOpen] = useState(false);
@@ -57,7 +58,7 @@ export function OrchestratorWorkspace() {
     const text = draft;
     if (!text.trim()) return;
     setDraft("");
-    void chat.sendMessage(text);
+    void chat.sendMessage(text, taskMode ? "task" : undefined);
   };
 
   return (
@@ -204,7 +205,7 @@ export function OrchestratorWorkspace() {
                 <div className="flex items-center gap-2 text-[11px]" data-testid="orch-classification">
                   <Badge
                     variant={
-                      chat.state.classification.mode === "interrupt"
+                      chat.state.classification.killSwitch || chat.state.classification.mode === "interrupt"
                         ? "warning"
                         : chat.state.classification.mode === "steer"
                           ? "info"
@@ -212,7 +213,7 @@ export function OrchestratorWorkspace() {
                     }
                     className="normal-case tracking-normal"
                   >
-                    {chat.state.classification.mode}
+                    {chat.state.classification.killSwitch ? "остановка" : chat.state.classification.mode}
                   </Badge>
                   <span className="text-white/55">
                     {chat.state.classification.killSwitch
@@ -223,6 +224,21 @@ export function OrchestratorWorkspace() {
                 </div>
               ) : null}
               {chat.sendError ? <p className="text-[11px] text-destructive">{chat.sendError}</p> : null}
+              <label className="flex items-start gap-2 text-[11px] text-white/60">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  data-testid="orch-mode-task"
+                  checked={taskMode}
+                  onChange={(event) => setTaskMode(event.target.checked)}
+                />
+                <span>
+                  Новая задача
+                  <span className="block text-[10px] text-white/35" data-testid="orch-mode-task-hint">
+                    Встаёт в очередь за текущей и не прерывает её.
+                  </span>
+                </span>
+              </label>
               <div className="flex items-end gap-2">
                 <Textarea
                   data-testid="orch-composer"

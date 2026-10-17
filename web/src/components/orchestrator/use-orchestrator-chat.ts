@@ -129,7 +129,7 @@ export function useOrchestratorChat() {
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, mode?: "task") => {
       const trimmed = text.trim();
       if (!trimmed || !token || blocked) return;
       dispatch({
@@ -140,7 +140,7 @@ export function useOrchestratorChat() {
       });
       setPending(true);
       try {
-        await postOrchMessage(cfg, { text: trimmed });
+        await postOrchMessage(cfg, mode === "task" ? { text: trimmed, mode: "task" } : { text: trimmed });
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
