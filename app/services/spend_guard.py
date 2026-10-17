@@ -28,6 +28,34 @@ CREDITS_REASON = "credits_exhausted"
 REFUSAL_CODES = ("spend_cap_run", "spend_cap_project", "spend_cap_daily")
 
 
+class BudgetExhausted(Exception):
+    """Потолок трат. Не RuntimeError: ретраи и обёртки HTTP его не глотают."""
+
+    def __init__(self, code: str, message_ru: str, *, provider: str = "", what: str = ""):
+        super().__init__(message_ru)
+        self.code = code
+        self.message_ru = message_ru
+        self.provider = provider
+        self.what = what
+
+
+def is_budget_exhausted(exc: BaseException | None) -> bool:
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, BudgetExhausted):
+            return True
+        code = getattr(cur, "code", None)
+        if code in REFUSAL_CODES:
+            return True
+        ctx = getattr(cur, "context", None)
+        if isinstance(ctx, dict) and ctx.get("gate_code") in REFUSAL_CODES:
+            return True
+        cur = cur.__cause__
+    return False
+
+
 def _source_ru(source: str) -> str:
     try:
         from app.services.telemetry import spend_source_label_ru

@@ -369,12 +369,60 @@ async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
         )
 
 
+async def _park_budget_exhausted(
+    session: AsyncSession,
+    project: Project,
+    error: Exception,
+) -> str:
+    """Потолок трат: задача ждёт одобрения. Готовые сцены и ноды не трогаем."""
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import NodeRun, NodeRunStatus, ProjectStatus, WorkflowRun
+
+    meta = dict(project.meta or {})
+    meta["approval_status"] = "waiting_approval"
+    meta["approval_reason"] = "budget_exhausted"
+    meta["paused_from_status"] = project.status.value
+    project.meta = meta
+    flag_modified(project, "meta")
+    running = (
+        await session.execute(
+            select(NodeRun)
+            .join(WorkflowRun, NodeRun.workflow_run_id == WorkflowRun.id)
+            .where(
+                WorkflowRun.project_id == project.id,
+                NodeRun.status == NodeRunStatus.running,
+            )
+        )
+    ).scalars().all()
+    for nr in running:
+        node_meta = dict(nr.meta or {})
+        node_meta["status"] = "waiting_approval"
+        node_meta["reason"] = "budget_exhausted"
+        nr.meta = node_meta
+        flag_modified(nr, "meta")
+    project.status = ProjectStatus.paused
+    await session.flush()
+    logger.warning(
+        "[#{}] budget_exhausted → waiting_approval, сцены не тронуты: {}",
+        project.id,
+        str(error)[:200],
+    )
+    return "waiting_approval"
+
+
 async def record_step_failure(
     session: AsyncSession,
     project: Project,
     *,
     error: Exception,
 ) -> str:
+    from app.services.spend_guard import is_budget_exhausted
+
+    if is_budget_exhausted(error):
+        return await _park_budget_exhausted(session, project, error)
+
     if is_chrome_infra_error(error):
         return await handle_chrome_step_failure(session, project, error)
 

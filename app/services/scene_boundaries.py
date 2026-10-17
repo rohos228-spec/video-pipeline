@@ -177,6 +177,15 @@ async def _stream_once(
                                 meta["usage"] = {**(meta["usage"] or {}), **ev["usage"]}
                         elif t == "error":
                             raise RuntimeError("stream error event: " + json.dumps(ev, ensure_ascii=False)[:500])
+    except spend_guard.PaidCallBlocked as blocked:
+        if blocked.code in spend_guard.REFUSAL_CODES:
+            raise spend_guard.BudgetExhausted(
+                blocked.code,
+                blocked.message_ru,
+                provider=blocked.provider,
+                what=blocked.what,
+            ) from blocked
+        raise
     except (httpx.HTTPError, OSError) as e:
         txt = "".join(parts)
         dt = round(time.time() - t0, 1)
@@ -235,6 +244,10 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             (trace_dir / f"{tag}.resp.txt").write_text(txt, encoding="utf-8")
             return txt
         except Exception as e:  # noqa: BLE001
+            from app.services.spend_guard import is_budget_exhausted
+
+            if is_budget_exhausted(e):
+                raise
             last = e
             msg = f"{type(e).__name__}: {e}"
             logger.warning("scene_boundaries {} try{} failed: {}", tag, k, msg[:500])
