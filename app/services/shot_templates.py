@@ -789,12 +789,24 @@ def _assign_scene_vo(
     *,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
+    """Каждый кадр — свой кусок закадра. Пустой кадр помечаем, не выкидываем."""
     vo = plain_scene_vo(vo)
     if not shots:
         return []
     if not vo:
-        return []
+        logger.warning(
+            "WARN _assign_scene_vo: пустой закадр, {} кадров сцены сохранены",
+            len(shots),
+        )
+        for shot in shots:
+            shot["закадр"] = str(shot.get("закадр") or "")
+            if not shot.get("карантин"):
+                _mark_shot_kept(
+                    shot,
+                    "пустой закадр ячейки — кадры сцены сохранены",
+                    where="_assign_scene_vo",
+                )
+        return list(shots)
     existing = [" ".join(str(s.get("закадр") or "").split()) for s in shots]
     if all(existing) and _norm_vo_words(" ".join(existing)) == _norm_vo_words(vo):
         return shots
@@ -817,13 +829,39 @@ def _assign_scene_vo(
     for sh, piece in zip(shots, parts):
         piece = " ".join((piece or "").split())
         if not piece:
-            continue
-        sh["закадр"] = piece
+            sh["закадр"] = ""
+            if not sh.get("карантин"):
+                _mark_shot_kept(
+                    sh,
+                    "пустой кусок закадра — кадр сохранён",
+                    where="_assign_scene_vo",
+                )
+        else:
+            sh["закадр"] = piece
         kept.append(sh)
-    if not kept:
+    for sh in shots[len(kept) :]:
+        sh["закадр"] = str(sh.get("закадр") or "")
+        if not sh.get("карантин"):
+            _mark_shot_kept(
+                sh,
+                "нет куска закадра — кадр сохранён",
+                where="_assign_scene_vo",
+            )
+        kept.append(sh)
+    if vo and shots and not any(str(s.get("закадр") or "").strip() for s in kept):
         shots[0]["закадр"] = vo
-        kept = [shots[0]]
-    return kept
+        # Весь закадр теперь на первом кадре: пометка «пустой кусок» его спрятала бы.
+        mark = str(shots[0].get("пометка") or "")
+        if shots[0].get("карантин") and (
+            "пуст" in mark or "нет куска" in mark or "кадры сцены сохранены" in mark
+        ):
+            shots[0].pop("карантин", None)
+            shots[0].pop("пометка", None)
+            logger.warning(
+                "WARN _assign_scene_vo: кадр {} получил весь закадр, карантин снят",
+                shots[0].get("id"),
+            )
+    return kept if kept else list(shots)
 
 
 def fill_kadry_from_catalog(
