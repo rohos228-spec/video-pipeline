@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid409 | paid422 | paidgrant409
+ *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -807,6 +807,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paid404" ||
     scenario === "paid404foreign" ||
     scenario === "paid409" ||
+    scenario === "paid409stale" ||
     scenario === "paid422" ||
     scenario === "paidgrant409" ||
     scenario === "paidzero" ||
@@ -1331,8 +1332,12 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { detail: "foreign change_id" });
         return;
       }
-      if (scenario === "paid409" || scenario === "paidgrant409") {
-        sendJson(res, 409, { detail: "approval conflict" });
+      if (scenario === "paid409") {
+        sendJson(res, 409, { detail: "change_id already decided" });
+        return;
+      }
+      if (scenario === "paid409stale" || scenario === "paidgrant409") {
+        sendJson(res, 409, { detail: "change_id is not current" });
         return;
       }
       if (scenario === "paid422") {
@@ -1361,8 +1366,16 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "foreign change_id" });
       return;
     }
-    if ((scenario === "approve409" && decision === "approve") || scenario === "paid409") {
+    if (scenario === "approve409" && decision === "approve") {
       sendJson(res, 409, { detail: "approval conflict" });
+      return;
+    }
+    if (scenario === "paid409") {
+      sendJson(res, 409, { detail: "change_id already decided" });
+      return;
+    }
+    if (scenario === "paid409stale") {
+      sendJson(res, 409, { detail: "change_id is not current" });
       return;
     }
     if ((scenario === "approve422" && decision === "approve") || scenario === "paid422") {

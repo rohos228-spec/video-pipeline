@@ -984,7 +984,8 @@ test.describe("orchestrator chat", () => {
     const cases = [
       ["paid404", "unknown change_id"],
       ["paid404foreign", "foreign change_id"],
-      ["paid409", "approval conflict"],
+      ["paid409", "change_id already decided"],
+      ["paid409stale", "change_id is not current"],
       ["paid422", "approval unprocessable"],
     ] as const;
     for (const [scenario, detail] of cases) {
@@ -1010,7 +1011,7 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-paid-retry").click();
     await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
     await page.getByTestId("orch-paid-retry-confirm").click();
-    await expect(page.getByTestId("orch-approval-error")).toContainText("approval conflict");
+    await expect(page.getByTestId("orch-approval-error")).toContainText("change_id is not current");
     await expect(page.getByTestId("orch-approval")).toBeVisible();
     await expect(page.getByTestId("orch-paid-forecast")).toBeVisible();
     await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
