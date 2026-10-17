@@ -1155,6 +1155,8 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             continue
         seen.add(pid)
         cells.append((parent, live))
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
     cells.sort(key=lambda item: int(getattr(item[0], "number", 0) or 0))
     earlier: set[str] = set()
     first_parent_key = ""
@@ -1196,7 +1198,7 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             pattrs = dict(getattr(parent, "attrs", None) or {})
             planned = planned_shots_from_attrs(parent)
             if planned:
-                pattrs["кадры"] = planned[:1]
+                pattrs["кадры"] = merge_kadry_keep_missing(planned, planned[:1])
             vo = str(getattr(parent, "voiceover_text", "") or "").strip()
             if vo:
                 pattrs["vo_cell_full"] = vo

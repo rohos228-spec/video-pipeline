@@ -200,6 +200,60 @@ def test_detach_skips_short_cell_that_is_not_film_opening() -> None:
     assert not is_coverage_leftover(later)
 
 
+def test_detach_replica_keeps_ids_cut_from_ladder(caplog) -> None:
+    """Срез planned[:1] не выбрасывает id, которого нет в других ячейках."""
+    from loguru import logger
+
+    p1 = "1" * 24
+    p2 = "2" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "early-k1", "закадр": "открытие ролика"},
+            {"id": "early-k2", "закадр": "второй кусок"},
+        ],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "early-k1", "закадр": "открытие ролика"},
+            {"id": "early-k2", "закадр": "второй кусок"},
+            {
+                "id": "replica-only",
+                "закадр": "только на реплике",
+                "действие": "ждёт",
+            },
+        ],
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        n = detach_duplicate_vo_replica_cells([early, replica])
+    finally:
+        logger.remove(sink)
+    assert n == 1
+    assert is_coverage_leftover(replica)
+    assert not is_coverage_leftover(early)
+    early_ids = {s["id"]: s for s in early.attrs["кадры"]}
+    assert early_ids["early-k1"].get("активен") is not False
+    assert early_ids["early-k2"].get("активен") is not False
+    replica_ids = {s["id"]: s for s in replica.attrs["кадры"]}
+    assert replica_ids["early-k1"].get("активен") is not False
+    assert replica_ids["replica-only"]["активен"] is False
+    assert replica_ids["replica-only"]["закадр"] == "только на реплике"
+    assert replica_ids["early-k2"]["активен"] is False
+    assert "replica-only" in caplog.text
+
+
 def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> None:
     from app.services.vo_shot_expand import leftover_later_duplicate_vo_frames
 
