@@ -101,7 +101,8 @@ interrupt с `kill_switch=false`. Классификатор для аварий
      (`ApprovalReason.budget_exhausted` в ws3-r3).
    В `orch_llm_calls` у этой попытки `status=ok`.
 3. Следующий internal-вызов того же `run_id` транспорт не трогает:
-   `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
+   `text == ""`, `model` и `provider` тоже пустые (попытки хопа не было),
+   те же `task_status` и `approval`. Строку вызова не пишем.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие

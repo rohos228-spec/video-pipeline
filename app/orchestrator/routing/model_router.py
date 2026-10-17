@@ -573,8 +573,8 @@ class ModelRouter:
         return LLMResponse(
             text="",
             call_id=str(uuid.uuid4()),
-            model=hop.model,
-            provider=hop.provider,
+            model="",
+            provider="",
             tier=ctx.effective_tier,
             finish_reason="",
             usage=LLMUsage(),
