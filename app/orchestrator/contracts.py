@@ -452,7 +452,7 @@ class ActionExecutor(Protocol):
         """WS2: ``actions.execute``."""
 
 
-# Ключ context для dry-run. Согласовано с WS1: валидатор только читает.
+# Ключ context для dry-run до критика. Согласовано с WS1: валидатор только читает.
 VALIDATOR_CONTEXT_DRY_RUN = "dry_run"
 
 
@@ -463,9 +463,11 @@ class ValidatorRunner(Protocol):
         Async тоже принимается: ``run_validator`` делает await, если ``run`` —
         корутина или вернул awaitable, иначе вызывает его через ``asyncio.to_thread``.
 
-        ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``) —
-        валидатор только читает. Сигнатура и поля результата те же:
-        ``name``, ``pass`` / ``passed``, ``details``, ``blocking``.
+        Перед критиком супервизор передаёт dry-run:
+        ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``).
+        В этом режиме валидатор только читает и ничего не меняет.
+        Сигнатура и поля результата те же: ``name``, ``pass`` / ``passed``,
+        ``details``, ``blocking``.
         """
 
 
@@ -1021,5 +1023,6 @@ def export_contract_schemas() -> dict[str, Any]:
             "deletion_actions": sorted(DELETION_ACTIONS),
             "approval_risks": sorted(APPROVAL_RISKS),
             "pipeline_forecast_limit_usd": PIPELINE_FORECAST_LIMIT_USD,
+            "validator_context_dry_run": VALIDATOR_CONTEXT_DRY_RUN,
         },
     }

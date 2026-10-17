@@ -12,7 +12,7 @@ import pytest
 from app.orchestrator.agents.critic import PlanCritic
 from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
-from app.orchestrator.contracts import Chunk, ChunkCorpus, PlanStep, TaskStatus
+from app.orchestrator.contracts import VALIDATOR_CONTEXT_DRY_RUN, Chunk, ChunkCorpus, PlanStep, TaskStatus
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedCritic, ScriptedRouter
 
 
@@ -573,6 +573,31 @@ async def test_critic_blocks_spend_forecast_and_deletion(token: str) -> None:
     assert await critic.review([PlanStep(action="montage.delete_frame")]) == "reject"
     assert await critic.review([PlanStep(action="run_node")]) == "revise"
     assert await critic.review([PlanStep(action="noop", estimated_cost=1)]) == "approve"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_before_critic_sets_read_only_flag(token: str) -> None:
+    del token
+    validators = MockValidators()
+    rt = build_runtime(
+        actions=MockActions(),
+        validators=validators,
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="noop", mutating=True, expected="ok")]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-dry", "проверка")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
+        dry = [call for call in validators.calls if call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is True]
+        assert [call["name"] for call in dry] == ["plan_sanity", "no_deletions", "spend_guard"]
+        assert all(call["context"][VALIDATOR_CONTEXT_DRY_RUN] is True for call in dry)
+        live = [call for call in validators.calls if call not in dry]
+        assert live
+        assert all(call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is not True for call in live)
+    finally:
+        set_runtime(None)
 
 
 @pytest.mark.asyncio

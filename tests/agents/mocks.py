@@ -133,8 +133,11 @@ class MockActions:
 
 
 class MockValidators:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
     async def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
-        del project_id, context
+        self.calls.append({"name": name, "project_id": project_id, "context": dict(context)})
         return ValidatorResult(name=name, passed=True, details="ok", blocking=False)
 
 

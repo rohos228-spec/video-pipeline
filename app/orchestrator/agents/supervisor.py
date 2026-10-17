@@ -31,6 +31,7 @@ from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
     APPROVAL_RISKS,
     TERMINAL_STATUSES,
+    VALIDATOR_CONTEXT_DRY_RUN,
     CheckpointData,
     PlanStep,
     SpendSnapshot,
@@ -494,7 +495,11 @@ class Supervisor:
             if step.params.get("project_id"):
                 project_id = int(step.params["project_id"])
                 break
-        payload = {"phase": "dry_run", "plan": [step.model_dump() for step in plan], "task_id": task_id}
+        payload = {
+            VALIDATOR_CONTEXT_DRY_RUN: True,
+            "plan": [step.model_dump() for step in plan],
+            "task_id": task_id,
+        }
         for name in _DRY_RUN:
             result = await self.validators.run(name, project_id, payload)
             await self.bus.publish(
