@@ -7,6 +7,7 @@ import contextlib
 
 import pytest
 
+from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.contracts import ActionResult, PlanStep, TaskStatus
 from app.services.step_cancel import clear_stop, is_stop_requested
@@ -131,4 +132,41 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
     finally:
         actions.release.set()
+        set_runtime(None)
+
+
+class _MeterRouter(ScriptedRouter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.partial_cost_usd = 0.0
+
+    async def call(self, *args, **kwargs):
+        del args, kwargs
+        self.partial_cost_usd = 0.37
+        self.started.set()
+        await asyncio.Event().wait()
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_step_records_spent_tokens(token: str) -> None:
+    del token
+    router = _MeterRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    session = "kill-3b"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.37)
+    finally:
         set_runtime(None)

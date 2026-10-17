@@ -992,6 +992,35 @@ class Supervisor:
             "retry_armed": False,
         }
 
+    def _partial_internal_cost(self) -> float:
+        """Уже потраченное на оборванном LLM-ходе.
+
+        Роутер кладёт сумму в ``partial_cost_usd``, пока ``call`` ещё не
+        вернулся, и снимает её после успешного ответа.
+        """
+        owners = (
+            self.planner,
+            getattr(self.planner, "router", None),
+            self.critic,
+            getattr(self.critic, "router", None),
+        )
+        for owner in owners:
+            if owner is None:
+                continue
+            raw = getattr(owner, "partial_cost_usd", None)
+            try:
+                value = float(raw or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return 0.0
+
+    def _charge_cancelled_llm(self, task_id: int) -> None:
+        cost = self._partial_internal_cost()
+        if cost:
+            self.tasks.add_spend(task_id, internal=cost)
+
     def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
         return {
             "run_id": orch_run_id(task_id=task_id),
@@ -1045,6 +1074,7 @@ class Supervisor:
             await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
             await self._execute_plan(task_id, session_id, plan, 0, goal)
         except asyncio.CancelledError:
+            self._charge_cancelled_llm(task_id)
             if task_id in self._paid_open or task_id in self._shield_orphaned:
                 if asyncio.current_task() and asyncio.current_task().cancelling():
                     raise
