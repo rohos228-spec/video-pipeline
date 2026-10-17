@@ -91,6 +91,8 @@ export interface ActionResultView {
   version: number | null;
   baseVersion: number | null;
   conflict: boolean;
+  /** null — оценки нет, не ноль. 0 — бесплатно. */
+  estimate: number | null;
 }
 
 export interface ReportEditBody {
@@ -312,6 +314,7 @@ function blankView(id: string, metadata: ActionMetadata, kind: ActionCardKind): 
     version: null,
     baseVersion: null,
     conflict: false,
+    estimate: null,
   };
 }
 
@@ -356,6 +359,16 @@ function softDeleteSatisfied(result: Record<string, unknown>): boolean {
   return true;
 }
 
+/** null и отсутствие поля — оценки нет. 0 остаётся нулём. */
+function readEstimate(result: Record<string, unknown> | null): number | null {
+  const preview = result ? plainObject(result.preview) : null;
+  const source = preview ?? result;
+  if (!source || !Object.prototype.hasOwnProperty.call(source, "estimate")) return null;
+  const value = source.estimate;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
 function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unknown>, result: Record<string, unknown> | null): void {
   const pair = partialPair(result, payload);
   view.warnings = stringList(payload.warnings);
@@ -385,6 +398,7 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
     const view = blankView(`wait-${seq}`, metadata, "waiting");
     view.action = metadata.name;
     applyEnvelopeExtras(view, payload, result);
+    view.estimate = readEstimate(result);
     view.changeId = null;
     view.conflict = false;
     return view;
@@ -629,6 +643,26 @@ export const EXAMPLE_UNKNOWN_APPROVAL = stepPayload("s-unknown", "неизвес
     preview: {
       change: "Неизвестное действие",
       estimate: null,
+    },
+  },
+  error: null,
+});
+
+export const EXAMPLE_FREE_APPROVAL = stepPayload("s-free", "бесплатное подтверждение", {
+  status: "approval_required",
+  result: {
+    action: "prompt.delete_master",
+    metadata: {
+      name: "prompt.delete_master",
+      risk: "high",
+      read_only: false,
+      destructive: true,
+      paid: false,
+    },
+    reason: "Удаление общего промта необратимо без снимка",
+    preview: {
+      change: "Пометить вариант промта удалённым, файл не стирать",
+      estimate: 0,
     },
   },
   error: null,

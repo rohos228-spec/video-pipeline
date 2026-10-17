@@ -203,7 +203,11 @@ export function ActionResultCard({
       <div className="text-xs font-semibold text-white">{TITLES[result.kind]}</div>
       <RiskLine result={result} />
       <Extras result={result} />
-      {result.kind === "waiting" ? null : result.kind === "mark" ? (
+      {result.kind === "waiting" ? (
+        <p className="mt-2 text-[11px] text-white/70" data-testid="orch-approval-estimate">
+          {result.estimate == null ? "стоимость неизвестна" : `стоимость ${result.estimate}`}
+        </p>
+      ) : result.kind === "mark" ? (
         <p className="mt-2 text-[11px] text-white/80" data-testid="orch-soft-delete">
           Помечено, файл на месте
         </p>

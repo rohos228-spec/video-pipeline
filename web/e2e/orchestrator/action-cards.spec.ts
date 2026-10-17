@@ -10,6 +10,7 @@ import {
   EXAMPLE_CORE_APPROVAL,
   EXAMPLE_DELETE_OK,
   EXAMPLE_FAILED,
+  EXAMPLE_FREE_APPROVAL,
   EXAMPLE_FRAME_DELETE,
   EXAMPLE_GROUP_DELETE,
   EXAMPLE_NODE_CREATE,
@@ -341,6 +342,21 @@ test("предупреждения и пропущенное на частичн
   await expect(card.getByTestId("orch-action-partial")).toContainText("Частично");
   await expect(card.getByTestId("orch-action-partial")).toContainText("пропущено");
   await expect(card.getByTestId("orch-action-skipped")).toContainText("shot-2");
+});
+
+test("пустая оценка approval не показывается нулём", async ({ page }) => {
+  await openWithToken(page, "act-cost");
+  await emit(page, "act-cost", "step_finished", EXAMPLE_PAID_APPROVAL);
+  const paid = page.getByTestId("orch-action-wait").filter({ hasText: "montage.suggest_scene_variants" });
+  await expect(paid.getByTestId("orch-approval-estimate")).toHaveText("стоимость неизвестна");
+  await expect(paid).not.toContainText("стоимость 0");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-cost", "step_finished", EXAMPLE_FREE_APPROVAL);
+  const free = page.getByTestId("orch-action-wait").filter({ hasText: "prompt.delete_master" });
+  await expect(free.getByTestId("orch-approval-estimate")).toHaveText("стоимость 0");
+  await expect(free).not.toContainText("стоимость неизвестна");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
 });
 
 test("поля r2.1: предупреждения, пропуск, конфликт и снимок", async ({ page }) => {
