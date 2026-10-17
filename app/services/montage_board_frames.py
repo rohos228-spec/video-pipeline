@@ -40,7 +40,15 @@ async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str)
     ).scalars().first()
     if not vo:
         if existing is not None:
-            await session.delete(existing)
+            # Было: ``await session.delete(existing)`` — пустой закадр стирал
+            # единственную строку FrameText. Текст остаётся, kind прячет её
+            # из живой выборки voiceover.
+            existing.kind = "vo_archived"
+            logger.warning(
+                "WARN montage: FrameText id={} не удалён, kind=vo_archived, "
+                "текст сохранён",
+                existing.id,
+            )
         return
     if existing is None:
         session.add(

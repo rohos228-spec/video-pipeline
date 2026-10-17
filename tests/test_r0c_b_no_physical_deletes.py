@@ -444,3 +444,34 @@ async def test_store_and_wipe_cells_archive_instead_of_delete(
     assert all(row.status == "archived" for row in still)
     assert any("archived" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_empty_voiceover_keeps_frame_text(session: AsyncSession, warn_log) -> None:
+    """Было: ``await session.delete(existing)`` в upsert_frame_voiceover."""
+    project = await _project(session, "vo-text")
+    frame = _frame(project, 1, "vo-1", "было", sort_key=1.0)
+    session.add(frame)
+    await session.flush()
+    session.add(
+        FrameText(
+            project_id=project.id,
+            frame_id=frame.id,
+            kind="voiceover",
+            text="было",
+        )
+    )
+    await session.commit()
+    text_id = (
+        await session.execute(select(FrameText.id).where(FrameText.frame_id == frame.id))
+    ).scalar_one()
+
+    await upsert_frame_voiceover(session, frame, "")
+    await session.commit()
+
+    row = await session.get(FrameText, text_id)
+    assert row is not None
+    assert row.kind == "vo_archived"
+    assert row.text == "было"
+    assert frame.voiceover_text == ""
+    assert any("vo_archived" in line for line in warn_log)
+
