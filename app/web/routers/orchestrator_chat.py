@@ -78,7 +78,7 @@ async def stream_session(session: str, request: Request) -> EventSourceResponse:
         runtime = get_runtime()
         cursor = last_seq
         async with runtime.bus.subscription(session) as queue:
-            for event in runtime.bus.replay(session, last_seq):
+            for event in await runtime.bus.replay_from(session, last_seq):
                 cursor, fresh = remember_seq(cursor, event.seq)
                 if fresh:
                     yield _sse(event)

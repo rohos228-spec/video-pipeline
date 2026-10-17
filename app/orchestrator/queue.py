@@ -137,7 +137,14 @@ class MessageQueue:
         """
         task_id = self.supervisor.active_task(session_id)
         run_id = orch_run_id(task_id=task_id, session_id=session_id)
-        message_id = _insert_message(session_id, "user", text, task_id=task_id, mode=None)
+        message_id = await asyncio.to_thread(
+            _insert_message,
+            session_id,
+            "user",
+            text,
+            task_id=task_id,
+            mode=None,
+        )
         ack = await self.bus.publish(
             session_id,
             "ack",
@@ -203,14 +210,14 @@ class MessageQueue:
             )
             published = True
             if message_id is not None:
-                _set_message_mode(message_id, decided.mode.value)
+                await asyncio.to_thread(_set_message_mode, message_id, decided.mode.value)
             await self._apply(session_id, text, decided, project_id)
         except Exception:
             logger.exception("orch classification failed for session {}", session_id)
             if published:
                 return
             if message_id is not None:
-                _set_message_mode(message_id, MessageMode.append.value)
+                await asyncio.to_thread(_set_message_mode, message_id, MessageMode.append.value)
             await self.bus.publish(
                 session_id,
                 "classification",
@@ -265,7 +272,14 @@ class MessageQueue:
         parts = deltas or _token_pieces(response.text)
         for part in parts:
             await self.bus.publish(session_id, "token", {"text": part})
-        _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
+        await asyncio.to_thread(
+            _insert_message,
+            session_id,
+            "assistant",
+            response.text,
+            task_id=task_id,
+            mode=MessageMode.append.value,
+        )
         if budget_exhausted_response(response) and task_id is not None:
             await self.supervisor.absorb_budget(task_id, session_id, response)
         elif budget_exhausted_response(response):

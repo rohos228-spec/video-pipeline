@@ -165,7 +165,7 @@ class Supervisor:
         row = self.tasks.get(task_id)
         if row is None:
             raise LookupError(task_id)
-        data = self.checkpoints.load_latest(task_id)
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         session_id = str(row["session_id"])
@@ -204,7 +204,7 @@ class Supervisor:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
-        data = self.checkpoints.load_latest(task_id)
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         self._budget_stop.discard(task_id)
@@ -497,7 +497,7 @@ class Supervisor:
             text = str(getattr(response, "text", "") or "")
             self._context[task_id] = (self._context.get(task_id, "") + "\n" + text).strip()
             plan = self._stored_plan(task_id)
-            existing = self.checkpoints.load_latest(task_id)
+            existing = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
             if position is None:
                 position = int(existing.position) if existing is not None else 0
             if existing is not None and not plan:
@@ -1237,7 +1237,7 @@ class Supervisor:
             context=self._context.get(task_id, ""),
         )
         self.tasks.mirror_progress(task_id, plan, position, data.spend)
-        self.checkpoints.save(task_id, session_id, data)
+        await asyncio.to_thread(self.checkpoints.save, task_id, session_id, data)
         await self.bus.publish(
             session_id,
             "checkpoint",
