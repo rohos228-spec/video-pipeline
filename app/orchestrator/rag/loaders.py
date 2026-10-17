@@ -15,7 +15,14 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from app.orchestrator.rag.chunking import split_history_text, split_prompt, split_rules, window_messages
+from app.orchestrator.rag.chunking import (
+    section_prefix,
+    split_heading_sections,
+    split_history_text,
+    split_rules,
+    split_section_windows,
+    window_messages,
+)
 from app.orchestrator.rag.node_store import (
     NODE_KEY_RE,
     MemoryNodeStore,
@@ -337,6 +344,7 @@ def load_nodes_and_prompts(
         if node.status == "disabled":
             continue
         node_docs.append(_node_doc(node))
+        node_docs.extend(_node_section_docs(node))
         prompt_docs.extend(_prompt_docs(node))
     return node_docs, prompt_docs, skipped
 
@@ -406,15 +414,22 @@ def _prompt_lead(template: str) -> str:
     return lead[:500]
 
 
+def _section_meta(node: ResolvedNode, heading: str, *, prompt_path: str | None = None) -> dict[str, Any]:
+    meta = _node_metadata(node, prompt_path=prompt_path)
+    meta["section"] = heading or "без заголовка"
+    return meta
+
+
 def _node_doc(node: ResolvedNode) -> SourceDoc:
     glued = node.node_key.replace("_", "")
     params = json.dumps(node.params, ensure_ascii=False, sort_keys=True) if node.params else "{}"
     lead = _prompt_lead(node.prompt_template)
     phrase = _role_phrase(node)
+    prefix = section_prefix(node_key=node.node_key, title=node.title, role=phrase, heading="Каталог")
     text = (
-        f"Нода {node.node_key}. Ключ {glued}. Группа {node.group_key}. "
-        f"Название: {node.title}. {phrase} Статус: {node.status}. "
-        f"Версия: {node.version}. Источник: {node.source}. "
+        f"{prefix}"
+        f"Ключ {glued}. Группа {node.group_key}. {phrase} "
+        f"Статус: {node.status}. Версия: {node.version}. Источник: {node.source}. "
         f"Описание: {node.description}. Параметры: {params}. "
         f"О чём промпт: {lead}"
     )
@@ -424,32 +439,58 @@ def _node_doc(node: ResolvedNode) -> SourceDoc:
         title=node.title,
         text=text,
         part_key="catalog",
-        metadata=_node_metadata(node),
+        metadata=_section_meta(node, "Каталог"),
     )
+
+
+def _node_section_docs(node: ResolvedNode) -> list[SourceDoc]:
+    """Короткая карточка каждой секции промпта в корпусе нод.
+
+    Полный текст секции живёт в корпусе промптов. Здесь только заголовок и
+    начало, чтобы нода тоже искалась по секции и не дублировала длинное окно.
+    """
+    template = (node.prompt_template or "").strip()
+    if not template:
+        return []
+    phrase = _role_phrase(node)
+    docs: list[SourceDoc] = []
+    for index, (heading, body) in enumerate(split_heading_sections(template)):
+        prefix = section_prefix(node_key=node.node_key, title=node.title, role=phrase, heading=heading)
+        lead = body.strip()[:400]
+        docs.append(
+            SourceDoc(
+                corpus="nodes",
+                source_id=node.node_key,
+                title=f"{node.title} · {heading or 'секция'}",
+                text=f"{prefix}{lead}",
+                part_key=f"n{index}",
+                metadata=_section_meta(node, heading, prompt_path=node.prompt_path),
+            )
+        )
+    return docs
 
 
 def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     template = (node.prompt_template or "").strip()
     if not template:
         return []
-    header = f"Промпт «{node.title}» ноды {node.node_key}, версия {node.version}."
     phrase = _role_phrase(node)
-    if phrase:
-        header = f"{header} {phrase}"
-    # До 8 секций ##, без склейки в 3 ведра: иначе вектор секции тонет в чужом тексте.
-    parts = split_prompt(template, max_parts=8)
     docs: list[SourceDoc] = []
-    for part_key, body in parts:
-        docs.append(
-            SourceDoc(
-                corpus="prompts",
-                source_id=node.node_key,
-                title=f"{node.title} · промпт",
-                text=f"{header}\n{body}",
-                part_key=part_key,
-                metadata=_node_metadata(node, prompt_path=node.prompt_path),
+    number = 0
+    for heading, body in split_heading_sections(template):
+        prefix = section_prefix(node_key=node.node_key, title=node.title, role=phrase, heading=heading)
+        for window in split_section_windows(body, prefix=prefix):
+            docs.append(
+                SourceDoc(
+                    corpus="prompts",
+                    source_id=node.node_key,
+                    title=f"{node.title} · {heading or 'секция'}",
+                    text=window,
+                    part_key=f"s{number}",
+                    metadata=_section_meta(node, heading, prompt_path=node.prompt_path),
+                )
             )
-        )
+            number += 1
     return docs
 
 

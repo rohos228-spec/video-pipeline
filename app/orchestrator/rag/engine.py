@@ -139,7 +139,7 @@ class RagEngine:
 
     def reindex(self, corpus: str | None = None) -> ReindexResult | dict[str, ReindexResult]:
         corpora = self._corpora_arg(corpus)
-        return self._worker.submit(lambda: self._reindex_many(corpora))
+        return self._worker.submit(lambda: self._reindex_many(corpora), timeout=900)
 
     def retrieve(
         self,
@@ -153,11 +153,19 @@ class RagEngine:
         rerank: bool | None = None,
         rerank_pool: int = 30,
         bm25_scope: str = "full",
+        source_aggregate: str = "off",
+        source_cap: int = 3,
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
         Cross-encoder применяется только к гибриду: топ ``rerank_pool`` после RRF,
         затем срез до ``top_k``. BM25 и вектор реранкер не трогает.
+
+        ``source_aggregate`` ``max`` или ``sum2`` склеивает чанки нод и промптов
+        одного ``source_id``: оценка документа — максимум или сумма двух лучших
+        чанков. В выдаче не больше ``source_cap`` чанков документа, чтобы один
+        источник не занял весь топ. ``off`` — прежний порядок чанков. Правила
+        не склеиваются: у них разметка по part_key.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -170,6 +178,10 @@ class RagEngine:
             raise ValueError("rerank_pool должен быть > 0")
         if bm25_scope not in {"full", "head"}:
             raise ValueError("bm25_scope должен быть full или head")
+        if source_aggregate not in {"off", "max", "sum2"}:
+            raise ValueError("source_aggregate должен быть off, max или sum2")
+        if source_cap < 1:
+            raise ValueError("source_cap должен быть >= 1")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -178,6 +190,8 @@ class RagEngine:
         pool = max(top_k * 4, 20)
         if use_rerank:
             pool = max(pool, rerank_pool)
+        if source_aggregate != "off":
+            pool = max(pool, 80)
         lexical = (
             self.store.bm25(fts_match_query(query), selected, limit=pool, scope=bm25_scope)
             if channel != "vector"
@@ -216,6 +230,8 @@ class RagEngine:
         ]
         rerank_scores: dict[str, float] = {}
         if use_rerank and self.reranker is not None:
+            # В реранкер идёт сырой топ RRF. Агрегация по source_id режет уже
+            # переоценённый список, иначе чужой документ не пускает нужные секции.
             candidates = ordered[:rerank_pool]
             passages = [_rerank_passage(by_id[chunk_id]) for chunk_id in candidates]
             raw_scores = self.reranker.score(query, passages)
@@ -229,6 +245,24 @@ class RagEngine:
                     key=lambda item: (-item[1], item[0]),
                 )
             ]
+            if source_aggregate != "off":
+                ordered = _diversify_ids(
+                    ordered,
+                    rerank_scores,
+                    by_id,
+                    limit=top_k,
+                    cap=source_cap,
+                    mode=source_aggregate,
+                )
+        elif source_aggregate != "off":
+            ordered = _diversify_ids(
+                ordered,
+                fused,
+                by_id,
+                limit=top_k,
+                cap=source_cap,
+                mode=source_aggregate,
+            )
         result: list[Chunk] = []
         for rank, chunk_id in enumerate(ordered[:top_k], start=1):
             chunk = by_id[chunk_id]
@@ -311,6 +345,47 @@ class RagEngine:
         if unknown:
             raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {', '.join(CORPORA)}")
         return selected
+
+
+def _source_group(chunk: Chunk) -> tuple[str, ...]:
+    """Ноды и промпты одного ключа — один документ. Правила остаются по part_key."""
+    if chunk.corpus in {"nodes", "prompts"}:
+        return ("doc", chunk.source_id)
+    part = str(chunk.metadata.get("part_key") or "")
+    return (chunk.corpus, chunk.source_id, part)
+
+
+def _diversify_ids(
+    ordered: list[str],
+    scores: dict[str, float],
+    by_id: dict[str, Chunk],
+    *,
+    limit: int,
+    cap: int,
+    mode: str,
+) -> list[str]:
+    """Оценка документа — max или сумма двух лучших чанков, затем не больше ``cap``."""
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for chunk_id in ordered:
+        chunk = by_id.get(chunk_id)
+        if chunk is None:
+            continue
+        groups.setdefault(_source_group(chunk), []).append(chunk_id)
+    ranked_docs: list[tuple[float, tuple[str, ...], list[str]]] = []
+    for key, chunk_ids in groups.items():
+        chunk_ids.sort(key=lambda chunk_id: (-scores.get(chunk_id, 0.0), chunk_id))
+        if mode == "max":
+            doc_score = scores.get(chunk_ids[0], 0.0)
+        else:
+            doc_score = sum(scores.get(chunk_id, 0.0) for chunk_id in chunk_ids[:2])
+        ranked_docs.append((doc_score, key, chunk_ids))
+    ranked_docs.sort(key=lambda item: (-item[0], item[1]))
+    chosen: list[str] = []
+    for _doc_score, _key, chunk_ids in ranked_docs:
+        chosen.extend(chunk_ids[:cap])
+        if len(chosen) >= limit:
+            break
+    return chosen[:limit]
 
 
 def _rerank_passage(chunk: Chunk) -> str:

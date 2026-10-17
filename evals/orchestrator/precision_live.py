@@ -221,6 +221,8 @@ def measure(
     rrf_weights: tuple[float, float] | None = None,
     bm25_scope: str = "full",
     rerank_pool: int = 20,
+    source_aggregate: str = "off",
+    source_cap: int = 3,
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
     """Метрики, задержка и top-8 по запросам. Холодная загрузка весов не входит."""
     indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
@@ -232,6 +234,8 @@ def measure(
         "rrf_k": rrf_k,
         "bm25_scope": bm25_scope,
         "rerank_pool": rerank_pool,
+        "source_aggregate": source_aggregate,
+        "source_cap": source_cap,
     }
     if rrf_weights is not None:
         kwargs["rrf_weights"] = rrf_weights
