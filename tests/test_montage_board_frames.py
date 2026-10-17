@@ -573,3 +573,47 @@ async def test_delete_other_frame_keeps_pending_ops(
     ops = montage_meta(project).get("pending_ops") or []
     assert [op["frame_number"] for op in ops] == [1]
     assert ops[0]["action"] == "оставить"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_vo_cell_keeps_missing_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Пересборка ячейки не выкидывает шоты: пропавшие остаются с активен False."""
+    from loguru import logger
+
+    from app.services.montage_board_frames import _rewrite_vo_cell
+
+    session.add(project)
+    parent = _vo_parent(project.id, 21, "aa" * 12, "голова")
+    parent.attrs = {
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12},
+        "кадры": [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "21-K2", "закадр": "середина", "действие": "идёт"},
+            {
+                "id": "21-K3",
+                "закадр": "хвост",
+                "действие": "пропал",
+                "активен": False,
+            },
+        ],
+    }
+    session.add(parent)
+    await session.flush()
+    before = list(parent.attrs["кадры"])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        _rewrite_vo_cell(parent, [parent])
+    finally:
+        logger.remove(sink)
+
+    kadry = parent.attrs["кадры"]
+    assert len(kadry) == len(before)
+    by_id = {shot["id"]: shot for shot in kadry}
+    assert by_id["21-K1"].get("активен") is not False
+    assert by_id["21-K2"]["активен"] is False
+    assert by_id["21-K3"]["активен"] is False
+    assert by_id["21-K2"]["действие"] == "идёт"
+    assert any("21-K2" in line and "активен: False" in line for line in lines)

@@ -104,6 +104,121 @@ def shot_is_active(shot: Any) -> bool:
     return True
 
 
+_SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
+_SHOT_CONTENT_KEYS = ("закадр", "описание", "описание_кадра", "description")
+
+
+def _shot_id(shot: dict[str, Any]) -> str | None:
+    for key in _SHOT_ID_KEYS:
+        val = str(shot.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Текст шота без ``порядок``/``номер``. Пустой текст не склеивает шоты."""
+    parts: list[tuple[str, str]] = []
+    for key in _SHOT_CONTENT_KEYS:
+        val = str(shot.get(key) or "").strip()
+        if val:
+            parts.append((key, val))
+    if not parts:
+        return None
+    return tuple(parts)
+
+
+def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
+    """Новый список ``кадры`` не выбрасывает старые шоты.
+
+    Та же семантика, что у WS1 ``_merge_kadry_keep_missing``: совпадение по id,
+    без id — только по уникальному тексту, не по ``порядок``. Пропавшие шоты
+    остаются в хвосте с ``активен: False``. Входящий флаг не снимается, старый
+    неактивный шот не оживает.
+    """
+    if not isinstance(new, list):
+        logger.warning(
+            "WARN merge_kadry_keep_missing: новое значение не список ({}) — "
+            "старые шоты остаются",
+            type(new).__name__,
+        )
+        new = []
+    incoming: list[Any] = []
+    seen_ids: set[str] = set()
+    incoming_by_id: dict[str, dict[str, Any]] = {}
+    new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    incoming_by_content: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
+    for shot in new:
+        if not isinstance(shot, dict):
+            incoming.append(shot)
+            continue
+        item = dict(shot)
+        incoming.append(item)
+        sid = _shot_id(item)
+        if sid:
+            seen_ids.add(sid)
+            incoming_by_id[sid] = item
+            continue
+        ident = _shot_content_identity(item)
+        if ident is not None:
+            new_content_counts[ident] = new_content_counts.get(ident, 0) + 1
+            incoming_by_content.setdefault(ident, []).append(item)
+    if not isinstance(old, list):
+        return incoming
+    old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for shot in old:
+        if isinstance(shot, dict) and _shot_id(shot) is None:
+            ident = _shot_content_identity(shot)
+            if ident is not None:
+                old_content_counts[ident] = old_content_counts.get(ident, 0) + 1
+    kept: list[Any] = []
+    for shot in old:
+        if not isinstance(shot, dict):
+            if shot not in incoming:
+                kept.append(shot)
+            continue
+        sid = _shot_id(shot)
+        if sid:
+            if sid in seen_ids:
+                if shot.get(ACTIVE_MARK) is False:
+                    incoming_by_id[sid][ACTIVE_MARK] = False
+                continue
+        else:
+            ident = _shot_content_identity(shot)
+            if (
+                ident is not None
+                and old_content_counts.get(ident) == 1
+                and new_content_counts.get(ident) == 1
+            ):
+                if shot.get(ACTIVE_MARK) is False:
+                    matched = incoming_by_content.get(ident) or []
+                    if len(matched) == 1:
+                        matched[0][ACTIVE_MARK] = False
+                continue
+            if ident is None and any(
+                isinstance(item, dict) and _shot_id(item) is None and item == shot
+                for item in incoming
+            ):
+                continue
+        marked = dict(shot)
+        marked[ACTIVE_MARK] = False
+        kept.append(marked)
+    if kept:
+        labels = []
+        for shot in kept:
+            if isinstance(shot, dict):
+                labels.append(_shot_id(shot) or "?")
+            else:
+                labels.append(repr(shot))
+        logger.warning(
+            "WARN merge_kadry_keep_missing: {} шотов нет в новом списке, "
+            "остаются в хвосте с активен: False ({})",
+            len(kept),
+            ", ".join(labels),
+        )
+    return [*incoming, *kept]
+
+
 class PaidFrameSkipped(RuntimeError):
     """Помеченный кадр не отправляется в платную генерацию."""
 
