@@ -102,6 +102,7 @@ export function NodeStudio({
   initialTab = "settings",
   promptFocus,
   nodeDisabled = false,
+  onEnableNode,
   promptSlots: promptSlotsProp,
   inlineTargetId = null,
 }: {
@@ -112,6 +113,7 @@ export function NodeStudio({
   initialTab?: StudioTab;
   promptFocus?: NodePromptSlot | null;
   nodeDisabled?: boolean;
+  onEnableNode?: () => void;
   promptSlots?: NodePromptSlot[];
   inlineTargetId?: string | null;
 }) {
@@ -1314,7 +1316,18 @@ export function NodeStudio({
                     <SfxGenSettingsPanel projectId={projectId} />
                   ) : null}
                   {nodeDisabled && (
-                    <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
+                      {onEnableNode ? (
+                        <button
+                          type="button"
+                          className="h-9 w-fit rounded-md border border-amber-400/40 px-3 text-[13px] text-amber-200"
+                          onClick={onEnableNode}
+                        >
+                          Включить ноду
+                        </button>
+                      ) : null}
+                    </div>
                   )}
                 </div>
               )}
