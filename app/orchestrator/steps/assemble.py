@@ -411,6 +411,7 @@ async def _assemble_body(
             cells=cells,
             words=words,
             per_frame_tts=True,
+            omit_numbers=set(marked_numbers),
         )
         timeline_mode = "per-frame"
     else:
