@@ -9,6 +9,7 @@ import {
   orchKillUsesMessageField,
   orchTaskModeEnabled,
   parseOrchProjectId,
+  projectBindWireBody,
   postOrchProject,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
@@ -398,10 +399,7 @@ export function useOrchestratorChat() {
       setDecisionError(null);
       const taskNum = taskId != null && /^[1-9]\d*$/.test(taskId) ? Number(taskId) : null;
       try {
-        await postOrchProject(cfg, {
-          project_id: projectId,
-          ...(taskNum != null ? { task_id: taskNum } : {}),
-        });
+        await postOrchProject(cfg, projectBindWireBody(projectId, taskNum));
         dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
         setSendError("");
       } catch (error) {

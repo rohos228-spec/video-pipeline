@@ -134,6 +134,19 @@ export function parseOrchProjectId(raw: string): number | null {
   return id;
 }
 
+export function projectBindWireBody(projectId: number, taskId: number | null): OrchProjectBindRequest {
+  if (!Number.isInteger(projectId) || projectId < 1) {
+    throw new Error(PROJECT_BIND_INVALID);
+  }
+  const body: OrchProjectBindRequest = { project_id: projectId };
+  if (taskId == null) return body;
+  if (!Number.isInteger(taskId) || taskId < 1) {
+    throw new Error(PROJECT_BIND_INVALID);
+  }
+  body.task_id = taskId;
+  return body;
+}
+
 export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
 export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
 export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";

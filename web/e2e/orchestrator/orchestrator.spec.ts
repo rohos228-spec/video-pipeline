@@ -13,6 +13,7 @@ import {
   orchKillUsesMessageField,
   orchContractIsR34,
   parseOrchProjectId,
+  projectBindWireBody,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
   PROJECT_BIND_INVALID,
@@ -346,6 +347,22 @@ test("project_id клиента — целое от 1", () => {
   expect(parseOrchProjectId("1.5")).toBeNull();
   expect(parseOrchProjectId("")).toBeNull();
   expect(parseOrchProjectId("01")).toBeNull();
+  expect(parseOrchProjectId("13.0")).toBeNull();
+  expect(parseOrchProjectId("true")).toBeNull();
+});
+
+test("project bind шлёт строго целые project_id и task_id", () => {
+  const body = projectBindWireBody(13, 1);
+  expect(body).toEqual({ project_id: 13, task_id: 1 });
+  expect(typeof body.project_id).toBe("number");
+  expect(typeof body.task_id).toBe("number");
+  const json = JSON.stringify(body);
+  expect(json).toBe('{"project_id":13,"task_id":1}');
+  expect(json).not.toContain('"13"');
+  expect(json).not.toContain('"1"');
+  expect(projectBindWireBody(13, null)).toEqual({ project_id: 13 });
+  expect(() => projectBindWireBody(13.5, 1)).toThrow();
+  expect(() => projectBindWireBody(13, 1.5)).toThrow();
 });
 
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
