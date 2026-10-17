@@ -525,9 +525,20 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
     from app.services.frame_tombstones import merge_kadry_keep_missing
 
-    attrs["кадры"] = merge_kadry_keep_missing(old_kadry, kadry)
+    before_rows = (
+        [dict(row) if isinstance(row, dict) else row for row in old_kadry]
+        if isinstance(old_kadry, list)
+        else []
+    )
+    attrs["кадры"] = keep_soft_kadry(
+        before_rows,
+        merge_kadry_keep_missing(old_kadry, kadry),
+        scene_id=getattr(parent, "uuid", None) or "cell",
+        number=getattr(parent, "number", None) or 0,
+    )
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

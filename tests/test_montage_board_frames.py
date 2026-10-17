@@ -640,3 +640,57 @@ async def test_rewrite_vo_cell_keeps_missing_shots_inactive(
     assert by_id["21-K3"]["активен"] is False
     assert by_id["21-K2"]["действие"] == "идёт"
     assert any("21-K2" in line and "активен: False" in line for line in lines)
+
+
+def test_rewrite_vo_cell_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch) -> None:
+    """Склейка, которая выкинула шот, не стирает его закадр. Неактивный остаётся один раз."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import merge_kadry_keep_missing as real_merge
+    from app.services.montage_board_frames import _rewrite_vo_cell
+
+    def _parent(shots: list[dict]):
+        return SimpleNamespace(
+            uuid="aa" * 12,
+            number=21,
+            voiceover_text="голова",
+            attrs={
+                "camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12},
+                "кадры": shots,
+                "shot01_action": "смотрит",
+                "place": "двор",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        lambda old, new: new,
+    )
+    dropped = _parent(
+        [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "DROP", "закадр": "фраза на месте", "действие": "хвост"},
+        ]
+    )
+    _rewrite_vo_cell(dropped, [dropped])
+    rows = {shot["id"]: shot for shot in dropped.attrs["кадры"]}
+    assert rows["DROP"]["активен"] is False
+    assert rows["DROP"]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in rows["DROP"]
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        real_merge,
+    )
+    quiet = _parent(
+        [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "QUIET", "закадр": "фраза на месте", "активен": False, "действие": "пауза"},
+        ]
+    )
+    _rewrite_vo_cell(quiet, [quiet])
+    kept = [shot for shot in quiet.attrs["кадры"] if shot["id"] == "QUIET"]
+    assert len(kept) == 1
+    assert kept[0]["активен"] is False
+    assert kept[0]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in kept[0]
