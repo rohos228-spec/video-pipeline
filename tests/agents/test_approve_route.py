@@ -207,6 +207,42 @@ async def test_approve_route_404_409_passthrough(token: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_approve_route_invalid_body_422(token: str) -> None:
+    del token
+    session = "approve-422"
+    task_id, _step = _insert_paid(session)
+    actions = MockActions()
+    runtime = build_runtime(actions=actions, validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        before = _effects(runtime, session, task_id)
+        bodies = (
+            {"decision": "ship_it"},
+            {"decision": "approve", "note": "extra"},
+            {"retry_grant": {"enabled": True}},
+            {"change_id": 12},
+        )
+        transport = ASGITransport(app=_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for body in bodies:
+                response = await client.post(
+                    f"/api/orchestrator/chat/{session}/approve",
+                    json=body,
+                    headers=_headers(),
+                )
+                assert response.status_code == 422
+                assert _effects(runtime, session, task_id) == before
+                assert TEST_TOKEN not in response.text
+                assert "ORCH_API_TOKEN" not in response.text
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
 async def test_approve_route_401_without_token(token: str) -> None:
     del token
     transport = ASGITransport(app=_app())

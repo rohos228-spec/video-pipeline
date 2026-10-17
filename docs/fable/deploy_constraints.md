@@ -72,6 +72,9 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 `ApprovalGrantError` отдаётся тем же HTTP-кодом (404 или 409). `detail` — короткая
 причина без токена и без секретов. Нет задачи у сессии — 404 `not found`.
 
+Неизвестное `decision`, лишнее поле или неверный тип тела — **422**. Строка задачи
+при этом не меняется.
+
 200 возвращает объект с полями `executed`, `reason`, `forecast_usd`, `retry_armed`,
 `change_id`, `decision`. `executed: true` бывает у удавшегося `retry_grant`.
 Пустой `decision` на старом риске запускает шаг, как раньше, и не ставит `executed`.
