@@ -18,6 +18,7 @@ class NodeLlmOverride:
     kind: str  # text | image
     provider: str
     label: str
+    reasoning_effort: str | None = None
 
 
 _current: ContextVar[NodeLlmOverride | None] = ContextVar(
@@ -72,15 +73,22 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
             node_key = sd_runner.resolve_sd_node_key(project, "assemble")
 
-    choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+    from app.services.node_groups import is_script_frames_qc_gpt_node
+
     ov: NodeLlmOverride | None = None
-    if choice_raw and choice_raw.get("kind") == "text":
+    if is_script_frames_qc_gpt_node(meta, node_key=node_key):
+        # Границы / каркас / площадка / кадры / QC: vibecode напрямую с ПК,
+        # без VPS-relay (13.10: relay режет поток на 159-й секунде; kie Codex на
+        # тяжёлой задаче с high отдаёт Cloudflare 524 через 300 с, не начав
+        # стрим; vibecode.moe напрямую — 3/3 полных ответа по 34k за 3.5 мин).
+        # Высокое мышление — поле reasoning_effort. Модель с канваса не перебивает.
         ov = NodeLlmOverride(
-            model_id=str(choice_raw["id"]),
-            channel=str(choice_raw.get("channel") or "stable"),
+            model_id="gpt-5.6-sol",
+            channel="stable",
             kind="text",
-            provider=str(choice_raw.get("provider") or "vibecode"),
-            label=str(choice_raw.get("label") or choice_raw["id"]),
+            provider="vibecode",
+            label="GPT 5.6 Sol (vibecode · high)",
+            reasoning_effort="high",
         )
         logger.info(
             "node_llm: #{} {} → {} ({})",
@@ -89,6 +97,24 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
             ov.label,
             ov.model_id,
         )
+    else:
+        choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+        if choice_raw and choice_raw.get("kind") == "text":
+            ov = NodeLlmOverride(
+                model_id=str(choice_raw["id"]),
+                channel=str(choice_raw.get("channel") or "stable"),
+                kind="text",
+                provider=str(choice_raw.get("provider") or "vibecode"),
+                label=str(choice_raw.get("label") or choice_raw["id"]),
+                reasoning_effort=choice_raw.get("reasoning_effort") or None,
+            )
+            logger.info(
+                "node_llm: #{} {} → {} ({})",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+                ov.label,
+                ov.model_id,
+            )
     with use_override(ov) as bound:
         yield bound
 
@@ -122,6 +148,7 @@ def generation_text_override(
         kind="text",
         provider="vibecode",
         label=str(choice_raw.get("label") or choice_raw.get("id") or DEFAULT_TEXT_MODEL_ID),
+        reasoning_effort=choice_raw.get("reasoning_effort") or None,
     )
 
 

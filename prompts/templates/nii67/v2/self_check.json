@@ -1,0 +1,43 @@
+{
+  "version": "2",
+  "max_attempts": 3,
+  "stagger_s": 5,
+  "outcomes": [
+    "death",
+    "escape",
+    "transformation"
+  ],
+  "dull_themes": [
+    "лес",
+    "город",
+    "комната",
+    "подземелье",
+    "океан",
+    "пустыня",
+    "мир"
+  ],
+  "checks": [
+    "interesting_theme",
+    "clear_law",
+    "logical_outcome",
+    "vivid_peak",
+    "visualizable",
+    "start_ne_end",
+    "not_stoplist",
+    "doors_differ",
+    "category_assigned",
+    "finale_consistent"
+  ],
+  "check_labels": {
+    "interesting_theme": "мир — целая реальность уровня чёрной дыры или мультика, а не встреча с существом",
+    "clear_law": "law — главное свойство природы этого мира",
+    "logical_outcome": "исход — действие природы мира на тело героя, не атака существа",
+    "vivid_peak": "в пике тело героя крупно меняется под действием мира",
+    "visualizable": "каждый кадр можно снять или сгенерировать",
+    "start_ne_end": "стартовый кадр не равен конечному",
+    "not_stoplist": "темы нет в стоп-листе и это не близкая копия",
+    "doors_differ": "миры Двери 1 и Двери 2 различаются",
+    "category_assigned": "мир строго из назначенной категории, ядро механики не повторяет недавние миры",
+    "finale_consistent": "finale_line совпадает с исходом: при гибели герой не возвращается, при превращении возвращается изменённым, при побеге возвращается со следом"
+  }
+}

@@ -36,7 +36,7 @@ function StreamButtons({
           disabled={disabled}
           onClick={() => onPick(n)}
           className={
-            "h-8 min-w-8 rounded-lg px-2.5 text-xs font-semibold transition-all duration-150 " +
+            "h-8 min-w-8 rounded-lg px-2.5 text-sm font-semibold transition-all duration-150 " +
             (local === n
               ? "bg-emerald-600 text-white shadow-md shadow-emerald-500/20 border border-emerald-400/50 scale-105"
               : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60")
@@ -50,7 +50,7 @@ function StreamButtons({
 }
 
 /** Отдельный блок потоков: глобальная параллель проектов + per-project Outsee/check. */
-export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
+export function StreamsPanel({ project, hideTextModels = false, bare = false }: { project: ProjectDetail | null; hideTextModels?: boolean; bare?: boolean }) {
   const qc = useQueryClient();
   const runtime = useQuery({
     queryKey: ["runtime-streams"],
@@ -72,7 +72,7 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
       if (vars.worker_max_parallel != null) {
         toast.success(`Параллель проектов: ${vars.worker_max_parallel}`);
       } else if (vars.default_outsee_streams != null) {
-        toast.success(`Default Outsee: ${vars.default_outsee_streams}`);
+        toast.success(`Потоки по умолчанию: ${vars.default_outsee_streams}`);
       } else if (vars.default_check_streams != null) {
         toast.success(`Default check: ${vars.default_check_streams}`);
       }
@@ -117,8 +117,8 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
         const n = Number(m.img_streams ?? m.outsee_streams);
         toast.success(
           n === 0
-            ? "Потоки Outsee: 0 (без генерации)"
-            : `Потоки Outsee (проект): ${n}`,
+            ? "Потоки генерации: 0 (без генерации)"
+            : `Потоки генерации (проект): ${n}`,
         );
         outseeHoldUntilRef.current = Date.now() + 8000;
       }
@@ -154,27 +154,25 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
   const pending = patchGlobal.isPending || patchProject.isPending || runtime.isLoading;
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-sky-500/25 bg-zinc-900/80 p-3.5 shadow-lg">
-      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-300">
+    <div className={bare ? "flex flex-col gap-3" : "flex flex-col gap-3 rounded-2xl border border-sky-500/25 bg-zinc-900/80 p-3.5 shadow-lg"}>
+      <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-sky-300">
         <Layers className="h-4 w-4" />
         Потоки генерации
         {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin opacity-70" /> : null}
       </div>
-      <p className="text-xs leading-relaxed text-zinc-400">
-        Параллель проектов — глобально. Картинки/видео и проверка GPT ниже — для текущего проекта
-        (Create делит Outsee-пул ≤{cfg.create_max_parallel_outsee ?? 4}).
+      <p className="text-sm leading-relaxed text-zinc-400">
+        Проекты — для всех, картинки и проверка — для текущего.
       </p>
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
         <div className="mb-1 flex items-center justify-between gap-2">
           <div className="text-sm font-semibold text-zinc-100">Параллель проектов</div>
-          <span className="text-xs font-mono font-medium text-sky-400">
+          <span className="text-sm font-mono font-medium text-sky-400">
             занято {busy}/{workerLocal}
           </span>
         </div>
-        <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
-          Сколько проектов из очереди крутить сразу (1–4). paused/⏹ не блокируют
-          хвост — свободные слоты уходят следующим.
+        <p className="mb-2.5 text-sm leading-relaxed text-zinc-400">
+          Сколько проектов из очереди идут одновременно.
         </p>
         <StreamButtons
           values={[1, 2, 3, 4]}
@@ -190,9 +188,14 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
       {project ? (
         <>
           <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
-            <div className="mb-1 text-sm font-semibold text-zinc-100">Картинки + Видео</div>
-            <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
-              0 — не вызывать API; 1 — по одному; 2–4 — параллельно внутри шага.
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="mb-1 text-sm font-semibold text-zinc-100">Картинки + Видео</div>
+              <span className="text-sm font-mono font-medium text-sky-400">
+                занято {Number((cfg as Record<string, unknown>).outsee_busy ?? 0)}/{Number(cfg.create_max_parallel_outsee ?? 4)}
+              </span>
+            </div>
+            <p className="mb-2.5 text-sm leading-relaxed text-zinc-400">
+              0 — выкл., 1 — по одному, 2–4 — параллельно.
             </p>
             <StreamButtons
               values={[0, 1, 2, 3, 4]}
@@ -207,10 +210,11 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
             />
           </div>
 
+          {!hideTextModels && (
           <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
             <div className="mb-1 text-sm font-semibold text-zinc-100">Текстовые модели</div>
-            <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
-              Параллельные vision-батчи (0–10), каждый до 8 PNG.
+            <p className="mb-2.5 text-sm leading-relaxed text-zinc-400">
+              Параллельных проверок кадров (0–10).
             </p>
             <StreamButtons
               values={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
@@ -222,9 +226,10 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
               }}
             />
           </div>
+          )}
         </>
       ) : (
-        <p className="text-xs text-zinc-400">
+        <p className="text-sm text-zinc-400">
           Выберите проект слева, чтобы настроить потоки генерации.
         </p>
       )}

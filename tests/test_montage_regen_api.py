@@ -105,6 +105,97 @@ async def test_edit_prompt_writes_db_without_excel(
 
 
 @pytest.mark.asyncio
+async def test_edit_prompt_child_attaches_parent_still(
+    session: AsyncSession, project: Project
+) -> None:
+    session.add(project)
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="vo",
+        image_prompt="parent prompt",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid=child_uid,
+        voiceover_text="кусок",
+        image_prompt="old child",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    parent_png = scenes / "frame_001_shot1.png"
+    parent_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"p" * 1000)
+
+    prep = await prepare_image_regen(
+        session,
+        project,
+        2,
+        shot=1,
+        mode="edit_prompt",
+        new_prompt="крупный план руки",
+        ref_person_ids=["c01"],
+    )
+    await session.commit()
+    assert prep.refs == [parent_png]
+    assert prep.prompt_text.startswith("Image 1 is the previous coverage still")
+    assert "крупный план руки" in prep.prompt_text
+    fr2 = await session.get(Frame, child.id)
+    assert fr2 is not None and fr2.image_prompt == "крупный план руки"
+
+
+@pytest.mark.asyncio
+async def test_prepare_crops_character_sheets_and_locks_ids(
+    session: AsyncSession, project: Project
+) -> None:
+    from PIL import Image
+
+    session.add(project)
+    fr = Frame(
+        project_id=project.id,
+        number=7,
+        voiceover_text="vo",
+        image_prompt="official at the desk",
+        attrs={"персонажи": "c02,c03"},
+    )
+    session.add(fr)
+    await session.flush()
+    (project.data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+    chars = project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    for name in ("c02.png", "c03.png"):
+        im = Image.new("RGB", (2048, 1152), (200, 200, 200))
+        im.save(chars / name)
+
+    prep = await prepare_image_regen(
+        session, project, 7, shot=1, mode="same_prompt"
+    )
+    assert len(prep.refs) == 2
+    assert all(p.name.endswith("_front.png") for p in prep.refs)
+    assert "identity reference of c02" in prep.prompt_text
+    assert "identity reference of c03" in prep.prompt_text
+    assert "TWO different people" in prep.prompt_text
+
+
+@pytest.mark.asyncio
 async def test_prepare_uses_images_node_model_not_sidecar(
     session: AsyncSession, project: Project
 ) -> None:
@@ -191,7 +282,15 @@ async def test_execute_image_regen_api_skips_cdp(
 async def test_execute_video_regen_api_skips_cdp(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"png")
+    end = tmp_path / "end.png"
+    end.write_bytes(b"end")
+    captured: dict = {}
+
     async def _fake_gen(outsee, gpt, **kwargs):
+        captured["last_frame_image"] = kwargs.get("last_frame_image")
+        captured["start_frame"] = kwargs.get("start_frame")
         out = Path(kwargs["out_path"])
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"v" * 1000)
@@ -206,8 +305,6 @@ async def test_execute_video_regen_api_skips_cdp(
         "app.services.montage_board_regen.generate_video_with_retries", _fake_gen
     )
 
-    start = tmp_path / "start.png"
-    start.write_bytes(b"png")
     prep = VideoRegenPrep(
         project_id=1,
         frame_number=1,
@@ -215,9 +312,12 @@ async def test_execute_video_regen_api_skips_cdp(
         prompt_text="vid",
         file_path=tmp_path / "clip_001_x.mp4",
         start_frame=start,
+        end_frame=end,
     )
     out = await execute_video_regen(prep)
     assert out.is_file()
+    assert captured["start_frame"] == start
+    assert captured["last_frame_image"] == end
 
 
 @pytest.mark.asyncio
@@ -235,3 +335,40 @@ async def test_resolve_video_prompt_frame_over_empty_version(
     await session.commit()
     text = await resolve_video_prompt(session, project, fr, 1)
     assert text == "anim from frame"
+
+
+@pytest.mark.asyncio
+async def test_prepare_grafts_style_on_vo_parent_without_lock(
+    session: AsyncSession, project: Project
+) -> None:
+    session.add(project)
+    donor = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="aa" * 12,
+        voiceover_text="vo",
+        image_prompt=(
+            "Full-bleed frame: office.\n\n"
+            "STYLE: noir watercolour.\n"
+            "Final style lock: archival noir.\n"
+            "Negative: photorealism."
+        ),
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12}},
+    )
+    orphan = Frame(
+        project_id=project.id,
+        number=9,
+        uuid="bb" * 12,
+        voiceover_text="vo9",
+        image_prompt="сцена с референса (кадр 7), крупность ДЕТАЛЬ Сейчас в кадре: фото.",
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "bb" * 12}},
+    )
+    session.add_all([donor, orphan])
+    await session.flush()
+    (project.data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+
+    prep = await prepare_image_regen(session, project, 9, shot=1, mode="same_prompt")
+    assert prep.prompt_text.startswith("сцена с референса")
+    assert "STYLE:" in prep.prompt_text
+    assert "Negative:" in prep.prompt_text
+    assert prep.refs == []

@@ -63,6 +63,27 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
     )
 
 
+_TRUNCATED_STREAM_FINISH = frozenset(
+    {"stream_partial", "stream_salvaged", "stream_continued"}
+)
+
+
+def _is_truncated_stream_reply(text: str, finish_reason: str) -> bool:
+    """Обрубок SSE: поток не закрыт (нет finish/[DONE]) и JSON не закрыт.
+
+    Такой ответ — сетевая потеря, не отказ модели: повторять надо саму
+    пачку (с новой стеной), а не слать «верни JSON» внутри старой.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if (finish_reason or "") not in _TRUNCATED_STREAM_FINISH:
+        return False
+    from app.services.gpt_api import looks_truncated_llm_text
+
+    return looks_truncated_llm_text(t)
+
+
 def _log_apply_ops_coverage(
     node_key: str,
     apply_ops: dict | None,
@@ -386,9 +407,62 @@ async def _run_operator_api_real(
     if (effective_output == "project_file" and not is_check) or (
         check_mode and check_fix and db_sot_check
     ):
-        from app.services.db_apply import extract_apply_ops_json
+        from app.services.db_apply import (
+            extract_apply_ops_json,
+            salvage_ops_from_partial_json,
+        )
 
-        apply_ops = extract_apply_ops_json(reply_text or "")
+        finish = str(getattr(result, "finish_reason", "") or "")
+        if _is_truncated_stream_reply(reply_text or "", finish):
+            # Обрубок SSE: берём только ЗАКРЫТЫЕ операции. Силой закрывать
+            # хвост (close_truncated_json) нельзя — обрезанная ячейка легла
+            # бы в БД как «заполненная» и больше не добиралась. Недостающие
+            # ячейки добирает пачка. Ни одной целой — это сеть: retryable,
+            # без второго «верни JSON» внутри той же стены пачки (16:31 13.10).
+            closed_ops = salvage_ops_from_partial_json(reply_text or "")
+            if closed_ops:
+                apply_ops = {
+                    "ops": closed_ops,
+                    "_salvaged_partial": True,
+                    "_stream_truncated": True,
+                }
+                logger.warning(
+                    "gpt_operator/api: node={} — обрубок потока (finish={}, "
+                    "chars={}): целых ops={}, обрезанная операция отброшена, "
+                    "недостающие ячейки добирает пачка",
+                    node_key,
+                    finish,
+                    len(reply_text or ""),
+                    len(closed_ops),
+                )
+            else:
+                from app.services.gpt_api import GptApiError
+
+                try:
+                    (out_dir / "gpt_reply_pre_retry.txt").write_text(
+                        reply_text or "", encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+                logger.warning(
+                    "gpt_operator/api: node={} — обрубок потока без целых ops "
+                    "(finish={}, chars={}) → retryable, пачка повторит",
+                    node_key,
+                    finish,
+                    len(reply_text or ""),
+                )
+                raise GptApiError(
+                    f"GPT поток оборван (finish={finish}, "
+                    f"{len(reply_text or '')} символов, ни одной целой операции)",
+                    context={
+                        "error_kind": "network",
+                        "retryable": True,
+                        "finish_reason": finish,
+                        "chars": len(reply_text or ""),
+                    },
+                )
+        else:
+            apply_ops = extract_apply_ops_json(reply_text or "")
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
             if not (check_mode and not check_fix):
                 logger.warning(
@@ -687,15 +761,17 @@ async def _run_check_vision_batched(
             )
         return bi, res
 
-    if streams <= 1:
-        ordered: list[tuple[int, OperatorApiResult]] = []
-        for bi, batch in enumerate(batches, start=1):
-            ordered.append(await _one_batch(bi, batch))
-    else:
-        gathered = await asyncio.gather(
-            *[_one_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
-        )
-        ordered = sorted(gathered, key=lambda x: x[0])
+    # 2026-10-11 user: always parallel, ~5s apart
+    streams = max(streams, len(batches))
+
+    async def _stag_batch(bi: int, batch: Any) -> tuple[int, OperatorApiResult]:
+        await asyncio.sleep((bi - 1) * 5.0)
+        return await _one_batch(bi, batch)
+
+    gathered = await asyncio.gather(
+        *[_stag_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
+    )
+    ordered = sorted(gathered, key=lambda x: x[0])
 
     parts: list[str] = []
     any_fail = False

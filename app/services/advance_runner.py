@@ -62,24 +62,9 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     logger.warning("advance_project_job: повторное открытие #{} не удалось", project_id)
                     return AdvanceJobResult(project_id, "", None)
 
-            # Синхронизируем статус и мета из master, если мастер был переведён в running (например, через веб-UI)
-            if master_status is not None and project.status != master_status:
-                logger.info(
-                    "advance_project_job: синхронизация статуса #{} project.db {} -> master {}",
-                    project_id,
-                    project.status.value,
-                    master_status.value,
-                )
-                project.status = master_status
-                if master_meta:
-                    project.meta = master_meta
-                if master_general_plan:
-                    project.general_plan = master_general_plan
-                if master_script_text:
-                    project.script_text = master_script_text
-                if master_hero_desc:
-                    project.hero_description = master_hero_desc
-                await session.flush()
+            from app.project_db import pull_master_runtime_into_project
+
+            await pull_master_runtime_into_project(session, project)
 
             prev = project.status.value
             prev_status = project.status
@@ -93,29 +78,13 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     prev_status=prev_status,
                     new_status=project.status,
                 )
-                # Синхронизируем статус, данные и NodeRun в master state.db
-                try:
-                    async with session_scope() as master_sess:
-                        m_proj = await master_sess.get(Project, project_id)
-                        if m_proj:
-                            m_proj.status = project.status
-                            if project.general_plan:
-                                m_proj.general_plan = project.general_plan
-                            if project.script_text:
-                                m_proj.script_text = project.script_text
-                            if project.hero_description:
-                                m_proj.hero_description = project.hero_description
-                            if isinstance(project.meta, dict):
-                                m_proj.meta = dict(project.meta)
-                        await complete_active_node_for_step(
-                            master_sess,
-                            m_proj or project,
-                            prev_status=prev_status,
-                            new_status=project.status,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("advance_project_job: sync status to master failed: {}", exc)
+            try:
+                from app.project_db import push_runtime_to_master
 
+                await push_runtime_to_master(session, project)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
+            if new != prev:
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )

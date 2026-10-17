@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -62,6 +63,16 @@ _status_machine_write: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 def is_status_write_allowed() -> bool:
     return _status_machine_write.get()
+
+
+@contextmanager
+def allow_replica_status_write():
+    """Копия NodeRun между state.db и project.db — не переход FSM."""
+    token = _status_machine_write.set(True)
+    try:
+        yield
+    finally:
+        _status_machine_write.reset(token)
 
 
 def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:

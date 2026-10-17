@@ -1,4 +1,4 @@
-"""Модель с канвас-ноды, не дефолт каталога."""
+﻿"""Модель с канвас-ноды, не дефолт каталога."""
 
 from __future__ import annotations
 
@@ -122,7 +122,199 @@ def test_bind_generation_llm_routes_chat_to_vibecode_not_kie(
     with bind_generation_llm(None, node_type="image_prompts"):
         assert gpt_api.is_responses_mode() is False
         assert gpt_api._chat_url("gpt-5.6-sol") == (
+            "https://gpt.example.com/v1/chat/completions"
+        )
+        headers = gpt_api._headers()
+        assert headers["Authorization"] == "Bearer vk-test"
+        assert headers["X-VP-Relay-Token"] == "relay-secret"
+
+
+_SFQC_GRAPH = {
+    "canvas_graph": {
+        "workflow_id": 1,
+        "nodes": [
+            {
+                "id": "n_excel_gpt_fw_script",
+                "type": "excel_gpt",
+                "data": {
+                    "groupId": "script_frames_qc",
+                    "modelId": "gpt-5.6-sol",
+                    "modelChannel": "stable",
+                },
+            },
+            {
+                "id": "n_excel_gpt_fw_shots",
+                "type": "excel_gpt",
+                "data": {
+                    "groupId": "script_frames_qc",
+                    "modelId": "gpt-5.6-sol",
+                    "modelChannel": "stable",
+                },
+            },
+            {
+                "id": "n_excel_gpt_fw_report",
+                "type": "excel_gpt",
+                "data": {
+                    "groupId": "script_frames_qc",
+                    "modelId": "gpt-5.6-sol",
+                },
+            },
+            {
+                "id": "n_excel_gpt_1",
+                "type": "excel_gpt",
+                "data": {"modelId": "gpt-5.6-sol"},
+            },
+        ],
+        "edges": [],
+    }
+}
+
+
+def test_bind_script_frames_qc_uses_vibecode_high(monkeypatch) -> None:
+    """Каркас идёт на vibecode с высоким мышлением, канвасная модель не перебивает."""
+    from app.services.llm_override import current_override
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_model", "gpt-5-6-sol")
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
+    }
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+        assert ov.reasoning_effort == "high"
+        assert current_text_model_id() == "gpt-5.6-sol"
+
+
+def test_bind_script_frames_qc_shots_uses_vibecode_high(monkeypatch) -> None:
+    """Кадры идут на vibecode с высоким мышлением, канвасная модель не перебивает."""
+    from app.services.llm_override import current_override
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_model", "gpt-5.6-sol")
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
+    }
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+        assert ov.reasoning_effort == "high"
+        assert current_text_model_id() == "gpt-5.6-sol"
+
+
+def test_bind_script_frames_qc_report_stays_off_kie() -> None:
+    from app.services.llm_override import current_override
+
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_report",
+    }
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+
+
+def test_bind_plain_excel_gpt_stays_vibecode() -> None:
+    from app.services.llm_override import current_override
+
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_1",
+    }
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+
+
+def _direct_settings(monkeypatch, tmp_path):
+    """kie в шапке, relay выключен: группа всё равно идёт на vibecode.moe напрямую."""
+    import app.services.gpt_api as gpt_api
+    import app.settings as settings_mod
+    from app.settings import Settings
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
+    monkeypatch.setenv("GPT_RELAY_TOKEN", "")
+    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
+    monkeypatch.setenv("GPT_MODEL", "gpt-5-6-sol")
+    monkeypatch.setenv("GPT_REASONING_EFFORT", "low")
+    monkeypatch.setenv("VIBECODE_API_KEY", "vk-test")
+    monkeypatch.setenv("VIBECODE_BASE_URL", "https://vibecode.moe/v1")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(gpt_api, "settings", s)
+    return gpt_api
+
+
+def test_script_frames_qc_routes_chat_to_vibecode_direct_while_header_is_kie(
+    monkeypatch, tmp_path
+) -> None:
+    """Каркас: vibecode chat напрямую (без relay), ключ vibecode, reasoning high."""
+    from app.services.llm_override import bind_project_llm, current_override
+
+    gpt_api = _direct_settings(monkeypatch, tmp_path)
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
+    }
+    assert gpt_api.is_responses_mode() is True
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+        assert ov.reasoning_effort == "high"
+        assert gpt_api.is_responses_mode() is False
+        assert gpt_api._chat_url("gpt-5.6-sol") == (
             "https://vibecode.moe/v1/chat/completions"
         )
-        assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
-        assert "X-VP-Relay-Token" not in gpt_api._headers()
+        headers = gpt_api._headers()
+        assert headers["Authorization"] == "Bearer vk-test"
+        assert "X-VP-Relay-Token" not in headers
+        assert gpt_api._node_reasoning_effort() == "high"
+    assert gpt_api.is_responses_mode() is True
+    assert gpt_api._node_reasoning_effort() is None
+
+
+def test_shots_routes_chat_to_vibecode_direct_while_header_is_kie(
+    monkeypatch, tmp_path
+) -> None:
+    from app.services.llm_override import (
+        bind_project_llm,
+        current_override,
+        current_text_model_id,
+    )
+
+    gpt_api = _direct_settings(monkeypatch, tmp_path)
+    meta = {
+        **_SFQC_GRAPH,
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
+    }
+    with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+        assert gpt_api.is_responses_mode() is False
+        assert gpt_api._chat_url("gpt-5.6-sol") == (
+            "https://vibecode.moe/v1/chat/completions"
+        )
+        headers = gpt_api._headers()
+        assert headers["Authorization"] == "Bearer vk-test"
+        assert "X-VP-Relay-Token" not in headers
+        assert current_text_model_id() == "gpt-5.6-sol"
+        assert gpt_api._node_reasoning_effort() == "high"
+    assert gpt_api._node_reasoning_effort() is None
+
+

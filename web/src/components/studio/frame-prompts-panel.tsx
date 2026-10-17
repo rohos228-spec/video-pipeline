@@ -77,7 +77,7 @@ export function FramePromptsPanel({
   return (
     <div className="flex min-h-[50vh] flex-col gap-2">
       <p className="text-xs text-muted-foreground">
-        {items.length} кадр(ов) — эти тексты уходят в outsee при генерации.
+        {items.length} кадр(ов) — эти тексты уходят в генератор при генерации.
       </p>
       <FramePromptsView items={items} />
     </div>

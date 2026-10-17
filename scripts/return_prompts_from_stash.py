@@ -25,25 +25,33 @@ from pathlib import Path
 MANIFEST_NAME = "_vp_aside_manifest.json"
 
 
+_GIT_TIMEOUT_S = 20
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     # Windows: default text mode uses cp1251 and dies on UTF-8 stash messages
     # («автосохранение…») → stdout=None → AttributeError on .splitlines().
-    return subprocess.run(
-        ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    cmd = ["git", "-C", str(repo), "-c", "core.quotepath=false", *args]
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=_GIT_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, stdout="", stderr="git timeout")
 
 
 def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
-        capture_output=True,
-        check=False,
-    )
+    cmd = ["git", "-C", str(repo), "-c", "core.quotepath=false", *args]
+    try:
+        return subprocess.run(cmd, capture_output=True, check=False, timeout=_GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, stdout=b"", stderr=b"git timeout")
 
 
 def _stdout_lines(proc: subprocess.CompletedProcess[str]) -> list[str]:
@@ -258,8 +266,9 @@ def return_prompts_from_all_studio_stashes(
     repo: Path,
     *,
     safe: bool = True,
+    max_stashes: int = 1,
 ) -> dict[str, object]:
-    refs = list_studio_stash_refs(repo)
+    refs = list_studio_stash_refs(repo)[: max(1, int(max_stashes or 1))]
     report: dict[str, object] = {
         "ok": True,
         "stashes": refs,
@@ -427,8 +436,9 @@ def restore_prompts_from_aside(
 
 
 def recover_prompts_on_startup(repo: Path | None = None) -> dict[str, object]:
-    """Idempotent safe recover: aside backup + all studio stashes.
+    """Idempotent safe recover: aside backup + newest studio stash.
 
+    Scanning dozens of local stashes blocks STUDIO.cmd [1] for minutes.
     No blocking stamp — safe mode will not clobber newer local edits.
     """
     try:

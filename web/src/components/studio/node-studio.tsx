@@ -1,4 +1,5 @@
 "use client";
+import { getNodeCustomBg } from "@/lib/node-custom-bg";
 
 import type { SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +20,8 @@ import {
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
+import { Copy as CopyIcon, Play as PlayIcon, X as XIcon, Loader2 as SpinIcon, Maximize2 as OpenIcon } from "lucide-react";
+import { NodeModelPicker } from "@/components/canvas/node-model-picker";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -38,6 +41,7 @@ import {
   excelGptAttachmentChipTitle,
   excelGptSlotIndex,
   isExcelGptNode,
+  isShotsReportNode,
   EXCEL_GPT_STEP_CODE,
   workModeLabel,
   type ExcelGptNodeConfig,
@@ -45,6 +49,10 @@ import {
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { ItemsConfigPanel } from "@/components/canvas/items-config-panel";
 import { HeroConfigPanel } from "@/components/canvas/hero-config-panel";
+import { Nii67CardPanel } from "@/components/canvas/nii67-card-panel";
+import { projectUsesNii67Script } from "@/lib/nii67";
+/** Steps that never call a text LLM (pure FFmpeg / TTS / SFX / upload) or have no model (topic). */
+const NO_LLM_NODE_TYPES = new Set(["topic", "assemble", "audio", "publish", "sfx_gen"]);
 import { CheckNodePromptPanel } from "@/components/studio/check-node-prompt-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -71,7 +79,11 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeResultViewBody } from "@/components/canvas/node-result-views";
 import { resolveNodeResult } from "@/lib/node-result-resolver";
 import type { FrameDTO } from "@/lib/types";
-import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
+import { NodeStepParamsPanel, StreamsPicker } from "@/components/studio/node-step-params-panel";
+import { NodePromptBlock } from "@/components/studio/node-prompt-block";
+import { NodeStyleVars } from "@/components/studio/node-style-vars";
+const STREAM_NODE_TYPES = new Set(["images", "videos", "hero"]);
+import { nodeBgFor, promptBgFor } from "@/components/prompts/prompt-card-catalog";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
@@ -91,6 +103,7 @@ export function NodeStudio({
   promptFocus,
   nodeDisabled = false,
   promptSlots: promptSlotsProp,
+  inlineTargetId = null,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -100,6 +113,7 @@ export function NodeStudio({
   promptFocus?: NodePromptSlot | null;
   nodeDisabled?: boolean;
   promptSlots?: NodePromptSlot[];
+  inlineTargetId?: string | null;
 }) {
   const nodeType = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(nodeType);
@@ -107,6 +121,11 @@ export function NodeStudio({
   const NodeIcon = getNodeIcon(spec.iconKey);
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
+  const [catalogMode, setCatalogMode] = useState(true);
+  useEffect(() => {
+    if (open) setCatalogMode(!inlineTargetId && initialTab !== "settings");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, nodeKey]);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   /** false = весь лист (дефолт); true = узкий ключевой фрагмент по типу ноды */
@@ -189,11 +208,13 @@ export function NodeStudio({
     return resolvePromptSlots(nodeType, null);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
+  const isReportNode = isShotsReportNode(nodeKey);
   const showExcel =
-    nodeTypeRequiresExcel(nodeType) ||
-    allSlots.some((s) => s.kind === "excel") ||
-    tab === "excel" ||
-    isExcelGptNode(nodeType);
+    !isReportNode &&
+    (nodeTypeRequiresExcel(nodeType) ||
+      allSlots.some((s) => s.kind === "excel") ||
+      tab === "excel" ||
+      isExcelGptNode(nodeType));
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
@@ -241,12 +262,16 @@ export function NodeStudio({
 
   useEffect(() => {
     if (!open) return;
-    if (promptFocus) {
+    if (isShotsReportNode(nodeKey)) {
+      setTab(initialTab === "settings" ? "settings" : "results");
+      return;
+    }
+    if (promptFocus && initialTab !== "settings") {
       setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
       return;
     }
     setTab(initialTab);
-  }, [open, initialTab, promptFocus]);
+  }, [open, initialTab, promptFocus, nodeKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -376,14 +401,14 @@ export function NodeStudio({
     mutationFn: (variables?: { mode?: "full" | "resume" }) =>
       api.runProjectStep(projectId!, stepCode!, {
         nodeKey: nodeKey ?? undefined,
-        mode: variables?.mode ?? "full",
+        mode: variables?.mode ?? "resume",
       }),
     onSuccess: (_, vars) => {
-      const isResume = vars?.mode === "resume";
+      const isFull = vars?.mode === "full";
       toast.success(
-        isResume
-          ? `Доделка шага «${spec.label}» запущена`
-          : `Шаг «${spec.label}» запущен начисто`,
+        isFull
+          ? `Шаг «${spec.label}» запущен начисто`
+          : `Шаг «${spec.label}» запущен`,
       );
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
@@ -469,6 +494,13 @@ export function NodeStudio({
     return [];
   }, [artifacts.data, nodeType]);
 
+  // Inline "Результат ноды": node's OWN result only. Plan/Сценарий output lives in the
+  // project.xlsx "Общий план" sheet even when project.general_plan is empty.
+  const ownFileNode =
+    nodeType.includes("image") ||
+    nodeType.includes("video") ||
+    nodeType === "hero" ||
+    nodeType === "items";
   const assets = useQuery({
     queryKey: ["project-assets", projectId],
     queryFn: () => api.listProjectAssets(projectId!),
@@ -543,6 +575,22 @@ export function NodeStudio({
     mapMedia,
     nodeKey,
   ]);
+  const projectHasXlsxAsset = (assets.data ?? []).some((a) =>
+    /\.xlsx$/i.test(String((a as { name?: string; path?: string }).name ?? (a as { path?: string }).path ?? "")),
+  );
+  const inlineResult = useMemo(() => {
+    if (!resultSnapshot) return null;
+    if (!resultSnapshot.hasResult && resultSnapshot.viewMode === "xlsx_general_plan" && projectHasXlsxAsset) {
+      return {
+        ...resultSnapshot,
+        hasResult: true,
+        itemCount: 1,
+        summary: "Сценарий — лист «Общий план» в Excel",
+        items: [{ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" as const }],
+      };
+    }
+    return resultSnapshot;
+  }, [resultSnapshot, projectHasXlsxAsset]);
 
   const showStepParams =
     projectId != null &&
@@ -592,7 +640,299 @@ export function NodeStudio({
     return false;
   }, [runStep.isPending, project.data?.status, project.data?.generation_active, nodeType, stepCode]);
 
+  const canCatalog = Boolean(showFilesPanel && promptStepCode && !isCheckNode && !showGptTextPanel && !showFramePromptsPanel);
+  const catalogActive = open && catalogMode && canCatalog && tab === "prompts";
+  useEffect(() => {
+    if (open && catalogMode && canCatalog && tab !== "prompts" && initialTab !== "settings" && !inlineTargetId) setTab("prompts");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, catalogMode, canCatalog]);
+  const [, setInlineTick] = useState(0);
+  useEffect(() => {
+    if (!open || !inlineTargetId) return;
+    if (document.getElementById(inlineTargetId)) return;
+    let raf = 0;
+    const tick = () => {
+      if (document.getElementById(inlineTargetId)) {
+        setInlineTick((n) => n + 1);
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [open, inlineTargetId]);
+  const [catalogDetail, setCatalogDetail] = useState<{ nodeKey: string; item: { id: string; label: string } | null } | null>(null);
+  useEffect(() => {
+    const on = (ev: Event) => setCatalogDetail((ev as CustomEvent<{ nodeKey: string; item: { id: string; label: string } | null }>).detail);
+    window.addEventListener("vp-catalog-detail", on);
+    return () => window.removeEventListener("vp-catalog-detail", on);
+  }, []);
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (wasOpenRef.current && !open) window.dispatchEvent(new CustomEvent("node-studio-closed"));
+    wasOpenRef.current = open;
+  }, [open]);
+  // Close with a fade: tell the inline node to start its reverse animation, keep the
+  // menu mounted while it fades out, then actually close.
+  const closingRef = useRef(false);
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    if (!inlineTargetId) {
+      onOpenChange(false);
+      return;
+    }
+    closingRef.current = true;
+    window.dispatchEvent(new CustomEvent("vp-node-closing", { detail: { nodeKey } }));
+    window.setTimeout(() => {
+      closingRef.current = false;
+      onOpenChange(false);
+    }, 170);
+  }, [onOpenChange, nodeKey, inlineTargetId]);
+  useEffect(() => {
+    const onClose = () => requestClose();
+    window.addEventListener("node-studio-close", onClose);
+    return () => window.removeEventListener("node-studio-close", onClose);
+  }, [requestClose]);
+
+  const nodeBgUrl = nodeBgFor(nodeKey, promptBgFor(String(activeVariant || "default"), String(activeVariant || "default"), nodeKey));
+
   if (!nodeKey || !mounted || !open) return null;
+  // Old side-sheet studio is detached: only the inline expanded node menu renders.
+  if (!inlineTargetId) return null;
+  const inlineEl = inlineTargetId ? document.getElementById(inlineTargetId) : null;
+  if (inlineTargetId && !inlineEl) return null;
+  if (inlineEl) {
+    const ds = inlineEl.dataset;
+    const hasSettings =
+      (isExcelGptNode(nodeType) && !!projectId) ||
+      !!showStepParams ||
+      ((nodeType === "items" || nodeType === "hero" || nodeType === "script") && !!projectId);
+    const statusLabel = isThisNodeRunning ? "в работе" : nodeDisabled ? "отключена" : ds.status || "";
+    const statusDot =
+      statusLabel === "готово" ? "bg-white" : statusLabel === "ошибка" ? "bg-red-500" : isThisNodeRunning ? "bg-sky-400 animate-pulse" : "border border-white/40";
+    const inTab0 = tab === "prompts" ? "prompts" : tab === "results" ? "results" : "settings";
+    const activeName = String(activeVariant || "default");
+    const detailOpen = inTab0 === "prompts" && !!catalogDetail && catalogDetail.nodeKey === nodeKey && !!catalogDetail.item;
+  const headPrompt =
+      inTab0 === "prompts" && catalogDetail && catalogDetail.nodeKey === nodeKey && catalogDetail.item
+        ? catalogDetail.item
+        : { id: activeName, label: activeName };
+    const inTab: "settings" | "prompts" | "results" = tab === "prompts" ? "prompts" : tab === "results" ? "results" : "settings";
+    return createPortal(
+      <aside className="vp-menu nowheel nopan relative isolate flex max-h-[680px] w-full cursor-auto flex-col overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#0a0a0a] text-left text-white backdrop-blur-xl">
+          <div
+            data-vp-menu-header
+            className="vp-head-img relative h-[60px] shrink-0 cursor-grab overflow-hidden bg-cover active:cursor-grabbing"
+            style={{ backgroundImage: `url(${getNodeCustomBg(nodeKey) || nodeBgFor(nodeKey, promptBgFor(headPrompt.id, headPrompt.label, nodeKey))})`, backgroundPosition: "center top" }}
+          >
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/60 via-black/15 to-black/30" />
+            <div className={cn("absolute inset-0 flex items-center px-4 text-[16px] font-medium leading-[1.2] text-white [text-shadow:0_1px_6px_rgba(0,0,0,0.6)]", detailOpen ? "pr-56" : "pr-14")}>
+              <span className="truncate">
+                {(excelConfig.label?.trim() || spec.label) + ": " + headPrompt.label.replace(/\.(md|txt)$/i, "")}
+              </span>
+            </div>
+            {detailOpen ? (
+              <button
+                type="button"
+                data-vp-catalog-back
+                onClick={() => window.dispatchEvent(new CustomEvent("vp-catalog-back", { detail: { nodeKey } }))}
+                className="nodrag absolute right-12 top-1/2 z-[1] -translate-y-1/2 px-1 text-[13px] text-white/80 [text-shadow:0_1px_4px_rgba(0,0,0,0.8)] hover:text-white"
+              >
+                ← Назад к каталогу
+              </button>
+            ) : null}
+            <button
+              type="button"
+              title="Закрыть"
+              data-vp-menu-close
+              onClick={() => requestClose()}
+              className="nodrag absolute right-2 top-1/2 z-[1] flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md bg-black/45 text-white/85 backdrop-blur-sm hover:bg-black/70 hover:text-white"
+            >
+              <XIcon className="h-4 w-4" />
+            </button>
+          </div>
+        <div className="flex shrink-0 cursor-grab items-stretch gap-2 p-3 pb-0 active:cursor-grabbing" title="Перетащите за верхнюю панель">
+          {detailOpen ? <div id={`vp-detail-actions-${nodeKey}`} className="flex flex-1" /> : (
+          <div className="grid flex-1 grid-cols-3 border border-white/10">
+            {(
+              [
+                ["prompts", "Каталог промтов"],
+                ["settings", "Настройки"],
+                ["results", "Результат"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={cn(
+                  "flex h-12 items-center justify-center rounded-none px-3 py-3 text-[13px] font-medium uppercase leading-[1.25] tracking-[0.08em] transition-colors",
+                  inTab === id ? "bg-white text-black" : "text-white/60 hover:bg-white/[0.05] hover:text-white",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          )}
+        </div>
+        {inTab === "settings" ? (
+          <div data-vp-settings className="nodrag flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+            {!NO_LLM_NODE_TYPES.has(nodeType) ? (
+            <div className="flex items-center gap-3 rounded-[10px] border border-white/[0.06] px-4 py-3">
+              <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">Модель</span>
+              {true ? (
+                <div className="min-w-0 font-mono text-[12px] [&_*]:!font-mono [&_*]:!text-[12px]">
+                  <NodeModelPicker
+                    nodeKey={nodeKey}
+                    nodeType={nodeType}
+                    modelId={ds.modelId || undefined}
+                    imageResolution={ds.imageResolution || undefined}
+                    imageQuality={ds.imageQuality || undefined}
+                    aspectRatio={ds.aspectRatio || undefined}
+                    reasoningEffort={ds.reasoningEffort || undefined}
+                  />
+                </div>
+              ) : null}
+              <span className="flex-1" />
+              {STREAM_NODE_TYPES.has(nodeType) && projectId ? <StreamsPicker projectId={projectId} /> : null}
+            </div>
+            ) : null}
+            {hasSettings ? (
+              <div className="flex flex-col gap-3 text-[14px] text-white/85">
+                {isExcelGptNode(nodeType) && projectId ? (
+                  <ExcelGptSettingsPanel projectId={projectId} nodeKey={nodeKey} config={excelConfig} onConfigChange={patchExcelNodeData} />
+                ) : null}
+                {showStepParams ? <NodeStepParamsPanel projectId={projectId!} nodeType={nodeType} /> : null}
+                {nodeType === "items" && projectId ? <ItemsConfigPanel projectId={projectId} /> : null}
+                {nodeType === "hero" && projectId ? <HeroConfigPanel projectId={projectId} /> : null}
+                {nodeType === "script" && projectId && projectUsesNii67Script(project.data ?? null) ? <Nii67CardPanel projectId={projectId} /> : null}
+              </div>
+            ) : null}
+            {promptStepCode && projectId && nodeKey ? (
+              <NodeStyleVars projectId={projectId} stepCode={promptStepCode} nodeKey={nodeKey} slotId={activeSlot?.id} activeVariant={activeVariant ? String(activeVariant) : undefined} />
+            ) : null}
+            {showFilesPanel && promptStepCode ? (
+              <NodePromptBlock
+                stepCode={promptStepCode}
+                activeVariant={activeVariant ? String(activeVariant) : undefined}
+                onActivate={(v) => activateVariant.mutate(v)}
+                nodeKey={nodeKey ?? ""}
+                description={ds.description || spec.description || ""}
+              />
+            ) : null}
+            {showFilesPanel && promptStepCode && !canCatalog ? (
+              <div className="rounded-[10px] border border-white/[0.06] bg-black/35 p-1 [&_section]:!rounded-[10px] [&_section]:!border-0 [&_section]:!bg-transparent">
+                <PromptFilesPanel
+                  key={`inline-files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
+                  stepCode={promptStepCode ?? ""}
+                  slotId={activeSlot?.id}
+                  projectId={projectId ?? undefined}
+                  preferredFile={preferredFile}
+                  folderHint={legacyPromptFolder(promptStepCode) ?? promptPaths.legacyDir ?? promptStepCode}
+                  activeVariant={activeVariant}
+                  activeVariantSourceLabel={activeVariantSourceLabel}
+                  onActivateVariant={(variant) => activateVariant.mutate(variant)}
+                  activating={activateVariant.isPending}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : inTab === "results" ? (
+          <div className="nodrag flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+            <div className="rounded-[10px] border border-white/[0.06] bg-black/35 p-3 text-[13px] text-white/85 [&_.rounded-xl]:!rounded-[10px] [&_.rounded-xl]:!border-white/[0.06] [&_.rounded-xl]:!bg-black/30">
+              <div className="flex flex-col gap-4">
+                  {inlineResult && (inlineResult.hasResult || inlineResult.items.length > 0) ? (
+                    <NodeResultViewBody
+                      projectId={projectId!}
+                      nodeKey={nodeKey}
+                      nodeType={nodeType}
+                      snapshot={inlineResult}
+                    />
+                  ) : ownFileNode && filteredArtifacts.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {filteredArtifacts.map((a) => (
+                        <div
+                          key={a.id}
+                          className="rounded-xl border border-white/10 bg-white/5 p-2"
+                        >
+                          <div className="text-[13px] uppercase text-muted-foreground">
+                            {humanizeSlug(a.kind)}
+                          </div>
+                          {a.path.match(/\.(mp4|webm)$/i) ? (
+                            <video
+                              controls
+                              className="mt-1 max-h-40 w-full rounded"
+                              src={api.artifactFileUrl(a.uuid)}
+                            />
+                          ) : a.path.match(/\.(mp3|wav|m4a|ogg|aac|flac)$/i) ? (
+                            <div className="mt-2 flex flex-col gap-1 rounded bg-black/40 p-2">
+                              <audio
+                                controls
+                                className="w-full"
+                                src={api.artifactFileUrl(a.uuid)}
+                              />
+                            </div>
+                          ) : a.path.match(/\.(json|txt|tsv|md|csv)$/i) ? (
+                            <div className="mt-1 flex max-h-40 flex-col overflow-auto rounded bg-black/40 p-2 text-[13px] font-mono text-zinc-300">
+                              <div className="text-[12px] text-zinc-500">
+                                {a.path.split(/[\\/]/).pop()}
+                              </div>
+                              <span className="mt-1 text-[13px] text-zinc-400">Текстовый артефакт (доступен для скачивания)</span>
+                            </div>
+                          ) : (
+                            <img
+                              alt=""
+                              className="mt-1 max-h-40 w-full rounded object-contain"
+                              src={api.artifactFileUrl(a.uuid)}
+                            />
+                          )}
+                          <a
+                            href={api.artifactFileUrl(a.uuid)}
+                            download
+                            className="mt-2 inline-flex items-center gap-1 text-[13px] text-primary hover:underline"
+                          >
+                            <Download className="h-3 w-3" />
+                            Скачать
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                      <p className="text-[15px]">
+                        {inlineResult?.summary || "Результаты ещё не сформированы. Запустите шаг для генерации."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+            </div>
+          </div>
+        ) : (
+          <div className="nodrag flex min-h-0 flex-auto flex-col overflow-hidden p-3">
+            {showFilesPanel && promptStepCode ? (
+              <PromptFilesPanel
+                key={`inline-cat-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
+                stepCode={promptStepCode}
+                slotId={activeSlot?.id}
+                projectId={projectId ?? undefined}
+                preferredFile={preferredFile}
+                folderHint={legacyPromptFolder(promptStepCode) ?? promptPaths.legacyDir ?? promptStepCode}
+                activeVariant={activeVariant}
+                activeVariantSourceLabel={activeVariantSourceLabel}
+                onActivateVariant={(variant) => activateVariant.mutate(variant)}
+                activating={activateVariant.isPending}
+                catalogPanel={{ nodeKey, embedded: true, onOpenSettings: () => setTab("settings"), onClose: () => requestClose() }}
+              />
+            ) : (
+              <p className="p-4 text-[13px] text-white/50">У этой ноды нет каталога промтов.</p>
+            )}
+          </div>
+        )}
+      </aside>,
+      inlineEl,
+    );
+  }
 
   const closeNow = (e: SyntheticEvent) => {
     if (Date.now() < backdropGuardUntil.current) return;
@@ -603,10 +943,10 @@ export function NodeStudio({
 
   return createPortal(
     <>
-      <button
+      {!inlineEl ? (<button
         type="button"
         aria-label="Закрыть студию"
-        className="fixed inset-0 z-[90] bg-black/45 backdrop-blur-[2px]"
+        className={cn("fixed inset-0 z-[90]", catalogActive ? "bg-black/15" : "bg-black/45 backdrop-blur-[2px]")}
         onPointerDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -616,9 +956,9 @@ export function NodeStudio({
           e.stopPropagation();
         }}
         onClick={closeNow}
-      />
+      />) : null}
       <aside
-        className="premium-sheet fixed right-0 top-0 z-[100] flex h-full w-[min(920px,92vw)] flex-col border-l border-white/10 shadow-2xl"
+        className={cn(inlineEl ? "nowheel nodrag nopan relative flex h-full w-full cursor-auto flex-col overflow-hidden rounded-lg border border-white/10 bg-[#0d0d10]/95 text-left" : "premium-sheet fixed right-0 top-0 z-[100] flex h-full w-[min(920px,92vw)] flex-col border-l border-white/10 shadow-2xl", catalogActive && "pointer-events-none invisible")}
         role="dialog"
         aria-modal="true"
       >
@@ -638,7 +978,7 @@ export function NodeStudio({
             </button>
             <div className="flex items-start justify-between gap-4 pr-12">
               <div>
-                <h2 className="flex items-center gap-2 text-lg font-semibold">
+                <h2 className="flex items-center gap-2 text-xl font-semibold">
                   <span
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl shadow-inner"
                     style={{
@@ -650,17 +990,17 @@ export function NodeStudio({
                   </span>
                   {excelConfig.label?.trim() || spec.label}
                 </h2>
-                <p className="text-xs text-muted-foreground">{spec.description}</p>
+                <p className="text-[13px] text-muted-foreground">{spec.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Badge variant="muted" className="text-[10px]">
+                  <Badge variant="muted" className="text-[13px]">
                     {formatNodeKeyLabel(nodeKey)}
                   </Badge>
                   {isExcelGptNode(nodeType) ? (
                     <>
-                      <Badge variant="muted" className="text-[10px] text-violet-200/90">
+                      <Badge variant="muted" className="text-[13px] text-violet-200/90">
                         {workModeLabel(excelConfig.workMode)}
                       </Badge>
-                      <Badge variant="muted" className="text-[10px] text-emerald-200/90">
+                      <Badge variant="muted" className="text-[13px] text-emerald-200/90">
                         {excelGptAttachmentChipTitle(
                           excelConfig.inputSource ?? "project_xlsx",
                         )}
@@ -668,7 +1008,7 @@ export function NodeStudio({
                     </>
                   ) : null}
                   {promptPaths.legacyDir && (
-                    <Badge variant="muted" className="text-[9px] font-mono">
+                    <Badge variant="muted" className="text-[12px] font-mono">
                       prompts/{promptPaths.legacyDir}
                     </Badge>
                   )}
@@ -679,10 +1019,10 @@ export function NodeStudio({
                   <>
                     <Button
                       size="sm"
-                      onClick={() => runStep.mutate({ mode: "full" })}
+                      onClick={() => runStep.mutate({ mode: "resume" })}
                       disabled={!projectId || isThisNodeRunning || nodeDisabled}
                       className={cn(
-                        "transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md",
+                        "transition-all duration-200 gap-2 h-9 px-4 font-semibold text-[13px] text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md",
                         isThisNodeRunning &&
                           "border-emerald-400/80 bg-emerald-500/25 text-emerald-200 animate-pulse font-medium shadow-[0_0_20px_rgba(16,185,129,0.35)]",
                       )}
@@ -691,7 +1031,7 @@ export function NodeStudio({
                           ? "Нода отключена в графе"
                           : isThisNodeRunning
                             ? "Шаг сейчас выполняется..."
-                            : "Запустить шаг начисто с 1-го кадра (полный перезапуск с очисткой)"
+                            : "Запустить шаг: готовое не трогаем, дальше по цепочке"
                       }
                     >
                       {isThisNodeRunning ? (
@@ -711,7 +1051,7 @@ export function NodeStudio({
                         size="sm"
                         onClick={() => runStep.mutate({ mode: "resume" })}
                         disabled={!projectId || isThisNodeRunning || nodeDisabled}
-                        className="transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-amber-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 active:scale-[0.98] shadow-lg shadow-amber-500/25 border border-amber-200/60 rounded-xl backdrop-blur-md"
+                        className="transition-all duration-200 gap-2 h-9 px-4 font-semibold text-[13px] text-amber-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 active:scale-[0.98] shadow-lg shadow-amber-500/25 border border-amber-200/60 rounded-xl backdrop-blur-md"
                         title="Доделать только недостающие элементы (мягкое продолжение без удаления готовых)"
                       >
                         <Play className="h-3.5 w-3.5 text-amber-950 fill-current" />
@@ -725,10 +1065,10 @@ export function NodeStudio({
             <div className="mt-3 flex flex-wrap gap-1">
               {(
                 [
-                  ["settings", "Настройки", Settings2],
+                  ["settings", inlineTargetId ? "Настройки ноды" : "Настройки", Settings2],
                   ...(pipelineSlots.some((s) => s.kind !== "excel") ||
                   (nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType))
-                    ? ([["prompts", "Промпты", FileText]] as const)
+                    ? ([["prompts", inlineTargetId ? "Каталог промтов" : "Промпты", FileText]] as const)
                     : []),
                   ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
@@ -740,7 +1080,7 @@ export function NodeStudio({
                   size="sm"
                   variant="ghost"
                   className={cn(
-                    "gap-1.5 text-xs font-semibold rounded-lg transition-all",
+                    "gap-1.5 text-[13px] font-semibold rounded-lg transition-all",
                     tab === id
                       ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
                       : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
@@ -765,7 +1105,7 @@ export function NodeStudio({
                       size="sm"
                       variant="ghost"
                       className={cn(
-                        "h-7 text-xs font-medium rounded-lg transition-all",
+                        "h-7 text-[13px] font-medium rounded-lg transition-all",
                         activeSlotId === slot.id && !showGptTextPanel
                           ? "bg-zinc-800 text-white border border-zinc-700 shadow-sm"
                           : "border border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40",
@@ -783,7 +1123,7 @@ export function NodeStudio({
                     size="sm"
                     variant="ghost"
                     className={cn(
-                      "h-7 text-xs font-medium rounded-lg transition-all",
+                      "h-7 text-[13px] font-medium rounded-lg transition-all",
                       activeSlotId === "gpt_text"
                         ? "bg-violet-950/80 text-violet-200 border border-violet-500/50 shadow-sm"
                         : "border border-violet-900/40 bg-violet-950/20 text-violet-300 hover:text-violet-100 hover:bg-violet-900/30",
@@ -801,7 +1141,22 @@ export function NodeStudio({
             )}
           </header>
 
-          {tab === "excel" && projectId ? (
+          {isReportNode && tab === "results" && projectId ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-black">
+              {resultSnapshot && (resultSnapshot.hasResult || resultSnapshot.items.length > 0) ? (
+                <NodeResultViewBody
+                  projectId={projectId}
+                  nodeKey={nodeKey}
+                  nodeType={nodeType}
+                  snapshot={resultSnapshot}
+                />
+              ) : (
+                <p className="text-[15px] text-muted-foreground">
+                  Отчёт ещё не собран. Запусти ноду «Отчёт: кадры + промты».
+                </p>
+              )}
+            </div>
+          ) : tab === "excel" && projectId ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-5">
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <Button size="sm" variant="outline" asChild>
@@ -848,7 +1203,7 @@ export function NodeStudio({
                   {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                       <select
-                        className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
+                        className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-[13px]"
                         value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
                         onChange={(e) => setXlsxSheet(e.target.value)}
                       >
@@ -859,7 +1214,7 @@ export function NodeStudio({
                         ))}
                       </select>
                       {focusAvailable ? (
-                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[13px] text-muted-foreground">
                           <input
                             type="checkbox"
                             className="rounded border-white/20"
@@ -879,7 +1234,7 @@ export function NodeStudio({
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
                     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
                       {xlsxPreview.data?.xlsx_snapshot || xlsxSheetsMeta.data?.xlsx_snapshot ? (
-                        <p className="shrink-0 text-[10px] text-muted-foreground">
+                        <p className="shrink-0 text-[13px] text-muted-foreground">
                           Показан файл:{" "}
                           <span className="font-mono text-foreground/90">
                             {xlsxPreview.data?.xlsx_snapshot ||
@@ -888,12 +1243,12 @@ export function NodeStudio({
                         </p>
                       ) : null}
                       {xlsxParams.hint && xlsxFocusKeyRows ? (
-                        <p className="shrink-0 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
+                        <p className="shrink-0 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-100/90">
                           {xlsxParams.hint}
                         </p>
                       ) : null}
                       {xlsxPreview.data?.truncated_rows || xlsxPreview.data?.truncated_cols ? (
-                        <p className="shrink-0 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
+                        <p className="shrink-0 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[13px] text-sky-100/90">
                           Показана часть листа
                           {xlsxPreview.data.sheet_max_row
                             ? ` (в файле ~${xlsxPreview.data.sheet_max_row}×${xlsxPreview.data.sheet_max_col || "?"})`
@@ -909,7 +1264,7 @@ export function NodeStudio({
                           colLetters={xlsxPreview.data?.col_letters}
                         />
                       ) : (
-                        <p className="rounded-xl border border-white/10 p-4 text-xs text-muted-foreground">
+                        <p className="rounded-xl border border-white/10 p-4 text-[13px] text-muted-foreground">
                           {nodeType === "plan"
                             ? "Лист пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx. Переключите лист в списке выше (например «план»)."
                             : "Таблица пуста или ещё не создана. Проверьте выбранный лист."}
@@ -927,7 +1282,7 @@ export function NodeStudio({
           <ScrollArea className="flex-1">
             <div className="p-5">
               {tab === "settings" && (
-                <div className="flex flex-col gap-4 text-sm text-muted-foreground">
+                <div className="flex flex-col gap-4 text-[15px] text-muted-foreground">
                   {isExcelGptNode(nodeType) && projectId && nodeKey ? (
                     <ExcelGptSettingsPanel
                       projectId={projectId}
@@ -949,6 +1304,9 @@ export function NodeStudio({
                       <HeroConfigPanel projectId={projectId} />
                     </div>
                   ) : null}
+                  {nodeType === "script" && projectId ? (
+                    <Nii67CardPanel projectId={projectId} />
+                  ) : null}
                   {nodeType === "sfx_plan" && projectId ? (
                     <SfxPlanSettingsPanel projectId={projectId} />
                   ) : null}
@@ -964,7 +1322,7 @@ export function NodeStudio({
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
                   {activeSlot && !showGptTextPanel && showFilesPanel && (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-[13px] text-muted-foreground">
                       Редактируется:{" "}
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
@@ -1005,9 +1363,21 @@ export function NodeStudio({
                       activeVariantSourceLabel={activeVariantSourceLabel}
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}
                       activating={activateVariant.isPending}
+                      catalogPanel={
+                        catalogActive && nodeKey
+                          ? {
+                              nodeKey,
+                              onOpenSettings: () => {
+                                setCatalogMode(false);
+                                setTab("settings");
+                              },
+                              onClose: () => requestClose(),
+                            }
+                          : null
+                      }
                     />
                   ) : activeSlot?.kind === "excel" ? (
-                    <div className="flex flex-col gap-3 text-sm text-muted-foreground">
+                    <div className="flex flex-col gap-3 text-[15px] text-muted-foreground">
                       <p>
                         Для этой ноды мастер-промт задаётся через{" "}
                         <span className="font-medium text-foreground">project.xlsx</span> — откройте
@@ -1052,7 +1422,7 @@ export function NodeStudio({
                           key={a.id}
                           className="rounded-xl border border-white/10 bg-white/5 p-2"
                         >
-                          <div className="text-[10px] uppercase text-muted-foreground">
+                          <div className="text-[13px] uppercase text-muted-foreground">
                             {humanizeSlug(a.kind)}
                           </div>
                           {a.path.match(/\.(mp4|webm)$/i) ? (
@@ -1070,11 +1440,11 @@ export function NodeStudio({
                               />
                             </div>
                           ) : a.path.match(/\.(json|txt|tsv|md|csv)$/i) ? (
-                            <div className="mt-1 flex max-h-40 flex-col overflow-auto rounded bg-black/40 p-2 text-[11px] font-mono text-zinc-300">
-                              <div className="text-[9px] text-zinc-500">
+                            <div className="mt-1 flex max-h-40 flex-col overflow-auto rounded bg-black/40 p-2 text-[13px] font-mono text-zinc-300">
+                              <div className="text-[12px] text-zinc-500">
                                 {a.path.split(/[\\/]/).pop()}
                               </div>
-                              <span className="mt-1 text-[10px] text-zinc-400">Текстовый артефакт (доступен для скачивания)</span>
+                              <span className="mt-1 text-[13px] text-zinc-400">Текстовый артефакт (доступен для скачивания)</span>
                             </div>
                           ) : (
                             <img
@@ -1086,7 +1456,7 @@ export function NodeStudio({
                           <a
                             href={api.artifactFileUrl(a.uuid)}
                             download
-                            className="mt-2 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                            className="mt-2 inline-flex items-center gap-1 text-[13px] text-primary hover:underline"
                           >
                             <Download className="h-3 w-3" />
                             Скачать
@@ -1096,7 +1466,7 @@ export function NodeStudio({
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                      <p className="text-sm">
+                      <p className="text-[15px]">
                         {resultSnapshot?.summary || "Результаты ещё не сформированы. Запустите шаг для генерации."}
                       </p>
                     </div>
@@ -1109,7 +1479,7 @@ export function NodeStudio({
         </div>
       </aside>
     </>,
-    document.body,
+    inlineEl ?? document.body,
   );
 }
 

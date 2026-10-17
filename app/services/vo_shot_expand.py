@@ -1,13 +1,20 @@
-"""Визуальные шоты внутри ячейки разбивки.
+"""Покрытие кадры[] → ячейки закадра по сценам (родитель + дочерние шоты).
 
-Frame.voiceover_text = результат ноды разбивки. Не пишем, не режем.
-Копия ячейки режется по шотам в attrs.camera_subdivide.vo_shot —
-так же, как раньше резался закадр (split_text_into_parts).
+После нод shots / frames / QC группа script_frames_qc вызывает
+``apply_shot_coverage_to_vo_cells``: недостающие шоты вставляются, затем
+каждая СЦЕНА (``кадры[].сцена``) становится своей VO-ячейкой: первый кадр
+сцены — родитель (полная лестница в ``кадры[]``), остальные кадры сцены —
+дочерние шоты (``role="shot"``, ``parent_uuid`` на родителя). Закадр кадра
+берётся из куска этой сцены в ``главное_действие``, не из нарезки всей
+ячейки по всем кадрам.
 """
 
 from __future__ import annotations
 
+import copy
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -19,6 +26,7 @@ from app.services.scene_design.camera_expand import (
     already_subdivided,
     renumber_frames_by_sort_key,
     split_text_into_parts,
+    vo_chunk_is_dangling,
 )
 
 _ATTR_KEY = "camera_subdivide"
@@ -34,6 +42,153 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def parent_still_suppressed(frame: Any) -> bool:
+    """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
+    cs = _cs(frame)
+    raw = cs.get("use_parent_still")
+    if raw is False or str(raw).strip().lower() in {"0", "false", "no", "off"}:
+        return True
+    return str(cs.get("coverage_kind") or "").strip().lower() == "parent"
+
+
+def uses_parent_still(frame: Any) -> bool:
+    """Вешать PNG родителя в генерацию / рефы доски."""
+    if parent_still_suppressed(frame):
+        return False
+    if str(_cs(frame).get("coverage_kind") or "").strip().lower() == "child":
+        return True
+    return is_shot_child(frame)
+
+
+def is_img_pr_vo_parent(frame: Any) -> bool:
+    """GPT img_pr пишет только VO-родителя ячейки, не K2/K3."""
+    if is_shot_child(frame):
+        return False
+    if not str(getattr(frame, "uuid", "") or "").strip():
+        return False
+    return bool(str(getattr(frame, "voiceover_text", "") or "").strip())
+
+
+def effective_image_prompt(frame: Any, frames: list[Any] | None = None) -> str:
+    """Промт для outsee: свой, иначе раскладка K2/K3 (реф = PNG родителя)."""
+    own = str(getattr(frame, "image_prompt", None) or "").strip()
+    if own:
+        return own
+    if not is_shot_child(frame) or not frames:
+        return ""
+    parent = find_coverage_parent_frame(list(frames), frame)
+    return compose_coverage_child_prompt(frame, parent)
+
+
+def _child_plan_chip(frame: Any) -> str:
+    cs = _cs(frame)
+    plan = str(cs.get("крупность") or cs.get("план") or "").strip()
+    if plan:
+        return plan
+    attrs = getattr(frame, "attrs", None)
+    if isinstance(attrs, dict):
+        plan = str(attrs.get("план") or attrs.get("крупность") or "").strip()
+        if plan:
+            return plan
+    sid = coverage_shot_id(frame)
+    for shot in planned_shots_from_attrs(frame):
+        if sid and str(shot.get("id") or "") == sid:
+            return str(shot.get("план") or "").strip()
+    return ""
+
+
+def _child_angle_chip(frame: Any) -> str:
+    cs = _cs(frame)
+    angle = str(cs.get("ракурс") or "").strip()
+    if angle:
+        return angle
+    attrs = getattr(frame, "attrs", None)
+    if isinstance(attrs, dict):
+        return str(attrs.get("ракурс") or "").strip()
+    return ""
+
+
+def compose_coverage_child_prompt(child: Any, parent: Any | None = None) -> str:
+    """Формула ребёнка: сцена с референса (кадр N), крупность, РАКУРС, раскладка."""
+    attrs = getattr(child, "attrs", None)
+    layout = ""
+    if isinstance(attrs, dict):
+        layout = str(attrs.get("раскладка") or "").strip()
+    plan = _child_plan_chip(child)
+    angle = _child_angle_chip(child)
+    parent_n = getattr(parent, "number", None) if parent is not None else None
+    ref = f"кадр {parent_n}" if parent_n is not None else "кадр родителя"
+    head = f"сцена с референса ({ref})"
+    if plan:
+        head += f", крупность {plan}"
+    if angle:
+        sep = " " if plan else ", "
+        head += f"{sep}РАКУРС {angle}"
+    if not layout:
+        return head
+    if layout.lower().startswith(("сейчас в кадре", "старт")):
+        return f"{head} {layout}"
+    return f"{head} {layout}"
+
+
+def child_shot_brief(frame: Any, parent: Any | None = None) -> str:
+    """Свой шаг ребёнка: раскладка площадки, не копия STYLE родителя."""
+    return compose_coverage_child_prompt(frame, parent)
+
+
+def write_coverage_child_prompts(
+    frames: list[Any], *, overwrite: bool = False
+) -> int:
+    """Вписать промт раскладки в пустой image_prompt shot-ребёнка. Родителей не трогает."""
+    universe = list(frames)
+    n = 0
+    for fr in universe:
+        if not is_shot_child(fr):
+            continue
+        existing = str(getattr(fr, "image_prompt", None) or "").strip()
+        if existing and not overwrite:
+            continue
+        parent = find_coverage_parent_frame(universe, fr)
+        text = compose_coverage_child_prompt(fr, parent)
+        if not text:
+            continue
+        fr.image_prompt = text
+        n += 1
+    return n
+
+
+_COVERAGE_SHOT_RE = re.compile(r"^(.+)-K(\d+)$")
+_CELL_SHOT_RE = re.compile(r"^(.+)-(\d+)$")
+_GENERIC_SHOT_ID_RE = re.compile(r"^f\d{1,2}$", re.I)
+_REUSED_PARENT_IDS = frozenset({"1-s1-k1", "k1"})
+_PARENT_SCENE_LOCK = (
+    "Image 1 is the previous coverage still of the SAME scene "
+    "(layout / set / wardrobe / lighting / cast-count / prop-identity lock). "
+    "Preserve: the same room architecture, furniture placement, wall color, "
+    "the SAME people already visible (same body count — do not invent extras), "
+    "their clothes, lighting direction, and the SAME named objects "
+    "(the painting/portrait/document/table in Image 1 is that exact object, "
+    "not a replacement). "
+    "Change: camera position, framing, and this shot's action only. "
+    "If punching in on a painting, it must be the painting already in Image 1. "
+    "If Image 1 shows one person at the table, the result still shows one person. "
+    "Do not invent a new location or a new person. The viewer must recognize "
+    "the next camera in the same take. "
+    "Exception: if this shot's text puts people in another zone of the same "
+    "place (inside vs outside the door, hallway, next room), build that zone "
+    "from the text and keep only people, wardrobe, prop identity and light "
+    "logic from Image 1. A person who was walking or running in Image 1 is "
+    "further along the path now, never on the same spot. When the camera "
+    "looks from the opposite side, left and right swap. Door and prop states "
+    "(open/closed) follow this shot's text, not Image 1."
+)
+_CHAR_SHEET_LOCK = (
+    "Image 2 is the character sheet: identity only (face/body/clothes). "
+    "Do not copy the sheet pose or layout."
+)
+_IDENTITY_LOCK_PREFIX = "Image 1 is the identity reference of "
+
+
 def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     """Список кадров ноды «сцены → кадры» (attrs.кадры)."""
     attrs = getattr(frame, "attrs", None)
@@ -45,18 +200,595 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
-def resolve_shot_plan(
-    original_vo: str, planned: list[dict[str, Any]]
-) -> tuple[int, list[str]]:
-    """Сколько шотов и какие vo_shot: из кадры[] или эвристика по фразам."""
+def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
+    """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
+    for item in planned or []:
+        if not isinstance(item, dict):
+            continue
+        obj = str(item.get("объект") or "").strip().casefold()
+        if obj in {"место", "тело", "двое", "предмет", "лицо", "взгляд"}:
+            return True
+        template = str(item.get("шаблон") or item.get("template") or "").strip()
+        tid = template.upper()
+        if tid[:1] in {"T", "X"} and any(ch.isdigit() for ch in tid):
+            return True
+        plan = str(item.get("план") or item.get("plan") or "").strip()
+        place = str(item.get("место") or item.get("place") or "").strip()
+        angle = str(item.get("ракурс") or item.get("angle") or "").strip()
+        if plan and (place or angle):
+            return True
+    return False
+
+
+def frame_has_scene_shots(frame: Any) -> bool:
+    return kadry_are_scene_shots(planned_shots_from_attrs(frame))
+
+
+def _scene_plan_for(raw: Any, shots: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Площадка seed-ячейки → сцене: та же карта, заметки только своих кадров."""
+    if not isinstance(raw, dict) or not raw.get("зоны"):
+        return None
+    from app.services.scene_plan import notes_for_shots
+
+    out = copy.deepcopy(raw)
+    ids = {str(s.get("id")) for s in shots if isinstance(s, dict) and s.get("id")}
+    notes = notes_for_shots(list(out.get("исправлено_кодом") or []), ids or None)
+    if notes:
+        out["исправлено_кодом"] = notes
+    else:
+        out.pop("исправлено_кодом", None)
+    return out
+
+
+def main_action_text(frame: Any) -> str:
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    return str(
+        attrs.get("главное_действие") or attrs.get("main_action") or ""
+    ).strip()
+
+
+def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
+    """Биты с самой длинной ячейки; если везде по одному — склеить по порядку."""
+    per_cell: list[list[dict[str, Any]]] = []
+    for fr in frames:
+        found = bits_from_attrs(fr)
+        if found:
+            per_cell.append(found)
+    if not per_cell:
+        return []
+    longest = max(per_cell, key=len)
+    if len(longest) >= 2:
+        return longest
+    merged: list[dict[str, Any]] = []
+    for found in per_cell:
+        merged.extend(found)
+    return merged
+
+
+def strip_non_scene_kadry(frame: Any) -> bool:
+    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
+    planned = planned_shots_from_attrs(frame)
+    if not planned or kadry_are_scene_shots(planned):
+        return False
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs.pop("кадры", None)
+    attrs.pop("shots", None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    return True
+
+
+def coverage_shot_id(frame: Any) -> str:
+    """id шота покрытия: ``кадры[0].id`` или ``camera_subdivide.shot_id``."""
+    planned = planned_shots_from_attrs(frame)
     if planned:
-        need = max(1, len(planned))
-        parts = [str(item.get("закадр") or "").strip() for item in planned]
-        if not any(parts):
-            parts = split_text_into_parts(original_vo, need)
-        return need, parts
-    need = shots_needed_for_vo(original_vo)
-    return need, split_text_into_parts(original_vo, need)
+        sid = str(planned[0].get("id") or "").strip()
+        if sid:
+            return sid
+    return str(_cs(frame).get("shot_id") or "").strip()
+
+
+def parse_coverage_shot(shot_id: str) -> tuple[str, int] | None:
+    m = _COVERAGE_SHOT_RE.match((shot_id or "").strip())
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def is_coverage_child(frame: Any) -> bool:
+    """Дочерний кадр покрытия: shot-ребёнок или есть родитель по T/X."""
+    if is_shot_child(frame):
+        return True
+    return bool(coverage_parent_shot_id(frame))
+
+
+def coverage_parent_shot_id(frame: Any) -> str:
+    """Родитель покрытия: явный parent_id из таблицы T/X, иначе prefix-K1.
+
+    В scene-split структуре ``parent_id=null`` = новое место → референса
+    нет (кадр самостоятельный), эвристика prefix-K1 не применяется.
+    Leftover ``1-S1-K1`` на позднем VO-родителе (другая S-сцена) не still.
+    """
+    cs = _cs(frame)
+
+    def _stale_cross_scene(pid: str) -> bool:
+        if not pid or is_shot_child(frame):
+            return False
+        if str(cs.get("coverage_kind") or "").strip().lower() == "child":
+            return False
+        own_scene = _scene_from_shot_id(coverage_shot_id(frame))
+        pid_scene = _scene_from_shot_id(pid)
+        return (
+            own_scene is not None
+            and pid_scene is not None
+            and own_scene != pid_scene
+        )
+
+    explicit = str(cs.get("coverage_parent_id") or "").strip()
+    if explicit and not _stale_cross_scene(explicit):
+        return explicit
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        pid = str(planned[0].get("parent_id") or "").strip()
+        if pid and not _stale_cross_scene(pid):
+            return pid
+    if cs.get("scene_split"):
+        return ""
+    parsed = parse_coverage_shot(coverage_shot_id(frame))
+    if parsed is None or parsed[1] < 2:
+        return ""
+    return f"{parsed[0]}-K1"
+
+
+def is_coverage_leftover(frame: Any) -> bool:
+    return bool(_cs(frame).get("leftover"))
+
+
+def coverage_parent_number(frame: Any) -> int | None:
+    raw = _cs(frame).get("coverage_parent_number")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def _frame_by_number(frames: list[Any], number: int) -> Any | None:
+    for fr in frames:
+        try:
+            if int(fr.number) == int(number):
+                return fr
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _pick_coverage_parent_by_shot_id(
+    frames: list[Any],
+    parent_sid: str,
+    child: Any,
+) -> Any | None:
+    """Первый leftover с тем же id не подменяет live-родителя с доски."""
+    child_uid = str(getattr(child, "uuid", "") or "")
+    try:
+        child_n = int(getattr(child, "number", 0) or 0)
+    except (TypeError, ValueError):
+        child_n = 0
+    matches: list[Any] = []
+    for fr in frames:
+        if coverage_shot_id(fr) != parent_sid:
+            continue
+        if child_uid and str(getattr(fr, "uuid", "") or "") == child_uid:
+            continue
+        try:
+            if child_n and int(fr.number) == child_n:
+                continue
+        except (TypeError, ValueError):
+            pass
+        matches.append(fr)
+    if not matches:
+        return None
+    live = [fr for fr in matches if not is_coverage_leftover(fr)]
+    pool = live or matches
+    parents = [
+        fr
+        for fr in pool
+        if str(_cs(fr).get("coverage_kind") or "").strip().lower() == "parent"
+        or parent_still_suppressed(fr)
+    ]
+    if parents:
+        return parents[0]
+    roots = [fr for fr in pool if not uses_parent_still(fr)]
+    if roots:
+        return roots[0]
+    return pool[0]
+
+
+def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
+    """Still-родитель покрытия. VO-ячейка (parent_uuid) здесь не меняется.
+
+    По умолчанию K2/K3 берут K1 своей ячейки. Явный ``coverage_kind=child``
+    на доске — выбранный still (номер кадра, иначе id), даже с другой сцены.
+    Без этой роли ``coverage_parent_id`` X1 не подменяет PNG K1 ячейки.
+    Leftover с тем же shot_id не считается родителем.
+    """
+    if parent_still_suppressed(child):
+        return None
+    child_uid = str(getattr(child, "uuid", "") or "")
+    cs = _cs(child)
+    explicit_kind = str(cs.get("coverage_kind") or "").strip().lower() == "child"
+    board_n = coverage_parent_number(child)
+    if explicit_kind and board_n:
+        found = _frame_by_number(frames, board_n)
+        if found is not None:
+            try:
+                if int(found.number) != int(getattr(child, "number", 0) or 0):
+                    return found
+            except (TypeError, ValueError):
+                return found
+    if is_shot_child(child) and not explicit_kind:
+        uid = str(cs.get("parent_uuid") or "").strip()
+        if uid and uid != child_uid:
+            for fr in frames:
+                if str(getattr(fr, "uuid", "") or "") == uid:
+                    return fr
+    parent_sid = coverage_parent_shot_id(child)
+    if not parent_sid:
+        return None
+    return _pick_coverage_parent_by_shot_id(frames, parent_sid, child)
+
+
+def merge_parent_scene_refs(
+    parent_png: Any | None,
+    other: list[Any],
+    *,
+    max_refs: int = 2,
+) -> list[Any]:
+    """Слот 1 = PNG родителя (layout lock), слот 2 = персонаж."""
+    if parent_png is None:
+        return list(other)[:max_refs]
+    out = [parent_png]
+    parent_key = str(parent_png)
+    for item in other:
+        if str(item) == parent_key:
+            continue
+        out.append(item)
+        if len(out) >= max_refs:
+            break
+    return out
+
+
+def with_parent_scene_lock(
+    prompt: str,
+    *,
+    has_parent_ref: bool,
+    has_char_ref: bool = False,
+) -> str:
+    """Контракт Preserve/Change для GPT Image 2, если прикреплён still родителя."""
+    raw = (prompt or "").strip()
+    if not has_parent_ref:
+        return raw
+    if raw.startswith("Image 1 is the previous coverage still"):
+        return raw
+    parts = [_PARENT_SCENE_LOCK]
+    if has_char_ref:
+        parts.append(_CHAR_SHEET_LOCK)
+    return "\n".join(parts) + "\n\n" + raw
+
+
+def with_character_sheet_lock(prompt: str, sheet_ids: list[str]) -> str:
+    """Image N = какой cXX. Без этого gpt-image-2 сливает два листа в одно лицо."""
+    raw = (prompt or "").strip()
+    ids = [str(x).strip() for x in sheet_ids if str(x).strip()]
+    if not ids:
+        return raw
+    if raw.startswith(_IDENTITY_LOCK_PREFIX) or raw.startswith(
+        "Image 1 is the previous coverage still"
+    ):
+        return raw
+    lines: list[str] = []
+    for i, rid in enumerate(ids, start=1):
+        lines.append(
+            f"Image {i} is the identity reference of {rid} — use this face, "
+            f"hair, beard, body and clothes for person {rid} only."
+        )
+    if len(ids) >= 2:
+        named = " and ".join(ids)
+        lines.append(
+            f"{named} are TWO different people from TWO different attached "
+            "images. The scene must show both as two distinct bodies with two "
+            "distinct faces — not twins, not one man copied twice, not a merge "
+            "of the two sheets. A character sheet grid repeats one person on "
+            "purpose; that is identity reference, not a twin instruction and "
+            "not a layout to copy."
+        )
+    else:
+        lines.append(
+            f"Exactly one body of {ids[0]}. Do not copy the sheet grid or pose."
+        )
+    return "\n".join(lines) + "\n\n" + raw
+
+
+def flattened_coverage_groups(
+    frames: list[Any],
+) -> dict[str, list[Any]]:
+    """K1+K2+… после flatten: группа по префиксу id (`5` из `5-K2`).
+
+    После promote каждый кадр — vo_parent с ``parent_uuid`` = сам себе,
+    поэтому ``_group_by_parent`` их не склеивает.
+    """
+    buckets: dict[str, list[tuple[int, Any]]] = {}
+    for fr in frames:
+        if not _is_pipeline_frame(fr):
+            continue
+        parsed = parse_coverage_shot(coverage_shot_id(fr))
+        if parsed is None:
+            continue
+        group, k = parsed
+        buckets.setdefault(group, []).append((k, fr))
+    out: dict[str, list[Any]] = {}
+    for group, items in buckets.items():
+        items.sort(key=lambda item: item[0])
+        ks = [k for k, _ in items]
+        if 1 not in ks or max(ks) < 2:
+            continue
+        out[group] = [fr for _, fr in items]
+    return out
+
+
+def merge_flattened_coverage_members(
+    members: list[Any],
+) -> tuple[Any, list[Any]]:
+    """Склеить K1+K2+K3 обратно на родителя: полный закадр + кадры[]."""
+    if len(members) < 2:
+        return members[0], []
+    parent = members[0]
+    extra = list(members[1:])
+    shots: list[dict[str, Any]] = []
+    parts: list[str] = []
+    parent_sid = ""
+    for i, fr in enumerate(members):
+        planned = planned_shots_from_attrs(fr)
+        shot = copy.deepcopy(planned[0]) if planned else {}
+        if not isinstance(shot, dict):
+            shot = {}
+        piece = (getattr(fr, "voiceover_text", None) or "").strip()
+        parts.append(piece)
+        sid = str(shot.get("id") or coverage_shot_id(fr) or "").strip()
+        if i == 0:
+            parent_sid = sid
+        shot["id"] = sid
+        shot["порядок"] = i + 1
+        shot["parent_id"] = None if i == 0 else parent_sid or None
+        shot["закадр"] = piece
+        shots.append(shot)
+    full = " ".join(" ".join(parts).split())
+    if full:
+        parent.voiceover_text = full
+        parent.duration_seconds = vo_duration_sec(full, shots=1)
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs["кадры"] = shots
+    attrs["vo_cell_full"] = full
+    parent.attrs = attrs
+    _flag_attrs(parent)
+    _set_cs(
+        parent,
+        role="vo_parent",
+        parent_uuid=str(getattr(parent, "uuid", "") or ""),
+        shot_index=1,
+        shots_in_beat=len(shots),
+        shot_id=parent_sid,
+    )
+    return parent, extra
+
+
+async def collapse_flattened_coverage_cells(
+    session: AsyncSession,
+    project: Project,
+) -> dict[str, Any]:
+    """Перед повторным script_frames_qc: K2/K3 → снова дети на K1.
+
+    Иначе GPT видит 44 самостоятельных ячейки и пишет покрытие на покрытие.
+    """
+    from sqlalchemy import select as sel
+
+    from app.models import Frame
+    from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
+
+    frames = list(
+        (
+            await session.execute(
+                sel(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if any(_cs(fr).get("scene_split") for fr in frames):
+        # Уже разбито по сценам (родитель + дочерние шоты) — нечего склеивать.
+        return {"groups": 0, "deleted": 0, "skipped": "scene_split"}
+    groups = flattened_coverage_groups(frames)
+    extra: list[Any] = []
+    merged = 0
+    for members in groups.values():
+        _parent, drop = merge_flattened_coverage_members(members)
+        extra.extend(drop)
+        merged += 1
+    archived = _archive_frames_as_leftover(extra)
+    if archived:
+        await session.flush()
+        await renumber_frames_by_sort_key(session, project)
+    report = {
+        "groups": merged,
+        "deleted": 0,
+        "archived": archived,
+    }
+    if merged or archived:
+        logger.info(
+            "[#{}] collapse flattened coverage: groups={} archived={}",
+            project.id,
+            merged,
+            archived,
+        )
+    return report
+
+
+def _vo_parts_without_empty(text: str, n: int) -> list[str]:
+    """Нарезка без пустого хвоста: лишние слоты не оставляем пустыми."""
+    raw = (text or "").strip()
+    parts = split_text_into_parts(raw, max(1, int(n)))
+    while parts and not str(parts[-1] or "").strip():
+        parts.pop()
+    cleaned = [" ".join((p or "").split()) for p in parts if str(p or "").strip()]
+    if cleaned:
+        return cleaned
+    return [raw] if raw else []
+
+
+def kadry_vo_pieces(
+    planned: list[dict[str, Any]],
+    full: str,
+    action: str = "",
+) -> list[str]:
+    """Ровно ``len(planned)`` кусков. Нарезка VO длину лестницы не режет."""
+    n = len(planned)
+    if n < 1:
+        text = " ".join((full or "").split())
+        return [text] if text else [""]
+    # Раскладка из кадры[] — источник правды, если склейка непустых кусков =
+    # закадр ячейки (гейт шотов: пустой закадр у кадра — норма). Слепо не
+    # перерезаем: иначе пустые кадры получают куски и закадр дублируется.
+    laid = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
+    if any(laid) and _norm_words(" ".join(p for p in laid if p)) == _norm_words(full):
+        return laid
+    chain_parts = partition_planned_by_scene_chain(planned, action) if action else None
+    if chain_parts is not None:
+        out = list(chain_parts[:n])
+        while len(out) < n:
+            out.append("")
+        return out
+    explicit = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
+    if all(len(piece) >= 13 for piece in explicit):
+        return explicit
+    partition = kadry_vo_partition(full, planned) or kadry_vo_partition_aligned(
+        full, planned
+    )
+    if partition:
+        out = list(partition[:n])
+        while len(out) < n:
+            out.append("")
+        return out
+    parts = _vo_parts_without_empty(full, n)
+    while len(parts) < n:
+        parts.append("")
+    return parts[:n]
+
+
+def resolve_shot_plan(
+    original_vo: str,
+    planned: list[dict[str, Any]],
+    action: str = "",
+) -> tuple[int, list[str]]:
+    """Сколько шотов: только из кадры[]. Без плана не выдумывать нарезку."""
+    text = (original_vo or "").strip()
+    if planned:
+        return len(planned), kadry_vo_pieces(planned, text, action)
+    return 1, [text] if text else [""]
+
+
+def bits_from_attrs(frame: Any) -> list[dict[str, Any]]:
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return []
+    raw = attrs.get("биты") or attrs.get("bits")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """1 бит → 1 кадр. Склейка закадр = весь текст ячейки, без хвостов."""
+    text = " ".join((full_vo or "").split())
+    ordered = sorted(
+        (item for item in bits if isinstance(item, dict)),
+        key=lambda item: int(item.get("порядок") or 0),
+    )
+    if not text or not ordered:
+        return []
+    starts: list[int] = []
+    cursor = 0
+    for i, item in enumerate(ordered):
+        anchor = " ".join(str(item.get("якорь") or "").split())
+        idx = -1
+        if anchor:
+            idx = text.find(anchor, cursor)
+            if idx < 0:
+                idx = text.lower().find(anchor.lower(), cursor)
+        if idx < 0:
+            parts = split_text_into_parts(text, len(ordered))
+            while parts and not str(parts[-1] or "").strip():
+                parts.pop()
+            if " ".join(" ".join(parts).split()) != text:
+                return []
+            return _kadry_rows(ordered[: len(parts)], parts)
+        starts.append(0 if i == 0 else idx)
+        cursor = idx + max(len(anchor), 1)
+    parts: list[str] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        if end < start:
+            end = start
+        parts.append(text[start:end].strip())
+    if " ".join(" ".join(parts).split()) != text:
+        parts = split_text_into_parts(text, len(ordered))
+        while parts and not str(parts[-1] or "").strip():
+            parts.pop()
+        if " ".join(" ".join(parts).split()) != text:
+            return []
+        ordered = ordered[: len(parts)]
+    return _kadry_rows(ordered, parts)
+
+
+def _kadry_rows(
+    bits: list[dict[str, Any]], parts: list[str]
+) -> list[dict[str, Any]]:
+    """1 бит = самостоятельная VO-ячейка ``Bnn-K1``, не покрытие ``B01-K2``."""
+    rows: list[dict[str, Any]] = []
+    for i, (item, piece) in enumerate(zip(bits, parts, strict=False)):
+        sid = f"B{i + 1:02d}-K1"
+        rows.append(
+            {
+                "id": sid,
+                "порядок": i + 1,
+                "parent_id": None,
+                "закадр": piece,
+                "действие": str(
+                    item.get("изменение") or item.get("глагол") or ""
+                ).strip(),
+            }
+        )
+    return rows
+
+
+def ensure_kadry_from_bits(frame: Any) -> int:
+    """Если кадры[] пустые, а биты есть — собрать покрытие по якорям."""
+    if planned_shots_from_attrs(frame):
+        return 0
+    bits = bits_from_attrs(frame)
+    full = (getattr(frame, "voiceover_text", None) or "").strip()
+    planned = kadry_from_bits(full, bits)
+    if not planned:
+        return 0
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["кадры"] = planned
+    attrs["vo_cell_full"] = " ".join(full.split())
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    return len(planned)
 
 
 _SCENE_CHAIN_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
@@ -80,12 +812,16 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
         attrs["place"] = place
     if action:
         attrs["shot01_action"] = action
-        existing = str(
-            attrs.get("main_action") or attrs.get("главное_действие") or ""
-        ).strip()
-        # Expand не затирает цепь сцен (и любой уже записанный main_action).
-        if not existing:
+        # Пустую ячейку заполняем. Уже записанную цепь сцен не затираем
+        # коротким действием шота — иначе shots видит steps=0.
+        if not str(attrs.get("main_action") or "").strip():
             attrs["main_action"] = action
+    for key in ("раскладка", "зона"):
+        val = str(shot.get(key) or "").strip()
+        if val:
+            attrs[key] = val
+        # не стираем уже записанную раскладку/зону пустым shot-полем
+        # (QC sync / partial ops иначе затирали layout)
     frame.attrs = attrs
     _flag_attrs(frame)
     extra: dict[str, Any] = {}
@@ -126,6 +862,30 @@ def vo_duration_sec(text: str, *, shots: int = 1) -> float:
     return round(total, 2)
 
 
+def _is_pipeline_frame(frame: Any) -> bool:
+    if not str(getattr(frame, "uuid", "") or "").strip():
+        return False
+    if is_coverage_leftover(frame):
+        return False
+    attrs = getattr(frame, "attrs", None)
+    if isinstance(attrs, dict) and attrs.get("from_disk_media"):
+        return False
+    return True
+
+
+def _archive_frames_as_leftover(frames: list[Any]) -> int:
+    """Пометить кадры leftover. Строки Frame / промты / тексты не удаляются."""
+    n = 0
+    for fr in frames:
+        if getattr(fr, "id", None) is None:
+            continue
+        if is_coverage_leftover(fr):
+            continue
+        _set_cs(fr, leftover=True)
+        n += 1
+    return n
+
+
 def _cs(frame: Any) -> dict[str, Any]:
     attrs = getattr(frame, "attrs", None)
     if not isinstance(attrs, dict):
@@ -160,6 +920,8 @@ def repair_split_vo_on_parents(frames: list[Any]) -> int:
     """
     groups: dict[str, list[Any]] = {}
     for fr in frames:
+        if not _is_pipeline_frame(fr):
+            continue
         cs = _cs(fr)
         parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
         if not parent:
@@ -188,6 +950,10 @@ def repair_split_vo_on_parents(frames: list[Any]) -> int:
         if len(unique) == 1:
             joined = next(iter(unique))
         else:
+            parent_vo = (getattr(parent, "voiceover_text", None) or "").strip()
+            # Порог уже разрезал закадр по запятой — не склеивать обратно.
+            if parent_vo.endswith((",", ";", ":", "—")):
+                continue
             joined = " ".join(p for p in parts if p)
         if joined:
             parent.voiceover_text = joined
@@ -202,6 +968,8 @@ def apply_vo_shot_cuts(frames: list[Any]) -> int:
     """Дубликат ячейки разбивки режем по шотам. voiceover_text не трогаем."""
     groups: dict[str, list[Any]] = {}
     for fr in frames:
+        if not _is_pipeline_frame(fr):
+            continue
         cs = _cs(fr)
         parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
         if not parent:
@@ -217,9 +985,11 @@ def apply_vo_shot_cuts(frames: list[Any]) -> int:
         original = (getattr(parent, "voiceover_text", None) or "").strip()
         if not original:
             continue
-        parts = split_text_into_parts(original, len(members))
+        parts = _vo_parts_without_empty(original, len(members))
         for i, fr in enumerate(members):
             piece = parts[i] if i < len(parts) else ""
+            if not piece:
+                continue
             if str(_cs(fr).get(_VO_SHOT_KEY) or "") == piece:
                 continue
             _set_cs(fr, **{_VO_SHOT_KEY: piece})
@@ -230,6 +1000,8 @@ def apply_vo_shot_cuts(frames: list[Any]) -> int:
 def _group_by_parent(frames: list[Any]) -> dict[str, list[Any]]:
     groups: dict[str, list[Any]] = {}
     for fr in frames:
+        if not _is_pipeline_frame(fr):
+            continue
         cs = _cs(fr)
         parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
         if not parent:
@@ -240,11 +1012,1051 @@ def _group_by_parent(frames: list[Any]) -> dict[str, list[Any]]:
     return groups
 
 
+def _norm_vo_key(text: str) -> str:
+    return " ".join((text or "").replace("\u0301", "").split()).casefold()
+
+
+def _write_frame_shot_id(
+    frame: Any, sid: str, *, parent_sid: str | None
+) -> None:
+    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым."""
+    extra: dict[str, Any] = {"shot_id": sid}
+    if parent_sid is not None:
+        extra["coverage_parent_id"] = parent_sid
+    _set_cs(frame, **extra)
+    planned = planned_shots_from_attrs(frame)
+    if not planned:
+        return
+    planned[0]["id"] = sid
+    if parent_sid is not None:
+        planned[0]["parent_id"] = parent_sid or None
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["кадры"] = planned
+    frame.attrs = attrs
+    _flag_attrs(frame)
+
+
+def sync_live_coverage_ids(frames: list[Any]) -> int:
+    """shot_id = ``{живой_номер_K1}-S{сцена}-K{i}``. Stale 12-S3 при кадре 13.
+
+    У VO-родителя без явной роли child сбрасывает leftover coverage_parent_id.
+    """
+    changed = 0
+    for members in _group_by_parent(frames).values():
+        live = [m for m in members if not is_coverage_leftover(m)]
+        if not live:
+            continue
+        parent = next((m for m in live if not is_shot_child(m)), live[0])
+        kids = [m for m in live if m is not parent]
+        kids.sort(
+            key=lambda m: (
+                int(_cs(m).get("shot_index") or 0),
+                int(getattr(m, "number", 0) or 0),
+            )
+        )
+        ordered = [parent, *kids]
+        own_sid = coverage_shot_id(parent)
+        if _scene_from_shot_id(own_sid) is None:
+            keep_x1 = (
+                str(_cs(parent).get("coverage_kind") or "").strip().lower()
+                == "child"
+            )
+            leftover = str(_cs(parent).get("coverage_parent_id") or "")
+            if leftover and not keep_x1:
+                _set_cs(parent, coverage_parent_id="")
+                changed += 1
+            continue
+        scene = frame_scene_number(parent) or _scene_from_shot_id(own_sid) or 1
+        try:
+            pno = int(parent.number)
+        except (TypeError, ValueError):
+            continue
+        parent_sid = f"{pno}-S{int(scene)}-K1"
+        keep_x1 = str(_cs(parent).get("coverage_kind") or "").strip().lower() == "child"
+        planned = planned_shots_from_attrs(parent)
+        for i, fr in enumerate(ordered, start=1):
+            sid = f"{pno}-S{int(scene)}-K{i}"
+            if i == 1:
+                pid: str | None = (
+                    str(_cs(parent).get("coverage_parent_id") or "")
+                    if keep_x1
+                    else ""
+                )
+            else:
+                pid = parent_sid
+            before = (
+                coverage_shot_id(fr),
+                str(_cs(fr).get("coverage_parent_id") or ""),
+                int(_cs(fr).get("shot_index") or 0),
+                int(_cs(fr).get("shots_in_beat") or 0),
+            )
+            _write_frame_shot_id(fr, sid, parent_sid=pid)
+            _set_cs(
+                fr,
+                shot_index=i,
+                shots_in_beat=len(ordered),
+            )
+            if i - 1 < len(planned):
+                planned[i - 1]["id"] = sid
+                planned[i - 1]["parent_id"] = None if i == 1 else parent_sid
+            after = (
+                coverage_shot_id(fr),
+                str(_cs(fr).get("coverage_parent_id") or ""),
+                int(_cs(fr).get("shot_index") or 0),
+                int(_cs(fr).get("shots_in_beat") or 0),
+            )
+            if before != after:
+                changed += 1
+        if planned:
+            attrs = dict(getattr(parent, "attrs", None) or {})
+            attrs["кадры"] = planned
+            parent.attrs = attrs
+            _flag_attrs(parent)
+    return changed
+
+
+def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
+    """Поздняя VO-ячейка с тем же закадром, что уже был — leftover, не сцена.
+
+    Типичный хвост: последняя ячейка набрала весь ролик (96 шотов) с still
+    своего K1, хотя текст уже лежит в ячейках 1…N-1.
+    """
+    cells: list[tuple[Any, list[Any]]] = []
+    seen: set[int] = set()
+    for members in _group_by_parent(frames).values():
+        live = [m for m in members if not is_coverage_leftover(m)]
+        if not live:
+            continue
+        parent = next((m for m in live if not is_shot_child(m)), live[0])
+        pid = id(parent)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        cells.append((parent, live))
+    cells.sort(key=lambda item: int(getattr(item[0], "number", 0) or 0))
+    earlier: set[str] = set()
+    first_parent_key = ""
+    detached = 0
+    for parent, members in cells:
+        keys = [
+            _norm_vo_key(str(getattr(m, "voiceover_text", "") or ""))
+            for m in members
+        ]
+        nonempty = [k for k in keys if k]
+        hits = sum(1 for k in nonempty if k in earlier)
+        threshold = max(3, (len(members) + 3) // 4)
+        parent_key = _norm_vo_key(str(getattr(parent, "voiceover_text", "") or ""))
+        same_opening = bool(
+            first_parent_key
+            and parent_key
+            and (
+                parent_key == first_parent_key
+                or (
+                    len(first_parent_key) >= 24
+                    and (
+                        parent_key.startswith(first_parent_key[:40])
+                        or first_parent_key.startswith(parent_key[:40])
+                    )
+                )
+            )
+        )
+        huge = len(members) >= 16 and hits >= threshold
+        replica = bool(earlier) and (same_opening or huge)
+        if replica:
+            for m in members:
+                extra: dict[str, Any] = {"leftover": True}
+                if is_shot_child(m):
+                    extra["parent_uuid"] = ""
+                    extra["coverage_parent_id"] = ""
+                    extra["use_parent_still"] = False
+                _set_cs(m, **extra)
+                detached += 1
+            pattrs = dict(getattr(parent, "attrs", None) or {})
+            planned = planned_shots_from_attrs(parent)
+            if planned:
+                pattrs["кадры"] = planned[:1]
+            vo = str(getattr(parent, "voiceover_text", "") or "").strip()
+            if vo:
+                pattrs["vo_cell_full"] = vo
+            parent.attrs = pattrs
+            _flag_attrs(parent)
+            _set_cs(parent, shots_in_beat=1, shot_index=1)
+            continue
+        if not first_parent_key:
+            first_parent_key = parent_key
+        earlier.update(nonempty)
+    return detached
+
+
+def leftover_later_duplicate_vo_frames(
+    frames: list[Any],
+    scenes_dir: Path | None = None,
+) -> int:
+    """Второй раз тот же закадр — leftover, если нет своего PNG.
+
+    Повторный expand копирует фразы на хвост (tkach #65 и #129). Карточку
+    без картинки прячем. PNG второго прохода не трогаем: это другой still.
+    Шоты живой ячейки (parent_uuid → этот прогон) не прячем: иначе монтаж
+    оставляет у сцены один кадр.
+    """
+    uuid_of = {
+        str(getattr(fr, "uuid", "") or ""): fr
+        for fr in frames
+        if str(getattr(fr, "uuid", "") or "")
+    }
+    seen: set[str] = set()
+    n = 0
+    for fr in _ordered_pipeline_frames(frames):
+        if is_coverage_leftover(fr):
+            continue
+        if is_shot_child(fr):
+            parent_uid = str(_cs(fr).get("parent_uuid") or "").strip()
+            parent = uuid_of.get(parent_uid) if parent_uid else None
+            try:
+                parent_n = int(getattr(parent, "number", 0) or 0) if parent else 0
+                self_n = int(getattr(fr, "number", 0) or 0)
+            except (TypeError, ValueError):
+                parent_n, self_n = 0, 0
+            if parent is not None and parent_n and parent_n != self_n:
+                if not is_coverage_leftover(parent):
+                    continue
+        key = _norm_vo_key(str(getattr(fr, "voiceover_text", "") or ""))
+        if not key:
+            continue
+        if key not in seen:
+            seen.add(key)
+            continue
+        try:
+            number = int(getattr(fr, "number", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        if scenes_dir is not None and number > 0:
+            if any(scenes_dir.glob(f"frame_{number:03d}_*.png")):
+                continue
+        extra: dict[str, Any] = {"leftover": True}
+        if is_shot_child(fr):
+            extra["parent_uuid"] = ""
+            extra["coverage_parent_id"] = ""
+            extra["use_parent_still"] = False
+        _set_cs(fr, **extra)
+        n += 1
+    return n
+
+
+def apply_ordered_voiceover_to_stills(
+    frames: list[Any],
+    pieces: list[str],
+    scenes_dir: Path,
+) -> int:
+    """Закадр QC/лестницы — на кадры с PNG по порядку, не на пустые слоты."""
+    stills: list[Any] = []
+    for fr in _ordered_pipeline_frames(frames):
+        if is_coverage_leftover(fr):
+            continue
+        try:
+            number = int(getattr(fr, "number", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if number < 1:
+            continue
+        if any(scenes_dir.glob(f"frame_{number:03d}_*.png")):
+            stills.append(fr)
+    updated = 0
+    for fr, piece in zip(stills, pieces, strict=False):
+        text = " ".join(str(piece or "").split())
+        if not text:
+            continue
+        if str(getattr(fr, "voiceover_text", "") or "") != text:
+            fr.voiceover_text = text
+            updated += 1
+        planned = planned_shots_from_attrs(fr)
+        if planned:
+            planned[0]["закадр"] = text
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        if planned:
+            attrs["кадры"] = planned
+        fr.attrs = attrs
+        _set_cs(fr, **{_VO_SHOT_KEY: text})
+    return updated
+
+
+def _norm_words(text: str) -> list[str]:
+    return " ".join((text or "").split()).split()
+
+
+def kadry_vo_partition(full: str, planned: list[dict[str, Any]]) -> list[str] | None:
+    """закадр из кадры[], только если склейка = ячейка и нет обрубков."""
+    parts = [str(item.get("закадр") or "").strip() for item in planned]
+    if not parts or not all(parts):
+        return None
+    if _norm_words(" ".join(parts)) != _norm_words(full):
+        return None
+    if any(vo_chunk_is_dangling(p) for p in parts):
+        return None
+    return parts
+
+
+def kadry_vo_partition_aligned(
+    full: str, planned: list[dict[str, Any]]
+) -> list[str] | None:
+    """Фрагменты кадры[].закадр, выровненные по тексту последовательно.
+
+    Терпим к мелким расхождениям GPT (пунктуация/пробелы между кусками):
+    каждый фрагмент ищется в остатке текста; промежутки приклеиваются к
+    предыдущему куску, хвост — к последнему. Склейка = весь текст.
+    None — если фрагмент не нашёлся по порядку (тогда слепая нарезка).
+    """
+    text = " ".join((full or "").split())
+    frags = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
+    if not text or not frags or any(not f for f in frags):
+        return None
+    lower = text.lower()
+    starts: list[int] = []
+    cursor = 0
+    for frag in frags:
+        idx = lower.find(frag.lower(), cursor)
+        if idx < 0:
+            return None
+        starts.append(idx)
+        cursor = idx + max(len(frag), 1)
+    parts: list[str] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        parts.append(text[start:end].strip())
+    if starts[0] > 0:
+        parts[0] = f"{text[: starts[0]].strip()} {parts[0]}".strip()
+    if any(vo_chunk_is_dangling(p) for p in parts):
+        return None
+    return parts
+
+
+_S_LADDER_RE = re.compile(r"^\d+-S(\d+)-K\d+$", re.I)
+
+
+def _scene_from_shot_id(shot_id: str) -> int | None:
+    m = _S_LADDER_RE.match((shot_id or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _scene_num(shot: dict[str, Any] | None) -> int | None:
+    if not isinstance(shot, dict):
+        return None
+    try:
+        return int(shot.get("сцена"))
+    except (TypeError, ValueError):
+        pass
+    return _scene_from_shot_id(str(shot.get("id") or ""))
+
+
+def frame_scene_number(frame: Any) -> int | None:
+    """Номер сцены кадра: camera_subdivide / кадры[0] / id ``1-S3-K1``."""
+    cs = _cs(frame)
+    try:
+        return int(cs.get("сцена"))
+    except (TypeError, ValueError):
+        pass
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        n = _scene_num(planned[0])
+        if n is not None:
+            return n
+    return _scene_from_shot_id(
+        str(cs.get("shot_id") or coverage_shot_id(frame) or "")
+    )
+
+
+_SIDECAR_PLACE_RE = re.compile(
+    r"(?:Место и время|Место)\s*:\s*([^;\n]+)",
+    re.I,
+)
+
+
+def generation_place_from_prompt(prompt: str) -> str:
+    """Место из строки «Место:» / «Место и время:». Preserve — lock, не локация."""
+    raw = str(prompt or "")
+    m = _SIDECAR_PLACE_RE.search(raw)
+    if m:
+        return " ".join(m.group(1).split()).strip().rstrip(".")
+    return ""
+
+
+def generation_place_from_sidecar(scenes_dir: Path, number: int) -> str:
+    """Место из sidecar JSON рядом с PNG кадра."""
+    if number < 1 or not scenes_dir.is_dir():
+        return ""
+    files = sorted(
+        scenes_dir.glob(f"frame_{int(number):03d}_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        place = generation_place_from_prompt(str(data.get("prompt") or ""))
+        if place:
+            return place
+    return ""
+
+
+def apply_generation_places_from_sidecars(
+    frames: list[Any],
+    scenes_dir: Path,
+) -> int:
+    """Вернуть ``место`` кадра из sidecar — DB после relink часто гомогенна."""
+    updated = 0
+    for fr in frames:
+        if is_coverage_leftover(fr):
+            continue
+        try:
+            number = int(getattr(fr, "number", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        place = generation_place_from_sidecar(scenes_dir, number)
+        if not place:
+            continue
+        planned = planned_shots_from_attrs(fr)
+        if planned:
+            planned[0]["место"] = place
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs["place"] = place
+        if planned:
+            attrs["кадры"] = planned
+        fr.attrs = attrs
+        extra_cs: dict[str, Any] = {"место": place, "набор": place}
+        _set_cs(fr, **extra_cs)
+        updated += 1
+    return updated
+
+
+def _frame_place(frame: Any) -> str:
+    cs = _cs(frame)
+    attrs = getattr(frame, "attrs", None)
+    attrs = attrs if isinstance(attrs, dict) else {}
+    for src in (
+        cs.get("место"),
+        attrs.get("place"),
+        attrs.get("место"),
+    ):
+        val = str(src or "").strip()
+        if val:
+            return val
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        val = str(planned[0].get("место") or planned[0].get("place") or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _ordered_pipeline_frames(frames: list[Any]) -> list[Any]:
+    work = [fr for fr in frames if _is_pipeline_frame(fr)]
+    work.sort(
+        key=lambda fr: (
+            float(
+                getattr(fr, "sort_key", None)
+                if getattr(fr, "sort_key", None) is not None
+                else getattr(fr, "number", 0)
+                or 0
+            ),
+            int(getattr(fr, "number", 0) or 0),
+        )
+    )
+    return work
+
+
+def assigned_scene_numbers(frames: list[Any]) -> list[int | None]:
+    """Номер сцены по порядку кадров: явный, иначе предыдущий (хвост без ``сцена``)."""
+    prev: int | None = None
+    out: list[int | None] = []
+    for fr in frames:
+        n = frame_scene_number(fr)
+        if n is None:
+            n = prev
+        out.append(n)
+        if n is not None:
+            prev = n
+    return out
+
+
+def _is_generic_shot_id(shot_id: str) -> bool:
+    """Короткие ``f1`` / ``1-S1-K1`` переиспользуются между сценами — не ключ группы."""
+    sid = (shot_id or "").strip()
+    if not sid:
+        return True
+    if _GENERIC_SHOT_ID_RE.match(sid):
+        return True
+    return sid.casefold() in _REUSED_PARENT_IDS
+
+
+_INHERIT_PLACE_RE = re.compile(
+    r"^(?:тот же|та же|то же|the same)\b[\s,.—–-]*",
+    re.I,
+)
+
+
+def _norm_place_key(place: str) -> str:
+    """Канон места для склейки: пусто = наследовать предыдущее."""
+    raw = " ".join((place or "").split()).strip()
+    if not raw:
+        return ""
+    low = raw.casefold()
+    if low.startswith("нет исходных") or low in {"?", "the same room architecture"}:
+        return ""
+    low = _INHERIT_PLACE_RE.sub("", low).strip()
+    return low.split(";")[0].split(",")[0].strip()
+
+
+def _explicit_scene_number(frame: Any) -> int | None:
+    """Номер сцены из cs/кадры, не из stamped ``7-S2-K1``."""
+    cs = _cs(frame)
+    try:
+        return int(cs.get("сцена"))
+    except (TypeError, ValueError):
+        pass
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        try:
+            return int(planned[0].get("сцена"))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _should_split_place_run(prev: Any, fr: Any) -> bool:
+    """Смена места режет склейку, кроме подхода той же сцены (T6, parent_id пуст)."""
+    prev_p = _norm_place_key(_frame_place(prev))
+    cur_p = _norm_place_key(_frame_place(fr))
+    if not prev_p or not cur_p or prev_p == cur_p:
+        return False
+    planned = planned_shots_from_attrs(fr)
+    pid = ""
+    if planned:
+        pid = str(planned[0].get("parent_id") or "").strip()
+    prev_scene = _explicit_scene_number(prev)
+    cur_scene = _explicit_scene_number(fr)
+    if (
+        pid in {"", "null", "None"}
+        and prev_scene is not None
+        and cur_scene == prev_scene
+    ):
+        return False
+    return True
+
+
+def assigned_place_run_keys(frames: list[Any]) -> list[str]:
+    """Прогон сцены по месту картинки, не по штампу VO-ячейки.
+
+    Смена места при том же номере и пустом parent_id (улица → крыльцо) не режет.
+    parent_id на чужой K1 при смене места режет. То же место на соседнем
+    VO-родителе не режет — иначе дети still-лока висят на двух карточках.
+    Пустое / «тот же» место наследует текущий прогон; следующее реальное
+    место режет, даже если предыдущий кадр был пустым.
+    ``cs.сцена`` / parent_uuid сами по себе группу не закрывают.
+    """
+    flats = assigned_flatten_keys(frames)
+    out: list[str] = []
+    prev_key = ""
+    prev: Any | None = None
+    split_i = 0
+    run_place = ""
+    for i, fr in enumerate(frames):
+        explicit = _explicit_scene_number(fr)
+        raw_place = _norm_place_key(_frame_place(fr))
+        place = raw_place or run_place
+        gap = False
+        if prev is not None:
+            try:
+                gap = int(fr.number) - int(prev.number) > 1
+            except (TypeError, ValueError):
+                gap = False
+        if gap:
+            run_place = raw_place
+        # Ручное разделение на доске: пустое место не склеивает новые
+        # VO-родители обратно в одну семью.
+        held = bool(_cs(fr).get("montage_split")) and not is_shot_child(fr)
+        if (
+            prev is not None
+            and not gap
+            and raw_place
+            and run_place
+            and raw_place != run_place
+        ):
+            split_i += 1
+            key = f"x:{split_i}"
+        elif held and prev is not None:
+            split_i += 1
+            key = f"ms:{split_i}"
+        elif prev is not None and not gap and prev_key and (
+            not raw_place or not run_place or raw_place == run_place
+        ):
+            key = prev_key
+        elif explicit is not None:
+            key = f"s:{explicit}"
+        elif place:
+            key = f"p:{place}"
+        elif prev_key.startswith(("p:", "x:")):
+            key = prev_key
+        else:
+            key = flats[i] if i < len(flats) else f"solo:{i}"
+        out.append(key)
+        prev_key = key
+        prev = fr
+        if raw_place:
+            run_place = raw_place
+        elif gap:
+            run_place = ""
+    return out
+
+
+def _run_already_linked(members: list[Any]) -> bool:
+    """Эта пачка уже parent + shot с parent_uuid на голову — не переписывать."""
+    if not members:
+        return True
+    parent = members[0]
+    uid = str(getattr(parent, "uuid", "") or "").strip()
+    if not uid or is_shot_child(parent):
+        return False
+    if len(planned_shots_from_attrs(parent)) > len(members):
+        return False
+    try:
+        beat = int(_cs(parent).get("shots_in_beat") or 0)
+    except (TypeError, ValueError):
+        beat = 0
+    if beat and beat != len(members):
+        return False
+    if len(members) == 1:
+        return str(_cs(parent).get("parent_uuid") or uid) in {uid, ""}
+    for m in members[1:]:
+        if not is_shot_child(m):
+            return False
+        if str(_cs(m).get("parent_uuid") or "") != uid:
+            return False
+    return True
+
+
+def flatten_scene_key(frame: Any) -> str | None:
+    """Ключ сцены после flatten: S-лестница / префикс ``57-2``, не reused f1."""
+    sid = coverage_shot_id(frame)
+    from_s = _scene_from_shot_id(sid)
+    if from_s is not None:
+        return f"s:{from_s}"
+    parsed = parse_coverage_shot(sid)
+    if parsed and not _is_generic_shot_id(parsed[0]):
+        return f"g:{parsed[0]}"
+    m = _CELL_SHOT_RE.match(sid)
+    if m and not _is_generic_shot_id(m.group(1)):
+        return f"g:{m.group(1)}"
+    planned = planned_shots_from_attrs(frame)
+    pid = ""
+    if planned:
+        pid = str(planned[0].get("parent_id") or "").strip()
+    if pid and pid.casefold() != "null" and not _is_generic_shot_id(pid):
+        return f"m:{pid}"
+    if sid and not _is_generic_shot_id(sid):
+        return f"m:{sid}"
+    place = _frame_place(frame)
+    if place:
+        return f"pl:{place.casefold()}"
+    return None
+
+
+def assigned_flatten_keys(frames: list[Any]) -> list[str]:
+    """Ключ каждого кадра; пустой хвост (f2 без места) наследует предыдущий."""
+    out: list[str] = []
+    prev: str | None = None
+    for i, fr in enumerate(frames):
+        key = flatten_scene_key(fr)
+        own = key is not None
+        if key is None:
+            key = prev
+        if key is None:
+            key = f"solo:{i}"
+        out.append(key)
+        if own or prev is None:
+            prev = key
+    return out
+
+
+def relink_shot_roles_by_scene(
+    frames: list[Any],
+    *,
+    resplit_places: bool = False,
+) -> int:
+    """Склеить подряд идущие кадры одной сцены: первый родитель, остальные shot.
+
+    QC часто выкидывает ``сцена``. promote тогда делает 1 кадр = 1 VO-ячейка.
+    По умолчанию уже связанные parent+children не трогаем (хвост
+    script_frames_qc). ``resplit_places`` — доска монтажа: смена места
+    с parent_id на чужой K1 режет группу, иначе дети одного родителя
+    висят на двух соседних сценах.
+    """
+    work = [
+        fr
+        for fr in _ordered_pipeline_frames(frames)
+        if not is_coverage_leftover(fr)
+    ]
+    if not work:
+        return 0
+    keep_longer_kadry = False
+    if resplit_places:
+        keys = assigned_place_run_keys(work)
+        source = work
+        use_gap = True
+    else:
+        already: set[int] = set()
+        for members in _group_by_parent(work).values():
+            if len(members) > 1 and any(is_shot_child(m) for m in members):
+                already.update(id(m) for m in members)
+        source = [fr for fr in work if id(fr) not in already]
+        if not source:
+            return 0
+        keys = assigned_flatten_keys(source)
+        use_gap = False
+        keep_longer_kadry = True
+    groups: list[tuple[str, list[Any]]] = []
+    for fr, key in zip(source, keys, strict=False):
+        last = groups[-1] if groups else None
+        gap = False
+        if use_gap and last:
+            prev_fr = last[1][-1]
+            try:
+                gap = int(fr.number) - int(prev_fr.number) > 1
+            except (TypeError, ValueError):
+                gap = False
+        if not last or last[0] != key or gap:
+            groups.append((key, [fr]))
+        else:
+            last[1].append(fr)
+    updated = 0
+    for scene_n, (_key, members) in enumerate(groups, start=1):
+        if resplit_places and _run_already_linked(members):
+            if len(members) == 1 and _cs(members[0]).get("сцена") in (None, ""):
+                _set_cs(members[0], **{"сцена": scene_n})
+                updated += 1
+            continue
+        if not resplit_places and len(members) < 2:
+            if scene_n is not None and _cs(members[0]).get("сцена") in (None, ""):
+                _set_cs(members[0], **{"сцена": scene_n})
+                updated += 1
+            continue
+        parent = members[0]
+        uid = str(getattr(parent, "uuid", "") or "").strip()
+        if not uid:
+            continue
+        place = next((_frame_place(m) for m in members if _frame_place(m)), "")
+        parent_place = _frame_place(parent) or place
+        shots: list[dict[str, Any]] = []
+        master_id = ""
+        for i, fr in enumerate(members):
+            planned = planned_shots_from_attrs(fr)
+            shot = copy.deepcopy(planned[0]) if planned else {}
+            if not isinstance(shot, dict):
+                shot = {}
+            sid = str(shot.get("id") or coverage_shot_id(fr) or "").strip()
+            if i == 0:
+                master_id = sid
+            shot["id"] = sid
+            shot["порядок"] = i + 1
+            shot["parent_id"] = None if i == 0 else master_id or None
+            if scene_n is not None:
+                shot["сцена"] = scene_n
+            own_place = _frame_place(fr)
+            if own_place:
+                shot["место"] = own_place
+            elif place and not str(shot.get("место") or "").strip():
+                shot["место"] = place
+            vo = str(getattr(fr, "voiceover_text", None) or "").strip()
+            if vo:
+                shot["закадр"] = vo
+            shots.append(shot)
+        full = " ".join(
+            str(getattr(m, "voiceover_text", None) or "").strip()
+            for m in members
+            if str(getattr(m, "voiceover_text", None) or "").strip()
+        )
+        full = " ".join(full.split())
+        pattrs = dict(getattr(parent, "attrs", None) or {})
+        if keep_longer_kadry:
+            existing = planned_shots_from_attrs(parent)
+            if len(existing) > len(shots):
+                shots = existing
+        pattrs["кадры"] = shots
+        if full:
+            pattrs["vo_cell_full"] = full
+        if parent_place:
+            pattrs["place"] = parent_place
+        if not str(pattrs.get("главное_действие") or "").strip():
+            from app.services.shot_templates import parse_scene_chain
+
+            old_uid = str(_cs(parent).get("parent_uuid") or "")
+            donor = next(
+                (
+                    f
+                    for f in work
+                    if str(getattr(f, "uuid", "") or "") == old_uid
+                ),
+                parent,
+            )
+            scene_no = _explicit_scene_number(parent)
+            if scene_no is None and shots:
+                try:
+                    scene_no = int(shots[0].get("сцена"))
+                except (TypeError, ValueError):
+                    scene_no = scene_n
+            chain = {
+                sc["n"]: sc
+                for sc in parse_scene_chain(main_action_text(donor))
+            }
+            sc = chain.get(scene_no) if scene_no is not None else None
+            if sc:
+                head = f"{sc['n']}. {sc['place']} — {sc['action']}".rstrip(" —")
+                vo_line = str(sc.get("vo") or "").strip()
+                pattrs["главное_действие"] = (
+                    f"{head}\n{vo_line}" if vo_line else head
+                )
+        parent.attrs = pattrs
+        _flag_attrs(parent)
+        extra_cs: dict[str, Any] = {
+            "role": "vo_parent",
+            "parent_uuid": uid,
+            "shot_index": 1,
+            "shots_in_beat": len(members),
+            "scene_split": 1,
+        }
+        own_scene = _explicit_scene_number(parent)
+        if own_scene is not None:
+            extra_cs["сцена"] = own_scene
+        elif scene_n is not None:
+            extra_cs["сцена"] = scene_n
+        if parent_place:
+            extra_cs["место"] = parent_place
+            extra_cs["набор"] = parent_place
+        _set_cs(parent, **extra_cs)
+        if len(members) == 1:
+            updated += 1
+            continue
+        for i, fr in enumerate(members[1:], start=2):
+            child_place = _frame_place(fr) or place
+            child_cs: dict[str, Any] = {
+                "role": "shot",
+                "parent_uuid": uid,
+                "shot_index": i,
+                "shots_in_beat": len(members),
+                "scene_split": 1,
+            }
+            if own_scene is not None:
+                child_cs["сцена"] = own_scene
+            elif scene_n is not None:
+                child_cs["сцена"] = scene_n
+            if child_place:
+                child_cs["место"] = child_place
+                child_cs["набор"] = child_place
+            _set_cs(fr, **child_cs)
+            cattrs = dict(getattr(fr, "attrs", None) or {})
+            one = shots[i - 1] if i - 1 < len(shots) else {}
+            if one:
+                cattrs["кадры"] = [one]
+            if child_place and not str(cattrs.get("place") or "").strip():
+                cattrs["place"] = child_place
+            fr.attrs = cattrs
+            _flag_attrs(fr)
+        updated += len(members)
+    if updated:
+        logger.info("relink_shot_roles_by_scene: frames={}", updated)
+    return updated
+
+
+def planned_for_parent_expand(
+    parent: Any, planned: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """После scene_split не разворачивать чужие сцены из полного кадры[].
+
+    Повторный apply-ops часто пишет всю лестницу ролика на первый
+    vo_parent. Без отсечения expand считает need=20 при have=2 и
+    вставляет вторую копию сцен 2…N рядом со старыми ячейками.
+    """
+    if not planned or not _cs(parent).get("scene_split"):
+        return list(planned)
+    own = frame_scene_number(parent)
+    if own is None:
+        return list(planned)
+    own_shots = [s for s in planned if _scene_num(s) == own]
+    return own_shots or list(planned)
+
+
+def _ladder_keep_key(members: list[Any], index: int) -> tuple[int, int, int]:
+    has_s = 0
+    max_id = 0
+    for fr in members:
+        sid = coverage_shot_id(fr)
+        if _S_LADDER_RE.match(sid or ""):
+            has_s = 1
+        raw = getattr(fr, "id", None)
+        try:
+            max_id = max(max_id, int(raw or 0))
+        except (TypeError, ValueError):
+            pass
+    return (has_s, max_id, -index)
+
+
+_LADDER_CELL_RE = re.compile(r"^(\d+)-")
+
+
+def _ladder_cell_key(frame: Any) -> str:
+    """Префикс ячейки из id лестницы (``57-S1-K1`` → ``57``).
+
+    GPT нумерует ``сцена`` локально (каждая ячейка с 1) — без префикса
+    лестницы разных ячеек считались дублями одной сцены и удалялись.
+    """
+    for sid in (coverage_shot_id(frame), str(_cs(frame).get("shot_id") or "")):
+        m = _LADDER_CELL_RE.match((sid or "").strip())
+        if m:
+            return m.group(1)
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        m = _LADDER_CELL_RE.match(str(planned[0].get("id") or "").strip())
+        if m:
+            return m.group(1)
+    return ""
+
+
+def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
+    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
+    groups = _group_by_parent(frames)
+    seen: set[int] = set()
+    ladders: dict[tuple[str, int], list[tuple[int, list[Any]]]] = {}
+    idx = 0
+    for members in groups.values():
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if str(_cs(m).get("role") or "") == "vo_parent"),
+            members[0],
+        )
+        sc = frame_scene_number(parent)
+        if sc is None:
+            continue
+        ladders.setdefault((_ladder_cell_key(parent), sc), []).append((idx, list(members)))
+        idx += 1
+        for fr in members:
+            seen.add(id(fr))
+    for fr in frames:
+        if id(fr) in seen or not _is_pipeline_frame(fr) or is_shot_child(fr):
+            continue
+        sc = frame_scene_number(fr)
+        if sc is None:
+            continue
+        ladders.setdefault((_ladder_cell_key(fr), sc), []).append((idx, [fr]))
+        idx += 1
+        seen.add(id(fr))
+    extra: list[Any] = []
+    seen_extra: set[int] = set()
+
+    def _take(members: list[Any]) -> None:
+        for fr in members:
+            marker = id(fr)
+            if marker in seen_extra:
+                continue
+            seen_extra.add(marker)
+            extra.append(fr)
+
+    for items in ladders.values():
+        if len(items) < 2:
+            continue
+        keep = max(items, key=lambda it: _ladder_keep_key(it[1], it[0]))
+        for item in items:
+            if item is keep:
+                continue
+            _take(item[1])
+    # Старый ``1-K7`` после renumber живёт рядом с ``3-S2-K*``: префикс
+    # уже не совпадает, но это вторая лестница той же сцены. S-лестницу
+    # оставляем, безымянную K-лестницу снимаем.
+    by_scene: dict[int, list[list[tuple[int, list[Any]]]]] = {}
+    for (_cell, sc), items in ladders.items():
+        by_scene.setdefault(int(sc), []).append(items)
+    for groups in by_scene.values():
+        s_groups: list[list[tuple[int, list[Any]]]] = []
+        plain: list[list[tuple[int, list[Any]]]] = []
+        for items in groups:
+            has_s = any(
+                _S_LADDER_RE.match(coverage_shot_id(fr) or "")
+                for _idx, members in items
+                for fr in members
+            )
+            (s_groups if has_s else plain).append(items)
+        if not s_groups or not plain:
+            continue
+        for items in plain:
+            for _idx, members in items:
+                _take(members)
+    return extra
+
+
+def partition_planned_by_scene_chain(
+    planned: list[dict[str, Any]],
+    action: str,
+) -> list[str] | None:
+    """Нарезать закадр по сценам ``главное_действие``, не по всей ячейке."""
+    from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+
+    chain = parse_scene_chain(action)
+    if not chain or not planned:
+        return None
+    if not any(_scene_num(shot) is not None for shot in planned):
+        return None
+    vo_by_n = {
+        int(sc["n"]): plain_scene_vo(str(sc.get("vo") or ""))
+        for sc in chain
+    }
+    if not any(vo_by_n.values()):
+        return None
+    groups: list[tuple[int | None, list[int]]] = []
+    for i, shot in enumerate(planned):
+        n = _scene_num(shot)
+        if not groups or groups[-1][0] != n:
+            groups.append((n, [i]))
+        else:
+            groups[-1][1].append(i)
+    out = [""] * len(planned)
+    for n, idxs in groups:
+        scene_vo = vo_by_n.get(n) if n is not None else ""
+        if not scene_vo:
+            return None
+        scene_shots = [planned[i] for i in idxs]
+        scene_parts = (
+            kadry_vo_partition(scene_vo, scene_shots)
+            or kadry_vo_partition_aligned(scene_vo, scene_shots)
+            or _vo_parts_without_empty(scene_vo, len(idxs))
+        )
+        for j, i in enumerate(idxs):
+            if j < len(scene_parts):
+                out[i] = " ".join((scene_parts[j] or "").split())
+    return out
+
+
+def _cell_full_text(parent: Any, members: list[Any]) -> str:
+    attrs = getattr(parent, "attrs", None) or {}
+    full = str(attrs.get("vo_cell_full") or "").strip() if isinstance(attrs, dict) else ""
+    if full:
+        return full
+    joined = " ".join(
+        (getattr(m, "voiceover_text", None) or "").strip()
+        for m in members
+        if (getattr(m, "voiceover_text", None) or "").strip()
+    )
+    joined = " ".join(joined.split())
+    if joined:
+        return joined
+    return (getattr(parent, "voiceover_text", None) or "").strip()
+
+
 def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
     """После QC: закадр ячейки → voiceover_text каждого кадра группы.
 
-    Склейка кусков по порядку = исходная ячейка. Полный текст копируется
-    в attrs.vo_cell_full у родителя.
+    Режем по фразам/клаузам, не по 27–54 и не по словам. Склейка непустых
+    кусков = исходная ячейка. Полный текст — в attrs.vo_cell_full.
     """
     updated = 0
     for members in _group_by_parent(frames).values():
@@ -254,37 +2066,644 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             members[0],
         )
-        attrs = dict(getattr(parent, "attrs", None) or {})
-        full = str(attrs.get("vo_cell_full") or "").strip()
-        if not full:
-            full = (getattr(parent, "voiceover_text", None) or "").strip()
-            if not full:
-                full = " ".join(
-                    (getattr(m, "voiceover_text", None) or "").strip()
-                    for m in members
-                    if (getattr(m, "voiceover_text", None) or "").strip()
-                )
-                full = " ".join(full.split())
+        full = _cell_full_text(parent, members)
         if not full:
             continue
         planned = planned_shots_from_attrs(parent)
-        parts = [str(item.get("закадр") or "").strip() for item in planned]
-        if len(parts) != len(members) or not all(parts):
-            parts = [
-                str(_cs(m).get(_VO_SHOT_KEY) or "").strip() for m in members
-            ]
-        if len(parts) != len(members) or not all(parts):
-            parts = split_text_into_parts(full, len(members))
+        parts = _vo_parts_without_empty(full, len(members))
+        attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
+        if planned:
+            for i, item in enumerate(planned):
+                piece = parts[i] if i < len(parts) else ""
+                if not piece:
+                    continue
+                if str(item.get("закадр") or "") != piece:
+                    item["закадр"] = piece
+                    updated += 1
+            attrs["кадры"] = list(planned)
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(members):
             piece = parts[i] if i < len(parts) else ""
+            if not piece:
+                continue
             if (getattr(fr, "voiceover_text", None) or "") != piece:
                 fr.voiceover_text = piece
                 updated += 1
             _set_cs(fr, **{_VO_SHOT_KEY: piece})
     return updated
+
+
+def _scene_group_key(shot: dict[str, Any] | None, solo: str) -> str:
+    """Ключ сцены: ``сцена`` / ``1-S3-K1`` / цепочка ``parent_id``, иначе соло."""
+    if not isinstance(shot, dict):
+        return solo
+    sc = shot.get("сцена")
+    if sc not in (None, ""):
+        return f"s:{sc}"
+    from_id = _scene_num(shot)
+    if from_id is not None:
+        return f"s:{from_id}"
+    pid = shot.get("parent_id")
+    sid = str(shot.get("id") or "").strip()
+    if pid not in (None, "", "null"):
+        return f"m:{str(pid).strip()}"
+    if sid:
+        return f"m:{sid}"
+    return solo
+
+
+def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
+    """Кадры[] → ячейки по СЦЕНАМ: K1 = VO-родитель, K2+ = дочерние шоты.
+
+    Сцена (``кадры[].сцена``) = одна ячейка заказа: родитель несёт полную
+    лестницу кадров сцены (``parent_id`` по таблице T/X) и кусок закадра
+    своего кадра, дочерние шоты — ``role="shot"`` с ``parent_uuid`` на
+    родителя и своими кусками. Склейка кусков всех ячеек = закадр исходной
+    ячейки. Лишние слоты сверх ``кадры[]`` — на удаление.
+    """
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_VIDEO_PROMPT_ATTR,
+    )
+    from app.services.shot_templates import parse_scene_chain
+
+    updated = 0
+    extra: list[Any] = []
+    for members in list(_group_by_parent(frames).values()):
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        full = _cell_full_text(parent, members)
+        if not full:
+            continue
+        planned = planned_shots_from_attrs(parent)
+        if planned:
+            from app.services.scene_shot_grammar import fill_kadry_scene_numbers
+
+            fill_kadry_scene_numbers(planned)
+        n_planned = max(1, len(planned) if planned else len(members))
+        if planned and len(members) < n_planned:
+            if (getattr(parent, "voiceover_text", None) or "").strip() != full:
+                parent.voiceover_text = full
+            updated += 1
+            continue
+        parts = (
+            kadry_vo_pieces(planned, full, main_action_text(parent))
+            if planned
+            else _vo_parts_without_empty(full, n_planned)
+        )
+        if len(parts) < n_planned:
+            parts = list(parts) + [""] * (n_planned - len(parts))
+        extra.extend(members[n_planned:])
+        keep = members[:n_planned]
+        n = len(keep)
+        if n < 1:
+            n = 1
+        planned = (planned or [])[:n]
+        parts = parts[:n]
+
+        # Группы шотов по сценам (порядок = порядок кадров в кадры[]).
+        scene_order: list[str] = []
+        scene_idxs: dict[str, list[int]] = {}
+        for i in range(n):
+            shot = planned[i] if i < len(planned) else None
+            key = _scene_group_key(shot, f"_solo_{i}")
+            if key not in scene_idxs:
+                scene_idxs[key] = []
+                scene_order.append(key)
+            scene_idxs[key].append(i)
+
+        # Цепь сцен ячейки → своя строка главное_действие на каждую сцену.
+        chain = {sc["n"]: sc for sc in parse_scene_chain(main_action_text(parent))}
+        seed_plan = (getattr(parent, "attrs", None) or {}).get("площадка")
+
+        for g_i, key in enumerate(scene_order):
+            idxs = scene_idxs[key]
+            scene_cells = [keep[i] for i in idxs]
+            scene_parent = scene_cells[0]
+            pieces = [parts[i] for i in idxs]
+            scene_chunk = " ".join(p for p in pieces if p).strip()
+            shots: list[dict[str, Any]] = []
+            shot_ids: set[str] = set()
+            for i in idxs:
+                raw = planned[i] if i < len(planned) else None
+                sid = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+                if sid:
+                    shot_ids.add(sid)
+            for pos, i in enumerate(idxs):
+                shot = copy.deepcopy(planned[i]) if i < len(planned) else None
+                if not isinstance(shot, dict):
+                    shot = {}
+                sid = str(shot.get("id") or "").strip()
+                shot["порядок"] = pos + 1
+                shot["закадр"] = pieces[pos]
+                pid = str(shot.get("parent_id") or "").strip()
+                if pos == 0 and (not pid or pid == sid or pid in shot_ids):
+                    # Первый кадр сцены — master: parent только кросс-ячеечный
+                    # (X1: master этой локации из прошлой ячейки).
+                    shot["parent_id"] = None
+                shots.append(shot)
+            scene_n: int | None = None
+            try:
+                scene_n = int(shots[0].get("сцена")) if shots else None
+            except (TypeError, ValueError):
+                scene_n = None
+            for pos, fr in enumerate(scene_cells):
+                piece = pieces[pos]
+                shot = shots[pos] if pos < len(shots) else None
+                uid = str(getattr(fr, "uuid", "") or "")
+                attrs = dict(getattr(fr, "attrs", None) or {})
+                if fr is scene_parent:
+                    attrs["кадры"] = shots
+                    attrs["vo_cell_full"] = scene_chunk or piece
+                    plan = _scene_plan_for(seed_plan, shots)
+                    if plan:
+                        attrs["площадка"] = plan
+                    sc = chain.get(scene_n) if scene_n is not None else None
+                    if sc:
+                        head = f"{sc['n']}. {sc['place']} — {sc['action']}".rstrip(" —")
+                        vo_line = str(sc.get("vo") or "").strip()
+                        attrs["главное_действие"] = (
+                            f"{head}\n{vo_line}" if vo_line else head
+                        )
+                    s2 = str(
+                        attrs.get(SHOT2_PROMPT_ATTR) or attrs.get("промт_картинки_2") or ""
+                    ).strip()
+                    v2 = str(
+                        attrs.get(SHOT2_VIDEO_PROMPT_ATTR)
+                        or attrs.get("animation_prompt_shot2")
+                        or ""
+                    ).strip()
+                    if not str(getattr(fr, "image_prompt", None) or "").strip() and s2:
+                        fr.image_prompt = s2
+                    if not str(getattr(fr, "animation_prompt", None) or "").strip() and v2:
+                        fr.animation_prompt = v2
+                    attrs.pop(SHOT2_PROMPT_ATTR, None)
+                    attrs.pop("промт_картинки_2", None)
+                    attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+                    attrs.pop("промты_детей", None)
+                    attrs.pop("child_prompts", None)
+                    if g_i > 0:
+                        attrs.pop("биты", None)
+                        attrs.pop("bits", None)
+                else:
+                    # Дочерний шот сцены: свой кадр, свой кусок закадра.
+                    # shot2-промт не трогаем — картинка из PNG родителя.
+                    attrs["кадры"] = [shot] if shot else []
+                    attrs["vo_cell_full"] = piece
+                    attrs.pop("биты", None)
+                    attrs.pop("bits", None)
+                    attrs.pop("главное_действие", None)
+                    attrs.pop("main_action", None)
+                    attrs.pop("площадка", None)
+                fr.attrs = attrs
+                _flag_attrs(fr)
+                if (getattr(fr, "voiceover_text", None) or "") != piece:
+                    fr.voiceover_text = piece
+                fr.duration_seconds = vo_duration_sec(piece, shots=1)
+                if fr is scene_parent:
+                    _set_cs(
+                        fr,
+                        role="vo_parent",
+                        parent_uuid=uid,
+                        shot_index=1,
+                        shots_in_beat=len(idxs),
+                        scene_split=1,
+                        **{_VO_SHOT_KEY: piece},
+                    )
+                else:
+                    _set_cs(
+                        fr,
+                        role="shot",
+                        parent_uuid=str(getattr(scene_parent, "uuid", "") or ""),
+                        shot_index=pos + 1,
+                        shots_in_beat=len(idxs),
+                        scene_split=1,
+                        **{_VO_SHOT_KEY: piece},
+                    )
+                _apply_shot_meta(fr, shot)
+                updated += 1
+    seen_extra = {id(fr) for fr in extra}
+    for fr in duplicate_scene_ladder_frames(frames):
+        if id(fr) in seen_extra:
+            continue
+        extra.append(fr)
+        seen_extra.add(id(fr))
+    return updated, extra
+
+
+async def rebuild_vo_cells_from_shots(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete."""
+    from sqlalchemy import delete, select
+
+    from app.models import FrameEdge, FrameText
+    from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
+
+    n_cells, extra = promote_shots_to_vo_cells(frames)
+    drop = [fr for fr in extra if getattr(fr, "id", None)]
+    seen = {id(fr) for fr in drop}
+    for fr in frames:
+        if id(fr) in seen or not getattr(fr, "id", None):
+            continue
+        vo = (getattr(fr, "voiceover_text", None) or "").strip()
+        attrs = getattr(fr, "attrs", None) or {}
+        cell = ""
+        if isinstance(attrs, dict):
+            cell = str(attrs.get("vo_cell_full") or "").strip()
+        cs = _cs(fr)
+        has_kadry = bool(planned_shots_from_attrs(fr))
+        has_vo = bool(
+            vo or cell or str(cs.get("vo_shot") or "").strip() or has_kadry
+            or is_shot_child(fr)
+        )
+        # Пустой закадр сам по себе не повод сносить шот из кадры[].
+        if not _is_pipeline_frame(fr) or not has_vo:
+            drop.append(fr)
+            seen.add(id(fr))
+    # 2026-10-11: never delete a main scene cell (has «площадка» from the
+    # Площадка node): losing it loses that scene's VO from the DB.
+    _protected = [
+        fr for fr in drop
+        if isinstance(getattr(fr, "attrs", None), dict)
+        and (getattr(fr, "attrs") or {}).get("площадка")
+        and not is_shot_child(fr)
+    ]
+    if _protected:
+        logger.warning(
+            "[#{}] rebuild VO cells: keep {} main cells (площадка) instead of deleting: {}",
+            project.id, len(_protected),
+            [str(getattr(fr, "uuid", ""))[:8] for fr in _protected],
+        )
+        _pid = {id(fr) for fr in _protected}
+        drop = [fr for fr in drop if id(fr) not in _pid]
+    archived = _archive_frames_as_leftover(drop)
+    if archived:
+        await session.flush()
+    ordered = await renumber_frames_by_sort_key(session, project)
+    work = [f for f in ordered if _is_pipeline_frame(f)]
+    await session.execute(
+        delete(FrameEdge).where(
+            FrameEdge.project_id == project.id,
+            FrameEdge.type == "next",
+        )
+    )
+    for a, b in zip(work, work[1:]):
+        session.add(
+            FrameEdge(
+                project_id=project.id,
+                from_frame_id=a.id,
+                to_frame_id=b.id,
+                type="next",
+            )
+        )
+    await session.flush()
+    work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
+    existing_vo: dict[int, Any] = {}
+    if work_ids:
+        rows = (
+            await session.execute(
+                select(FrameText).where(
+                    FrameText.project_id == project.id,
+                    FrameText.kind == "voiceover",
+                    FrameText.frame_id.in_(work_ids),
+                )
+            )
+        ).scalars()
+        for row in rows:
+            existing_vo.setdefault(int(row.frame_id), row)
+    for fr in work:
+        vo = (getattr(fr, "voiceover_text", None) or "").strip()
+        if not vo or getattr(fr, "id", None) is None:
+            continue
+        row = existing_vo.get(int(fr.id))
+        if row is None:
+            session.add(
+                FrameText(
+                    project_id=project.id,
+                    frame_id=fr.id,
+                    kind="voiceover",
+                    text=vo,
+                    sort_key=1.0,
+                )
+            )
+        elif (row.text or "") != vo:
+            row.text = vo
+    await session.flush()
+    report = {
+        "cells": n_cells,
+        "deleted": 0,
+        "archived": archived,
+        "pipeline": len(work),
+    }
+    logger.info(
+        "[#{}] rebuild VO cells from shots: cells={} archived={} pipeline={}",
+        project.id,
+        n_cells,
+        archived,
+        len(work),
+    )
+    return ordered, report
+
+
+async def reseed_vo_cells_without_kadry(
+    session: AsyncSession,
+    project: Project,
+) -> dict[str, Any]:
+    """Несколько ячеек без T/X кадры[] → снова 1 seed + биты.
+
+    Заглушки Bnn-K1 не считаются кадрами сцен: их снимаем и схлопываем.
+    Склейка split-ячеек не требуется — SoT закадра = script_text.
+    """
+    from sqlalchemy import select as sel
+
+    from app.services import db_v2
+
+    full = " ".join((db_v2.resolve_full_voiceover_text(project) or "").split())
+    frames = list(
+        (
+            await session.execute(
+                sel(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    work = [fr for fr in frames if _is_pipeline_frame(fr)]
+    if not full:
+        return {"reseeding": False, "cells": len(work), "reason": "no_vo"}
+    if any(frame_has_scene_shots(fr) for fr in work):
+        return {"reseeding": False, "cells": len(work), "reason": "has_tx"}
+    stripped = sum(1 for fr in work if strip_non_scene_kadry(fr))
+    bits = collect_bits_for_reseed(work)
+    if len(work) <= 1:
+        if work:
+            seed = work[0]
+            attrs = dict(getattr(seed, "attrs", None) or {})
+            if bits:
+                attrs["биты"] = bits
+            seed.attrs = attrs
+            _flag_attrs(seed)
+            await session.flush()
+        return {
+            "reseeding": False,
+            "cells": len(work),
+            "stripped": stripped,
+            "bits": len(bits),
+            "reason": "already_one",
+        }
+    seed = await db_v2.ensure_single_seed_vo_cell(session, project, full)
+    attrs = dict(getattr(seed, "attrs", None) or {})
+    if bits:
+        attrs["биты"] = bits
+    seed.attrs = attrs
+    _flag_attrs(seed)
+    await session.flush()
+    logger.info(
+        "[#{}] reseed VO without T/X кадры[]: cells {}→1 bits={} stripped={}",
+        project.id,
+        len(work),
+        len(bits),
+        stripped,
+    )
+    return {
+        "reseeding": True,
+        "cells_before": len(work),
+        "bits": len(bits),
+        "stripped": stripped,
+    }
+
+
+async def adopt_full_kadry_ladder(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Any],
+) -> int:
+    """Лестница кадры[] на одном uuid длиннее, чем кадров в БД — она SoT.
+
+    QC пишет все шоты на первый кадр. Старые vo_parent прошлого promote
+    иначе остаются, expand не восстанавливает недостающие строки.
+    """
+    from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
+
+    work = [fr for fr in frames if _is_pipeline_frame(fr)]
+    if not work:
+        return 0
+    owner = max(work, key=lambda fr: len(planned_shots_from_attrs(fr)))
+    planned = planned_shots_from_attrs(owner)
+    if not kadry_are_scene_shots(planned):
+        return 0
+    rest_n = sum(len(planned_shots_from_attrs(fr)) for fr in work if fr is not owner)
+    if len(planned) <= len(work) or len(planned) <= rest_n:
+        return 0
+    extra = [fr for fr in work if fr is not owner]
+    archived = _archive_frames_as_leftover(extra)
+    if archived:
+        await session.flush()
+        await renumber_frames_by_sort_key(session, project)
+    attrs = dict(getattr(owner, "attrs", None) or {})
+    cs = dict(attrs.get(_ATTR_KEY) or {})
+    cs.pop("scene_split", None)
+    cs["role"] = "vo_parent"
+    cs["parent_uuid"] = str(getattr(owner, "uuid", "") or "")
+    cs["shot_index"] = 1
+    cs["shots_in_beat"] = 1
+    attrs[_ATTR_KEY] = cs
+    owner.attrs = attrs
+    _flag_attrs(owner)
+    logger.info(
+        "[#{}] adopt full кадры ladder: keep_uuid={} kadry={} dropped={}",
+        project.id,
+        str(getattr(owner, "uuid", "") or ""),
+        len(planned),
+        archived,
+    )
+    return archived
+
+
+
+def _keep_shorter_door_run(old: str, new: str) -> str:
+    """QC схлопнул «бежит по улице» и «к двери» в одну фразу.
+
+    Кадр уже нёс короткий заход. Хвост «к … двери» остаётся на кадре порога,
+    этот кадр не переписываем длинной фразой.
+    """
+    old_n = " ".join((old or "").split())
+    new_n = " ".join((new or "").split())
+    if not old_n or not new_n.startswith(old_n + " "):
+        return new
+    tail = new_n[len(old_n) :].strip()
+    if re.match(r"к\s+\S+", tail) and re.search(r"двер", tail, re.IGNORECASE):
+        return old_n
+    return new
+
+
+def _repair_door_actions(parent: Any, planned: list[dict]) -> list[dict]:
+    """QC часто оставляет «бежит к открытой двери». Физика порога — после синка."""
+    plan = (getattr(parent, "attrs", None) or {}).get("площадка")
+    shots = [dict(s) for s in planned if isinstance(s, dict)]
+    if not shots:
+        return planned
+    try:
+        from app.services.scene_plan import apply_scene_plan_cells
+
+        apply_scene_plan_cells([{
+            "key": str(getattr(parent, "uuid", "") or "qc"),
+            "shots": shots,
+            "plan": plan,
+            "owned": True,
+        }])
+    except Exception:  # noqa: BLE001
+        return planned
+    return shots or planned
+
+
+def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
+    """После QC: перенести план/раскладка/ракурс из attrs.кадры на ячейки покрытия.
+
+    Не делает adopt/expand/rebuild — только обновляет meta уже существующих
+    vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
+    """
+    updated = 0
+    work = [f for f in frames if _is_pipeline_frame(f)]
+    for members in _group_by_parent(work).values():
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        planned = planned_for_parent_expand(
+            parent, planned_shots_from_attrs(parent)
+        )
+        if not planned:
+            continue
+        planned = _repair_door_actions(parent, planned)
+        ordered = list(members)
+        ordered.sort(
+            key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
+        )
+        # Ensure parent carries full ladder (QC SoT).
+        pattrs = dict(getattr(parent, "attrs", None) or {})
+        if planned_shots_from_attrs(parent) != planned:
+            # keep existing if already same length ids; otherwise write planned
+            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+            parent.attrs = pattrs
+            _flag_attrs(parent)
+            updated += 1
+        for i, fr in enumerate(ordered):
+            shot = planned[i] if i < len(planned) else None
+            if not isinstance(shot, dict):
+                continue
+            old_action = str(
+                (getattr(fr, "attrs", None) or {}).get("shot01_action") or ""
+            )
+            kept = _keep_shorter_door_run(old_action, str(shot.get("действие") or ""))
+            if kept and kept != str(shot.get("действие") or "").strip():
+                shot = dict(shot)
+                shot["действие"] = kept
+            before_plan = str(_cs(fr).get("план") or "")
+            before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
+            _apply_shot_meta(fr, shot)
+            # Children keep single-shot кадры mirror for report overlays.
+            if fr is not parent and is_shot_child(fr):
+                cattrs = dict(getattr(fr, "attrs", None) or {})
+                cattrs["кадры"] = [dict(shot)]
+                # раскладка already set by _apply_shot_meta on attrs
+                fr.attrs = cattrs
+                _flag_attrs(fr)
+            after_plan = str(_cs(fr).get("план") or "")
+            after_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
+            if before_plan != after_plan or before_lay != after_lay:
+                updated += 1
+    return updated
+
+
+async def apply_shot_coverage_to_vo_cells(
+    session: AsyncSession,
+    project: Project,
+) -> dict[str, Any]:
+    """Хвост группы script_frames_qc: кадры[] → ячейки закадра 1:1 + R49."""
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sel
+
+    from app.models import Frame
+
+    # После session.expire_all() sync доступ к project.* → MissingGreenlet.
+    insp = sa_inspect(project)
+    if insp.expired:
+        pid = int(insp.identity[0]) if insp.identity else None
+        if pid is None:
+            raise RuntimeError("apply_shot_coverage: project expired without identity")
+        project = await session.get(type(project), pid)
+        if project is None:
+            raise RuntimeError(f"apply_shot_coverage: project {pid} not found")
+    pid = int(project.id)
+
+    frames = list(
+        (
+            await session.execute(
+                sel(Frame)
+                .where(Frame.project_id == pid)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    n_adopt = await adopt_full_kadry_ladder(session, project, frames)
+    if n_adopt:
+        frames = list(
+            (
+                await session.execute(
+                    sel(Frame)
+                    .where(Frame.project_id == pid)
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    frames, exp = await expand_vo_cells_into_shots(session, project, frames)
+    n_relink = relink_shot_roles_by_scene(frames)
+    n_cam = inherit_camera_on_children(frames)
+    n_dist = distribute_coverage_prompts(frames)
+    frames, rebuilt = await rebuild_vo_cells_from_shots(session, project, frames)
+    work = [f for f in frames if _is_pipeline_frame(f)]
+    xlsx: dict[str, Any] | None = None
+    try:
+        from app.services.db_apply import export_project_xlsx
+
+        xlsx = export_project_xlsx(project, work)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] coverage export xlsx skipped: {}", project.id, exc)
+    out = {
+        **rebuilt,
+        "expand": exp,
+        "relink": n_relink,
+        "adopt": n_adopt,
+        "camera": n_cam,
+        "dist": n_dist,
+        "xlsx": xlsx,
+    }
+    logger.info(
+        "[#{}] shot coverage → VO cells: pipeline={} deleted={} expand={}",
+        project.id,
+        out.get("pipeline"),
+        out.get("deleted"),
+        exp,
+    )
+    return out
 
 
 def distribute_coverage_prompts(frames: list[Any]) -> int:
@@ -328,6 +2747,12 @@ def distribute_coverage_prompts(frames: list[Any]) -> int:
                 or (parent_vid2 if i == 0 else "")
                 or ""
             ).strip()
+            existing_img = str(getattr(child, "image_prompt", None) or "").strip()
+            existing_vid = str(getattr(child, "animation_prompt", None) or "").strip()
+            if not img:
+                img = existing_img
+            if not vid:
+                vid = existing_vid
             cattrs = dict(getattr(child, "attrs", None) or {})
             if img:
                 cattrs[SHOT2_PROMPT_ATTR] = img
@@ -349,29 +2774,49 @@ def distribute_coverage_prompts(frames: list[Any]) -> int:
 
 
 def inherit_camera_on_children(frames: list[Any]) -> int:
-    """Дети берут движение/набор с родителя; крупность уже из плана шота."""
+    """Дети берут движение/набор с родителя; крупность уже из плана шота.
+
+    Сирота (vo_parent нет в группе): набор из ``место``, движение — статика.
+    Иначе добор меню съёмки их не видит (нет закадра) и нода падает 50/52.
+    """
     updated = 0
     for members in _group_by_parent(frames).values():
         parent = next(
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             None,
         )
-        if parent is None:
-            continue
-        pcs = _cs(parent)
+        pcs = _cs(parent) if parent is not None else {}
         move = str(pcs.get("движение") or pcs.get("move") or "").strip()
         nab = str(pcs.get("набор") or pcs.get("set") or "").strip()
-        if not move and not nab:
-            continue
+        if parent is None:
+            donor = next(
+                (
+                    m
+                    for m in members
+                    if str(_cs(m).get("движение") or "").strip()
+                    or str(_cs(m).get("набор") or "").strip()
+                ),
+                None,
+            )
+            if donor is not None:
+                dcs = _cs(donor)
+                move = str(dcs.get("движение") or dcs.get("move") or "").strip()
+                nab = str(dcs.get("набор") or dcs.get("set") or "").strip()
         for child in members:
-            if child is parent:
+            if parent is not None and child is parent:
                 continue
             extra: dict[str, Any] = {}
             ccs = _cs(child)
-            if move and not str(ccs.get("движение") or "").strip():
-                extra["движение"] = move
-            if nab and not str(ccs.get("набор") or "").strip():
-                extra["набор"] = nab
+            if not str(ccs.get("движение") or "").strip():
+                if move:
+                    extra["движение"] = move
+                elif parent is None:
+                    extra["движение"] = "статика"
+            if not str(ccs.get("набор") or "").strip():
+                place = str(ccs.get("место") or "").strip()
+                fill = nab or place
+                if fill:
+                    extra["набор"] = fill
             if extra:
                 _set_cs(child, **extra)
                 updated += 1
@@ -383,7 +2828,24 @@ async def expand_vo_cells_into_shots(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Вставить визуальные шоты. Закадр разбивки не меняем; режем копию."""
+    """Шоты внутри ячейки.
+
+    Без группы на канвасе — глобальный путь main (режем копию закадра).
+    С ``script_frames_qc`` — ячейка = сцена, дети = шаги действия.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
+
+    if canvas_has_script_frames_qc(project):
+        return await _expand_vo_cells_into_shots_group(session, project, frames)
+    return await _expand_vo_cells_into_shots_default(session, project, frames)
+
+
+async def _expand_vo_cells_into_shots_default(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+) -> tuple[list[Frame], dict[str, Any]]:
+    """Глобальный пайплайн: закадр разбивки не меняем, режем копию."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,
@@ -405,7 +2867,9 @@ async def expand_vo_cells_into_shots(
     for parent in reversed(parents):
         original_vo = parent.voiceover_text or ""
         planned = planned_shots_from_attrs(parent)
-        need, vo_parts = resolve_shot_plan(original_vo, planned)
+        need, vo_parts = resolve_shot_plan(
+            original_vo, planned, action=main_action_text(parent)
+        )
         total_sec = vo_duration_sec(original_vo, shots=need)
         part_sec = round(total_sec / need, 2)
         start_ts = parent.start_ts
@@ -438,13 +2902,17 @@ async def expand_vo_cells_into_shots(
         group = [parent, *children]
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
+            # Пустой кусок остаётся пустым: роль и родителя ставим всё равно.
+            # Весь закадр ячейки в пустой шот не копируем.
+            piece = vo_parts[i] if i < len(vo_parts) else ""
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
             else:
                 fr.start_ts = None
                 fr.end_ts = None
-                fr.voiceover_text = ""
+                if piece:
+                    fr.voiceover_text = piece
             fr.duration_seconds = part_sec
             _set_cs(
                 fr,
@@ -452,7 +2920,7 @@ async def expand_vo_cells_into_shots(
                 parent_uuid=parent_uuid,
                 shot_index=i + 1,
                 shots_in_beat=need,
-                vo_shot=vo_parts[i] if i < len(vo_parts) else "",
+                vo_shot=piece,
             )
             _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
 
@@ -467,6 +2935,162 @@ async def expand_vo_cells_into_shots(
         project.id,
         report["parents"],
         inserted,
+        report["vo_shot_cuts"],
+        report["frames_before"],
+        report["frames_after"],
+    )
+    return ordered, report
+
+
+async def _expand_vo_cells_into_shots_group(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+) -> tuple[list[Frame], dict[str, Any]]:
+    """Группа script_frames_qc: ячейка = сцена, дети = шаги действия."""
+    report: dict[str, Any] = {
+        "skipped": False,
+        "parents": 0,
+        "inserted": 0,
+        "repaired_vo": 0,
+        "vo_shot_cuts": 0,
+        "cells_expanded": 0,
+        "cells_already": 0,
+        "frames_before": len(frames),
+        "frames_after": len(frames),
+    }
+    work = [f for f in frames if _is_pipeline_frame(f)]
+    groups = _group_by_parent(work)
+    parents = [
+        f
+        for f in work
+        if not is_shot_child(f)
+    ]
+    parents.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
+    inserted = 0
+    cells_expanded = 0
+    cells_already = 0
+    report["repaired_vo"] = repair_split_vo_on_parents(work)
+
+    for parent in reversed(parents):
+        members = list(groups.get(str(parent.uuid or ""), []) or [])
+        if parent not in members:
+            members = [parent, *[m for m in members if m is not parent]]
+        members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0))
+        planned = planned_for_parent_expand(
+            parent, planned_shots_from_attrs(parent)
+        )
+        original_vo = _cell_full_text(parent, members)
+        if _cs(parent).get("scene_split"):
+            joined = " ".join(
+                (getattr(m, "voiceover_text", None) or "").strip()
+                for m in members
+                if (getattr(m, "voiceover_text", None) or "").strip()
+            )
+            joined = " ".join(joined.split())
+            if joined:
+                original_vo = joined
+        # Полный закадр ячейки — в vo_cell_full ДО раздачи кусков детям:
+        # иначе _cell_full_text дальше склеит «полный текст родителя + куски
+        # детей» и закадр задвоится (promote_shots_to_vo_cells).
+        p_attrs = dict(getattr(parent, "attrs", None) or {})
+        if original_vo and not str(p_attrs.get("vo_cell_full") or "").strip():
+            p_attrs["vo_cell_full"] = original_vo
+            parent.attrs = p_attrs
+            _flag_attrs(parent)
+        if planned:
+            need = len(planned)
+            vo_parts = kadry_vo_pieces(planned, original_vo, main_action_text(parent))
+        else:
+            need, vo_parts = resolve_shot_plan(
+                original_vo, planned, action=main_action_text(parent)
+            )
+        children = [m for m in members if m is not parent]
+        have = 1 + len(children)
+        parent_uuid = parent.uuid
+        total_sec = vo_duration_sec(original_vo, shots=need)
+        part_sec = round(total_sec / need, 2)
+        start_ts = parent.start_ts
+        end_ts = parent.end_ts
+
+        if have < need:
+            after_id = children[-1].id if children else parent.id
+            for _ in range(need - have):
+                child = await insert_frame_after(
+                    session, project, after_frame_id=after_id
+                )
+                children.append(child)
+                after_id = child.id
+                inserted += 1
+            cells_expanded += 1
+        else:
+            cells_already += 1
+            if need <= 1:
+                _set_cs(
+                    parent,
+                    role="vo_parent",
+                    parent_uuid=parent_uuid,
+                    shot_index=1,
+                    shots_in_beat=1,
+                    vo_shot=vo_parts[0] if vo_parts else original_vo,
+                )
+                _apply_shot_meta(parent, planned[0] if planned else None)
+                if not parent.duration_seconds:
+                    parent.duration_seconds = part_sec
+                continue
+
+        group = [parent, *children]
+        parent.voiceover_text = original_vo
+        for i, fr in enumerate(group):
+            # Пустой кусок остаётся пустым: действие шота — не закадр, и весь
+            # закадр ячейки в пустой шот не копируем (раскладка VO — отдельно).
+            piece = vo_parts[i] if i < len(vo_parts) else ""
+            if i == 0:
+                fr.start_ts = start_ts
+                fr.end_ts = end_ts
+                fr.voiceover_text = original_vo
+            else:
+                fr.start_ts = None
+                fr.end_ts = None
+                if piece:
+                    fr.voiceover_text = piece
+            fr.duration_seconds = part_sec
+            _set_cs(
+                fr,
+                role="vo_parent" if i == 0 else "shot",
+                parent_uuid=parent_uuid,
+                shot_index=i + 1,
+                shots_in_beat=need,
+                vo_shot=piece,
+            )
+            _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
+
+    await session.flush()
+    tail_keys = [f.sort_key or 0.0 for f in work]
+    tail = (max(tail_keys) if tail_keys else 0.0) + 1000.0
+    for i, fr in enumerate(frames):
+        if _is_pipeline_frame(fr):
+            continue
+        fr.sort_key = tail + i
+    await session.flush()
+    ordered = await renumber_frames_by_sort_key(session, project)
+    report["parents"] = len(parents)
+    report["inserted"] = inserted
+    report["cells_expanded"] = cells_expanded
+    report["cells_already"] = cells_already
+    report["skipped"] = inserted == 0
+    report["vo_shot_cuts"] = apply_vo_shot_cuts(
+        [f for f in ordered if _is_pipeline_frame(f)]
+    )
+    report["frames_after"] = len(ordered)
+    logger.info(
+        "[#{}] vo_shot_expand: parents={} inserted={} expanded={} already={} "
+        "vo_shot_cuts={} frames {}→{}",
+        project.id,
+        report["parents"],
+        inserted,
+        cells_expanded,
+        cells_already,
         report["vo_shot_cuts"],
         report["frames_before"],
         report["frames_after"],

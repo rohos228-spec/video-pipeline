@@ -548,7 +548,20 @@ def resolve_node_choice(
     found = find_model(mid, channel=channel)
     if found:
         found = {**found, "channel": channel}
+        effort = read_node_reasoning_effort(node)
+        if effort:
+            found["reasoning_effort"] = effort
     return found
+
+
+# UI: low / med / high / ultra -> API reasoning_effort (ultra = xhigh, максимум vibecode).
+_UI_EFFORT_TO_API = {"low": "low", "med": "medium", "medium": "medium", "high": "high", "ultra": "xhigh", "xhigh": "xhigh"}
+
+
+def read_node_reasoning_effort(node: dict[str, Any] | None) -> str | None:
+    data = _node_data_dict(node)
+    raw = str(data.get("reasoningEffort") or data.get("reasoning_effort") or "").strip().lower()
+    return _UI_EFFORT_TO_API.get(raw)
 
 
 def resolve_image_generator_id(

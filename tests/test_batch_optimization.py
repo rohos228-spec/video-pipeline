@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import pytest
 from app.services.output_batch_plan import (
     IMG_PR_FRAMES_PER_BATCH,
@@ -20,6 +20,27 @@ def test_batch_constants_standardized():
     assert IMG_PR_FRAMES_PER_BATCH == 8
     assert _DENSE_FRAMES_PER_BATCH == 8
     assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
+
+
+def test_fw_frames_108_packs_by_6():
+    """fw_frames: пачки по 6 кадров; параллельный план — 10 кусков."""
+    from app.services.apply_ops_batches import (
+        FW_FRAMES_PER_BATCH,
+        SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+        split_frames,
+        split_into_n_packs,
+    )
+
+    frames = [{"uuid": f"u{i:03d}"} for i in range(108)]
+    ten_way = split_into_n_packs(frames, SCRIPT_FRAMES_QC_PARALLEL_BATCHES)
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 10
+    assert len(ten_way) == 10
+    assert max(len(p) for p in ten_way) == 11
+    packs = split_frames(frames, FW_FRAMES_PER_BATCH)
+    assert FW_FRAMES_PER_BATCH == 6
+    assert len(packs) == 18
+    assert max(len(p) for p in packs) == 6
+
 
 
 def test_pack_frames_img_pr_slices():
@@ -82,6 +103,46 @@ def test_shots_coverage_single_shot_on_short_vo():
     ]
     reason = shots_coverage_ops_reason(ops, frames)
     assert reason is None
+
+
+def test_piece_cell_gets_scene_action_for_shots_send():
+    from app.services.db_frames_context import attach_scene_action_to_pieces
+
+    scene = {
+        "number": 39,
+        "voiceover_text": (
+            "Когда система боится признать собственную ошибку, преступник получает время. "
+            "И если ошибку не исправляют вовремя, она сама становится частью преступления."
+        ),
+        "главное_действие": "Начальник милиции сидит за столом напротив Ткача.",
+        "main_action": "Начальник милиции сидит за столом напротив Ткача.",
+    }
+    piece = {
+        "number": 98,
+        "voiceover_text": "И если ошибку не исправляют вовремя, она сама становится частью преступления.",
+    }
+    same = {"number": 85, "voiceover_text": scene["voiceover_text"]}
+    assert attach_scene_action_to_pieces([scene, piece, same]) == 2
+    assert piece["главное_действие"] == scene["главное_действие"]
+    assert same["главное_действие"] == scene["главное_действие"]
+    assert attach_scene_action_to_pieces([scene, piece, same]) == 0
+
+
+def test_shots_use_short_parallel_packs():
+    from app.services.apply_ops_batches import (
+        SHOTS_PARALLEL,
+        SHOTS_STAGGER_SEC,
+        SHOTS_UNITS_PER_BATCH,
+        split_into_fixed_units,
+    )
+
+    assert SHOTS_UNITS_PER_BATCH == 3
+    assert SHOTS_PARALLEL == 16
+    assert SHOTS_STAGGER_SEC == 3.0
+    frames = [{"uuid": f"p{i:02d}", "voiceover_text": "текст"} for i in range(38)]
+    packs = split_into_fixed_units(frames, SHOTS_UNITS_PER_BATCH)
+    assert [len(p) for p in packs] == [3] * 12 + [2]
+    assert sum(len(p) for p in packs) == 38
 
 
 def test_merge_apply_ops_payloads():

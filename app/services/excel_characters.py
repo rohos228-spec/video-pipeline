@@ -57,6 +57,24 @@ def is_polluted_character_field(text: str) -> bool:
     return bool(_POLLUTED_PERSON_FIELD_RE.search(t))
 
 
+def character_blocks_hero(ch: "ExcelCharacter") -> bool:
+    """Не блокирует генерацию.
+
+    «оставь формат неизменный» — штатное имя вариации агента, не мусор.
+    Фразу по-прежнему не кладём в промт (`_field_for_prompt`).
+    """
+    del ch
+    return False
+
+
+def _field_for_prompt(text: str) -> str:
+    """Пусто, если в ячейке служебный маркер агента."""
+    t = (text or "").strip()
+    if not t or is_polluted_character_field(t):
+        return ""
+    return t
+
+
 def build_ref_variation_sheet_prompt(
     ch: "ExcelCharacter",
     *,
@@ -122,8 +140,9 @@ class ExcelCharacter:
         """Текст «изменений» для outsee-вариации: 4 поля с подписями,
         без «правил» (по требованию пользователя)."""
         parts: list[str] = []
-        if self.name:
-            parts.append(f"Имя: {self.name}")
+        name = _field_for_prompt(self.name)
+        if name:
+            parts.append(f"Имя: {name}")
         if self.look:
             parts.append(f"Внешность: {self.look}")
         if self.clothes:
@@ -135,8 +154,9 @@ class ExcelCharacter:
     def changes_text_en(self) -> str:
         """То же для Outsee REF-промта — английские ключи, без кириллицы-лейблов."""
         parts: list[str] = []
-        if self.name:
-            parts.append(f"Name: {self.name}")
+        name = _field_for_prompt(self.name)
+        if name:
+            parts.append(f"Name: {name}")
         if self.look:
             parts.append(f"Appearance: {self.look}")
         if self.clothes:

@@ -1,0 +1,13 @@
+[
+  {
+    "key": "column_sec",
+    "label": "Секунд на столбец",
+    "value": "4",
+    "type": "select",
+    "options": [
+      "3",
+      "4",
+      "5"
+    ]
+  }
+]

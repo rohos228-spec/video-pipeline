@@ -71,7 +71,8 @@ export function formatNodeCategory(cat: string): string {
   return NODE_CATEGORY[cat as NodeCategory] ?? humanizeSlug(cat);
 }
 
-export function formatRunStatus(status: string): string {
+export function formatRunStatus(status: string | null | undefined): string {
+  if (typeof status !== "string" || status.length === 0) return "";
   return RUN_STATUS[status] ?? humanizeSlug(status);
 }
 
@@ -112,7 +113,8 @@ export function formatStepCode(code: string): string {
 }
 
 /** Заменяет _ на пробелы, убирает лишние технические префиксы. */
-export function humanizeSlug(value: string): string {
+export function humanizeSlug(value: string | null | undefined): string {
+  if (typeof value !== "string") return "";
   return value
     .replace(/^n_/, "")
     .replace(/_/g, " ")
@@ -120,6 +122,28 @@ export function humanizeSlug(value: string): string {
     .replace(/\bgpt\b/gi, "GPT")
     .replace(/\boutsee\b/gi, "генератор")
     .trim();
+}
+
+/**
+ * Подпись строки Run в оверлее канваса.
+ * null — пустой ответ (`[]`, null) или объект без status-slug: оверлей
+ * показывает «не запущен», а не вызывает humanizeSlug(undefined).
+ */
+export function formatRunOverlayLabel(run: unknown): string | null {
+  if (run == null || typeof run !== "object" || Array.isArray(run)) return null;
+  const rec = run as { id?: unknown; status?: unknown };
+  if (typeof rec.status !== "string" || rec.status.trim() === "") return null;
+  if (typeof rec.id !== "number" && typeof rec.id !== "string") return null;
+  const label = formatRunStatus(rec.status);
+  if (!label) return null;
+  return `#${rec.id} · ${label}`;
+}
+
+/** node_runs из ответа /run. Пустой или кривой payload → пустой список, без throw. */
+export function nodeRunsFromPayload<T>(run: unknown): T[] {
+  if (run == null || typeof run !== "object" || Array.isArray(run)) return [];
+  const rows = (run as { node_runs?: unknown }).node_runs;
+  return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
 export function formatNodeKeyLabel(key: string): string {

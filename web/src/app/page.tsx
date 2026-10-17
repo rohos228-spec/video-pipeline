@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/shell/app-shell";
 import { ProjectSidebar } from "@/components/sidebar/project-sidebar";
-import { Inspector } from "@/components/inspector/inspector";
+import { StreamsPanel } from "@/components/inspector/streams-panel";
+import { useQuery } from "@tanstack/react-query";
 import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
@@ -40,7 +41,12 @@ export default function HomePage() {
   useEffect(() => {
     const openSidebar = () => setSidebarCollapsed(false);
     window.addEventListener("studio-open-projects-sidebar", openSidebar);
-    return () => window.removeEventListener("studio-open-projects-sidebar", openSidebar);
+    const toggleSidebar = () => setSidebarCollapsed((v) => !v);
+    window.addEventListener("studio-toggle-projects-sidebar", toggleSidebar);
+    return () => {
+      window.removeEventListener("studio-open-projects-sidebar", openSidebar);
+      window.removeEventListener("studio-toggle-projects-sidebar", toggleSidebar);
+    };
   }, []);
 
   useEffect(() => {
@@ -91,7 +97,7 @@ export default function HomePage() {
 
   return (
     <AppShell>
-      <div className="flex h-[calc(100vh-48px)] min-h-0">
+      <div className="flex h-screen min-h-0">
         <ProjectSidebar
           selectedProjectId={selectedProjectId}
           onSelect={(id) => {
@@ -144,6 +150,7 @@ export default function HomePage() {
             onDismiss={dismiss}
           />
           <OrchestratorPanel projectId={selectedProjectId} />
+          <StreamsFloat projectId={selectedProjectId} />
         </main>
         <FleetPanelSheet
           open={fleetOpen}
@@ -152,21 +159,6 @@ export default function HomePage() {
             setSelectedProjectId(projectId);
             setSelectedNodeKey(null);
             setStudioOpen(false);
-          }}
-        />
-        <Inspector
-          projectId={selectedProjectId}
-          selectedNodeKey={selectedNodeKey}
-          onOpenNodeStudio={() => {
-            if (selectedNodeKey) {
-              window.dispatchEvent(
-                new CustomEvent("studio-open-node-prompts", {
-                  detail: { nodeKey: selectedNodeKey },
-                }),
-              );
-            } else {
-              setStudioOpen(true);
-            }
           }}
         />
       </div>
@@ -185,5 +177,22 @@ export default function HomePage() {
         projectId={selectedProjectId}
       />
     </AppShell>
+  );
+}
+
+function StreamsFloat({ projectId }: { projectId: number | null }) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId!),
+    enabled: projectId != null,
+  });
+  if (projectId == null) return null;
+  return (
+    <div className="pointer-events-none absolute right-4 top-4 z-30 w-[300px]">
+      <div className="pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col gap-3 overflow-y-auto rounded-2xl border border-sky-500/25 bg-zinc-900/80 p-3.5 shadow-lg backdrop-blur-md">
+        <div id="vp-right-controls" />
+        <StreamsPanel project={project.data ?? null} hideTextModels bare />
+      </div>
+    </div>
   );
 }

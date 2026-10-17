@@ -96,7 +96,7 @@ async def test_apply_images_phase_before_videos(
     await session.flush()
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
@@ -159,7 +159,7 @@ async def test_apply_shot1_before_shot2_same_frame(
     await session.flush()
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
@@ -193,3 +193,94 @@ async def test_apply_shot1_before_shot2_same_frame(
     )
     assert result["ok"] is True
     assert events == ["start:1", "done:1", "start:2", "done:2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_child_when_parent_fails(
+    tmp_path: Path,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.settings.settings.data_dir", str(data_root))
+    project = Project(id=203, slug="montage-parent-fail", topic="t", hero_mode="auto")
+    project.data_dir.mkdir(parents=True, exist_ok=True)
+    project.meta = {"outsee_streams": 2}
+    session.add(project)
+    for n in (33, 34, 36):
+        session.add(
+            Frame(
+                project_id=203,
+                number=n,
+                voiceover_text="t",
+                status="planned",
+                image_prompt="p",
+            )
+        )
+    await session.flush()
+
+    @asynccontextmanager
+    async def _scope(*_a, **_k):
+        yield session
+
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
+
+    async def _parents(_project_id: int):
+        return {33: None, 34: 33, 36: None}
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.coverage_parent_map",
+        _parents,
+    )
+
+    ran: list[int] = []
+
+    async def _run(_project_id, op, _board):
+        fr = int(op["frame_number"])
+        ran.append(fr)
+        if fr == 33:
+            raise RuntimeError("GPT провайдер error: upstream error")
+        return {"ok": True, "highlight": f"F{fr}"}
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply._run_op_with_short_sessions",
+        _run,
+    )
+
+    result = await apply_montage_board(
+        session,
+        project,
+        pending_ops=[
+            {"type": "image_ai_change", "frame_number": 33, "shot": 1},
+            {"type": "image_ai_change", "frame_number": 36, "shot": 1},
+            {"type": "image_ai_change", "frame_number": 34, "shot": 1},
+            {"type": "image_ai_change", "frame_number": 34, "shot": 2},
+        ],
+    )
+    assert 34 not in ran
+    assert ran.count(33) == 1
+    assert 36 in ran
+    assert result["ok"] is False
+    child_errs = [
+        e
+        for e in result["errors"]
+        if "34" in e or "родител" in e.lower()
+    ]
+    assert child_errs, result["errors"]
+    assert any("33" in e for e in result["errors"])
+
+
+def test_waves_parent_then_child_only_if_parent_in_batch() -> None:
+    from app.services.montage_board_apply import waves_parent_then_child
+
+    parent_of = {1: None, 2: 1, 3: 1, 8: 7}
+    # Родитель уже есть и не в очереди — дети сразу.
+    assert waves_parent_then_child([2, 3, 8], parent_of) == [[2, 3, 8]]
+    # Родитель тоже в пачке — сначала он, потом дети.
+    assert waves_parent_then_child([1, 2, 3], parent_of) == [[1], [2, 3]]
+    # Дети 150/151 ждут still #148, а не leftover #2.
+    assert waves_parent_then_child([148, 1, 150, 151], {1: 148, 150: 148, 151: 148, 148: None}) == [
+        [148],
+        [1, 150, 151],
+    ]

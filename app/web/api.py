@@ -44,6 +44,9 @@ from app.web.routers import (
     frames as frames_router,
 )
 from app.web.routers import (
+    gen_assistant as gen_assistant_router,
+)
+from app.web.routers import (
     generation_options as generation_options_router,
 )
 from app.web.routers import (
@@ -59,13 +62,20 @@ from app.web.routers import (
     knowledge as knowledge_router,
 )
 from app.web.routers import (
-    meta_agent as meta_agent_router,
-)
-from app.web.routers import (
     library as library_router,
 )
 from app.web.routers import (
+    meta_agent as meta_agent_router,
+)
+from app.web.routers import (
+    nii67 as nii67_router,
+)
+from app.web.routers import (
+    style_agent as style_agent_router,
+)
+from app.web.routers import (
     node_groups as node_groups_router,
+    storage as storage_router,
 )
 from app.web.routers import (
     outsee_create as outsee_create_router,
@@ -75,6 +85,8 @@ from app.web.routers import (
 )
 from app.web.routers import (
     project_ops as project_ops_router,
+    ratings as ratings_router,
+    profile as profile_router,
 )
 from app.web.routers import (
     projects as projects_router,
@@ -122,10 +134,14 @@ async def _lifespan(app: FastAPI):
         from app.models import Base
 
         async with engine.begin() as conn:
+            from app.services.scene_space import models as _scene_space_models  # noqa: F401
+
             await conn.run_sync(Base.metadata.create_all)
             from app.services.db_v2 import migrate_db_v2_schema
+            from app.services.scene_space.migrate import migrate_scene_space_schema
 
             await migrate_db_v2_schema(conn)
+            await migrate_scene_space_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
@@ -249,6 +265,8 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router.router, prefix=API_PREFIX)
     app.include_router(projects_router.router, prefix=API_PREFIX)
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
+    app.include_router(ratings_router.router, prefix=API_PREFIX)
+    app.include_router(profile_router.router, prefix=API_PREFIX)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
     app.include_router(outsee_create_router.router, prefix=API_PREFIX)
@@ -257,6 +275,7 @@ def create_app() -> FastAPI:
     app.include_router(kie_create_router.router, prefix=API_PREFIX)
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
     app.include_router(text_llm_router.router, prefix=API_PREFIX)
+    app.include_router(gen_assistant_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
@@ -274,7 +293,10 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(db_browser_router.router, prefix=API_PREFIX)
     app.include_router(node_groups_router.router, prefix=API_PREFIX)
+    app.include_router(storage_router.router, prefix=API_PREFIX)
     app.include_router(meta_agent_router.router, prefix=API_PREFIX)
+    app.include_router(nii67_router.router, prefix=API_PREFIX)
+    app.include_router(style_agent_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:
@@ -433,11 +455,25 @@ def _mount_frontend(app: FastAPI) -> None:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=404, detail="not found")
+        if full_path.startswith("gen-styles/"):
+            from app.web.routers.gen_assistant import resolve_style_cover
+
+            cover = resolve_style_cover(full_path.split("/", 1)[1])
+            if cover is not None:
+                return FileResponse(
+                    cover,
+                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                )
         # Next static export — все маршруты как .html-файлы.
         candidate = out_dir / full_path
         if candidate.is_file():
             if candidate.suffix.lower() in {".html", ".htm"}:
                 return _html_response(candidate)
+            if candidate.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"}:
+                return FileResponse(
+                    candidate,
+                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                )
             return FileResponse(candidate)
         html_variant = out_dir / f"{full_path}.html"
         if html_variant.is_file():

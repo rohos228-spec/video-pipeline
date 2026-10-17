@@ -125,7 +125,12 @@ def _merge_protected_bucket(base_val: Any, patch_val: Any) -> Any:
                 continue
             nested = dict(out[key])
             for nk, nv in val.items():
-                if nv is not None:
+                if nv is None:
+                    # explicit null for a field inside an existing entry = clear it
+                    # (e.g. node_step_params.plan.duration_seconds). Entry/bucket-level
+                    # null is still ignored (stale canvas PATCH protection).
+                    nested.pop(nk, None)
+                else:
                     nested[nk] = nv
             out[key] = nested
         else:

@@ -63,10 +63,6 @@ from app.services import gpt_text_builder as gtb
 from app.services.excel_characters import ExcelCharacter
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.prompt_library import (
-    prompt_path,
-    resolve_project_prompt_name,
-)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -96,23 +92,48 @@ async def _optional_browser_session(
         yield bs
 
 
-def _read_hero_style(project: Project) -> str | None:
-    """Возвращает содержимое выбранного для проекта пресета стиля
-    из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
-    — возвращает None (вызывающий должен решить, как фоллбэчить)."""
-    overrides = getattr(project, "prompt_overrides", None) or {}
-    meta = getattr(project, "meta", None) or {}
-    name = resolve_project_prompt_name(overrides, "hero_style", meta=meta)
-    p = prompt_path("hero_style", name)
-    if not p.exists():
-        return None
+def _hero_canvas_node_key(project: Project) -> str | None:
     try:
-        return p.read_text(encoding="utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] hero_style read failed ({}): {}", project.id, p, e
+        from app.services.canvas_graph import canvas_graph_from_meta
+
+        cg = canvas_graph_from_meta(
+            project.meta if isinstance(project.meta, dict) else {}
         )
-        return None
+        for n in (cg or {}).get("nodes") or []:
+            if str(n.get("type") or "").strip().lower() == "hero":
+                key = str(n.get("id") or "").strip()
+                if key:
+                    return key
+    except Exception:  # noqa: BLE001
+        logger.debug("[#{}] hero node_key from canvas failed", project.id, exc_info=True)
+    return "n_hero"
+
+
+def _read_hero_style(project: Project) -> tuple[str, str]:
+    """(текст лока стиля, имя варианта). Пустой текст — стиля нет."""
+    from app.services.prompt_library import read_resolved_project_prompt
+
+    node_key = _hero_canvas_node_key(project)
+    try:
+        name, path, text, source = read_resolved_project_prompt(
+            project, "hero_style", node_key=node_key, slot_id="style"
+        )
+    except FileNotFoundError:
+        logger.warning("[#{}] hero_style файл не найден", project.id)
+        return "", "default"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] hero_style read failed: {}", project.id, e)
+        return "", "default"
+    clean = (text or "").strip()
+    logger.info(
+        "[#{}] hero_style variant={!r} source={} path={} chars={}",
+        project.id,
+        name,
+        source,
+        path,
+        len(clean),
+    )
+    return clean, name
 
 
 def _hero_target_pairs(
@@ -212,10 +233,24 @@ async def _approved_excel_ids(
     return out
 
 
+def _excel_disk_png(project: Project, excel_id: str) -> Path | None:
+    """characters/<id>.png, если файл на диске уже есть."""
+    cid = (excel_id or "").strip()
+    if not cid:
+        return None
+    path = project.data_dir / "characters" / f"{cid}.png"
+    try:
+        if path.is_file() and path.stat().st_size >= 1000:
+            return path
+    except OSError:
+        return None
+    return None
+
+
 async def _excel_ids_with_artifact(
     session: AsyncSession, project: Project
 ) -> set[str]:
-    """ID персонажей, для которых уже есть hero_reference с файлом на диске."""
+    """ID персонажей, для которых уже есть PNG (артефакт или файл на диске)."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -246,6 +281,18 @@ async def _excel_ids_with_artifact(
                     out.add(stem)
 
     return out
+
+
+async def _excel_png_for_id(
+    session: AsyncSession, project: Project, excel_id: str
+) -> Path | None:
+    """Путь к PNG рефа: артефакт, иначе characters/<id>.png."""
+    art = await _excel_artifact_for_id(session, project, excel_id)
+    if art is not None and art.path:
+        path = Path(art.path)
+        if path.is_file():
+            return path
+    return _excel_disk_png(project, excel_id)
 
 
 def _excel_batch_auto(project: Project) -> bool:
@@ -594,17 +641,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Стиль персонажа (мастер-промт из prompts/04_hero_style/) —
     # обязательно подмешивается к ChatGPT-промту, чтобы итоговое
     # изображение было в нужном визуале (фото-реализм / аниме / 3D / etc).
-    hero_style_content = _read_hero_style(project)
-    style_chosen = (
-        getattr(project, "prompt_overrides", None) or {}
-    ).get("hero_style") or "default"
+    hero_style_content, style_chosen = _read_hero_style(project)
     if not hero_style_content:
-        # Hard fallback: текст-плейсхолдер. Не падаем — но логируем.
         logger.warning(
-            "[#{}] hero_style '{}' не найден на диске — продолжаю без стиля",
+            "[#{}] hero_style {!r} пуст — продолжаю без стиля",
             project.id, style_chosen,
         )
-        hero_style_content = ""
 
     # Загружаем уже готовый hero_prompt из meta артефакта v=1 (если есть и
     # это не его собственная регенерация).
@@ -973,6 +1015,7 @@ async def _run_excel(
     Реф-вариации ждут файл родителя, затем идут следующей волной.
     """
     from app.db import SessionLocal
+    from app.services.artifact_recovery import recover_hero_references_from_disk
     from app.services.hero_check_regen import META_IDS, get_hero_check_regen_ids
     from app.services.img_streams import get_img_streams
     from app.services.step_cancel import raise_if_cancelled
@@ -987,6 +1030,8 @@ async def _run_excel(
         project.id,
         streams,
     )
+    await recover_hero_references_from_disk(session, project)
+
     if streams == 0:
         chars0 = _excel_characters_from_meta(cfg)
         generated0 = await _excel_ids_with_artifact(session, project)
@@ -1188,22 +1233,15 @@ async def _generate_one_excel_character(
     is_regen = await _is_regen_for_excel_id(session, project, ch.id)
     used_refs = bool(ch.ref_ids)
 
-    # Reference image(s): берём пути к одобренным артефактам каждого ref.
+    # Reference image(s): артефакт или characters/<id>.png на диске.
     ref_paths: list[Path] = []
     if used_refs:
         for rid in ch.ref_ids:
-            art = await _excel_artifact_for_id(session, project, rid)
-            if art is None or not art.path:
+            p = await _excel_png_for_id(session, project, rid)
+            if p is None:
                 logger.warning(
-                    "[#{}] excel_hero {}: ref {} артефакт не найден",
+                    "[#{}] excel_hero {}: ref {} файл не найден",
                     project.id, ch.id, rid,
-                )
-                continue
-            p = Path(art.path)
-            if not p.exists():
-                logger.warning(
-                    "[#{}] excel_hero {}: ref {} файл {} не существует",
-                    project.id, ch.id, rid, p,
                 )
                 continue
             ref_paths.append(p)
@@ -1229,11 +1267,7 @@ async def _generate_one_excel_character(
             return
 
     # Стиль (общий для проекта — выбирается в обычном hero-flow).
-    hero_style_content = _read_hero_style(project) or ""
-    style_chosen = (
-        (getattr(project, "prompt_overrides", None) or {}).get("hero_style")
-        or "default"
-    )
+    hero_style_content, style_chosen = _read_hero_style(project)
 
     out_dir = project.data_dir / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)

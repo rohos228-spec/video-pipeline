@@ -16,8 +16,13 @@ from app.services.excel_gpt_node import (
 )
 
 HITL_NODE_TYPES: frozenset[str] = frozenset(
-    {"hitl_hero", "hitl_images", "hitl_videos", "hitl_final", "hitl_gate"}
+    {"hitl_hero", "hitl_images", "hitl_videos", "hitl_final", "hitl_gate", "hitl_style"}
 )
+
+# Агент разбора стиля: style_extract — прозрачная нода с собственным фоновым
+# job (state в meta.style_agent, см. app/services/style_agent); hitl_style —
+# утверждение паспорта. Не шаги пайплайна: ProjectStatus не трогают.
+STYLE_AGENT_NODE_TYPES: frozenset[str] = frozenset({"style_extract", "hitl_style"})
 
 CONFIG_NODE_TYPES: frozenset[str] = frozenset({"topic", "storage"})
 # Нода-меню на канвасе (не шаг пайплайна). excel_feed — прозрачный вход.
@@ -206,6 +211,10 @@ def is_ui_menu_node_type(node_type: str) -> bool:
 
 def is_side_node_type(node_type: str) -> bool:
     return str(node_type or "") in SIDE_NODE_TYPES
+
+
+def is_style_agent_node_type(node_type: str) -> bool:
+    return str(node_type or "") in STYLE_AGENT_NODE_TYPES
 
 
 def spec_for_type(node_type: str) -> WorkNodeSpec | None:

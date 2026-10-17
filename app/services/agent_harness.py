@@ -158,6 +158,15 @@ def _db_path(data_dir: Path | None = None, project_id: int | None = None) -> Pat
     return _repo_root() / "data" / "state.db"
 
 
+def _frames_db_path(data_dir: Path | None) -> Path:
+    """Кадры: isolated ``project.db``, иначе master. Master часто без uuid/роли."""
+    if data_dir is not None:
+        isolated = Path(data_dir) / "project.db"
+        if isolated.is_file():
+            return isolated
+    return _db_path()
+
+
 def ops_dir_for_project(data_dir: Path) -> Path:
     d = data_dir / "ops"
     d.mkdir(parents=True, exist_ok=True)
@@ -251,12 +260,52 @@ def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
     return len(hits), log.name
 
 
+def _attrs_is_shot_child(attrs_raw: str) -> bool:
+    try:
+        data = json.loads(attrs_raw) if (attrs_raw or "").strip() else {}
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(data, dict):
+        return False
+    cs = data.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return False
+    return str(cs.get("role") or "") == "shot"
+
+
+def _row_is_img_pr_parent(
+    *,
+    uuid: str,
+    vo: str,
+    attrs_raw: str,
+) -> bool:
+    """Тот же критерий, что generate_image_prompts: VO-родитель, не K2/K3/leftover."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_coverage_leftover, is_img_pr_vo_parent
+
+    try:
+        attrs = json.loads(attrs_raw) if (attrs_raw or "").strip() else {}
+    except Exception:  # noqa: BLE001
+        attrs = {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    fr = SimpleNamespace(
+        uuid=uuid,
+        voiceover_text=vo,
+        attrs=attrs,
+    )
+    if is_coverage_leftover(fr):
+        return False
+    return is_img_pr_vo_parent(fr)
+
+
 def _load_frame_prompt_rows(
     project_id: int,
     data_dir: Path | None = None,
-) -> tuple[list[tuple[int, str, str, str]], str]:
-    """Кадры: (number, voiceover, image_prompt, animation_prompt) + ошибка или ''."""
-    db_file = _db_path(data_dir=data_dir, project_id=project_id)
+) -> tuple[list[tuple[int, str, str, str, str, str]], str]:
+    """Кадры: (number, vo, image_prompt, animation_prompt, attrs, uuid) + ошибка или ''."""
+    db_file = _frames_db_path(data_dir)
     if not db_file.is_file():
         return [], ""
     try:
@@ -265,17 +314,26 @@ def _load_frame_prompt_rows(
             "SELECT number, "
             "COALESCE(voiceover_text, ''), "
             "COALESCE(image_prompt, ''), "
-            "COALESCE(animation_prompt, '') "
+            "COALESCE(animation_prompt, ''), "
+            "COALESCE(attrs, ''), "
+            "COALESCE(uuid, '') "
             "FROM frames WHERE project_id=? ORDER BY number",
             (project_id,),
         ).fetchall()
         db.close()
     except Exception as e:  # noqa: BLE001
         return [], str(e)
-    rows: list[tuple[int, str, str, str]] = []
+    rows: list[tuple[int, str, str, str, str, str]] = []
     for r in raw:
         rows.append(
-            (int(r[0] or 0), str(r[1] or ""), str(r[2] or ""), str(r[3] or ""))
+            (
+                int(r[0] or 0),
+                str(r[1] or ""),
+                str(r[2] or ""),
+                str(r[3] or ""),
+                str(r[4] or ""),
+                str(r[5] or ""),
+            )
         )
     return rows, ""
 
@@ -283,22 +341,33 @@ def _load_frame_prompt_rows(
 def _append_prompt_nn_checks(
     checks: list[HarnessCheck],
     repair: list[str],
-    frame_rows: list[tuple[int, str, str, str]],
+    frame_rows: list[tuple[int, str, str, str, str, str]],
     *,
     status: str,
     step: str | None,
 ) -> None:
-    """N/N по БД: img_pr — все VO с image_prompt; anim_pr — usable img → anim.
+    """N/N по БД: img_pr — VO-родители с image_prompt; anim_pr — usable img → anim.
 
-    Срабатывает по ``step`` (гейт до *_ready) и по уже выставленному status
-    (второй рубеж auto_advance). excel_gpt не требует image_prompt.
+    Shot-дети (K2/K3) не требуют отдельного GPT img_pr: картинка идёт с
+    промта родителя + Preserve/Change lock. Срабатывает по ``step``
+    (гейт до *_ready) и по уже выставленному status.
     """
     step_key = (step or "").strip().lower()
-    want_img = step_key in _IMG_PR_STEPS or status == "image_prompts_ready"
-    want_anim = step_key in _ANIM_PR_STEPS or status == "animation_prompts_ready"
+    other_step = bool(step_key) and step_key not in _IMG_PR_STEPS and step_key not in _ANIM_PR_STEPS
+    want_img = step_key in _IMG_PR_STEPS or (
+        status == "image_prompts_ready" and not other_step
+    )
+    want_anim = step_key in _ANIM_PR_STEPS or (
+        status == "animation_prompts_ready" and not other_step
+    )
     if want_img:
-        missing = [n for n, vo, img, _ in frame_rows if vo.strip() and not img.strip()]
-        vo_n = sum(1 for _, vo, _, _ in frame_rows if vo.strip())
+        parent_rows = [
+            (n, vo, img)
+            for n, vo, img, _, attrs, uuid in frame_rows
+            if _row_is_img_pr_parent(uuid=uuid, vo=vo, attrs_raw=attrs)
+        ]
+        missing = [n for n, vo, img in parent_rows if vo.strip() and not img.strip()]
+        vo_n = len(parent_rows)
         img_n = vo_n - len(missing)
         ok = not missing
         checks.append(
@@ -315,11 +384,11 @@ def _append_prompt_nn_checks(
 
         missing = [
             n
-            for n, _, img, anim in frame_rows
+            for n, _, img, anim, _, _ in frame_rows
             if (not is_skippable_empty_prompt(img)) and is_skippable_empty_prompt(anim)
         ]
         usable = sum(
-            1 for _, _, img, _ in frame_rows if not is_skippable_empty_prompt(img)
+            1 for _, _, img, _, _, _ in frame_rows if not is_skippable_empty_prompt(img)
         )
         ok = not missing
         checks.append(
@@ -391,15 +460,13 @@ def verify_project_disk(
     if xlsx.is_file():
         try:
             from app.services.excel_characters import (
-                is_polluted_character_field,
+                character_blocks_hero,
                 parse_persons_sheet,
             )
 
             excel_persons = parse_persons_sheet(xlsx)
             for ch in excel_persons:
-                if is_polluted_character_field(ch.name) or is_polluted_character_field(
-                    ch.look
-                ):
+                if character_blocks_hero(ch):
                     polluted.append(ch.id)
         except Exception as e:  # noqa: BLE001
             logger.debug("harness persons parse skip: {}", e)
@@ -485,7 +552,7 @@ def verify_project_disk(
     frames_total = img_pr_db = anim_pr_db = vo_db = 0
     parity_err = ""
     try:
-        db_file = _db_path(data_dir=data_dir, project_id=project_id)
+        db_file = _frames_db_path(data_dir)
         if not db_file.is_file():
             # БД ещё нет — для ранних статусов это не блок (0 кадров).
             frames_total = img_pr_db = anim_pr_db = vo_db = 0
@@ -565,13 +632,19 @@ def verify_project_disk(
             )
         )
 
-    nn_rows, nn_err = _load_frame_prompt_rows(project_id, data_dir=data_dir)
+    nn_rows, nn_err = _load_frame_prompt_rows(project_id, data_dir)
     if nn_err:
         step_key = (step or "").strip().lower()
-        if step_key in _IMG_PR_STEPS or status == "image_prompts_ready":
+        if step_key in _IMG_PR_STEPS or (
+            status == "image_prompts_ready"
+            and not (bool(step_key) and step_key not in _IMG_PR_STEPS)
+        ):
             checks.append(HarnessCheck("img_pr_vo_coverage", False, nn_err))
             repair.append("img_pr")
-        elif step_key in _ANIM_PR_STEPS or status == "animation_prompts_ready":
+        elif step_key in _ANIM_PR_STEPS or (
+            status == "animation_prompts_ready"
+            and not (bool(step_key) and step_key not in _ANIM_PR_STEPS)
+        ):
             checks.append(HarnessCheck("anim_pr_coverage", False, nn_err))
             repair.append("anim_pr")
         if step_key in _EXCEL_GPT_STEPS:

@@ -21,6 +21,7 @@ export type CanvasRuntimeData = {
   imageResolution?: unknown;
   imageQuality?: unknown;
   aspectRatio?: unknown;
+  reasoningEffort?: unknown;
 };
 
 export type MergeableCanvasNode<T extends CanvasRuntimeData = CanvasRuntimeData> = {
@@ -61,6 +62,8 @@ export function mergeGraphNodesWithRuntime<T extends CanvasRuntimeData>(
         imageResolution: n.data.imageResolution ?? old.data.imageResolution,
         imageQuality: n.data.imageQuality ?? old.data.imageQuality,
         aspectRatio: n.data.aspectRatio ?? old.data.aspectRatio,
+        reasoningEffort: n.data.reasoningEffort ?? old.data.reasoningEffort,
+        customBg: (n.data as { customBg?: string }).customBg ?? (old.data as { customBg?: string }).customBg,
       },
     };
   });

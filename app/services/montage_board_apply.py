@@ -14,32 +14,39 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from collections import defaultdict
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import session_scope
-from app.project_db import project_db_session_scope, sync_project_row_to_master_db
-from app.models import Project
-from app.services.img_streams import acquire_image_slot, get_img_streams
-from app.services.montage_board_meta import (
-    add_failed_highlight,
-    add_highlight,
-    clear_failed_highlight,
-    slot_key_from_op,
-    montage_meta,
-    public_board_meta,
-    set_montage_meta,
-    touch_applied,
+from app.models import Entity, Frame, Project
+from app.project_db import (
+    project_db_session_scope as _isolated_project_scope,
+    sync_project_row_to_master_db,
 )
+from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
     load_img_pr_master,
     rewrite_prompt_via_gpt,
     write_ai_change_db_card,
+)
+from app.services.montage_board_meta import (
+    add_failed_highlight,
+    add_highlight,
+    clear_failed_highlight,
+    montage_meta,
+    public_board_meta,
+    remap_board_slot_keys,
+    remap_frame_numbers,
+    set_montage_meta,
+    slot_key_from_op,
+    touch_applied,
 )
 from app.services.montage_board_regen import (
     _frame_by_number,
@@ -50,7 +57,7 @@ from app.services.montage_board_regen import (
     prepare_image_regen,
     prepare_video_regen,
 )
-
+from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
 
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
@@ -70,6 +77,22 @@ _IMAGE_OP_TYPES = frozenset(
 _VIDEO_OP_TYPES = frozenset(
     {"video_regen", "video_regen_prompt", "video_ai_change"}
 )
+
+
+@asynccontextmanager
+async def session_scope(project_id: int | None = None) -> AsyncIterator[AsyncSession]:
+    """Короткие сессии apply: изолированная project.db.
+
+    Тесты подменяют этот CM (игнор аргумента) на in-memory сессию.
+    """
+    if project_id is None:
+        from app.db import session_scope as _master_scope
+
+        async with _master_scope() as session:
+            yield session
+        return
+    async with _isolated_project_scope(project_id) as session:
+        yield session
 
 
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
@@ -133,6 +156,8 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
         frame = int(op.get("frame_number") or 0)
     except (TypeError, ValueError):
         frame = 0
+    if str(op.get("slot") or "").strip().lower() == "parent":
+        return frame, 0
     try:
         shot = int(op.get("shot") or 1)
     except (TypeError, ValueError):
@@ -140,14 +165,60 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
     return frame, (2 if shot == 2 else 1)
 
 
+def parse_apply_frame_numbers(raw: Any) -> list[int]:
+    """Номера кадров для точечного apply. Пусто = вся очередь."""
+    if raw in (None, "", [], ()):
+        return []
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        n = int(raw)
+        return [n] if n >= 1 else []
+    out: list[int] = []
+    seen: set[int] = set()
+    for item in raw if isinstance(raw, (list, tuple, set)) else [raw]:
+        try:
+            n = int(item)
+        except (TypeError, ValueError):
+            continue
+        if n < 1 or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def split_apply_ops(
+    ops: list[dict[str, Any]],
+    frame_numbers: list[int] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Оставить в apply только выбранные кадры, остальные вернуть в очередь."""
+    wanted = {int(n) for n in (frame_numbers or []) if int(n) >= 1}
+    if not wanted:
+        return list(ops), []
+    apply_ops: list[dict[str, Any]] = []
+    keep_ops: list[dict[str, Any]] = []
+    for op in ops:
+        try:
+            fr = int(op.get("frame_number") or 0)
+        except (TypeError, ValueError):
+            fr = 0
+        if fr in wanted:
+            apply_ops.append(op)
+        else:
+            keep_ops.append(op)
+    return apply_ops, keep_ops
+
+
 def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Картинки по (frame, shot) → видео по (frame, shot). Чужие типы — в конец."""
+    """Покрытие → картинки → видео. Чужие типы — в конец."""
+    coverage: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
     videos: list[dict[str, Any]] = []
     other: list[dict[str, Any]] = []
     for op in ops:
         t = str(op.get("type") or "").strip()
-        if t in _IMAGE_OP_TYPES:
+        if t in COVERAGE_OP_TYPES:
+            coverage.append(op)
+        elif t in _IMAGE_OP_TYPES:
             images.append(op)
         elif t in _VIDEO_OP_TYPES:
             videos.append(op)
@@ -155,7 +226,90 @@ def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]
             other.append(op)
     images.sort(key=_op_frame_shot)
     videos.sort(key=_op_frame_shot)
-    return images + videos + other
+    return coverage + images + videos + other
+
+
+def failed_parent_skip_reason(
+    frame: int,
+    parent_of: dict[int, int | None] | None,
+    failed_frames: set[int],
+) -> str | None:
+    """Если предок в этой пачке уже упал — ребёнка не гоняем."""
+    if not parent_of or not failed_frames:
+        return None
+    seen: set[int] = set()
+    cur = parent_of.get(int(frame))
+    while cur is not None and cur not in seen:
+        if cur == int(frame):
+            break
+        if cur in failed_frames:
+            return f"пропуск: родительский кадр {cur} не применился"
+        seen.add(cur)
+        cur = parent_of.get(cur)
+    return None
+
+
+def waves_parent_then_child(
+    frame_numbers: list[int],
+    parent_of: dict[int, int | None],
+) -> list[list[int]]:
+    """Сначала кадры без родителя в этой пачке, потом их дети.
+
+    Если родитель уже есть и его нет в очереди — ребёнок идёт сразу.
+    Если родитель тоже генерируется в этой пачке — ждём волну родителя.
+    """
+    remaining = list(dict.fromkeys(int(n) for n in frame_numbers))
+    in_batch = set(remaining)
+    waves: list[list[int]] = []
+    while remaining:
+        ready: list[int] = []
+        blocked: list[int] = []
+        remaining_set = set(remaining)
+        for fr in remaining:
+            parent = parent_of.get(fr)
+            if (
+                parent is not None
+                and parent in in_batch
+                and parent != fr
+                and parent in remaining_set
+            ):
+                blocked.append(fr)
+            else:
+                ready.append(fr)
+        if not ready:
+            ready = blocked
+            blocked = []
+        waves.append(ready)
+        remaining = blocked
+    return waves
+
+
+async def coverage_parent_map(project_id: int) -> dict[int, int | None]:
+    """frame_number → still-родитель, если кадр вешает PNG родителя."""
+    from app.services.vo_shot_expand import find_coverage_parent_frame, uses_parent_still
+
+    async with session_scope(project_id) as session:
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == int(project_id))
+                    .order_by(Frame.number.asc())
+                )
+            ).scalars().all()
+        )
+        mapping: dict[int, int | None] = {}
+        for fr in frames:
+            num = int(fr.number)
+            if not uses_parent_still(fr):
+                mapping[num] = None
+                continue
+            parent = find_coverage_parent_frame(frames, fr)
+            if parent is None or int(parent.number) == num:
+                mapping[num] = None
+            else:
+                mapping[num] = int(parent.number)
+        return mapping
 
 
 def group_ops_by_frame(
@@ -201,7 +355,7 @@ async def _finalize_image_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with project_db_session_scope(project_id) as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -235,7 +389,7 @@ async def _finalize_video_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with project_db_session_scope(project_id) as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -276,12 +430,19 @@ async def _run_op_with_short_sessions(
     ai_img_pr_variant = ""
     ai_db_card_path: Path | None = None
     ai_project: Any = None
+    ai_instruction = ""
+    ai_action = ""
+    ai_camera: dict[str, str] = {}
+    ai_coverage_role = ""
     prep: Any = None
 
-    async with project_db_session_scope(project_id) as session:
+    async with session_scope(project_id) as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
+
+        if op_type in COVERAGE_OP_TYPES:
+            return await apply_coverage_op(session, project, op)
 
         if op_type in ("image_ai_change", "video_ai_change"):
             fr = await _frame_by_number(session, project.id, frame_number)
@@ -290,15 +451,54 @@ async def _run_op_with_short_sessions(
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
+            scene_frames = list(
+                (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            from app.services.excel_characters import entity_cards_for_gpt
+
+            ents = list(
+                (
+                    await session.execute(
+                        select(Entity).where(Entity.project_id == project.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
             ai_db_card_path = write_ai_change_db_card(
                 project,
                 fr,
                 Path(tempfile.mkdtemp(prefix="ai_change_db_")),
+                characters=entity_cards_for_gpt(ents),
+                all_frames=scene_frames,
             )
             ai_project = SimpleNamespace(
                 id=project.id,
                 meta=getattr(project, "meta", None),
+                general_plan=getattr(project, "general_plan", None),
             )
+            ai_instruction = str(
+                op.get("instruction") or op.get("correction") or ""
+            ).strip()
+            from app.services.db_frames_context import camera_chips_from_frame
+            from app.services.montage_board import _action_for_frame
+            from app.services.vo_shot_expand import is_coverage_child
+
+            ai_action = _action_for_frame(fr)
+            ai_camera = {
+                key: val
+                for key, val in camera_chips_from_frame(fr).items()
+                if val
+            }
+            ai_coverage_role = "child" if is_coverage_child(fr) else ""
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -320,6 +520,7 @@ async def _run_op_with_short_sessions(
                 correction=str(op.get("correction") or op.get("prompt") or ""),
                 board=board,
                 pinned_prompt=pinned if op_type == "image_regen" and pinned else None,
+                slot=str(op.get("slot") or ""),
             )
         elif op_type in ("video_regen", "video_regen_prompt"):
             mode = "edit_prompt" if op_type == "video_regen_prompt" else "same_prompt"
@@ -344,10 +545,14 @@ async def _run_op_with_short_sessions(
             img_pr_path=ai_img_pr_path,
             img_pr_variant=ai_img_pr_variant,
             db_card_path=ai_db_card_path,
+            instruction=ai_instruction,
+            action=ai_action,
+            camera=ai_camera,
+            coverage_role=ai_coverage_role,
         )
 
         async def _prepare_after_gpt():
-            async with project_db_session_scope(project_id) as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -362,6 +567,7 @@ async def _run_op_with_short_sessions(
                         correction="",
                         board=board,
                         ref_person_ids=character_ids_from_prompt(new_prompt),
+                        slot=str(op.get("slot") or ""),
                     )
                 return await prepare_video_regen(
                     session,
@@ -432,8 +638,12 @@ async def _run_ops_phase(
     errors: list[str],
     on_progress: ProgressCb | None,
     phase_label: str,
+    parent_of: dict[int, int | None] | None = None,
 ) -> None:
-    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго."""
+    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго.
+
+    Картинки/видео: волна родителей, затем дети — если родитель в этой же пачке.
+    """
     if not phase_indices:
         return
 
@@ -445,13 +655,19 @@ async def _run_ops_phase(
         by_frame[fr].sort(key=lambda i: _op_frame_shot(all_ops[i]))
 
     frames = sorted(by_frame.keys())
+    waves = (
+        waves_parent_then_child(frames, parent_of)
+        if parent_of
+        else [frames]
+    )
     logger.info(
-        "montage apply #{} phase={} frames={} ops={} parallel={}",
+        "montage apply #{} phase={} frames={} ops={} parallel={} waves={}",
         project_id,
         phase_label,
         len(frames),
         len(phase_indices),
         parallel,
+        [len(w) for w in waves],
     )
 
     meta_lock = asyncio.Lock()
@@ -463,6 +679,18 @@ async def _run_ops_phase(
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
             op_status[idx] = "ok" if ok else "fail"
+            mapping = result.get("renumber") if ok else None
+            if isinstance(mapping, dict) and mapping:
+                # Якорь создал шот → номера кадров сдвинулись: чиним ещё не
+                # применённые операции, иначе правка уедет на соседний кадр.
+                rest = [o for i, o in enumerate(all_ops) if op_status[i] != "ok"]
+                moved = remap_frame_numbers(rest, mapping)
+                remap_board_slot_keys(board, mapping)
+                logger.info(
+                    "montage apply #{} renumber после вставки шота: {} ops",
+                    project_id,
+                    moved,
+                )
             if ok:
                 results.append(result)
                 highlight = result.get("highlight")
@@ -478,7 +706,7 @@ async def _run_ops_phase(
                 if fail_key:
                     add_failed_highlight(board, fail_key)
             board["pending_ops"] = _pending_snapshot()
-            async with project_db_session_scope(project_id) as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     set_montage_meta(project, board)
@@ -490,7 +718,29 @@ async def _run_ops_phase(
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
 
+    def _failed_frame_set() -> set[int]:
+        out: set[int] = set()
+        for i, st in enumerate(op_status):
+            if st != "fail":
+                continue
+            fr, _ = _op_frame_shot(all_ops[i])
+            out.add(fr)
+        return out
+
     async def _frame_worker(frame: int) -> None:
+        skip = failed_parent_skip_reason(frame, parent_of, _failed_frame_set())
+        if skip:
+            logger.warning(
+                "montage apply #{} skip child frame {}: {}",
+                project_id,
+                frame,
+                skip,
+            )
+            for idx in by_frame[frame]:
+                await _finish_op(
+                    idx, False, {"ok": False, "error": skip, "op": all_ops[idx]}
+                )
+            return
         # Shot1 → shot2 строго подряд внутри кадра.
         for idx in by_frame[frame]:
             op = all_ops[idx]
@@ -513,7 +763,8 @@ async def _run_ops_phase(
         async with sem:
             await _frame_worker(frame)
 
-    await asyncio.gather(*(_guarded(fr) for fr in frames))
+    for wave in waves:
+        await asyncio.gather(*(_guarded(fr) for fr in wave))
 
 
 async def apply_montage_board(
@@ -522,6 +773,7 @@ async def apply_montage_board(
     *,
     video_trims: dict[str, dict[str, float]] | None = None,
     pending_ops: list[dict[str, Any]] | None = None,
+    keep_ops: list[dict[str, Any]] | None = None,
     on_progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
     board = montage_meta(project)
@@ -530,6 +782,7 @@ async def apply_montage_board(
     ops = order_montage_pending_ops(
         list(pending_ops or board.get("pending_ops") or [])
     )
+    held = [op for op in list(keep_ops or []) if isinstance(op, dict)]
     # Не стираем прошлые зелёные слоты — иначе после следующего apply
     # «слетают» все ранее применённые правки в UI. Чистим только failed
     # у слотов этой очереди (их снова добавят при ошибке).
@@ -544,6 +797,9 @@ async def apply_montage_board(
     project_id = int(project.id)
     parallel = _montage_apply_parallel(project)
 
+    coverage_indices = [
+        i for i, o in enumerate(ops) if str(o.get("type") or "") in COVERAGE_OP_TYPES
+    ]
     image_indices = [
         i for i, o in enumerate(ops) if str(o.get("type") or "") in _IMAGE_OP_TYPES
     ]
@@ -555,11 +811,13 @@ async def apply_montage_board(
         for i, o in enumerate(ops)
         if str(o.get("type") or "") not in _IMAGE_OP_TYPES
         and str(o.get("type") or "") not in _VIDEO_OP_TYPES
+        and str(o.get("type") or "") not in COVERAGE_OP_TYPES
     ]
 
     logger.info(
-        "montage apply #{}: {} image + {} video + {} other, parallel={}",
+        "montage apply #{}: {} coverage + {} image + {} video + {} other, parallel={}",
         project_id,
+        len(coverage_indices),
         len(image_indices),
         len(video_indices),
         len(other_indices),
@@ -580,6 +838,25 @@ async def apply_montage_board(
 
     await _run_ops_phase(
         project_id=project_id,
+        phase_indices=coverage_indices,
+        all_ops=ops,
+        board=board,
+        parallel=1,
+        op_status=op_status,
+        results=results,
+        errors=errors,
+        on_progress=on_progress,
+        phase_label="coverage",
+    )
+    # После coverage роли актуальны: ребёнок ждёт родителя только если тот
+    # тоже в этой пачке. Уже готовый родитель на диске детей не блокирует.
+    parent_of = (
+        await coverage_parent_map(project_id)
+        if image_indices or video_indices
+        else None
+    )
+    await _run_ops_phase(
+        project_id=project_id,
         phase_indices=image_indices,
         all_ops=ops,
         board=board,
@@ -589,6 +866,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="images",
+        parent_of=parent_of,
     )
     await _run_ops_phase(
         project_id=project_id,
@@ -601,6 +879,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="videos",
+        parent_of=parent_of,
     )
     await _run_ops_phase(
         project_id=project_id,
@@ -616,7 +895,7 @@ async def apply_montage_board(
     )
 
     remaining = [ops[i] for i, st in enumerate(op_status) if st != "ok"]
-    board["pending_ops"] = remaining
+    board["pending_ops"] = remaining + held
     touch_applied(board)
     set_montage_meta(project, board)
     await session.flush()

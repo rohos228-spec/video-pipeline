@@ -35,11 +35,15 @@ async def _init_db() -> None:
     from sqlalchemy import text
 
     async with engine.begin() as conn:
+        from app.services.scene_space import models as _scene_space_models  # noqa: F401
+
         await conn.run_sync(Base.metadata.create_all)
 
         from app.services.db_v2 import migrate_db_v2_schema
+        from app.services.scene_space.migrate import migrate_scene_space_schema
 
         await migrate_db_v2_schema(conn)
+        await migrate_scene_space_schema(conn)
 
         # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
         # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS
@@ -122,6 +126,8 @@ async def _backfill_from_disk() -> None:
     """
     from sqlalchemy import func, select
     from sqlalchemy.orm.attributes import flag_modified
+
+    from pathlib import Path
 
     from app.db import session_scope
     from app.models import Frame, Project
@@ -463,9 +469,32 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             )
                 fail_counts.pop(key, None)
             except Exception:  # noqa: BLE001
-                logger.warning(
+                logger.exception(
                     "step_failure_policy failed for #{}", project_id
                 )
+                try:
+                    from app.project_db import project_db_session_scope
+                    from app.services.project_state import is_running_status
+                    from app.services.run_sync import prepare_node_for_step_start
+                    from app.telegram.menu import step_by_running_status
+
+                    async with project_db_session_scope(project_id) as ps:
+                        rp = await ps.get(Project, project_id)
+                        if rp is not None and is_running_status(rp.status):
+                            st = step_by_running_status(rp.status)
+                            meta = rp.meta if isinstance(rp.meta, dict) else {}
+                            await prepare_node_for_step_start(
+                                ps,
+                                rp,
+                                st.code if st else rp.status.value,
+                                node_key=meta.get("active_excel_gpt_node_key"),
+                                explicit_ui_start=True,
+                            )
+                            await ps.commit()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "fallback unstick after policy fail #{}", project_id
+                    )
         finally:
             unregister_advance_task(project_id)
 
@@ -533,20 +562,22 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    # Этот цикл — уже running. Gate очереди / until_node
+                    # только для auto_advance *_ready. Иначе ручной ▶
+                    # (overflow excel_gpt) ставит enriching_1, а воркер
+                    # не берёт — нода так и висит «ожидание».
                     if project_gated_by_gen_queue(p.id):
-                        logger.debug(
-                            "worker: #{} {} — не в gen_queue, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — не в gen_queue, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if should_hold_queue_auto_advance(p):
-                        logger.debug(
-                            "worker: #{} {} — gen_queue target reached/passed, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — until_node пройден, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if is_stop_requested(p.id):
                         from app.services.step_cancel import stop_flag_path
 
@@ -574,6 +605,28 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.id,
                             p.status.value,
                         )
+                        continue
+                    from app.services.excel_gpt_node import (
+                        excel_gpt_already_completed_no_force,
+                        slot_from_running_status,
+                    )
+                    from app.telegram.menu import step_by_running_status
+
+                    if (
+                        slot_from_running_status(p.status) is not None
+                        and excel_gpt_already_completed_no_force(p)
+                    ):
+                        st = step_by_running_status(p.status)
+                        if st is not None:
+                            logger.info(
+                                "worker: #{} {} node already in completed_keys "
+                                "— {} without GPT restart",
+                                p.id,
+                                p.status.value,
+                                st.ready_status.value,
+                            )
+                            p.status = st.ready_status
+                            await s.commit()
                         continue
                     queue_blocker = await gen_queue_blocks_project(s, p.id)
                     if queue_blocker is not None:
@@ -800,7 +853,7 @@ async def _startup_maintenance() -> None:
             if _spec and _spec.loader:
                 _mod = importlib.util.module_from_spec(_spec)
                 _spec.loader.exec_module(_mod)
-                stash_report = _mod.recover_prompts_on_startup()
+                stash_report = await asyncio.to_thread(_mod.recover_prompts_on_startup)
                 n = len(stash_report.get("restored") or [])
                 if n:
                     logger.warning("prompts recovered on startup: {} file(s)", n)

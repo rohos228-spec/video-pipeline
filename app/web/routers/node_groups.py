@@ -19,7 +19,7 @@ from app.services.node_groups import (
     save_custom_group,
     update_custom_group,
 )
-from app.web.deps import get_session
+from app.web.deps import get_project_session
 
 router = APIRouter(tags=["node-groups"])
 
@@ -89,7 +89,7 @@ async def remove_node_group(group_id: str) -> dict[str, Any]:
 @router.post("/projects/{project_id}/node-groups/from-selection")
 async def create_group_from_selection(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
     body: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
     """Сохранить выделенные ноды канваса как пользовательскую группу.
@@ -122,11 +122,39 @@ async def create_group_from_selection(
     return _summary(group.group_id)
 
 
+@router.post("/projects/{project_id}/canvas/groups/script_frames_qc/upgrade")
+async def upgrade_script_frames_qc_canvas(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict[str, Any]:
+    """Обновить группу script_frames_qc на канвасе проекта (новые ноды, напр. «Границы сцен»)."""
+    from app.services.node_groups import upgrade_script_frames_qc_on_project
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    changed = await upgrade_script_frames_qc_on_project(session, project)
+    await session.commit()
+    if changed:
+        try:
+            from app.project_db import sync_runtime_both_ways
+
+            await sync_runtime_both_ways(session, project)
+        except Exception:  # noqa: BLE001
+            pass
+        await publish_project_event(
+            project_id,
+            event_type="project_updated",
+            payload={"canvas_group_upgraded": "script_frames_qc"},
+        )
+    return {"changed": bool(changed)}
+
+
 @router.post("/projects/{project_id}/canvas/groups/{group_id}")
 async def add_group_to_canvas(
     project_id: int,
     group_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
     body: dict[str, Any] | None = Body(default=None),
 ) -> dict[str, Any]:
     """Вшить группу нод в канвас проекта (позиции, связи, промты, флаги)."""
@@ -140,6 +168,13 @@ async def add_group_to_canvas(
         result = await insert_node_group(session, project, group_id, after=after)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        pass
     await publish_project_event(
         project_id,
         event_type="project_updated",

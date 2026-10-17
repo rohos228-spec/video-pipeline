@@ -1,0 +1,44 @@
+[
+    {
+        "key":  "style_label",
+        "label":  "Название стиля",
+        "value":  "Archival Noir Watercolor Grunge Dossier Poster Illustration",
+        "type":  "text"
+    },
+    {
+        "key":  "style_core",
+        "label":  "Ядро стиля",
+        "value":  "archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "style_ru",
+        "label":  "Описание стиля и палитра (RU)",
+        "value":  "Архивный нуарный grunge-досье постер с мрачной акварельно-размытой палитрой: washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray, paper-absorbed watercolor pigment, ink-and-water stains, torn archive paper, worn newspaper fragments, distressed print texture, rough comic inking, realistic prison / historical material surfaces and controlled true-crime investigation tension. Коллажная энергия должна ощущаться как физический архивный материал, но итоговый кадр должен оставаться единой постерной композицией с одним главным фокусом.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "style_lock_rule",
+        "label":  "Запреты стиля",
+        "value":  "not clean minimalist style, not photorealism, not glossy 3D, not cute, not pastel, not bright cheerful colors, not dry flat digital color, not smooth vector gradient, not plastic digital paint, not neon cyberpunk palette, not separate collage panels inside one image, not multiple visual frames inside one generated image, not automatic detective board, not investigation wall unless explicitly required by source data, not foreground-object formula, not repeated props, not copper basin, not brass basin, not washstand, not synonym scene without direct need, not non-physical screen text, not repeated image text across nearest 10 scenes, not copied voiceover text, not copied row 49, not voiceover context block.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "final_lock",
+        "label":  "Финальная фиксация стиля",
+        "value":  "unified cinematic frame, archival noir watercolor grunge dossier poster, dark comic graphic novel inking, distressed printmaking, realistic historical texture, high-contrast mixed media illustration, transparent watercolor washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles, no isolated words, no random word pairs, no meaningless pseudo-text, no Latin filler, no non-physical screen text, no captions, no subtitles, no overlay text, no copied row 49, no voiceover context, no repeated image text across nearest 10 scenes, no automatic detective board, no invented details, no large foreground props, no copper basin, no brass basin, no washstand, no repeated distinctive prop from the previous three frames, no synonym scene without direct need.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "negative",
+        "label":  "Негатив (запреты)",
+        "value":  "copied row 49, partial row 49 rewrite, copied voiceover, voiceover context, narration context, text based on voiceover, reasoning text on image, explanatory text on image, philosophical text on image, isolated single words, random word pairs, disconnected short phrases, invented readable object text, non-predefined inscription, repeated image text across nearest ten scenes, repeated paper text, repeated poster text, repeated diary text, repeated medical record text, repeated sign text, meaningless pseudo-text, fake pseudo-Cyrillic, Latin filler text, lorem ipsum, nonsensical handwriting, unrelated readable text, wrong-language text, captions, subtitles, overlay text, floating text, text across the image, graphic labels, explanatory labels, author comments, non-physical screen text, text not attached to a real object, logo, watermark, literal collage panels, multiple visual panels inside one image, synonym scene without direct source need, repeated scene meaning, reworded duplicate scene, same visual function as nearby scenes, frequent similar scenes, repeated location without direct need, repeated room setup, repeated window setup, repeated table setup, repeated document scene, repeated lonely figure in room, evidence circles, red circles, target rings, circular highlight marks, red outlines around clues, red arrows pointing at evidence, literal evidence-board strings, automatic detective board, investigation wall, clue map, detective map more than once in fifteen prompts, board with strings, board with red lines, invented clues, extra documents, new characters, random detective props, clean minimalist style, photorealism, glossy 3D render, cute style, pastel palette, bright cheerful colors, neon palette, cyberpunk lighting, flat digital color, dry vector color, smooth vector gradients, clean flat poster style, plastic digital paint, over-saturated colors, pure black-and-white without watercolor wash, oil painting impasto, airbrushed fantasy art, low detail, blurry, gore, explicit violence, modern objects, modern clothing, modern hospital equipment, fluorescent lighting, contemporary furniture, clean hospital look, surreal symbols, fantasy imagery, random table objects, large foreground objects, oversized props at the front edge, repeated foreground prop, repeated clue object, foreground basin, copper basin, brass basin, metal bowl, washbasin, washstand, recurring washstand, recurring metal vessel, recurring bowl, object pushed into camera, prop-centered composition, repeated furniture setup, same object repeated across consecutive frames, same foreground composition repeated within three frames, [CONTEXT_SPECIFIC_NEGATIVES]",
+        "type":  "textarea"
+    },
+    {
+        "key":  "prompt_limit",
+        "label":  "Лимит символов промта",
+        "value":  "4900",
+        "type":  "text"
+    }
+]

@@ -101,7 +101,7 @@ def analyze(events: list[dict]) -> dict:
     }
 
 
-def print_report(analysis: dict, *, as_json: bool = False) -> None:
+def _print_report_raw(analysis: dict, *, as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(analysis, ensure_ascii=False, indent=2, default=str))
         return
@@ -387,6 +387,15 @@ def main() -> None:
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(render_html_report(analysis), encoding="utf-8")
         print(f"HTML-отчёт сохранён: {html_path}")
+
+
+def print_report(analysis: dict, *, as_json: bool = False) -> None:
+    import contextlib, io, sys
+    from app.brand import scrub
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_report_raw(analysis, as_json=as_json)
+    sys.stdout.write(scrub(buf.getvalue()))
 
 
 if __name__ == "__main__":

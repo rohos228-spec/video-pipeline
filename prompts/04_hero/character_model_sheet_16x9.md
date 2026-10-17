@@ -1,4 +1,4 @@
-16/9 Create a dense professional character model sheet / turnaround sheet for the SAME exact character.
+{{STYLE:aspect}} Create a dense professional character model sheet / turnaround sheet for the SAME exact character.
 
 Use the character data from the database fields:
 
@@ -9,7 +9,7 @@ Outfit:
 [верхняя одежда], [верх], [низ], [обувь], [цвета], [материалы]
 
 IMPORTANT LAYOUT REQUIREMENTS:
-pure white background (#FFFFFF)
+{{STYLE:background}}
 no environment
 no background shadows
 no decorative elements
