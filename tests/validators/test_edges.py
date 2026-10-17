@@ -302,7 +302,9 @@ def test_plan_registry_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
         {"plan": [{"action": "rag_search", "params": {"query": 5}}], "whitelist": ["rag_search", "free_action"]},
     )
     assert typed.details["errors"][0]["reason"] == "bad_type"
-    assert run("plan_sanity", 1, {"plan": [{"action": "free_action"}], "whitelist": ["free_action"]}).passed is True
+    free = run("plan_sanity", 1, {"plan": [{"action": "free_action"}], "whitelist": ["free_action"]})
+    assert free.passed is False
+    assert free.details["errors"][0]["reason"] == "not_in_whitelist"
 
     class Named:
         def names(self) -> list[str]:
