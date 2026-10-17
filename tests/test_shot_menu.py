@@ -614,8 +614,9 @@ def test_single_phrase_vo_leaves_tail_shot_without_vo() -> None:
          "duration_seconds": 2, "attrs": {"camera_subdivide": {"parent_uuid": "p1", "shot_index": 2}}},
     ]
     shots = group_vo_cells(frames)[0]["shots"]
-    assert shots[0]["voiceover_in_shot"] == "Одна короткая фраза"
-    assert shots[1]["voiceover_in_shot"] == "—"
+    # R0a: меню делит слова ячейки по шотам, сумма фрагментов = весь закадр.
+    assert shots[0]["voiceover_in_shot"] == "Одна короткая"
+    assert shots[1]["voiceover_in_shot"] == "фраза"
 
 
 def test_menu_uses_vo_shot_copy_not_split_column() -> None:
