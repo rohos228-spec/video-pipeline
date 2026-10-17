@@ -242,6 +242,72 @@ async def test_approve_route_invalid_body_422(token: str) -> None:
         set_runtime(None)
 
 
+def _approval_payloads(runtime, session: str) -> list[dict]:
+    return [event.payload for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]
+
+
+@pytest.mark.asyncio
+async def test_retry_armed_value_lifecycle(token: str) -> None:
+    del token
+    sessions = ("life-retry", "life-approve", "life-deny")
+    tasks = {session: _insert_paid(session)[0] for session in sessions}
+    actions = MockActions()
+    runtime = build_runtime(actions=actions, validators=MockValidators(), router=ScriptedRouter())
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        for task_id in tasks.values():
+            await runtime.supervisor.wait(task_id, timeout=5)
+        for session in sessions:
+            assert _approval_payloads(runtime, session)[-1]["retry_armed"] is False
+        runtime.supervisor._retry_armed[tasks["life-approve"]] = "stale"
+        runtime.supervisor._retry_armed[tasks["life-deny"]] = "stale"
+        transport = ASGITransport(app=_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            retry_id = _change_id(runtime, "life-retry")
+            armed = await client.post(
+                "/api/orchestrator/chat/life-retry/approve",
+                json={"change_id": retry_id, "decision": "retry_step"},
+                headers=_headers(),
+            )
+            assert armed.status_code == 200
+            assert armed.json()["retry_armed"] is True
+            assert _approval_payloads(runtime, "life-retry")[-1]["retry_armed"] is True
+            assert runtime.supervisor._retry_armed.get(tasks["life-retry"])
+            assert actions.calls == []
+
+            consumed = await client.post(
+                "/api/orchestrator/chat/life-retry/approve",
+                json={"change_id": retry_id, "retry_grant": True},
+                headers=_headers(),
+            )
+            assert consumed.status_code == 200
+            assert consumed.json()["retry_armed"] is False
+            assert consumed.json()["executed"] is True
+            assert tasks["life-retry"] not in runtime.supervisor._retry_armed
+
+            approved = await client.post(
+                "/api/orchestrator/chat/life-approve/approve",
+                json={"change_id": _change_id(runtime, "life-approve"), "decision": "approve"},
+                headers=_headers(),
+            )
+            denied = await client.post(
+                "/api/orchestrator/chat/life-deny/approve",
+                json={"change_id": _change_id(runtime, "life-deny"), "decision": "deny"},
+                headers=_headers(),
+            )
+            assert approved.status_code == 200
+            assert denied.status_code == 200
+            assert approved.json()["retry_armed"] is False
+            assert denied.json()["retry_armed"] is False
+            assert tasks["life-approve"] not in runtime.supervisor._retry_armed
+            assert tasks["life-deny"] not in runtime.supervisor._retry_armed
+            await runtime.supervisor.wait(tasks["life-retry"], timeout=5)
+            assert [call["name"] for call in actions.calls] == ["charge"]
+    finally:
+        set_runtime(None)
+
+
 @pytest.mark.asyncio
 async def test_approve_route_401_without_token(token: str) -> None:
     del token

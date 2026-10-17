@@ -271,7 +271,12 @@ class Supervisor:
             decision=decision,
         )
         if retry_grant and self._retry_grant_is_spent(task_id):
-            return {"executed": False, "reason": "retry_grant_spent", "forecast_usd": None}
+            return {
+                "executed": False,
+                "reason": "retry_grant_spent",
+                "forecast_usd": None,
+                "retry_armed": False,
+            }
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
@@ -286,11 +291,19 @@ class Supervisor:
             if decided is ApprovalDecision.approve:
                 await self._emit_decision(task_id, session_id, decided)
                 await self._approve_paid_unknown(task_id, session_id)
-                return {"executed": False, "decision": ApprovalDecision.approve.value}
+                return {
+                    "executed": False,
+                    "decision": ApprovalDecision.approve.value,
+                    "retry_armed": False,
+                }
             if decided is ApprovalDecision.deny:
                 await self._emit_decision(task_id, session_id, decided)
                 await self._deny_paid_unknown(task_id, session_id)
-                return {"executed": False, "decision": ApprovalDecision.deny.value}
+                return {
+                    "executed": False,
+                    "decision": ApprovalDecision.deny.value,
+                    "retry_armed": False,
+                }
             if decided is ApprovalDecision.retry_step:
                 await self._emit_decision(task_id, session_id, decided)
                 return await self._arm_paid_retry_forecast(task_id, session_id)
@@ -726,6 +739,7 @@ class Supervisor:
 
     async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""
+        self._retry_armed.pop(task_id, None)
         data, step = await self._checkpoint_step(task_id)
         row = self._running_paid_row(task_id, step)
         if row is not None:
@@ -737,6 +751,7 @@ class Supervisor:
 
     async def _deny_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Остановить задачу»: шаг и задача failed, execute не вызывается."""
+        self._retry_armed.pop(task_id, None)
         data, step = await self._checkpoint_step(task_id)
         row = self._running_paid_row(task_id, step)
         if row is not None:
@@ -758,6 +773,7 @@ class Supervisor:
         if (task_id, key) not in self._retry_spent:
             self._retry_armed[task_id] = key
         forecast = forecast_cost([step])
+        armed = self._retry_armed.get(task_id) == key
         await self.publish_approval_required(
             session_id,
             {
@@ -767,7 +783,7 @@ class Supervisor:
                 "position": int(data.position),
                 "forecast_usd": forecast,
                 "decisions": approval_decision_choices(),
-                "retry_armed": self._retry_armed.get(task_id) == key,
+                "retry_armed": armed,
             },
             task_id=task_id,
             reuse=True,
@@ -776,6 +792,7 @@ class Supervisor:
             "executed": False,
             "decision": ApprovalDecision.retry_step.value,
             "forecast_usd": forecast,
+            "retry_armed": armed,
         }
 
     def _retry_grant_is_spent(self, task_id: int) -> bool:
@@ -791,15 +808,30 @@ class Supervisor:
         Пока задача в ``_budget_stop``, ключ не сгорает и шаг не стартует.
         """
         if self._retry_armed.get(task_id) is None and any(stored == task_id for stored, _key in self._retry_spent):
-            return {"executed": False, "reason": "retry_grant_spent", "forecast_usd": None}
+            return {
+                "executed": False,
+                "reason": "retry_grant_spent",
+                "forecast_usd": None,
+                "retry_armed": False,
+            }
         if task_id not in self._retry_armed:
-            return {"executed": False, "reason": "retry_grant_required", "forecast_usd": None}
+            return {
+                "executed": False,
+                "reason": "retry_grant_required",
+                "forecast_usd": None,
+                "retry_armed": False,
+            }
         data, step = await self._checkpoint_step(task_id)
         key = self._retry_grant_key(step)
         forecast = forecast_cost([step])
         if (task_id, key) in self._retry_spent or self._retry_armed.get(task_id) != key:
             reason = "retry_grant_spent" if (task_id, key) in self._retry_spent else "retry_grant_required"
-            return {"executed": False, "reason": reason, "forecast_usd": forecast}
+            return {
+                "executed": False,
+                "reason": reason,
+                "forecast_usd": forecast,
+                "retry_armed": False,
+            }
         if task_id in self._budget_stop:
             await self.publish_approval_required(
                 session_id,
@@ -816,6 +848,7 @@ class Supervisor:
                 "executed": False,
                 "reason": ApprovalReason.budget_exhausted.value,
                 "forecast_usd": forecast,
+                "retry_armed": self._retry_armed.get(task_id) == key,
             }
         self._retry_spent.add((task_id, key))
         self._retry_armed.pop(task_id, None)
@@ -825,7 +858,12 @@ class Supervisor:
         self._block_reason.pop(task_id, None)
         data = await self._stamp_estimate(task_id, session_id, data)
         await self._continue_from_checkpoint(task_id, session_id, data)
-        return {"executed": True, "decision": ApprovalDecision.retry_step.value, "forecast_usd": forecast}
+        return {
+            "executed": True,
+            "decision": ApprovalDecision.retry_step.value,
+            "forecast_usd": forecast,
+            "retry_armed": False,
+        }
 
     def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
         return {
@@ -2124,6 +2162,8 @@ class Supervisor:
         payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
         if extra:
             payload.update(extra)
+        if reason == "paid_outcome_unknown":
+            payload.setdefault("retry_armed", False)
         if current is None or not can_transition(current, TaskStatus.waiting_approval):
             await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
             return

@@ -87,6 +87,10 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
 3. Следующий такой POST возвращает `reason: "retry_grant_spent"` и шаг не повторяет,
    даже если задача уже ушла из `waiting_approval`.
 
+`retry_armed` в этом ответе и в `approval_required`: `true` только после `retry_step`,
+пока отдельный grant не потрачен. После потребления `retry_grant`, а также после
+`approve` и `deny`, значение `false` (флаг вооружения снимается).
+
 ## Доступ
 
 - Все пути `/api/orchestrator/**` закрыты middleware `app/orchestrator/auth.py`.
