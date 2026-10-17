@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 
+from app.orchestrator.validators import run
 from app.orchestrator.validators.grammar import (
     local_ensure_wide_before_dialogue,
     local_merge_trivial_shots,
@@ -75,3 +76,39 @@ def test_wide_ignores_inactive_speaker_and_keeps_the_shot() -> None:
     assert notes == []
     assert dead == frozen
     assert [shot["id"] for shot in shots] == ["s-K1", "s-K2", "s-K9"]
+
+
+def test_run_keeps_inactive_shot_and_no_deletions_stays_quiet() -> None:
+    dead = _shot(id="dead", действие="сидит дальше", закадр="секрет")
+    dead["активен"] = False
+    dead["порядок"] = 5
+    frozen = copy.deepcopy(dead)
+    shots = [_shot(id="a"), dead]
+    frames = [{"id": "f1"}, {"id": "dead"}]
+    context = {
+        "shots": shots,
+        "before": {"scenes": [{"id": "sc1"}], "frames": frames},
+        "after": {"scenes": [{"id": "sc1"}], "frames": list(frames)},
+    }
+    merge = run("shot_merge", 1, context)
+    wide = run("wide_before_dialogue", 1, context)
+    deletions = run("no_deletions", 1, context)
+    assert merge.passed is True
+    assert merge.blocking is False
+    assert wide.passed is True
+    assert deletions.passed is True
+    assert deletions.blocking is False
+    assert context["shots"][1] == frozen
+
+    removed = run(
+        "no_deletions",
+        1,
+        {
+            "before": {"frames": [{"id": "f1"}, {"id": "dead"}]},
+            "after": {"frames": [{"id": "f1"}]},
+        },
+    )
+    assert removed.passed is False
+    assert removed.blocking is True
+    assert removed.details["frames"]["missing_ids"] == ["dead"]
+
