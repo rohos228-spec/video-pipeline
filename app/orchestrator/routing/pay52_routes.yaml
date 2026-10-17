@@ -13,10 +13,7 @@ timeouts_s:
 retries: 2
 backoff_base_s: 1.0
 
-# call_batch не читает зазор из файла: старт параллельный, gap по умолчанию 0.
-stagger_s:
-  min: 0
-  max: 0
+# Зазор батча здесь не задаётся: call_batch параллельный, gap по умолчанию 0.
 
 spend:
   # D4: суб-бюджет внутренних ходов. Исчерпание → TaskStatus.waiting_approval,

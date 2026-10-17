@@ -54,8 +54,6 @@ class RouteConfig:
     strong_timeout_s: float
     retries: int
     backoff_base_s: float
-    stagger_min_s: float
-    stagger_max_s: float
     internal_budget_usd: float
     classifier_threshold: float
     classifier_temperature: float
@@ -139,7 +137,6 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     flags = data.get("flags") or {}
     timeouts = data.get("timeouts_s") or {}
-    stagger = data.get("stagger_s") or {}
     spend = data.get("spend") or {}
     classifier = data.get("classifier") or {}
     chains = data.get("chains") or {}
@@ -157,8 +154,6 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
         strong_timeout_s=float(timeouts.get("strong", 300)),
         retries=int(data.get("retries", 2)),
         backoff_base_s=float(data.get("backoff_base_s", 1.0)),
-        stagger_min_s=float(stagger.get("min", 0)),
-        stagger_max_s=float(stagger.get("max", 0)),
         internal_budget_usd=float(spend.get("internal_sub_budget_usd", 10)),
         classifier_threshold=float(classifier.get("confidence_threshold", 0.8)),
         classifier_temperature=float(classifier.get("temperature", 0)),
