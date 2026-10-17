@@ -43,6 +43,11 @@ import {
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
+  montageOpsToApply,
+  pendingApplyFrameNumbers,
+  queueAfterApply,
+} from "@/lib/montage-apply-queue";
+import {
   readMontageAiChangeText,
   writeMontageAiChangeText,
 } from "@/lib/montage-ai-change-memory";
@@ -2094,6 +2099,7 @@ export function AssembleMontageBoard({
     null,
   );
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
+  const sentApplyKeysRef = useRef<string[]>([]);
   const montageActive = montageRunning || montageBusy;
   pendingOpsRef.current = pendingOps;
   /** Пользователь набрал очередь локально — не затирать пустым meta с сервера. */
@@ -2619,34 +2625,28 @@ export function AssembleMontageBoard({
   const applyMutation = useMutation({
     mutationFn: (opts?: { frameNumbers?: number[] }) => {
       const all = pendingOpsRef.current;
-      const images = all.filter((op) => String(op.type).startsWith("image_"));
-      const rest = all.filter(
-        (op) =>
-          !String(op.type).startsWith("image_") &&
-          !String(op.type).startsWith("coverage_"),
-      );
+      const ops = montageOpsToApply(all, opts?.frameNumbers);
+      sentApplyKeysRef.current = ops.map(opSelectKey);
       const wanted = opts?.frameNumbers?.length ? new Set(opts.frameNumbers) : null;
-      const ops = wanted ? images.filter((op) => wanted.has(op.frame_number)) : images;
+      const frameNs = [...new Set(ops.map((op) => op.frame_number))];
       if (ops.length > 0) {
-        const frameNs = [...new Set(ops.map((op) => op.frame_number))];
         toast.message(
           wanted
-            ? `Картинка #${[...wanted].join(", #")}…`
-            : `Картинки: ${frameNs.length} ${framesWord(frameNs.length)}… (VIA Render)`,
+            ? `Кадр #${[...wanted].join(", #")}…`
+            : `Правки: ${frameNs.length} ${framesWord(frameNs.length)}… (VIA Render)`,
         );
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
-        pending_ops: [...ops, ...rest],
-        ...(ops.length ? { frame_numbers: [...new Set(ops.map((op) => op.frame_number))] } : {}),
+        pending_ops: ops,
+        ...(frameNs.length ? { frame_numbers: frameNs } : {}),
       });
     },
-    onSuccess: (res, opts) => {
-      const appliedFrames = opts?.frameNumbers;
-      const queued = appliedFrames?.length
-        ? pendingOpsRef.current.filter((op) => appliedFrames.includes(op.frame_number))
-            .length
-        : pendingOpsRef.current.length;
+    onSuccess: (res) => {
+      const sent = new Set(sentApplyKeysRef.current);
+      const queued = sent.size;
+      const keepUnsent = (list: MontagePendingOp[]) =>
+        queueAfterApply(list, sent, opSelectKey);
       if (res.started) {
         submittedApplyRef.current = true;
         trimsDirtyRef.current = false;
@@ -2654,23 +2654,14 @@ export function AssembleMontageBoard({
           clearTimeout(queueSaveTimerRef.current);
           queueSaveTimerRef.current = null;
         }
-        if (appliedFrames?.length) {
-          const keep = pendingOpsRef.current.filter(
-            (op) => !appliedFrames.includes(op.frame_number),
-          );
-          localQueueDirtyRef.current = keep.length > 0;
-          pendingOpsRef.current = keep;
-          setPendingOps(keep);
-          setSelectedOpKeys((prev) => {
-            const live = new Set(keep.map(opSelectKey));
-            return new Set([...prev].filter((k) => live.has(k)));
-          });
-        } else {
-          localQueueDirtyRef.current = false;
-          setPendingOps([]);
-          pendingOpsRef.current = [];
-          setSelectedOpKeys(new Set());
-        }
+        const keep = keepUnsent(pendingOpsRef.current);
+        localQueueDirtyRef.current = keep.length > 0;
+        pendingOpsRef.current = keep;
+        setPendingOps(keep);
+        setSelectedOpKeys((prev) => {
+          const live = new Set(keep.map(opSelectKey));
+          return new Set([...prev].filter((k) => live.has(k)));
+        });
         setFailedHighlights([]);
         applySeenRunningRef.current = true;
         lastPatchedPathRef.current = "";
@@ -2689,10 +2680,15 @@ export function AssembleMontageBoard({
         return;
       }
       submittedApplyRef.current = false;
-      localQueueDirtyRef.current = false;
       trimsDirtyRef.current = false;
-      setPendingOps([]);
-      pendingOpsRef.current = [];
+      const keep = keepUnsent(pendingOpsRef.current);
+      localQueueDirtyRef.current = keep.length > 0;
+      pendingOpsRef.current = keep;
+      setPendingOps(keep);
+      setSelectedOpKeys((prev) => {
+        const live = new Set(keep.map(opSelectKey));
+        return new Set([...prev].filter((k) => live.has(k)));
+      });
       if (res.meta) {
         setHighlights(res.meta.highlights ?? []);
         setFailedHighlights(res.meta.failed_highlights ?? []);
@@ -2702,8 +2698,11 @@ export function AssembleMontageBoard({
         }
         const restored = parsePendingOps(res.meta.pending_ops);
         if (restored.length > 0) {
-          pendingOpsRef.current = restored;
-          setPendingOps(restored);
+          const seen = new Set(keep.map(opSelectKey));
+          const extra = restored.filter((op) => !seen.has(opSelectKey(op)));
+          const next = [...keep, ...extra];
+          pendingOpsRef.current = next;
+          setPendingOps(next);
         }
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -3582,17 +3581,10 @@ export function AssembleMontageBoard({
     return n;
   }, [pendingSlotKeys, failedSlotKeys]);
 
-  const pendingFrameNumbers = useMemo(() => {
-    const nums = [
-      ...new Set(
-        pendingOps
-          .filter((op) => String(op.type).startsWith("image_"))
-          .map((op) => op.frame_number),
-      ),
-    ];
-    nums.sort((a, b) => a - b);
-    return nums;
-  }, [pendingOps]);
+  const pendingFrameNumbers = useMemo(
+    () => pendingApplyFrameNumbers(pendingOps),
+    [pendingOps],
+  );
 
   const isStaleVideo = (frameNumber: number, shot: 1 | 2) =>
     staleVideos.includes(trimKey(frameNumber, shot));
@@ -4311,9 +4303,7 @@ export function AssembleMontageBoard({
                   </button>
                 </div>
                 <ul className="max-h-64 space-y-1 overflow-y-auto">
-                  {pendingOps
-                    .filter((op) => String(op.type).startsWith("image_"))
-                    .map((op) => {
+                  {montageOpsToApply(pendingOps).map((op) => {
                     const key = opSelectKey(op);
                     const checked = selectedOpKeys.has(key);
                     return (
