@@ -109,6 +109,12 @@ async def test_max_improve_fold_is_not_stored_in_attrs(
     )
     session.add_all([project, parent])
     await session.flush()
+    before_ids = {
+        int(fr_id)
+        for fr_id in (
+            await session.execute(select(Frame.id).where(Frame.project_id == project.id))
+        ).scalars()
+    }
     action = " → ".join(
         f"видимый шаг номер {i:02d}" for i in range(1, MAX_IMPROVE_SHOTS + 2)
     )
@@ -127,3 +133,15 @@ async def test_max_improve_fold_is_not_stored_in_attrs(
     assert len(stored) == MAX_IMPROVE_SHOTS + 1
     assert stored[-1]["id"].endswith(f"K{MAX_IMPROVE_SHOTS + 1}")
     assert any(pieces[-1] in str(s.get("закадр") or "") for s in stored)
+    cell = list(
+        (
+            await session.execute(select(Frame).where(Frame.project_id == project.id))
+        ).scalars()
+    )
+    # Кэп режет только рост: ячейка не длиннее MAX, уже бывшие кадры на месте.
+    assert len(cell) <= MAX_IMPROVE_SHOTS
+    assert before_ids <= {int(fr.id) for fr in cell}
+    shot_ids = [str(shot.get("id") or "") for shot in stored]
+    assert len(shot_ids) == len(set(shot_ids))
+    for n in range(1, MAX_IMPROVE_SHOTS + 2):
+        assert any(sid.endswith(f"K{n}") for sid in shot_ids)
