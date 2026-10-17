@@ -23,12 +23,9 @@ from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
-    IMAGE_RESOLUTIONS_BY_ID,
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS_BY_ID,
     build_gen_id_prefix,
-    clamp_image_resolution_id,
-    resolve_image_quality_slug,
 )
 from app.models import Frame, Project, PromptVersion
 from app.orchestrator.steps.generate_images import (
@@ -50,7 +47,6 @@ from app.services.montage_board_meta import (
 )
 from app.services.montage_frame_refs import append_manual_ref_note
 from app.services.outsee_retry import generate_image_with_retries, generate_video_with_retries
-from app.services.vibecode_catalog import resolve_node_media_settings
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_PROMPT_ATTR,
@@ -60,6 +56,7 @@ from app.services.plan_shot2 import (
     find_shot2_image,
     is_parent_slot,
 )
+from app.services.vibecode_catalog import resolve_node_media_settings
 
 
 @dataclass
@@ -168,6 +165,21 @@ async def _frame_by_number(
             )
         )
     ).scalar_one_or_none()
+
+
+async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str) -> bool:
+    """Помеченный кадр не уходит в API. Нет строки в БД — не блокируем чужой вызов."""
+    try:
+        from app.services.frame_tombstones import log_paid_frame_skip
+        from app.services.montage_board_apply import session_scope
+
+        async with session_scope(project_id) as session:
+            fr = await _frame_by_number(session, project_id, frame_number)
+    except Exception:  # noqa: BLE001
+        return False
+    if fr is None:
+        return False
+    return log_paid_frame_skip(fr, where=where) is not None
 
 
 async def _active_prompt_text(
@@ -397,6 +409,10 @@ async def prepare_image_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
+    from app.services.frame_tombstones import PaidFrameSkipped, log_paid_frame_skip
+
+    if log_paid_frame_skip(fr, where="prepare_image_regen"):
+        raise PaidFrameSkipped(f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена")
 
     scenes_dir = project.data_dir / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
@@ -540,6 +556,12 @@ async def prepare_image_regen(
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     """Только HTTP API (Outsee). Chrome CDP для монтажа отключён."""
+    if await _regen_paid_blocked(prep.project_id, prep.frame_number, where="execute_image_regen"):
+        from app.services.frame_tombstones import PaidFrameSkipped
+
+        raise PaidFrameSkipped(
+            f"кадр #{prep.frame_number} помечен «удалён» — платная генерация пропущена"
+        )
     if not _image_api_enabled():
         raise RuntimeError(
             "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY. "
@@ -651,6 +673,10 @@ async def prepare_video_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
+    from app.services.frame_tombstones import PaidFrameSkipped, log_paid_frame_skip
+
+    if log_paid_frame_skip(fr, where="prepare_video_regen"):
+        raise PaidFrameSkipped(f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена")
 
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
@@ -708,6 +734,12 @@ async def prepare_video_regen(
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     """Только HTTP API (Outsee/Kie). Chrome CDP для монтажа отключён."""
+    if await _regen_paid_blocked(prep.project_id, prep.frame_number, where="execute_video_regen"):
+        from app.services.frame_tombstones import PaidFrameSkipped
+
+        raise PaidFrameSkipped(
+            f"кадр #{prep.frame_number} помечен «удалён» — платная генерация пропущена"
+        )
     if not _video_api_enabled():
         raise RuntimeError(
             "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY или KIE_API_KEY. "

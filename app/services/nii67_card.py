@@ -500,11 +500,14 @@ _BEAT_KIND = {
 }
 
 
-def _keep_operator_block(block: dict[str, Any], reason: str) -> None:
+def _keep_operator_block(
+    block: dict[str, Any], reason: str, *, quarantine: bool = True
+) -> None:
     if block.get("пометка"):
         return
     block["пометка"] = reason
-    block["карантин"] = True
+    if quarantine:
+        block["карантин"] = True
     logger.warning(
         "WARN apply_generated_scenario: блок {} сохранён, не заменён: {}",
         block.get("id"),
@@ -570,7 +573,9 @@ def apply_generated_scenario(
                 merged_blocks.append(_merge_generated_beat(block, queue.pop(0), scenario))
             else:
                 _keep_operator_block(
-                    block, "блок оператора сохранён: генерация его не заменила"
+                    block,
+                    "блок оператора сохранён: генерация его не заменила",
+                    quarantine=False,
                 )
                 merged_blocks.append(block)
         for kind, beats_left in pending.items():

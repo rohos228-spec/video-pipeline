@@ -247,9 +247,33 @@ def test_qc_coalesce_keeps_ids_when_incoming_is_shorter(warn_log) -> None:
     rows = merged[0]["fields"]["кадры"]
     assert _ids(rows) == ["1-S1-K1", "1-S1-K2", "1-S1-K3"]
     assert rows[0]["действие"] == "новое"
+    assert rows[0].get("карантин") is not True
     assert rows[1]["карантин"] is True
+    assert "QC-список короче" in rows[1]["пометка"]
     assert rows[2]["карантин"] is True
+    assert "QC-список короче" in rows[2]["пометка"]
     assert any("WARN coalesce_cell_shot_ops" in line for line in warn_log)
+
+    # Пустой закадр у кадра, который QC только что вернул, — норма, не карантин.
+    fresh = coalesce_cell_shot_ops(
+        [
+            {
+                "frame_uuid": uid,
+                "fields": {
+                    "кадры": [
+                        {"id": "1-S1-K1", "закадр": "", "действие": "пауза QC"},
+                        {"id": "1-S1-K2", "закадр": "", "действие": "пауза"},
+                        {"id": "1-S1-K3", "закадр": "три", "действие": "хвост"},
+                    ]
+                },
+            }
+        ],
+        frames,
+        patch=True,
+    )[0]["fields"]["кадры"]
+    assert fresh[0]["действие"] == "пауза QC"
+    assert fresh[0].get("карантин") is not True
+    assert fresh[0]["закадр"] == ""
 
 
 def test_apply_generated_scenario_keeps_operator_blocks(warn_log) -> None:
@@ -289,7 +313,8 @@ def test_apply_generated_scenario_keeps_operator_blocks(warn_log) -> None:
     assert saved.get("пометка")
     custom = next(b for b in blocks if b["kind"] == "custom")
     assert custom["id"] in before_ids
-    assert custom.get("карантин") is True
+    assert custom.get("пометка")
+    assert custom.get("карантин") is not True
     assert any("WARN apply_generated_scenario" in line for line in warn_log)
 
 
@@ -405,7 +430,7 @@ async def test_coverage_delete_in_auto_apply_marks_frame(
     ).scalar_one()
     assert prompt.text == "промт ребёнка"
     assert text.text == "кусок"
-    assert art.frame_id is None
+    assert art.frame_id == child_id
     assert 2 in (project.meta or {}).get("deleted_frame_numbers", [])
     assert any("запрещён в авто-apply" in line for line in warn_log)
 
@@ -550,3 +575,272 @@ async def test_marked_frame_is_not_revived_or_duplicated_by_xlsx_import(
     assert deleted_numbers(project) == {3}
     assert sum(1 for fr in rows if fr.number == 3) == 1
     assert any("помечен «удалён»" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_coverage_delete_refuses_non_child(
+    session: AsyncSession, project: Project, warn_log
+) -> None:
+    from app.services.montage_coverage_ops import apply_coverage_op
+
+    session.add(project)
+    await session.flush()
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="ee" * 12,
+        voiceover_text="ячейка",
+        status=FrameStatus.image_generated,
+        image_prompt="промт родителя",
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "ee" * 12}},
+    )
+    session.add(parent)
+    await session.flush()
+    art = Artifact(
+        project_id=project.id,
+        frame_id=parent.id,
+        kind=ArtifactKind.scene_image,
+        uuid="art-parent",
+        path="scenes/frame_001.png",
+    )
+    session.add(art)
+    await session.flush()
+    result = await apply_coverage_op(
+        session, project, {"type": "coverage_delete", "frame_number": 1}
+    )
+    await session.flush()
+    assert result["ok"] is False and result["refused"] == "not_child"
+    live = await session.get(Frame, parent.id)
+    assert live is not None
+    assert (live.attrs or {}).get("удалён") is not True
+    assert live.image_prompt == "промт родителя"
+    assert live.status == FrameStatus.image_generated
+    kept = (
+        await session.execute(select(Artifact).where(Artifact.uuid == "art-parent"))
+    ).scalar_one()
+    assert kept.frame_id == parent.id
+    assert any("не дочерний" in line for line in warn_log)
+
+
+def test_full_vo_on_first_shot_clears_empty_quarantine(monkeypatch, warn_log) -> None:
+    from app.services.shot_templates import _assign_scene_vo
+
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.kadry_vo_partition",
+        lambda vo, shots: ["", ""],
+    )
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.kadry_vo_partition_aligned",
+        lambda vo, shots: ["", ""],
+    )
+    monkeypatch.setattr(
+        "app.services.scene_design.camera_expand.split_text_into_parts",
+        lambda text, n: ["", ""],
+    )
+    out = _assign_scene_vo(
+        [{"id": "a", "закадр": ""}, {"id": "b", "закадр": ""}],
+        "Целое предложение сцены.",
+    )
+    assert out[0]["закадр"] == "Целое предложение сцены."
+    assert out[0].get("карантин") is not True
+    assert out[1].get("карантин") is True
+    assert any("карантин снят" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_marked_frame_skips_paid_image_generation(
+    session: AsyncSession, project: Project, tmp_path: Path, warn_log, monkeypatch
+) -> None:
+    from app.orchestrator.steps.generate_images import (
+        _claim_shot1_batch,
+        _generate_and_send,
+    )
+    from app.services.frame_tombstones import mark_frame_deleted
+
+    session.add(project)
+    await session.flush()
+    live = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="11" * 12,
+        voiceover_text="живой",
+        image_prompt="промт живого",
+        status=FrameStatus.planned,
+    )
+    marked = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="22" * 12,
+        voiceover_text="помеченный",
+        image_prompt="промт помеченного",
+        status=FrameStatus.planned,
+    )
+    session.add_all([live, marked])
+    await session.flush()
+    mark_frame_deleted(marked, project, "тест")
+    await session.flush()
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    claimed = await _claim_shot1_batch(
+        session, project.id, scenes, project=project, limit=4
+    )
+    assert [fr.number for fr in claimed] == [1]
+    await session.refresh(marked)
+    assert marked.status == FrameStatus.planned
+    assert marked.image_prompt == "промт помеченного"
+    assert (marked.attrs or {}).get("img_gen_inflight") is None
+    assert (marked.attrs or {}).get("удалён") is True
+
+    async def _boom(*_a, **_k):
+        raise AssertionError("платный image API вызван")
+
+    monkeypatch.setattr(
+        "app.orchestrator.steps.generate_images.generate_image_with_retries",
+        _boom,
+    )
+    await _generate_and_send(
+        session, None, None, None, project, marked, scenes  # type: ignore[arg-type]
+    )
+    await session.refresh(marked)
+    assert marked.image_prompt == "промт помеченного"
+    assert marked.status == FrameStatus.planned
+    assert any("WARN generate_images" in line and "платная генерация" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_marked_frame_skips_paid_video_generation(
+    session: AsyncSession, project: Project, warn_log, monkeypatch
+) -> None:
+    from contextlib import asynccontextmanager
+
+    from app.orchestrator.steps.generate_videos import (
+        _claim_shot1_video_batch,
+        _shot1_job,
+    )
+    from app.services.frame_tombstones import PaidFrameSkipped, mark_frame_deleted
+    from app.services.montage_board_regen import (
+        ImageRegenPrep,
+        VideoRegenPrep,
+        execute_image_regen,
+        execute_video_regen,
+        prepare_image_regen,
+        prepare_video_regen,
+    )
+
+    session.add(project)
+    await session.flush()
+    live = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="33" * 12,
+        voiceover_text="живой",
+        animation_prompt="slow pan",
+        image_prompt="кадр",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    marked = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="44" * 12,
+        voiceover_text="помеченный",
+        animation_prompt="не снимать",
+        image_prompt="кадр помеченный",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    session.add_all([live, marked])
+    await session.flush()
+    mark_frame_deleted(marked, project, "тест")
+    await session.flush()
+    (project.data_dir / "videos").mkdir(parents=True, exist_ok=True)
+    claimed = await _claim_shot1_video_batch(session, project.id, limit=4)
+    assert [fr.number for fr in claimed] == [1]
+    await session.refresh(marked)
+    assert marked.status == FrameStatus.animation_prompt_ready
+    assert marked.animation_prompt == "не снимать"
+    assert (marked.attrs or {}).get("video_gen_inflight") is None
+
+    async def _boom(*_a, **_k):
+        raise AssertionError("платный video API вызван")
+
+    monkeypatch.setattr(
+        "app.orchestrator.steps.generate_videos.generate_video_with_retries",
+        _boom,
+    )
+
+    @asynccontextmanager
+    async def _slot():
+        yield None
+
+    monkeypatch.setattr(
+        "app.orchestrator.steps.generate_videos.acquire_outsee_slot",
+        _slot,
+    )
+
+    class _SM:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *_a):
+            return False
+
+    assert await _shot1_job(
+        project_id=project.id,
+        frame_id=marked.id,
+        out_dir=project.data_dir / "videos",
+        scenes_dir=project.data_dir / "scenes",
+        outsee=None,
+        gpt=None,
+        session_clip_paths=[],
+        clips_lock=__import__("asyncio").Lock(),
+        session_maker=_SM(),
+    ) is False
+    await session.refresh(marked)
+    assert marked.animation_prompt == "не снимать"
+    assert marked.status == FrameStatus.animation_prompt_ready
+
+    with pytest.raises(PaidFrameSkipped):
+        await prepare_image_regen(session, project, 2, shot=1, mode="same_prompt")
+    with pytest.raises(PaidFrameSkipped):
+        await prepare_video_regen(session, project, 2, shot=1, mode="same_prompt")
+    await session.refresh(marked)
+    assert marked.image_prompt == "кадр помеченный"
+    assert marked.animation_prompt == "не снимать"
+
+    @asynccontextmanager
+    async def _scope(_project_id=None):
+        yield session
+
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
+    monkeypatch.setattr(
+        "app.services.montage_board_regen.generate_image_with_retries",
+        _boom,
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_regen.generate_video_with_retries",
+        _boom,
+    )
+    with pytest.raises(PaidFrameSkipped):
+        await execute_image_regen(
+            ImageRegenPrep(
+                project_id=project.id,
+                frame_number=2,
+                shot=1,
+                prompt_text="api",
+                file_path=project.data_dir / "scenes" / "x.png",
+            )
+        )
+    with pytest.raises(PaidFrameSkipped):
+        await execute_video_regen(
+            VideoRegenPrep(
+                project_id=project.id,
+                frame_number=2,
+                shot=1,
+                prompt_text="vid",
+                file_path=project.data_dir / "videos" / "x.mp4",
+                start_frame=project.data_dir / "scenes" / "x.png",
+            )
+        )
+    assert any("WARN generate_videos" in line and "платная генерация" in line for line in warn_log)

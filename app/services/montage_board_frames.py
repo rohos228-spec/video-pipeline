@@ -10,17 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, Frame, FrameEdge, FrameStatus, FrameText, Project, PromptVersion
 from app.services.db_v2 import insert_frame_after
-from app.services.montage_coverage_ops import (
-    _children_of,
-    _clear_child_scene_chain,
-    _load_frames,
-    _refresh_shots_in_beat,
-    delete_coverage_child,
-)
 from app.services.montage_board_meta import (
     drop_pending_ops_for_frames,
     montage_meta,
     set_montage_meta,
+)
+from app.services.montage_coverage_ops import (
+    _clear_child_scene_chain,
+    _load_frames,
+    _refresh_shots_in_beat,
+    delete_coverage_child,
 )
 from app.services.vo_shot_expand import _cs, _flag_attrs, _set_cs, is_shot_child
 
@@ -246,7 +245,11 @@ async def delete_montage_frame(
         }
 
     quarantine_frame_media(project, number)
-    mark_frame_deleted(frame, project, "delete_montage_frame: кадр помечен, не удалён")
+    mark_frame_deleted(
+        frame,
+        project,
+        "delete_montage_frame: кадр помечен, не удалён; медиа в карантине",
+    )
     await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})

@@ -56,7 +56,7 @@ from app.services.scene_shot_grammar import (
     is_threshold_step,
 )
 from app.services.shot_templates import format_scene_chain, parse_scene_chain
-from app.services.vo_shot_expand import _flag_attrs, bits_from_attrs, main_action_text
+from app.services.vo_shot_expand import _flag_attrs, main_action_text
 
 GROUP_NODES: tuple[tuple[str, str], ...] = (
     ("fw_action", "Действие сцены"),
@@ -1676,10 +1676,11 @@ def qc_reasons(
         hard.append("кадры не разложены по якорям подряд")
     for unit in units:
         group = _group(shots, unit["n"])
-        if group and _glue(group) != _norm(unit["закадр"]):
+        live = [s for s in group if not s.get("карантин")] or group
+        if live and _glue(live) != _norm(unit["закадр"]):
             hard.append(f"якорь {unit['n']}: склейка закадра кадров ≠ куску якоря")
-        if len(_norm(unit["закадр"]).split()) >= len(group):
-            for shot in group:
+        if len(_norm(unit["закадр"]).split()) >= len(live):
+            for shot in live:
                 if not _norm(shot.get("закадр")):
                     hard.append(f"кадр {shot.get('порядок')}: пустой закадр")
     stems: set[str] = set()
@@ -1960,7 +1961,7 @@ async def improve_cell_scene(
         load_character_registry,
         match_registry_characters,
     )
-    from app.services.vo_shot_expand import _flag_attrs, _set_cs
+    from app.services.vo_shot_expand import _set_cs
 
     _ = anchors, passport
     frames = await _load_frames(session, int(project.id))

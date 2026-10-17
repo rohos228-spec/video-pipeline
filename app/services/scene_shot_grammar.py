@@ -736,6 +736,7 @@ def merge_gpt_shots_with_action(
             by_stem[stem] = s
     out: list[dict[str, Any]] = []
     missing: list[str] = []
+    matched_sources: set[int] = set()
     for i, can in enumerate(canonical):
         stem = action_stem(str(can.get("действие") or ""))
         gpt = by_stem.get(stem)
@@ -773,6 +774,7 @@ def merge_gpt_shots_with_action(
             if gpt.get(key) not in (None, ""):
                 row[key] = gpt[key]
         out.append(row)
+        matched_sources.add(id(gpt))
     if missing:
         # Mild: почти все шаги покрыты (≤2 дырки и ≥70% canonical) → WARN.
         # Severe → PassStop на retry, без silent invent и без принятия 1/N.
@@ -802,6 +804,8 @@ def merge_gpt_shots_with_action(
     # «общий вид»), дописываем. Идентификаторы не теряем.
     seen_ids = {str(r.get("id") or "") for r in out if str(r.get("id") or "")}
     for shot in cleaned:
+        if id(shot) in matched_sources:
+            continue
         sid = str(shot.get("id") or "")
         if sid and sid in seen_ids:
             continue
@@ -1333,6 +1337,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
 
 # ---- R-VO-SENTENCE (c61): закадр режется ТОЛЬКО по концу предложения ----
 import re as _re
+
 _SENT_END = _re.compile(r'(?<=[.!?…])["»)]*\s+(?=["«(]?[A-ZА-ЯЁ0-9—–-])')
 _END_OK = _re.compile(r'[.!?…]["»)]*\s*$')
 

@@ -337,5 +337,12 @@ def test_qc_patches_shot_by_id_and_keeps_the_rest() -> None:
         {"id": "9-S9-K9", "действие": "чужой кадр", "закадр": "нет"},
     ]}}]
     merged = coalesce_cell_shot_ops(ops, chunk, patch=True)
-    by_id = {s["id"]: s["действие"] for s in merged[0]["fields"]["кадры"]}
-    assert by_id == {"1-S1-K1": "новое", "1-S2-K1": "оставить"}
+    rows = merged[0]["fields"]["кадры"]
+    by_id = {s["id"]: s for s in rows}
+    assert by_id["1-S1-K1"]["действие"] == "новое"
+    assert by_id["1-S2-K1"]["действие"] == "оставить"
+    assert by_id["1-S2-K1"].get("карантин") is not True
+    extra = by_id["9-S9-K9"]
+    assert extra["действие"] == "чужой кадр"
+    assert extra["карантин"] is True
+    assert rows[-1]["id"] == "9-S9-K9"

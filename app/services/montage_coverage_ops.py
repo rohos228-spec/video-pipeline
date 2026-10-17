@@ -6,11 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Artifact,
     Frame,
     FrameStatus,
     Project,
@@ -1047,11 +1046,11 @@ async def delete_coverage_child(
     from app.services.frame_tombstones import mark_frame_deleted
 
     quarantine_frame_media(project, int(frame.number))
-    drop_id = int(frame.id)
-    await session.execute(
-        update(Artifact).where(Artifact.frame_id == drop_id).values(frame_id=None)
+    mark_frame_deleted(
+        frame,
+        project,
+        "delete_coverage_child: дочерний кадр помечен, не удалён; медиа в карантине",
     )
-    mark_frame_deleted(frame, project, "delete_coverage_child: дочерний кадр помечен, не удалён")
     await session.flush()
     logger.warning(
         "WARN delete_coverage_child: кадр #{} id={} помечен, PromptVersion/FrameText на месте",
@@ -1362,12 +1361,24 @@ async def apply_coverage_op(
     elif op_type == "coverage_delete":
         from app.services.frame_tombstones import mark_frame_deleted
 
+        parent = _vo_parent_frame(frames, frame)
+        is_child = parent is not None and int(parent.number) != int(frame.number)
+        if not (is_shot_child(frame) or is_child):
+            logger.warning(
+                "WARN coverage_delete: кадр #{} не дочерний — отказ, без пометки и без отвязки",
+                frame.number,
+            )
+            return {
+                "ok": False,
+                "refused": "not_child",
+                "highlight": slot_key_from_op(op),
+                "frame_number": frame_number,
+                "op": op,
+                "regen_image": False,
+            }
         logger.warning(
             "WARN coverage_delete запрещён в авто-apply: кадр #{} помечен, не удалён",
             frame.number,
-        )
-        await session.execute(
-            update(Artifact).where(Artifact.frame_id == int(frame.id)).values(frame_id=None)
         )
         mark_frame_deleted(
             frame,

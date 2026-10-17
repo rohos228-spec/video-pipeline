@@ -37,20 +37,20 @@ from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
-    fill_bit_spans,
-    is_cutaway_shot,
-    merge_same_place_scenes,
     carry_pose,
     character_id_problems,
     ensure_character_ids,
+    ensure_wide_before_dialogue,
+    fill_bit_spans,
+    is_cutaway_shot,
+    merge_same_place_scenes,
+    merge_trivial_shots,
     normalize_reply_cameras,
     reflow_vo_by_sentences,
-    merge_trivial_shots,
-    ensure_wide_before_dialogue,
-    spread_vo_sentences,
     repair_shot_vo_lengths,
     shots_continuity_problems,
     shots_grammar_reason,
+    spread_vo_sentences,
     vo_piece_ends_sentence,
     vo_sentence_problems,
 )
@@ -987,10 +987,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 bit["изменение"] = "смысл из закадра"
                 fixed += 1
             snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
-            if snapped and snapped != str(bit.get("якорь") or "").strip():
-                bit["якорь"] = snapped
-                fixed += 1
-            elif not str(bit.get("якорь") or "").strip() and snapped:
+            if snapped and snapped != str(bit.get("якорь") or "").strip() or not str(bit.get("якорь") or "").strip() and snapped:
                 bit["якорь"] = snapped
                 fixed += 1
         fields["биты"] = raw
@@ -1874,7 +1871,7 @@ def shots_reply_gate_problems(
 import contextvars as _cv
 
 # база персонажей для гейта/фикса id (ставит нода Кадры перед пачками)
-_GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE_CHARACTERS", default=[])
+_GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_CHARACTERS", default=[])
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
@@ -2163,30 +2160,32 @@ def coalesce_cell_shot_ops(
                     slot["shots"][index[sid]] = shot
                 elif sid:
                     unknown.append(sid)
+                    extra = dict(shot)
+                    extra["карантин"] = True
+                    extra["пометка"] = (
+                        "QC-кадр не было в ячейке — добавлен в хвост, список не подменён"
+                    )
+                    slot["shots"].append(extra)
+                    index[sid] = len(slot["shots"]) - 1
             if unknown:
                 logger.warning(
-                    "WARN coalesce_cell_shot_ops: QC-кадры {} нет в ячейке, список не подменён",
+                    "WARN coalesce_cell_shot_ops: QC-кадры {} нет в ячейке — "
+                    "добавлены в хвост с пометкой, список не подменён",
                     ", ".join(unknown),
                 )
-            # QC правит по id. Пустой закадр — норма; кадры не выкидываем и
-            # не подменяем список целиком (REPLACE).
+            # QC правит по id. Пустой закадр — норма, свежий результат QC
+            # из-за него не карантиним. Кадры, которые REPLACE выкинул бы
+            # (их нет в более коротком списке), остаются с явной причиной.
             if incoming:
-                from app.services.scene_shot_grammar import is_cutaway_shot
-
-                shorter = len(incoming) < len(slot["shots"])
+                original_count = len(slot["shots"]) - len(unknown)
+                shorter = len(incoming) < original_count
                 for shot in slot["shots"]:
-                    if not isinstance(shot, dict):
+                    if not isinstance(shot, dict) or shot.get("карантин"):
                         continue
                     sid = str(shot.get("id") or "")
-                    empty = not str(shot.get("закадр") or "").strip() and not is_cutaway_shot(
-                        shot
-                    )
-                    # REPLACE снёс бы кадры вне incoming; фильтр снёс бы пустой закадр.
-                    if not ((shorter and sid not in incoming_ids) or empty):
+                    if not (shorter and sid not in incoming_ids):
                         continue
-                    if shot.get("карантин"):
-                        continue
-                    reason = "QC не удаляет кадр — правка только по id"
+                    reason = "QC-список короче — кадр сохранён, список не подменён"
                     shot["карантин"] = True
                     shot["пометка"] = reason
                     logger.warning(
@@ -2793,7 +2792,8 @@ async def run_apply_ops_batched(
     )
     # 2026-10-11: one-shot targeted rerun of specific cells (data/_only_cells_<node>.json = [uuid,...]).
     try:
-        import json as _j, os as _os
+        import json as _j
+        import os as _os
         _oc = _os.path.join("data", f"_only_cells_{node_key}.json")
         if _os.path.exists(_oc):
             _want = set(_j.load(open(_oc, encoding="utf-8")))
