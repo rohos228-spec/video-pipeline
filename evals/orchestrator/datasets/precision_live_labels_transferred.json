@@ -1,0 +1,2490 @@
+{
+  "source": "precision_live_queries.json",
+  "old_max_parts": 8,
+  "new_max_parts": 3,
+  "grade": "max grade старых меток, чей текст целиком вошёл в новый чанк; отсутствие метки — не 0, а пропуск",
+  "queries": [
+    {
+      "id": "live-01",
+      "family": "camera",
+      "text": "Какими крупностями снимать и когда камера едет, а не стоит на месте?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-02",
+      "family": "camera",
+      "text": "Нужны оба описания постановки кадра: спокойный агент и вариант, где на фазу действия свой шот.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-03",
+      "family": "camera",
+      "text": "Где расписаны общий, средний и крупный план плюс панорама?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-04",
+      "family": "camera",
+      "text": "Хочу инструкцию оператору: композиция, наезд, отъезд, не телепорт.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-05",
+      "family": "camera",
+      "text": "Как выбирать план кадра, если сцена только открывается и если уже идёт действие?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-06",
+      "family": "camera",
+      "text": "Покажи материалы по съёмке: и обычный срез камеры, и динамический по фазам.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-07",
+      "family": "characters",
+      "text": "Кто ведёт реестр героев и как описывать внешность с одеждой?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-08",
+      "family": "characters",
+      "text": "Нужны карточки персонажей: и обычный кастинг, и вариант под смену состояний.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-09",
+      "family": "characters",
+      "text": "Где сказано, как завести героя, не путая его с местом и камерой?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-10",
+      "family": "characters",
+      "text": "Как собрать полный облик персонажа по закадру, чтобы потом не поехал?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-11",
+      "family": "characters",
+      "text": "Покажи оба промпта про людей в кадре: базовый и с динамикой характера.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-12",
+      "family": "characters",
+      "text": "Кто отвечает за то, какие герои вообще есть в ролике и как они выглядят?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-13",
+      "family": "world",
+      "text": "Кто придумывает места и интерьеры, не добавляя локации от себя?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-14",
+      "family": "world",
+      "text": "Где правила про локации: брать только то, что уже наметили, и расписать обстановку?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-15",
+      "family": "world",
+      "text": "Нужны оба текста про мир: обычный художник места и вариант с несколькими мирами.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-16",
+      "family": "world",
+      "text": "Как описывать пространство сцены, если закадр сам не назвал комнату?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-17",
+      "family": "world",
+      "text": "Покажи инструкции по местам действия, не по людям и не по камере.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-18",
+      "family": "world",
+      "text": "Где агент, который оформляет локации и проверяет, что ни одна не потерялась?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-19",
+      "family": "action",
+      "text": "Кто режет закадр на сцены и цепь поступков, не трогая камеру?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-20",
+      "family": "action",
+      "text": "Как понять, где сцена начинается и кончается по озвучке, а не по ячейке таблицы?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-21",
+      "family": "action",
+      "text": "Нужны оба промпта про действие: базовый и тот, где у сцены есть фазы.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-22",
+      "family": "action",
+      "text": "Где сказано, что одна ячейка текста не равна одной сцене и не равна одному кадру?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-23",
+      "family": "action",
+      "text": "Как строить шаги действия внутри сцены, если кадров потом будет несколько?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-24",
+      "family": "action",
+      "text": "Покажи материалы режиссёра постановки: границы сцен и что в них происходит.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-25",
+      "family": "assemble",
+      "text": "Кто собирает срезы агентов в итоговые сцены, когда они спорят?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-26",
+      "family": "assemble",
+      "text": "Как разрешать конфликт: закадр важнее, чем догадка камеры или мира?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-27",
+      "family": "assemble",
+      "text": "Нужны оба сборщика: обычный и тот, что склеивает скелет с фазами.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-28",
+      "family": "assemble",
+      "text": "Где финальная сборка JSON сцен из нескольких промежуточных ответов?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-29",
+      "family": "assemble",
+      "text": "Покажи промпты, которые ничего не придумывают заново, а только стыкуют чужие срезы.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-30",
+      "family": "assemble",
+      "text": "Кто выпускает цельный пакет сцен после того, как герои, места и действие уже есть?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-31",
+      "family": "shots",
+      "text": "Как из готового действия нарезать кадры и не потерять текст озвучки?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-32",
+      "family": "shots",
+      "text": "Где правила покрытия сцены несколькими кадрами, а не одним слайдом?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-33",
+      "family": "shots",
+      "text": "Нужен и агент нарезки кадров, и агент, который пишет промпты картинок по ним.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-34",
+      "family": "shots",
+      "text": "Как делить закадр между кадрами короткой фразой, чтобы сумма совпала с ячейкой?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-35",
+      "family": "shots",
+      "text": "Покажи, кто ставит план, ракурс и видимое действие в списке кадров.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-36",
+      "family": "shots",
+      "text": "Где непрерывность картинки внутри одной сцены и запрет тащить позу из соседней?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-37",
+      "family": "script",
+      "text": "Кто дробит закадр на смысловые биты, и кто потом собирает из них главное действие?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-38",
+      "family": "script",
+      "text": "Как решить, сколько изменений в ячейке, а не ставить один бит на всё?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-39",
+      "family": "script",
+      "text": "Нужны оба шага сценария: разметка битов и цепь действий по ним.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-40",
+      "family": "script",
+      "text": "Где сказано не склеивать ячейки озвучки и не терять куски текста?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-41",
+      "family": "script",
+      "text": "Покажи промпт про биты и промпт, который превращает их в поступки сцены.",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-42",
+      "family": "script",
+      "text": "Как из текста за кадром получить сцены с действием, не придумывая новую озвучку?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-43",
+      "family": "rules",
+      "text": "На сколько разносить одновременные пачки запросов к модели, чтобы они не стартовали в одну секунду?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-1",
+          "chunk_id": "497d497f01815a9b7909f0d394d124f8ee8345baac012af014a6a99897ef64a1",
+          "grade": 1,
+          "from": [
+            "497d497f01815a9b7909f0d394d124f8ee8345baac012af014a6a99897ef64a1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-44",
+      "family": "rules",
+      "text": "Можно ли для внутренних ходов и для нод опустить глубину рассуждения, или пока рано?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-2",
+          "chunk_id": "96849d17de38b887c73d333b59ccedc9ee0d0c676c2b61f06333da866bfa8338",
+          "grade": 1,
+          "from": [
+            "96849d17de38b887c73d333b59ccedc9ee0d0c676c2b61f06333da866bfa8338"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-45",
+      "family": "rules",
+      "text": "Если кадров получилось слишком много, можно просто стереть лишние сцены?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-3",
+          "chunk_id": "92b85675de560e217c68be3203a9aa86992de03b10a201cb29b890e5b749fb67",
+          "grade": 1,
+          "from": [
+            "92b85675de560e217c68be3203a9aa86992de03b10a201cb29b890e5b749fb67"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-46",
+      "family": "rules",
+      "text": "Какая модель стоит на нодах пайплайна и через какого провайдера, пока не подтвердили замену?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-4",
+          "chunk_id": "9ce21e54fcef1ad273a891e1bc45128d132d88fc7beb98a99611173e8fb80c8a",
+          "grade": 1,
+          "from": [
+            "9ce21e54fcef1ad273a891e1bc45128d132d88fc7beb98a99611173e8fb80c8a"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-47",
+      "family": "rules",
+      "text": "Соседние почти одинаковые кадры надо обязательно резать на два или их можно объединить?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-5",
+          "chunk_id": "f1dcbd6bfd5b6641bf3570caf1458119c85171c6f28a88152c7bc88dbc7a298b",
+          "grade": 1,
+          "from": [
+            "f1dcbd6bfd5b6641bf3570caf1458119c85171c6f28a88152c7bc88dbc7a298b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-48",
+      "family": "rules",
+      "text": "Что должно стоять в раскадровке раньше реплики: деталь или широкий вид места?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-6",
+          "chunk_id": "bb91028bcc2edf29da44103ed21b7e5f1f2cac023665b6f5c186121a00ea4a99",
+          "grade": 1,
+          "from": [
+            "bb91028bcc2edf29da44103ed21b7e5f1f2cac023665b6f5c186121a00ea4a99"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-49",
+      "family": "rules",
+      "text": "Сколько символов озвучки положено на одну сцену и можно ли при нарезке потерять хвост?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-7",
+          "chunk_id": "6420ef4558f2e041998bb11dfd3a7b52b967780fdce909892ccebf9264f62ee9",
+          "grade": 1,
+          "from": [
+            "6420ef4558f2e041998bb11dfd3a7b52b967780fdce909892ccebf9264f62ee9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "live-50",
+      "family": "rules",
+      "text": "Оркестратор может сам поправить код и запустить тесты или ему можно только ноды и отчёты?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "/workspace/docs/fable/user_rules.md",
+          "part_key": "rule-8",
+          "chunk_id": "c22034f6c1ec3dc0fd14345f0ec6bc45e4f7d473f24db5d17d3a707d61ef6078",
+          "grade": 1,
+          "from": [
+            "c22034f6c1ec3dc0fd14345f0ec6bc45e4f7d473f24db5d17d3a707d61ef6078"
+          ]
+        }
+      ]
+    }
+  ]
+}

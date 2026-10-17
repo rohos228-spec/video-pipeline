@@ -1,0 +1,65 @@
+{
+  "count": 12,
+  "items": [
+    {
+      "query_id": "live-19",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-20",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-21",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-22",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-23",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-24",
+      "old_chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-31",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-32",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-33",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-34",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-35",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    },
+    {
+      "query_id": "live-36",
+      "old_chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+      "reason": "текст старого чанка попал в несколько новых частей"
+    }
+  ]
+}
