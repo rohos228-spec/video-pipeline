@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ActionResultCard } from "@/components/orchestrator/action-result-card";
+import { actionResultVisible } from "@/lib/orchestratorActionCards";
 import {
   AGENT_LABEL,
   groupPlanSteps,
@@ -120,6 +121,7 @@ export function OrchestratorWorkspace() {
 
   const task = chat.state.tasks.at(-1) ?? null;
   const openApprovals = chat.state.approvals.filter((item) => item.resolved == null);
+  const visibleResults = chat.state.actionResults.filter((item) => actionResultVisible(item, chat.state.approvals));
 
   const send = () => {
     const text = draft;
@@ -267,7 +269,7 @@ export function OrchestratorWorkspace() {
                   .filter((step) => step.node && isNodeResultAction(step.action))
                   .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
               )}
-              {chat.state.actionResults.map((result) => (
+              {visibleResults.map((result) => (
                 <ActionResultCard key={result.id} result={result} onReportEdit={chat.sendReportEdit} />
               ))}
               {openApprovals.map((approval) => (

@@ -2,10 +2,16 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
+  EXAMPLE_PAID_APPROVAL,
+  EXAMPLE_PAID_PROMPT,
   EXAMPLE_PARAMS_EDIT,
   EXAMPLE_PROMPT_EDIT,
   EXAMPLE_REPORT,
+  EXAMPLE_UNKNOWN,
+  EXAMPLE_UNKNOWN_APPROVAL,
   lineDiff,
+  reportEditBody,
+  resolveActionMetadata,
 } from "../../src/lib/orchestratorActionCards";
 
 const TOKEN = "orch-dev-token";
@@ -37,7 +43,28 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
 
 test("построчный дифф промта не теряет строки", () => {
   const lines = lineDiff("кадр у окна\nгерой молчит", "кадр у окна\nгерой говорит");
-  expect(lines.map((line) => `${line.kind}:${line.text}`)).toEqual(["same:кадр у окна", "remove:герой молчит", "add:герой говорит"]);
+  expect(lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
+    "same:кадр у окна",
+    "remove:герой молчит",
+    "add:герой говорит",
+  ]);
+});
+
+test("неизвестное имя считается платным и деструктивным", () => {
+  const meta = resolveActionMetadata("widget.spin", {
+    name: "widget.spin",
+    risk: "none",
+    read_only: true,
+    destructive: false,
+    paid: false,
+  });
+  expect(meta.paid).toBe(true);
+  expect(meta.destructive).toBe(true);
+  expect(meta.read_only).toBe(false);
+  expect(reportEditBody("rpt-1", "  убери скрипт  ", "chg-report-1")).toEqual({
+    text: "убери скрипт",
+    action: { name: "report.edit", report_id: "rpt-1", change_id: "chg-report-1" },
+  });
 });
 
 test("карточка правки: дифф текстом, создание без было, открыть ноду", async ({ page }) => {
@@ -108,4 +135,41 @@ test("html-отчёт: sandbox без скриптов, правка шлёт о
     action: { name: "report.edit", report_id: "rpt-1", change_id: "chg-report-1" },
   });
   await expect(page.getByTestId("orch-report-send")).toBeDisabled();
+});
+
+test("платное и неизвестное действие: результат только после approve", async ({ page }) => {
+  await page.route("**/api/orchestrator/approvals/**/approve", async (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, matched: true, approval_id: id }),
+    });
+  });
+  await page.route("**/api/orchestrator/approvals/**/reject", async (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, matched: true, approval_id: id }),
+    });
+  });
+  await openWithToken(page, "act-paid");
+  await emit(page, "act-paid", "approval_required", EXAMPLE_PAID_APPROVAL);
+  await emit(page, "act-paid", "step_finished", EXAMPLE_PAID_PROMPT);
+  await expect(page.getByTestId("orch-approval")).toContainText("Шаг с риском");
+  await expect(page.getByTestId("orch-action-card")).toHaveCount(0);
+  await page.getByTestId("orch-approve").click();
+  await expect(page.getByTestId("orch-action-card")).toContainText("стало");
+  await expect(page.getByTestId("orch-diff-line").filter({ hasText: "стало" })).toHaveAttribute("data-kind", "add");
+
+  await emit(page, "act-paid", "approval_required", EXAMPLE_UNKNOWN_APPROVAL);
+  await emit(page, "act-paid", "step_finished", EXAMPLE_UNKNOWN);
+  const cards = page.getByTestId("orch-action-card");
+  await expect(cards).toHaveCount(1);
+  const unknown = page.getByTestId("orch-approval").filter({ hasText: "widget.spin" });
+  await expect(unknown).toBeVisible();
+  await unknown.getByTestId("orch-reject").click();
+  await expect(page.getByTestId("orch-action-card")).toHaveCount(1);
+  await expect(page.getByTestId("orch-action-card")).not.toContainText("widget.spin");
 });
