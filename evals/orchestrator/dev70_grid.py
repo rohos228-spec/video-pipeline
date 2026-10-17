@@ -47,6 +47,53 @@ def extended_grid() -> tuple[dict[str, Any], ...]:
     return tuple(specs)
 
 
+def fusion_grid() -> tuple[dict[str, Any], ...]:
+    """Слияние none и prompt_expand. none_cand — второй реранк, только на весах 0.5/1.5."""
+    specs: list[dict[str, Any]] = []
+    for rrf_k in RRF_KS:
+        for bm25, rerank_weight in FUSION_WEIGHTS:
+            specs.append(
+                _spec(
+                    f"rrf-none-expand-rrf-{bm25}-{rerank_weight}-k{rrf_k}",
+                    "rrf_none_expand",
+                    bm25,
+                    rerank_weight,
+                    rrf_k,
+                )
+            )
+        specs.append(
+            _spec(
+                f"none-cand-expand-rerank-rrf-0.5-1.5-k{rrf_k}",
+                "none_cand_expand_rerank",
+                0.5,
+                1.5,
+                rrf_k,
+            )
+        )
+    return tuple(specs)
+
+
+_FIRST = (
+    "expand-tail-rrf-0.5-1.5-k20",
+    "rrf-none-expand-rrf-0.5-1.5-k20",
+    "none-cand-expand-rerank-rrf-0.5-1.5-k20",
+)
+
+
+def grid_sort_key(spec: dict[str, Any]) -> tuple[int, int, str]:
+    """Сначала expand_tail и оба слияния на 0.5/1.5 k=20, потом остальные k=20, затем 40 и 60."""
+    key = str(spec["key"])
+    if key in _FIRST:
+        return (_FIRST.index(key), 0, key)
+    rrf_k = int(spec.get("rrf_k") or 20)
+    expensive = 1 if spec.get("aggregate") == "none_cand_expand_rerank" else 0
+    return (10 + rrf_k, expensive, key)
+
+
+def pending_specs(done: set[str]) -> list[dict[str, Any]]:
+    return sorted((spec for spec in GRID if spec["key"] not in done), key=grid_sort_key)
+
+
 # Пул реранкера зафиксирован. Веса — слияние BM25 и реранкера, не лексика/вектор RRF.
 GRID: tuple[dict[str, Any], ...] = (
     {
@@ -78,7 +125,7 @@ GRID: tuple[dict[str, Any], ...] = (
         "fusion_rerank": 1.5,
         "rrf_k": 20,
     },
-) + extended_grid()
+) + extended_grid() + fusion_grid()
 
 
 def load_dev70() -> list[dict[str, Any]]:
@@ -244,7 +291,7 @@ def run_dev70_grid(out: Path | None = None, diagnosis_out: Path | None = None) -
     if destination.is_file():
         existing = list(json.loads(destination.read_text(encoding="utf-8")).get("configs") or [])
     done = {str(row["key"]) for row in existing}
-    pending = [spec for spec in GRID if spec["key"] not in done]
+    pending = pending_specs(done)
     temp_dir = FsPath(tempfile.mkdtemp(prefix="orch-rag-dev70-"))
     db_path = temp_dir / "orch_rag.db"
     embedder = build_embedder("e5-large", eval_mode=True)

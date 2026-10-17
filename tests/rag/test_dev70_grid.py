@@ -102,7 +102,7 @@ def test_focus_diagnosis_is_dev70_and_names_the_displacing_chunks() -> None:
 
 
 def test_extended_grid_lists_weights_k_and_expand_tail() -> None:
-    from evals.orchestrator.dev70_grid import FUSION_WEIGHTS, RRF_KS, extended_grid
+    from evals.orchestrator.dev70_grid import FUSION_WEIGHTS, RRF_KS, extended_grid, fusion_grid, pending_specs
 
     specs = extended_grid()
     assert len(specs) == len(FUSION_WEIGHTS) * len(RRF_KS) * 2 - 1
@@ -115,6 +115,17 @@ def test_extended_grid_lists_weights_k_and_expand_tail() -> None:
     assert all(spec["rrf_k"] in RRF_KS for spec in specs)
     assert all(spec["rerank"] is True for spec in specs)
     assert {spec["aggregate"] for spec in specs} == {"none", "expand_tail"}
+    fused = fusion_grid()
+    fused_keys = [spec["key"] for spec in fused]
+    assert len(fused) == len(FUSION_WEIGHTS) * len(RRF_KS) + len(RRF_KS)
+    assert "rrf-none-expand-rrf-0.5-1.5-k20" in fused_keys
+    assert "none-cand-expand-rerank-rrf-0.5-1.5-k60" in fused_keys
+    order = [spec["key"] for spec in pending_specs(set())]
+    assert order[:3] == [
+        "expand-tail-rrf-0.5-1.5-k20",
+        "rrf-none-expand-rrf-0.5-1.5-k20",
+        "none-cand-expand-rerank-rrf-0.5-1.5-k20",
+    ]
 
 
 def test_committed_dev70_grid_keeps_the_only_hit_pass() -> None:
