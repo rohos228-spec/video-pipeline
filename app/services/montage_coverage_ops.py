@@ -1265,7 +1265,26 @@ async def apply_coverage_scene_action(
     from app.services.frame_tombstones import shot_is_active
 
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
-    layout = live_kadry or kadry
+    layout = live_kadry
+    if not layout:
+        logger.warning(
+            "WARN montage scene_action #{} ячейка {}: нет живых шотов, "
+            "раскладка пустая, неактивные сохранены",
+            project.id,
+            getattr(parent, "number", "?"),
+        )
+        attrs = dict(getattr(parent, "attrs", None) or {})
+        attrs["кадры"] = kadry
+        parent.attrs = attrs
+        _flag_attrs(parent)
+        return {
+            "shots": 0,
+            "frames": 0,
+            "inserted_frames": 0,
+            "skipped_shots": 0,
+            "renumber": {},
+            "chain": "",
+        }
     if lock_parent_plan:
         parent_plan = parent_establishing_plan(layout[0].get("план"))
     else:
@@ -1287,7 +1306,7 @@ async def apply_coverage_scene_action(
                     "action": str(shot.get("действие") or ""),
                     "vo": str(shot.get("закадр") or ""),
                 }
-                for i, shot in enumerate(kadry)
+                for i, shot in enumerate(layout)
             ]
         )
     if not chain_text:
@@ -1322,12 +1341,12 @@ async def apply_coverage_scene_action(
         frames = await _load_frames(session, int(project.id))
         parent, members = scene_group(frames, parent)
         group = _visible_cell_members(parent, members)
-    elif len(kadry) > len(group):
+    elif len(layout) > len(group):
         logger.info(
             "montage scene_action #{} ячейка {} цепь={} кадров, в ячейке {} — без вставки",
             project.id,
             parent.number,
-            len(kadry),
+            len(layout),
             len(group),
         )
 
@@ -1412,7 +1431,7 @@ async def apply_coverage_scene_action(
         "shots": used,
         "frames": len(group),
         "inserted_frames": len(inserted),
-        "skipped_shots": max(0, len(kadry) - used),
+        "skipped_shots": max(0, len(layout) - used),
         "renumber": remap,
         "chain": chain_text,
     }
