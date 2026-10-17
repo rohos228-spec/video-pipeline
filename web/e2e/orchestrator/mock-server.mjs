@@ -124,7 +124,25 @@ function writeEvent(res, event) {
   res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
+let busClock = 0;
+
+function touchSession(session) {
+  session.clock = ++busClock;
+}
+
+/** Несколько сессий могут держать один `orch-appr-<task>-<n>`. Решает живая, последняя. */
+function pickLiveWait(field, approvalId) {
+  let chosen = null;
+  for (const session of sessions.values()) {
+    const wait = session[field];
+    if (!wait || wait.id !== approvalId || session.clients.size === 0) continue;
+    if (!chosen || (session.clock || 0) >= (chosen.clock || 0)) chosen = session;
+  }
+  return chosen;
+}
+
 function emit(session, type, taskId, payload, sessionId = session.id) {
+  touchSession(session);
   const event = {
     type,
     task_id: taskId,
@@ -907,9 +925,9 @@ async function runPaidOutcome(session, taskId, restartOffered) {
 }
 
 function consumePaidRetryGrant(res, approvalId) {
-  for (const session of sessions.values()) {
+  const session = pickLiveWait("grantWait", approvalId);
+  if (session) {
     const wait = session.grantWait;
-    if (!wait || wait.id !== approvalId) continue;
     if (session.grantUsed) {
       sendJson(res, 409, { executed: false, reason: "retry_grant_spent", forecast_usd: PAID_FORECAST_USD });
       return;
@@ -1059,6 +1077,7 @@ function handleStream(req, res, sessionId) {
     if (event.seq > last) writeEvent(res, event);
   }
   session.clients.add(res);
+  touchSession(session);
   // req «close» у GET приходит сразу после заголовков и снимает живого клиента.
   // Отписка — по закрытию ответа, когда браузер обрывает SSE.
   res.on("close", () => {
@@ -1382,15 +1401,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 422, { detail: "approval unprocessable" });
       return;
     }
-    let matched = false;
-    for (const session of sessions.values()) {
-      const wait = session.approvalWait;
-      if (wait && wait.id === approvalId) {
-        wait.resolve(decision);
-        session.approvalWait = null;
-        matched = true;
-        break;
-      }
+    const session = pickLiveWait("approvalWait", approvalId);
+    const matched = session != null;
+    if (matched) {
+      session.approvalWait.resolve(decision);
+      session.approvalWait = null;
     }
     if (!matched) {
       sendJson(res, 404, { detail: "approval not found" });
