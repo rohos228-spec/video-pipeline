@@ -137,3 +137,44 @@ async def test_budget_park_goes_through_state_machine(mem, monkeypatch) -> None:
     assert refused == ["spend_guard"]
 
 
+async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None:
+    project_id, ids, wf_id = await _seed(
+        mem, statuses=[("n_plan", NodeRunStatus.waiting_approval)]
+    )
+
+    async def _wf(_session=None):
+        return wf_id
+
+    monkeypatch.setattr("app.services.run_sync._get_default_workflow_id", _wf)
+    async with mem() as session:
+        project = await session.get(Project, project_id)
+        project.status = ProjectStatus.plan_ready
+        node = await session.get(NodeRun, ids[0])
+        node.node_type = "plan"
+        node.node_key = "n_plan"
+        run = await session.get(WorkflowRun, node.workflow_run_id)
+        run.nodes_snapshot = [{"id": "n_plan", "type": "plan", "data": {}}]
+        for target in (
+            NodeRunStatus.queued,
+            NodeRunStatus.failed,
+            NodeRunStatus.pending,
+        ):
+            node.status = NodeRunStatus.waiting_approval
+            assert transition_node_status(
+                node, target, initiator="api", project_id=project.id
+            )
+            node.status = NodeRunStatus.waiting_approval
+        assert transition_node_status(
+            node,
+            NodeRunStatus.running,
+            initiator="api",
+            project_id=project.id,
+        )
+        node.status = NodeRunStatus.waiting_approval
+        await session.commit()
+        await start_step(session, project, "plan", skip_queue_guard=True)
+        await session.commit()
+        fresh = await session.get(NodeRun, ids[0])
+        assert fresh.status is NodeRunStatus.running
+
+
