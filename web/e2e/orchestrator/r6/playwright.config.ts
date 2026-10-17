@@ -44,6 +44,7 @@ export default defineConfig({
           ...process.env,
           ORCH_R6_PORT: port,
           ORCH_R6_TOKEN: process.env.ORCH_R6_TOKEN,
+          NEXT_PUBLIC_ORCH_TEST: "1",
         },
       },
 });
