@@ -8,16 +8,6 @@ import json
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _reset_spend_guard():
-    """Cap шлюза общий на процесс: соседние тесты не должны его наследовать."""
-    from app.services import spend_guard
-
-    spend_guard.reset()
-    yield
-    spend_guard.reset()
-
-
 class _Route:
     api_model = "gpt-5.6-sol"
     url = "http://127.0.0.1:9/v1/chat/completions"
