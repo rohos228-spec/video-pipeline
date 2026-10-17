@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -94,4 +95,40 @@ async def test_kill_sets_node_stop_key(token: str) -> None:
         assert is_stop_requested(13)
     finally:
         clear_stop(13)
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-1b"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        row = runtime.tasks.list_steps(task_id)[0]
+        runtime.tasks.note_running_outcome(int(row["id"]), "chg-partial", 0.0)
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        saved = runtime.tasks.list_steps(task_id)[0]
+        assert saved["status"] == "partial"
+        assert saved["change_id"] == "chg-partial"
+        checkpoint = runtime.checkpoints.load_latest(task_id)
+        assert checkpoint is not None
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["level"] == "WARN"
+        assert warned[-1].payload["change_ids"] == ["chg-partial"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+    finally:
+        actions.release.set()
         set_runtime(None)

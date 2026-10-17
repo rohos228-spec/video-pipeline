@@ -1468,6 +1468,11 @@ class Supervisor:
                 if any(item.paid for item, _ in started):
                     self._shield_orphaned.add(task_id)
                     raise
+                if any(item.mutating for item, _ in started):
+                    await asyncio.shield(
+                        self._mark_mutating_partial(task_id, session_id, plan, index, started)
+                    )
+                    raise
                 for _, step_id in started:
                     self.tasks.finish_step(step_id, "cancelled", None, 0.0)
                 current = self._status(task_id)
@@ -1752,6 +1757,42 @@ class Supervisor:
             return False
         self._step_recorded.add(step_id)
         return True
+
+    def _stored_change_id(self, task_id: int, step_id: int) -> str | None:
+        for row in self.tasks.list_steps(task_id):
+            if int(row["id"]) != int(step_id):
+                continue
+            raw = row.get("change_id")
+            return str(raw) if raw else None
+        return None
+
+    async def _mark_mutating_partial(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        index: int,
+        started: list[tuple[PlanStep, int]],
+    ) -> None:
+        """Отмена mutating-шага: чекпоинт, WARN ``partial_write``, change_id на месте."""
+        kept: list[str] = []
+        for done_step, step_id in started:
+            existing = self._stored_change_id(task_id, step_id)
+            status = "partial" if done_step.mutating else "cancelled"
+            self.tasks.finish_step(step_id, status, existing, 0.0)
+            if done_step.mutating and existing:
+                kept.append(existing)
+        await self._checkpoint(task_id, session_id, plan, index)
+        logger.warning("orch partial_write task {} change_ids {}", task_id, kept)
+        await self.bus.publish(
+            session_id,
+            "partial_write",
+            {"level": "WARN", "change_ids": kept, "position": index, "task_id": task_id},
+            task_id=task_id,
+        )
+        current = self._status(task_id)
+        if current not in TERMINAL_STATUSES:
+            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
 
     async def _hold_executor_approval(
         self,
