@@ -897,6 +897,10 @@ _DELETION_TOKENS = frozenset(
         "rename",
         "replace",
         "overwrite",
+        "erase",
+        "unlink",
+        "del",
+        "rm",
     }
 )
 # Сцены, кадры, персонажи и VO не удаляются никогда.
@@ -923,7 +927,12 @@ _PROTECTED_OBJECTS = frozenset(
 
 
 def _text_tokens(value: str) -> set[str]:
-    return {part for part in re.split(r"[^a-z0-9]+", value.lower()) if part}
+    """Сегменты имени. camelCase делится до lower, ``del`` и ``rm`` — целые токены.
+
+    ``model`` не содержит ``del``, ``form`` не содержит ``rm``.
+    """
+    split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value or "")
+    return {part for part in re.split(r"[^a-z0-9]+", split.lower()) if part}
 
 
 def is_named_deletion(action: str) -> bool:

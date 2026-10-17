@@ -143,6 +143,40 @@ def test_r2_delete_actions_ignore_safe_metadata(action: str) -> None:
     assert step_is_deletion(PlanStep(action=action), registry)
 
 
+@pytest.mark.parametrize("action", ["kadr.erase", "scene.deleteAll", "removeShot"])
+def test_erase_and_camel_case_names_are_deletions(action: str) -> None:
+    assert is_deletion_action(action)
+
+
+def test_del_and_rm_match_whole_tokens_only() -> None:
+    assert is_deletion_action("file.del")
+    assert is_deletion_action("file.rm")
+    assert not is_deletion_action("model")
+    assert not is_deletion_action("form")
+
+
+@pytest.mark.parametrize("action", ["kadr.erase", "scene.deleteAll", "removeShot"])
+@pytest.mark.asyncio
+async def test_erase_and_camel_case_names_are_not_granted(action: str, token: str) -> None:
+    del token
+    actions = MockActions(risks={action: "high"})
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action=action, mutating=True)]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("del-" + action.replace(".", "-"), "удали")
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert runtime.tasks.get(task_id)["error"] == "deletion_blocked"
+    finally:
+        set_runtime(None)
+
+
 def test_dropdown_is_not_a_deletion_segment() -> None:
     assert not is_deletion_action("dropdown")
     assert not is_deletion_action("look")
