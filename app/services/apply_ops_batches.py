@@ -3316,7 +3316,7 @@ async def run_apply_ops_batched(
                         return
                     _skip_pack(chunk, level, f"LLM/сеть после {_cap} повторов: {msg[:200]}")
                     return
-                if isinstance(exc, PassStopError) and "скопирован" in msg:
+                if isinstance(exc, PassStopError):
                     raise
                 logger.error(
                     "[#{}] apply_ops node={!r}: L{} пачка упала, "
@@ -3434,6 +3434,8 @@ async def run_apply_ops_batched(
         for err in results:
             if isinstance(err, asyncio.CancelledError):
                 raise err
+            if isinstance(err, PassStopError):
+                raise err
             if isinstance(err, BaseException):
                 logger.error(
                     "[#{}] apply_ops node={!r}: пачка упала, "
@@ -3530,7 +3532,7 @@ async def run_apply_ops_batched(
             )
             # QC-контракт и отмена должны дойти до вызывающего.
             # Обычная пачка excel по-прежнему не валит шаг.
-            if allow_empty_ops or isinstance(exc, PassStopError) and "скопирован" in str(exc):
+            if allow_empty_ops or isinstance(exc, PassStopError):
                 raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)
