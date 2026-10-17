@@ -893,4 +893,56 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
+
+  test("бюджет без change_id: решение не уходит, карточка закрывается статусом своей задачи", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/approvals\/.+\/(approve|reject)/.test(req.url())) {
+        posts.push(req.url());
+      }
+    });
+    await openWithToken(page, "budgetnoid", "budget-noid");
+    await page.getByTestId("orch-composer").fill("ещё бюджет");
+    await page.getByTestId("orch-send").click();
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-reject")).toBeDisabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveText("Решение недоступно: сервер не передал id");
+    await expect(page.getByTestId("orch-kill")).toBeEnabled();
+
+    await emitBus(page, "budget-noid", "agent_status", 2, {
+      agent: "supervisor",
+      status: "foreign-task",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-task");
+    await expect(card).toBeVisible();
+
+    await emitBus(
+      page,
+      "budget-noid",
+      "agent_status",
+      1,
+      { agent: "supervisor", status: "foreign-session", task_status: "paused" },
+      "other-session",
+    );
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-session");
+    await expect(card).toBeVisible();
+
+    await emitBus(page, "budget-noid", "agent_status", 1, {
+      agent: "supervisor",
+      status: "own-move",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-move");
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    expect(posts).toEqual([]);
+
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    await expect(page.getByTestId("orch-kill-status")).toBeVisible();
+    expect(posts).toEqual([]);
+  });
 });

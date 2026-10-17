@@ -645,12 +645,12 @@ function ApprovalCard({
         {approval.risk ? ` · ${approval.risk}` : ""}
         {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {terminal ? (
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.serverId ? (
+        ) : approval.changeId ? (
           <>
             <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
               Approve
@@ -660,9 +660,17 @@ function ApprovalCard({
             </Button>
           </>
         ) : (
-          <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
-          </p>
+          <>
+            <Button type="button" size="sm" data-testid="orch-approve" disabled>
+              Approve
+            </Button>
+            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled>
+              Reject
+            </Button>
+            <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+              Решение недоступно: сервер не передал id
+            </p>
+          </>
         )}
       </div>
       {error ? (
