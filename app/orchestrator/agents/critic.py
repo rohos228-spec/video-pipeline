@@ -109,3 +109,6 @@ def _parse_verdict(text: str) -> str:
 
 def _json_plan(plan: list[PlanStep]) -> str:
     return json.dumps({"steps": [step.model_dump() for step in plan]}, ensure_ascii=False)
+
+
+RouterCritic = PlanCritic

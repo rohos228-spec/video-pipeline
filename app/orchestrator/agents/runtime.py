@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from app.orchestrator.agents.critic import RouterCritic
+from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.stubs import FallbackRouter, StubCritic, StubPlanner
 from app.orchestrator.agents.supervisor import Supervisor
 from app.orchestrator.agents.task_store import TaskStore
@@ -23,6 +25,7 @@ class Runtime:
     checkpoints: CheckpointStore
     tasks: TaskStore
     router: Any
+    runtime_degraded: tuple[str, ...] = ()
 
 
 def build_runtime(
@@ -76,8 +79,25 @@ def get_runtime() -> Runtime:
 
             _runtime = build_r6_runtime()
         else:
-            _runtime = build_runtime()
+            _runtime = build_production_runtime()
     return _runtime
+
+
+def build_production_runtime() -> Runtime:
+    """Прод: planner/critic ходят в ``router.call``/``classify``, если пакет есть."""
+    from app.orchestrator.agents.wiring import load_router
+
+    router, missing = load_router()
+    degraded: list[str] = []
+    if missing:
+        degraded.append(missing)
+    runtime = build_runtime(
+        router=router,
+        planner=RouterPlanner(router),
+        critic=RouterCritic(router),
+    )
+    runtime.runtime_degraded = tuple(degraded)
+    return runtime
 
 
 def set_runtime(runtime: Runtime | None) -> None:

@@ -13,8 +13,9 @@ import uvicorn
 from fastapi import FastAPI
 from sse_starlette.sse import AppStatus
 
+from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import get_runtime, set_runtime
-from app.orchestrator.agents.stubs import FallbackRouter, StubPlanner, UnlinkedActions
+from app.orchestrator.agents.stubs import FallbackRouter, UnlinkedActions
 from app.orchestrator.agents.testkit import (
     MEDIUM_ACTION,
     PHRASE_MEDIUM,
@@ -131,7 +132,8 @@ def test_production_runtime_ignores_missing_flag(monkeypatch: pytest.MonkeyPatch
         enforce_r6_gate()
         runtime = get_runtime()
         assert isinstance(runtime.router, FallbackRouter)
-        assert isinstance(runtime.supervisor.planner, StubPlanner)
+        assert isinstance(runtime.supervisor.planner, RouterPlanner)
+        assert "routing" in runtime.runtime_degraded
         assert isinstance(runtime.supervisor.actions, UnlinkedActions)
     finally:
         set_runtime(None)
