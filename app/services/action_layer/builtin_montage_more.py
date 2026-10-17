@@ -6,7 +6,7 @@ from typing import Any
 
 from app.services.action_layer.builtin_montage import (
     _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
-from app.services.action_layer.context import ActionContext
+from app.services.action_layer.context import ActionCallError, ActionContext
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
     ActionSpec, CostEstimate, JobState, Precondition)
@@ -684,16 +684,19 @@ async def _align_audio(ctx, params):
 
 
 async def _set_assemble_params(ctx, params):
+    from app.orchestrator.node_store.meta_book import VersionConflict, expected_version, load_book
+
     pid = params["project_id"]
     detail = await ctx.call("GET", f"/projects/{pid}")
-    nsp = copy.deepcopy((detail.get("meta") or {}).get("node_step_params") or {})
-    bucket = dict(nsp.get("assemble") or {})
+    meta = detail.get("meta") if isinstance(detail, dict) else None
+    book = load_book(meta if isinstance(meta, dict) else None)
     changed = {k: params[k] for k in _ASSEMBLE_KEYS if k in params}
-    if not changed:
-        raise ValueError("не указано ни одного параметра сборки")
-    bucket.update(changed)
-    nsp["assemble"] = bucket
-    await ctx.call("PATCH", f"/projects/{pid}", json={"meta": {"node_step_params": nsp}})
+    try:
+        book.set_assemble_params(values=changed, version=expected_version(params, book))
+    except VersionConflict as exc:
+        raise ActionCallError(exc.status_code, str(exc)) from exc
+    await ctx.call("PATCH", f"/projects/{pid}", json={"meta": {
+        "node_step_params": {"assemble": changed}, "meta_version": book.version}})
     return {"assemble": changed}
 
 

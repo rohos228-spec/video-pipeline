@@ -293,8 +293,8 @@ async def test_set_assemble_params_merges_into_existing_node_step_params() -> No
     await spec("montage.set_assemble_params").executor(
         ctx, {"project_id": 1, "bgm_level": 70, "subtitles_enabled": True})
     sent = ctx.calls[-1][3]["meta"]["node_step_params"]
-    assert sent["plan"] == {"duration_seconds": 60}
-    assert sent["assemble"] == {"bgm_level": 70, "send_to_main_pc": True, "subtitles_enabled": True}
+    assert "plan" not in sent
+    assert sent["assemble"] == {"bgm_level": 70, "subtitles_enabled": True}
 
 
 async def test_cost_basis_reports_priced_and_unpriced() -> None:

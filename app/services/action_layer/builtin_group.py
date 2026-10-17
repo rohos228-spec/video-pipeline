@@ -273,8 +273,32 @@ async def _config_output_mode_allowed(ctx: ActionContext, params: dict) -> str |
     return None
 
 
+def _meta_book(proj: dict):
+    from app.orchestrator.node_store.meta_book import load_book
+
+    meta = proj.get("meta") if isinstance(proj, dict) else None
+    return load_book(meta if isinstance(meta, dict) else None)
+
+
+def _conflict(exc) -> ActionCallError:
+    return ActionCallError(getattr(exc, "status_code", 409), str(exc))
+
+
 async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, expected_version
+
+    proj = await _get_project(ctx, params["project_id"])
+    resolved = await ctx.call(
+        "GET", f"/projects/{params['project_id']}/gpt-operator/{params['node_key']}/resolve")
+    cfg = (resolved or {}).get("config") if isinstance(resolved, dict) else None
+    book = _meta_book(proj)
+    book.meta.setdefault("node_config", {})[params["node_key"]] = dict(cfg or {})
     body = {k: params[k] for k in _CONFIG_FIELDS if k in params}
+    try:
+        book.set_config(node_key=params["node_key"], fields=body,
+                        version=expected_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
     data = await ctx.call("PATCH", f"/projects/{params['project_id']}/gpt-operator/"
                                    f"{params['node_key']}", json=body)
     return {"ok": bool(data.get("ok")),
@@ -282,25 +306,38 @@ async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
 
 
 async def _node_set_prompt_variant(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, expected_version
+
     proj = await _get_project(ctx, params["project_id"])
-    allv = {k: dict(v) if isinstance(v, dict) else {}
-            for k, v in ((proj.get("meta") or {}).get("prompt_slot_variants") or {}).items()}
-    node = allv.setdefault(params["node_key"], {})
-    node[params.get("slot_id", "main")] = params["variant"]
-    await ctx.call("PATCH", f"/projects/{params['project_id']}",
-                   json={"meta": {"prompt_slot_variants": allv}})
-    return {"node_key": params["node_key"], "slot_id": params.get("slot_id", "main"),
-            "variant": params["variant"]}
+    book = _meta_book(proj)
+    slot_id = params.get("slot_id", "main")
+    try:
+        book.set_prompt_variant(
+            node_key=params["node_key"], slot_id=slot_id, variant=params["variant"],
+            version=expected_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
+    await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {
+        "prompt_slot_variants": {params["node_key"]: {slot_id: params["variant"]}},
+        "meta_version": book.version}})
+    return {"node_key": params["node_key"], "slot_id": slot_id, "variant": params["variant"]}
 
 
 async def _node_set_disabled(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, expected_version
+
     proj = await _get_project(ctx, params["project_id"])
-    cur = [str(x) for x in ((proj.get("meta") or {}).get("disabled_nodes") or [])]
-    key = params["node_key"]
-    new = [k for k in cur if k != key] + ([key] if params["disabled"] else [])
-    await ctx.call("PATCH", f"/projects/{params['project_id']}",
-                   json={"meta": {"disabled_nodes": new}})
-    return {"node_key": key, "disabled": params["disabled"], "disabled_nodes": new}
+    book = _meta_book(proj)
+    try:
+        result = book.set_disabled(
+            node_key=params["node_key"], disabled=bool(params["disabled"]),
+            version=expected_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
+    await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {
+        "disabled_nodes": result["disabled_nodes"], "meta_version": result["version"]}})
+    return {"node_key": result["node_key"], "disabled": result["disabled"],
+            "disabled_nodes": result["disabled_nodes"]}
 
 
 async def _node_run_step(ctx: ActionContext, params: dict) -> dict:
