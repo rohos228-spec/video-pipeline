@@ -768,6 +768,9 @@ DELETION_ACTIONS: frozenset[str] = frozenset(
         "montage.delete_image",
         "montage.delete_video",
         "montage.delete_manual_ref",
+        "group.delete",
+        "prompt.delete_master",
+        "delete_child_frame",
     }
 )
 APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
@@ -947,12 +950,64 @@ def is_deletion_action(action: str) -> bool:
     return bool(_text_tokens(name) & _DELETION_TOKENS)
 
 
+_HTTP_PARAM_KEYS = frozenset({"method", "httpmethod", "httpverb", "verb"})
+_SQL_PARAM_KEYS = frozenset({"sql", "query", "statement", "statements"})
+_KNOWN_HTTP_METHODS = frozenset(
+    {"get", "head", "options", "post", "put", "patch", "delete", "trace", "connect"}
+)
+
+
+def _param_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+def _computed_text(value: str) -> bool:
+    """Шаблон или подстановка: литерал метода или SQL доказать нельзя."""
+    return any(mark in value for mark in ("{", "}", "${", "`"))
+
+
+def _http_method_unproven(value: Any) -> bool:
+    """Метод не литерал, вычисляется или не из известного списка."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        return True
+    if _computed_text(value):
+        return True
+    method = value.strip().lower()
+    if method not in _KNOWN_HTTP_METHODS:
+        return True
+    return bool(_text_tokens(method) & _DELETION_TOKENS)
+
+
+def _sql_unproven(value: Any) -> bool:
+    """SQL не литерал, вычисляется, либо содержит удаление, ``TRUNCATE`` или ``executemany``."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        return True
+    if _computed_text(value):
+        return True
+    tokens = _text_tokens(value)
+    return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
+
+
 def params_request_deletion(value: Any) -> bool:
-    """Маркер удаления в параметрах: имя поля, SQL ``DELETE``/``DROP``, метод ``DELETE``."""
+    """Маркер удаления в параметрах.
+
+    HTTP-метод и SQL, которые нельзя доказать (не литерал, шаблон, неизвестный
+    метод), тоже ``deletion_blocked``. В литерале SQL ``TRUNCATE`` и
+    ``executemany`` достаточны сами по себе.
+    """
     if isinstance(value, str):
-        return bool(_text_tokens(value) & _DELETION_TOKENS)
+        tokens = _text_tokens(value)
+        return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
     if isinstance(value, dict):
-        return any(params_request_deletion(key) or params_request_deletion(item) for key, item in value.items())
+        for key, item in value.items():
+            kind = _param_key(key)
+            if kind in _HTTP_PARAM_KEYS and _http_method_unproven(item):
+                return True
+            if kind in _SQL_PARAM_KEYS and _sql_unproven(item):
+                return True
+            if params_request_deletion(key) or params_request_deletion(item):
+                return True
+        return False
     if isinstance(value, (list, tuple)):
         return any(params_request_deletion(item) for item in value)
     return False

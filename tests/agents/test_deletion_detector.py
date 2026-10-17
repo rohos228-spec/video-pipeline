@@ -67,6 +67,82 @@ def test_sql_and_http_delete_in_params_are_blocked(params: dict) -> None:
     assert not step_is_deletion(PlanStep(action="look"), registry)
 
 
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"method": None},
+        {"method": 1},
+        {"method": True},
+        {"method": {"ref": "request.method"}},
+        {"http_method": ["GET"]},
+        {"sql": None},
+        {"query": {"computed": True}},
+        {"statement": 5},
+    ],
+)
+def test_non_literal_http_or_sql_is_blocked(params: dict) -> None:
+    step = PlanStep(action="look", params=params)
+    assert params_request_deletion(params)
+    assert step_is_deletion(step, MockActions())
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"method": "{verb}"},
+        {"http_method": "${method}"},
+        {"sql": "`query`"},
+        {"query": "{sql}"},
+    ],
+)
+def test_computed_http_or_sql_is_blocked(params: dict) -> None:
+    assert params_request_deletion(params)
+    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+
+
+@pytest.mark.parametrize("params", [{"method": "CUSTOM"}, {"verb": "NOPE"}, {"http_method": ""}])
+def test_unknown_http_method_is_blocked(params: dict) -> None:
+    assert params_request_deletion(params)
+    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+    assert not params_request_deletion({"method": "GET"})
+    assert not params_request_deletion({"method": "POST"})
+    assert not params_request_deletion({"sql": "SELECT 1"})
+
+
+@pytest.mark.parametrize("params", [{"sql": "TRUNCATE TABLE frames"}, {"query": "truncate vo"}])
+def test_sql_truncate_is_blocked(params: dict) -> None:
+    assert params_request_deletion(params)
+    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sql": "cursor.executemany(stmt, rows)"},
+        {"statement": "executemany"},
+    ],
+)
+def test_sql_executemany_is_blocked(params: dict) -> None:
+    assert params_request_deletion(params)
+    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["montage.delete_frame", "group.delete", "prompt.delete_master", "delete_child_frame"],
+)
+def test_r2_delete_actions_ignore_safe_metadata(action: str) -> None:
+    class _Registry:
+        def metadata_of(self, action_name: str) -> ActionMetadata | None:
+            del action_name
+            return ActionMetadata(read_only=True, destructive=False, risk="none")
+
+    registry = _Registry()
+    assert is_deletion_action(action)
+    assert action_guard(action, registry) == "name"
+    assert step_is_deletion(PlanStep(action=action), registry)
+
+
 def test_dropdown_is_not_a_deletion_segment() -> None:
     assert not is_deletion_action("dropdown")
     assert not is_deletion_action("look")
