@@ -9,6 +9,7 @@ Git-шаблоны ``templates/node_groups/**`` читаются только н
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from collections.abc import Iterable
@@ -38,6 +39,23 @@ _ROLE_SOURCE = (
 
 
 _GROUP_ROLE_CACHE: dict[str, dict[str, Any]] | None = None
+_version_fallbacks = 0
+logger = logging.getLogger(__name__)
+
+
+def invalidate_group_role_cache() -> None:
+    """Сброс ролей после create_node / edit_node_prompt, без рестарта процесса."""
+    global _GROUP_ROLE_CACHE
+    _GROUP_ROLE_CACHE = None
+
+
+def version_fallback_count() -> int:
+    return _version_fallbacks
+
+
+def reset_version_fallback_count() -> None:
+    global _version_fallbacks
+    _version_fallbacks = 0
 
 
 def group_role_index() -> dict[str, dict[str, Any]]:
@@ -313,6 +331,7 @@ def load_nodes_and_prompts(
     scan_git: bool,
 ) -> tuple[list[SourceDoc], list[SourceDoc], int]:
     """Возвращает (nodes, prompts, skipped_invalid_keys)."""
+    invalidate_group_role_cache()
     merged: dict[str, ResolvedNode] = {}
     skipped = 0
     if scan_git:
@@ -437,7 +456,8 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     if phrase:
         header = f"{header} {phrase}"
     # До 8 секций ##, без склейки в 3 ведра: иначе вектор секции тонет в чужом тексте.
-    parts = split_prompt(template, max_parts=8)
+    # PLAN §5.2: один промпт — 1–3 чанка. Разметка контура B знает только s0–s2.
+    parts = split_prompt(template, max_parts=3)
     docs: list[SourceDoc] = []
     for part_key, body in parts:
         docs.append(
@@ -451,6 +471,20 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
             )
         )
     return docs
+
+
+def _front_matter_version(meta: dict[str, Any]) -> int:
+    """Нечисловой version не роняет reindex: берём 1 и считаем такой случай."""
+    global _version_fallbacks
+    raw = meta.get("version")
+    if raw in (None, ""):
+        return 1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        _version_fallbacks += 1
+        logger.warning("нечисловой version %r в шаблоне ноды, берём 1", raw)
+        return 1
 
 
 def iter_git_nodes(repo_root: Path) -> Iterable[ResolvedNode]:
@@ -473,7 +507,7 @@ def _nodes_from_template_dir(root: Path) -> Iterable[ResolvedNode]:
         node_key = str(meta.get("node_key") or _key_from_stem(path.stem))
         group_key = str(meta.get("group_key") or path.parent.name)
         title = str(meta.get("title") or path.stem)
-        version = int(meta.get("version") or 1)
+        version = _front_matter_version(meta)
         yield _git_node(
             node_key=node_key,
             group_key=group_key,

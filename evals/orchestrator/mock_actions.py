@@ -11,10 +11,26 @@ from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.node_store import NODE_KEY_RE, MemoryNodeStore, ResolvedNode
-from evals.orchestrator.checks import FORBIDDEN_ACTIONS, path_denied
+from evals.orchestrator.checks import path_denied
 from evals.orchestrator.sanitize import sanitize_html
 
 PAID_ACTIONS = frozenset({"run_node", "resume_node"})
+
+# Whitelist мока. Всё остальное, включая rollback, execute отклоняет.
+# rollback не входит в 102 действия плана и доступен только через rollback_prompt.
+ALLOWED_ACTIONS = frozenset(
+    {
+        "read_pipeline_code",
+        "get_node",
+        "run_node",
+        "resume_node",
+        "run_validators",
+        "create_node",
+        "edit_node_prompt",
+        "create_report",
+        "update_report",
+    }
+)
 
 
 @dataclass
@@ -31,6 +47,7 @@ class MockActionBackend:
     calls: list[dict[str, Any]] = field(default_factory=list)
     reports: dict[int, str] = field(default_factory=dict)
     _paid: dict[str, ActionResult] = field(default_factory=dict)
+    spend_usd: float = 0.0
     _report_seq: int = 1
     stop_key: bool = False
     allow_new_actions: bool = True
@@ -42,11 +59,11 @@ class MockActionBackend:
         self.calls.append({"action": name, "params": params})
         if not self.allow_new_actions or self.stop_key:
             return ActionResult(False, {"error": "killed"}, cost=0.0)
-        if name in FORBIDDEN_ACTIONS:
+        if name not in ALLOWED_ACTIONS:
             return ActionResult(False, {"error": "not_in_whitelist", "action": name}, cost=0.0)
         handler = getattr(self, f"_act_{name}", None)
         if handler is None:
-            return ActionResult(False, {"error": "unknown_action", "action": name}, cost=0.0)
+            return ActionResult(False, {"error": "not_in_whitelist", "action": name}, cost=0.0)
         if name in PAID_ACTIONS:
             key = sha256_payload({"action": name, "params": params})
             previous = self._paid.get(key)
@@ -59,6 +76,7 @@ class MockActionBackend:
                 )
             result = handler(params, task_ctx or {})
             self._paid[key] = result
+            self.spend_usd += result.cost
             return result
         return handler(params, task_ctx or {})
 
@@ -133,14 +151,27 @@ class MockActionBackend:
         if node is None:
             return ActionResult(False, {"error": "node_missing"})
         mode = str(params.get("patch_mode") or "")
-        if mode != "replace_section":
-            return ActionResult(False, {"error": "unsupported_patch_mode"})
-        anchor = str(params.get("section_anchor") or "")
         content = str(params.get("content") or "")
-        updated, ok = replace_section(node.prompt_template, anchor, content)
-        if not ok:
-            return ActionResult(False, {"error": "section_missing", "anchor": anchor})
-        node.prompt_template = updated
+        anchor = str(params.get("section_anchor") or "")
+        if mode == "replace_full":
+            if not content.strip():
+                return ActionResult(False, {"error": "content_required"})
+            node.prompt_template = content if content.endswith("\n") else content + "\n"
+        elif mode == "append_section":
+            if not anchor.strip():
+                return ActionResult(False, {"error": "anchor_required"})
+            block = f"## {anchor}\n{content.rstrip()}\n"
+            base = node.prompt_template
+            if base and not base.endswith("\n"):
+                base += "\n"
+            node.prompt_template = base + block
+        elif mode == "replace_section":
+            updated, ok = replace_section(node.prompt_template, anchor, content)
+            if not ok:
+                return ActionResult(False, {"error": "section_missing", "anchor": anchor})
+            node.prompt_template = updated
+        else:
+            return ActionResult(False, {"error": "unsupported_patch_mode"})
         node.version += 1
         node.db_version = node.version
         node.change_id = f"chg-prompt-{node.version}"
@@ -181,6 +212,14 @@ class MockActionBackend:
         return ActionResult(
             True, {"report_id": report_id, "html": clean}, change_id=f"chg-report-upd-{report_id}"
         )
+
+
+def rollback_prompt(backend: MockActionBackend, node_key: str, prompt_template: str) -> ActionResult:
+    """Откат промпта для тестов. Не проходит через ``execute`` и не в whitelist."""
+    return backend._act_rollback(
+        {"node_key": node_key, "prompt_template": prompt_template},
+        {},
+    )
 
 
 def replace_section(template: str, anchor: str, content: str) -> tuple[str, bool]:

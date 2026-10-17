@@ -131,7 +131,7 @@ def test_contour_b_profile_records_the_measured_default() -> None:
     from evals.orchestrator.precision_live import choose_default
 
     assert CONTOUR_B_EMBEDDER == "e5-large"
-    assert CONTOUR_B_RERANKER == "bge-m3"
+    assert CONTOUR_B_RERANKER == "none"
     assert CONTOUR_B_RRF_K == 20
     assert (CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR) == (0.5, 1.5)
     assert CONTOUR_B_RRF_VECTOR > CONTOUR_B_RRF_LEXICAL
@@ -234,8 +234,13 @@ def test_revert_to_git_pointer_is_treated_as_null(tmp_path: Path) -> None:
     signature = inspect.signature(resolve_node)
     assert list(signature.parameters) == ["node_key", "conn", "templates_root"]
     assert signature.parameters["templates_root"].kind is inspect.Parameter.KEYWORD_ONLY
-    switch = inspect.getsource(bind_resolve)
-    assert "from app.orchestrator.node_store import" in switch
-    assert "resolve_node" in switch
-    store_source = inspect.getsource(SqliteNodeStore.list_overrides)
-    assert "_overrides_via_resolve" in store_source
+    resolve_fn, _missing, broken = bind_resolve()
+    try:
+        import importlib
+
+        importlib.import_module("app.orchestrator.node_store")
+        assert resolve_fn.__module__.startswith("app.orchestrator.node_store")
+    except ImportError:
+        assert resolve_fn.__module__ == "app.orchestrator.rag.node_store"
+    with pytest.raises(broken, match="revert_to_git"):
+        SqliteNodeStore(db_path).list_overrides(templates_root=tmp_path)

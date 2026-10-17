@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DATASETS = Path(__file__).resolve().parent / "datasets"
 WS1_DIR = DATASETS / "ws1"
@@ -33,6 +36,11 @@ def load_dataset(name: str) -> dict[str, Any]:
             data["stub"] = False
             data["source"] = "ws1"
             return data
+        logger.warning(
+            "WS1 override %s помечен stub=true, берём закоммиченный набор %s",
+            override,
+            name,
+        )
     committed = DATASETS / f"{name}.json"
     if committed.is_file():
         return json.loads(committed.read_text(encoding="utf-8"))

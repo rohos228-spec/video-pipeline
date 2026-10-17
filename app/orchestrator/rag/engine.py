@@ -63,7 +63,11 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 
 class ReindexWorker:
-    """Один фоновый поток на базу. Повторный ``reindex`` ждёт очередь, не пишет параллельно."""
+    """Один фоновый поток на базу. Повторный ``reindex`` ждёт очередь, не пишет параллельно.
+
+    Воркер индексирует корпуса и не вызывает LLM. Правило очереди про пачки
+    LLM к этому потоку не относится; таймаут ``submit`` остаётся 120 с.
+    """
 
     def __init__(self) -> None:
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -123,6 +127,7 @@ class RagEngine:
         self.scan_git = scan_git
         self.static_docs = static_docs
         self.reranker = reranker
+        self.retrieve_defaults: dict[str, Any] = {}
         self.store = RagStore(self.db_path)
         self._worker = ReindexWorker()
         self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
@@ -170,6 +175,8 @@ class RagEngine:
             raise ValueError("rerank_pool должен быть > 0")
         if bm25_scope not in {"full", "head"}:
             raise ValueError("bm25_scope должен быть full или head")
+        if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
+            raise ValueError("веса RRF должны быть > 0")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -240,6 +247,9 @@ class RagEngine:
         return result
 
     def _reindex_many(self, corpora: list[str]) -> ReindexResult | dict[str, ReindexResult]:
+        from app.orchestrator.rag.loaders import invalidate_group_role_cache
+
+        invalidate_group_role_cache()
         self._node_cache = None
         results = {corpus: self._reindex_one(corpus) for corpus in corpora}
         self._node_cache = None

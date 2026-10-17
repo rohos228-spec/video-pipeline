@@ -18,21 +18,20 @@ from app.orchestrator.rag.engine import RagEngine
 from app.orchestrator.rag.llm_fixtures import ReplayRouter
 from app.orchestrator.rag.node_store import ResolvedNode
 from evals.orchestrator.checks import collect_violations, plan_sanity, prf
-from evals.orchestrator.classifier import classifier_messages, deterministic_classify
-from evals.orchestrator.e6_dataset import e6_queries
 from evals.orchestrator.golden import (
     E1_USER,
     E2_NODE,
     E2_USER,
     E3_SECTION,
     E3_USER,
-    E4_USER,
     FIXTURE_DIR,
     messages_for,
 )
-from evals.orchestrator.mock_actions import MockActionBackend
+from evals.orchestrator.mock_actions import MockActionBackend, rollback_prompt
 from evals.orchestrator.project65 import load_dataset, registry_ids
 from evals.orchestrator.sanitize import XSS_VECTORS, sanitize_html
+
+_NOT_GRADED = frozenset({"E4", "E5", "E6", "E8-B"})
 
 E3_ORIGINAL = """## INTRO
 Входные сцены уже собраны.
@@ -59,7 +58,7 @@ def run_contour_a(fixture_dir: Path | None = None) -> dict[str, Any]:
         _e8(),
         _e8b(contour="A", allow_live=False),
     ]
-    graded = [item for item in results if item["eval_id"] != "E8-B"]
+    graded = [item for item in results if item["eval_id"] not in _NOT_GRADED]
     passed = sum(1 for item in graded if item["passed"])
     e8_ok = next(item["passed"] for item in graded if item["eval_id"] == "E8")
     ratio = passed / len(graded)
@@ -78,12 +77,13 @@ def run_contour_a(fixture_dir: Path | None = None) -> dict[str, Any]:
 
 def run_contour_b(*, allow_live: bool) -> dict[str, Any]:
     blocked = _e8b(contour="B", allow_live=allow_live)
+    passed_flag = blocked.get("passed") is True
     return {
         "contour": "B",
-        "ok": False,
-        "passed": 0,
+        "ok": passed_flag,
+        "passed": 1 if passed_flag else 0,
         "total": 1,
-        "ratio": 0.0,
+        "ratio": 1.0 if passed_flag else 0.0,
         "results": [blocked],
         "by_id": {"E8-B": blocked},
         "reason": blocked["details"]["reason"],
@@ -217,18 +217,9 @@ def _e3(router: ReplayRouter) -> dict[str, Any]:
     section_ok = (
         E3_SECTION in current.prompt_template and "Старая мягкая формулировка." not in current.prompt_template
     )
-    rolled = backend.execute(
-        "rollback",
-        {"node_key": "n_excel_gpt_fw_shots", "prompt_template": original},
-    )
+    rolled = rollback_prompt(backend, "n_excel_gpt_fw_shots", original)
     restored = backend.node_store.resolve_node("n_excel_gpt_fw_shots")
     assert restored is not None
-    rollback_ok = (
-        restored.prompt_template == original
-        if original.endswith("\n")
-        else restored.prompt_template.strip() == original.strip()
-    )
-    # replace_section добавляет завершающий перевод строки; сравниваем смысловой текст.
     rollback_ok = restored.prompt_template.strip() == original.strip()
     passed = bool(edited.ok and intro_ok and tail_ok and section_ok and rolled.ok and rollback_ok)
     return _result(
@@ -243,95 +234,37 @@ def _e3(router: ReplayRouter) -> dict[str, Any]:
     )
 
 
+def _deferred(eval_id: str, reason: str, **details: Any) -> dict[str, Any]:
+    return {
+        "eval_id": eval_id,
+        "passed": None,
+        "contour": "A",
+        "status": "deferred",
+        "details": {"status": "deferred", "reason": reason, "stub": True, **details},
+    }
+
+
 def _e4(router: ReplayRouter) -> dict[str, Any]:
-    checkpoint = {"position": 2, "results": ["script-ok", "action-ok"]}
-    kept = list(checkpoint["results"])
-    response = router.call("strong", messages_for(E4_USER, system="planner"), False, reasoning_effort="high")
-    plan = json.loads(response.text)
-    resume_ok = plan.get("resume_from") == checkpoint["position"]
-    preserved = checkpoint["results"] == kept
-    # Механика: replan не переписывает результаты до чекпоинта. Часы мока — мгновенно, порог 30 с.
-    replan_latency_s = 0.0
-    passed = resume_ok and preserved and replan_latency_s <= 30
-    return _result(
+    del router
+    return _deferred(
         "E4",
-        passed,
-        resume_from=plan.get("resume_from"),
-        preserved_results=preserved,
-        replan_latency_s=replan_latency_s,
-        fixture_key=response.fixture_key,
+        "E4 отложен: нет FSM с инъекцией часов и perf_counter. Литералы за прохождение не считаются.",
     )
 
 
 def _e5() -> dict[str, Any]:
-    """Механика interrupt на мок-часах (Scripted, без LLM)."""
-    clock = 0.0
-    ack_at = clock + 0.4
-    classification_at = ack_at + 1.2
-    unpaid_cancel_at = classification_at + 4.0
-    paid_in_flight = True
-    paid_cancelled_midflight = False
-    paid_retries = 0
-    boundary_pause = True
-    passed = (
-        (ack_at - clock) <= 2
-        and (classification_at - clock) <= 5
-        and (unpaid_cancel_at - classification_at) <= 10
-        and paid_in_flight
-        and not paid_cancelled_midflight
-        and boundary_pause
-        and paid_retries == 0
-    )
-    return _result(
+    return _deferred(
         "E5",
-        passed,
-        ack_s=ack_at - clock,
-        classification_s=classification_at - clock,
-        unpaid_cancel_after_classification_s=unpaid_cancel_at - classification_at,
-        paid_cancelled_midflight=paid_cancelled_midflight,
-        paid_retries=paid_retries,
-        router="scripted-clock",
+        "E5 отложен: нет объекта interrupt с инъекцией часов. Литералы за прохождение не считаются.",
     )
 
 
 def _e6(router: ReplayRouter) -> dict[str, Any]:
-    rows = e6_queries()
-    simple_hits = 0
-    simple_total = 0
-    plan_hits = 0
-    plan_total = 0
-    deterministic = 0
-    mismatches = []
-    for row in rows:
-        decision = deterministic_classify(row["text"])
-        if decision["deterministic"]:
-            deterministic += 1
-            predicted = decision
-        else:
-            response = router.call("fast", classifier_messages(row["text"]), False)
-            predicted = json.loads(response.text)
-            predicted["deterministic"] = False
-        if predicted["tier"] != row["tier"] or predicted["mode"] != row["mode"]:
-            mismatches.append(row["id"])
-        if row["bucket"] == "simple":
-            simple_total += 1
-            if predicted["tier"] == "fast":
-                simple_hits += 1
-        if row["bucket"] == "plan":
-            plan_total += 1
-            if predicted["tier"] == "strong":
-                plan_hits += 1
-    simple_ratio = simple_hits / simple_total
-    plan_ratio = plan_hits / plan_total
-    det_ratio = deterministic / len(rows)
-    passed = simple_ratio >= 0.9 and plan_ratio == 1.0 and not mismatches
-    return _result(
+    del router
+    return _deferred(
         "E6",
-        passed,
-        simple_fast_ratio=simple_ratio,
-        plan_strong_ratio=plan_ratio,
-        deterministic_ratio=det_ratio,
-        mismatches=mismatches,
+        "E6 вне graded: метки rule-derived и совпадают с правилами классификатора. "
+        "Нужен набор из истории, не заглушка.",
         labeled_by="rule-derived-placeholder",
     )
 
@@ -383,6 +316,9 @@ def _e8() -> dict[str, Any]:
     wrong = _auth_status("nope", "secret-token")
     ok_token = _auth_status("secret-token", "secret-token")
     kill = _kill_switch()
+    paid = MockActionBackend()
+    first_paid = paid.execute("run_node", {"project_id": 65, "node_key": "n_excel_gpt_fw_shots"})
+    retry_paid = paid.execute("run_node", {"project_id": 65, "node_key": "n_excel_gpt_fw_shots"})
     checks = {
         "edit_files_rejected": bad_plan["pass"] is False and bad_plan["blocking"] is True,
         "env_denied": denied.ok is False and denied.data.get("error") == "path_denied",
@@ -394,6 +330,13 @@ def _e8() -> dict[str, Any]:
         "kill_stop_key": kill["stop_key"] is True,
         "kill_blocks_new": kill["new_action_ok"] is False,
         "kill_no_paid_retry": kill["paid_retries"] == 0,
+        "ledger_one_charge": (
+            first_paid.ok
+            and first_paid.cost == 1.0
+            and retry_paid.ok is False
+            and retry_paid.cost == 0.0
+            and paid.spend_usd == 1.0
+        ),
     }
     return _result("E8", all(checks.values()), checks=checks)
 

@@ -9,12 +9,26 @@ sqlite-vec используется только если расширение �
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import struct
 from pathlib import Path
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.types import CORPORA, Chunk, SourceDoc, normalize_metadata
+
+logger = logging.getLogger(__name__)
+
+# Доля существующих source_id, которую sync может снять без явного разрешения.
+PURGE_MAX_FRACTION = 0.5
+
+
+class RagSyncError(RuntimeError):
+    """Синхронизация сняла бы пустой incoming или больше половины корпуса."""
+
+    def __init__(self, message: str, *, source_ids: list[str]) -> None:
+        super().__init__(message)
+        self.source_ids = source_ids
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -140,11 +154,16 @@ class RagStore:
         embeddings: dict[str, list[float]],
         *,
         indexed_at: str,
+        allow_full_purge: bool = False,
     ) -> tuple[int, int, int]:
         """Синхронизирует один корпус.
 
         ``grouped``: source_id -> (revision, docs).
         ``embeddings``: chunk_id -> vector (только для документов, которые пишем).
+
+        Пустой ``grouped`` при уже записанных источниках и снятие больше
+        ``PURGE_MAX_FRACTION`` источников требуют ``allow_full_purge=True``.
+        Пустой корпус и пустой incoming — обычный первый прогон.
 
         Возвращает (written_chunks, unchanged_chunks, deleted_chunks).
         """
@@ -155,7 +174,12 @@ class RagStore:
             ensure_schema(conn)
             conn.execute("BEGIN IMMEDIATE")
             written, unchanged, deleted = self._sync_locked(
-                conn, corpus, grouped, embeddings, indexed_at=indexed_at
+                conn,
+                corpus,
+                grouped,
+                embeddings,
+                indexed_at=indexed_at,
+                allow_full_purge=allow_full_purge,
             )
             conn.commit()
             return written, unchanged, deleted
@@ -173,6 +197,7 @@ class RagStore:
         embeddings: dict[str, list[float]],
         *,
         indexed_at: str,
+        allow_full_purge: bool = False,
     ) -> tuple[int, int, int]:
         existing = {
             row["source_id"]: (row["revision"], int(row["chunk_count"]))
@@ -185,9 +210,26 @@ class RagStore:
         unchanged = 0
         deleted = 0
         incoming = set(grouped)
-        for source_id in existing:
-            if source_id not in incoming:
-                deleted += self._delete_source(conn, corpus, source_id)
+        doomed = sorted(source_id for source_id in existing if source_id not in incoming)
+        if doomed:
+            logger.warning(
+                "rag sync corpus=%s удаляются source_id (%s): %s",
+                corpus,
+                len(doomed),
+                doomed,
+            )
+        fraction = (len(doomed) / len(existing)) if existing else 0.0
+        wipe = (not incoming and bool(existing)) or fraction > PURGE_MAX_FRACTION
+        if wipe and not allow_full_purge:
+            raise RagSyncError(
+                (
+                    f"sync корпуса {corpus} снял бы {len(doomed)} из {len(existing)} "
+                    f"source_id (доля {fraction:.2f}). Нужен allow_full_purge=True."
+                ),
+                source_ids=doomed,
+            )
+        for source_id in doomed:
+            deleted += self._delete_source(conn, corpus, source_id)
         for source_id, (revision, docs) in grouped.items():
             prev = existing.get(source_id)
             if prev is not None and prev[0] == revision:
@@ -343,7 +385,8 @@ class RagStore:
                 (match, *corpora, limit),
             ).fetchall()
         except sqlite3.OperationalError:
-            return []
+            logger.exception("rag bm25 corpus=%s scope=%s: ошибка FTS, это не пустая выдача", corpora, scope)
+            raise
         finally:
             conn.close()
         # sqlite bm25: меньше (отрицательнее) — лучше. Наружу отдаём «больше = лучше».

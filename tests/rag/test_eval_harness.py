@@ -24,18 +24,17 @@ def test_contour_a_passes_and_e8b_is_deferred() -> None:
     report = run_contour_a()
     assert report["ok"] is True
     assert report["e8_passed"] is True
-    assert report["passed"] == report["total"] == 8
+    assert report["passed"] == report["total"] == 5
     e1 = report["by_id"]["E1"]
     assert e1["details"]["seeded_precision"] == 1.0
     assert e1["details"]["seeded_recall"] == 1.0
     assert e1["details"]["datasets"]["65-clean"]["false_positives"] == []
     assert e1["details"]["canary_scored"] is False
     assert e1["details"]["datasets"]["65-seeded"]["stub"] is True
-    e6 = report["by_id"]["E6"]["details"]
-    assert e6["simple_fast_ratio"] >= 0.9
-    assert e6["plan_strong_ratio"] == 1.0
-    assert report["by_id"]["E8-B"]["status"] == "deferred"
-    assert report["by_id"]["E8-B"]["passed"] is None
+    for eval_id in ("E4", "E5", "E6", "E8-B"):
+        assert report["by_id"][eval_id]["status"] == "deferred"
+        assert report["by_id"][eval_id]["passed"] is None
+    assert report["by_id"]["E6"]["details"]["labeled_by"] == "rule-derived-placeholder"
     e8 = report["by_id"]["E8"]["details"]["checks"]
     assert all(e8.values())
 

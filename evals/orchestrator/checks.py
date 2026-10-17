@@ -14,15 +14,20 @@ FORBIDDEN_ACTIONS = frozenset({"edit_files", "run_tests", "exec", "shell", "writ
 def check_vo_lengths(fragments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
     try:
         from app.orchestrator.validators.vo_length import check_vo_lengths as upstream
-    except Exception:
+    except ImportError:
         upstream = None
     if upstream is not None:
         try:
             raw = upstream(fragments)
-        except TypeError:
-            raw = None
-        if raw is not None:
-            return [_coerce_violation(item) for item in raw], "ws1"
+        except TypeError as exc:
+            raise RuntimeError(
+                "check_vo_lengths: контракт WS1 не совпал, заглушка не подменяет валидатор"
+            ) from exc
+        if raw is None:
+            raise RuntimeError(
+                "check_vo_lengths: контракт WS1 не совпал, заглушка не подменяет валидатор"
+            )
+        return [_coerce_violation(item) for item in raw], "ws1"
     found: list[dict[str, Any]] = []
     for fragment in fragments:
         text = str(fragment.get("text") or "")

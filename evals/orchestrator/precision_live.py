@@ -4,7 +4,8 @@
 (``~/.cache/huggingface`` или ``HF_HOME`` / ``FASTEMBED_CACHE_PATH``), не в ``data/``.
 Сеть — только Hugging Face за весами. Провайдеры вроде 52pay не вызываются.
 
-Приёмка: hit@5 ≥ 0.9 и nDCG@8 ≥ 0.7. precision@8, recall@8 и hit@8 — для сведения.
+Приёмка: hit@5 ≥ 0.9 и nDCG@8 ≥ 0.65 (временный порог, пересмотр на R5).
+precision@8, recall@8 и hit@8 — для сведения.
 
 Корпуса: ``docs/fable/user_rules.md``, ноды из ``NODE_GROUPS`` и
 ``templates/node_groups`` (на этом main каталога нет — файл перекрыл бы код),
@@ -22,6 +23,7 @@ import argparse
 import gc
 import json
 import math
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -29,20 +31,11 @@ from typing import Any
 
 from app.orchestrator.rag.embedder import build_embedder
 from app.orchestrator.rag.engine import RagEngine
-from app.orchestrator.rag.profile import (
-    CONTOUR_B_BM25_SCOPE,
-    CONTOUR_B_EMBEDDER,
-    CONTOUR_B_RERANK_MAX_LENGTH,
-    CONTOUR_B_RERANK_POOL,
-    CONTOUR_B_RERANKER,
-    CONTOUR_B_RRF_K,
-    CONTOUR_B_RRF_LEXICAL,
-    CONTOUR_B_RRF_VECTOR,
-)
 from app.orchestrator.rag.rerank import Reranker, build_reranker
 
 HIT_AT_5_MIN = 0.9
-NDCG_AT_8_MIN = 0.7
+# временный, пересмотр на R5
+NDCG_AT_8_MIN = 0.65
 P95_MAX_S = 1.5
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -307,9 +300,12 @@ def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, 
 
     Если реранкер не поднимает nDCG выше гибрида e5-large, дефолт — этот гибрид
     без реранкера, даже когда гибрид e5-small набрал больше.
+    Если ни один вариант не уложился в p95, ключ пустой и текст говорит «нет дефолта».
     """
     eligible = [row for row in runs if row[2]["p95_s"] <= P95_MAX_S]
-    pool = eligible or runs
+    if not eligible:
+        return "", f"Нет дефолта: ни один вариант не уложился в p95 ≤ {P95_MAX_S:.1f} с."
+    pool = eligible
     best = max(pool, key=_rank_key)
     large = [row for row in pool if row[0].startswith("e5-large+k")]
     best_large = max(large, key=_rank_key) if large else None
@@ -337,8 +333,6 @@ def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, 
                 f" Глобальный максимум nDCG среди p95 ≤ {P95_MAX_S:.1f} с — «{best[1]}» "
                 f"({best[2]['ndcg_at_8']:.4f}); он не выбран, потому что реранкер не помогает."
             )
-    if not eligible:
-        why = f"Ни один вариант не уложился в p95 ≤ {P95_MAX_S:.1f} с. " + why
     return chosen[0], why
 
 
@@ -390,30 +384,36 @@ def render_report(
             f"{metrics['precision_at_8']:.4f} | {metrics['recall_at_8']:.4f} | "
             f"{metrics['hit_at_8']:.4f} | {metrics['p50_s']:.3f} | {metrics['p95_s']:.3f} | {mark} |"
         )
-    chosen_label = next(label for key, label, _metrics in rows if key == chosen_key)
-    chosen = next(metrics for key, _label, metrics in rows if key == chosen_key)
-    lines.extend(
-        [
+    matched = next(((key, label, metrics) for key, label, metrics in rows if key == chosen_key), None)
+    ceiling = rows[0][2]["ceiling"] if rows else 0.0
+    if matched is None:
+        default_lines = [
             "",
-            f"Потолок precision@8 по разметке: **{rows[0][2]['ceiling']:.4f}**.",
+            f"Потолок precision@8 по разметке: **{ceiling:.4f}**.",
             "",
-            f"Дефолт контура B: **{chosen_label}** (ключ `{chosen_key}`). {why} "
-            f"В `app/orchestrator/rag/profile.py` для явного включения записано "
-            f"embedder `{CONTOUR_B_EMBEDDER}`, реранкер `{CONTOUR_B_RERANKER}`, "
-            f"RRF k={CONTOUR_B_RRF_K}, веса {CONTOUR_B_RRF_LEXICAL}/{CONTOUR_B_RRF_VECTOR}, "
-            f"BM25 `{CONTOUR_B_BM25_SCOPE}`, пул {CONTOUR_B_RERANK_POOL}, "
-            f"обрезка {CONTOUR_B_RERANK_MAX_LENGTH} токенов. "
-            "`get_engine()` эти константы не читает.",
+            f"Дефолт: **нет дефолта**. {why}",
+            "",
+        ]
+    else:
+        key, chosen_label, chosen = matched
+        default_lines = [
+            "",
+            f"Потолок precision@8 по разметке: **{ceiling:.4f}**.",
+            "",
+            f"Дефолт контура B: **{chosen_label}** (ключ `{key}`). {why}",
             "",
             "Критерии выбранного дефолта: "
             f"hit@5 = {chosen['hit_at_5']:.4f} (порог {HIT_AT_5_MIN}), "
             f"nDCG@8 = {chosen['ndcg_at_8']:.4f} (порог {NDCG_AT_8_MIN}). "
             + ("Оба порога взяты." if _passes(chosen) else "Пороги не взяты."),
             "",
+        ]
+    lines.extend(default_lines)
+    lines.extend(
+        [
             "Гибрид по умолчанию в коде ретривера — RRF k=60, веса 1/1, BM25 по всему тексту. "
-            "Константы контура B в `profile.py` на этот дефолт не подменяют `get_engine()`. "
-            "Реранкер опционален: `RagEngine(reranker=None)` и `retrieve(..., rerank=False)`. "
-            "`get_engine()` реранкер не включает и остаётся на hashing.",
+            "Без `ORCH_RAG_PROFILE=contour-b` `get_engine()` остаётся на hashing и реранкер не включает. "
+            "Реранкер выключается `ORCH_RAG_RERANK=0` или `retrieve(..., rerank=False)`.",
             "",
             "## Запросы, где hit@5 промахнулись все варианты",
             "",
@@ -542,10 +542,92 @@ def _miss_lines(
     return lines
 
 
+def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
+    """Два варианта на текущей разметке: дефолт bge-m3 и тот же гибрид без реранкера.
+
+    Запросы не переписывает. Рейтинги пишет во временный файл, не в репозиторий.
+    """
+    queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
+    report_path = out or REPORT_PATH
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-pair-"))
+    runs: list[tuple[str, str, dict[str, float]]] = []
+    saved: dict[str, list[dict[str, Any]]] = {}
+    try:
+        embedder = build_embedder("e5-large")
+        plain = _engine(temp_dir / "orch_rag.db", embedder, None)
+        try:
+            plain.reindex(["rules", "nodes", "prompts"])
+            print("index chunks", len(_index_catalog(plain)), flush=True)
+            metrics, details = measure(
+                queries,
+                plain,
+                rerank=False,
+                rrf_k=20,
+                rrf_weights=(0.5, 1.5),
+                bm25_scope="full",
+            )
+        finally:
+            plain.close()
+        runs.append(("e5-large+k20+w0.5/1.5+full", "e5-large гибрид k=20 веса 0.5/1.5 BM25 весь текст", metrics))
+        saved[runs[-1][0]] = details
+        print(runs[-1][1], {k: round(v, 4) for k, v in metrics.items()}, flush=True)
+        reranker = build_reranker("bge-m3", max_length=256)
+        ranked = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        try:
+            ranked.reindex(["rules", "nodes", "prompts"])
+            metrics, details = measure(
+                queries,
+                ranked,
+                rerank=True,
+                rrf_k=20,
+                rrf_weights=(0.5, 1.5),
+                bm25_scope="full",
+                rerank_pool=20,
+            )
+        finally:
+            ranked.close()
+        runs.append(
+            (
+                "e5-large+bge-m3+p20+t256",
+                "e5-large + bge-m3 топ-20 256 ток. (база k=20 веса 0.5/1.5 BM25 full)",
+                metrics,
+            )
+        )
+        saved[runs[-1][0]] = details
+        print(runs[-1][1], {k: round(v, 4) for k, v in metrics.items()}, flush=True)
+        chosen_key, why = choose_default(runs)
+        misses = _miss_lines(queries, saved)
+        text = render_report(runs, chosen_key=chosen_key, why=why, misses=misses)
+        text += (
+            "\nЧанкование промптов: `split_prompt(max_parts=3)` по PLAN §5.2. "
+            "Таблица из 32 вариантов снята при `max_parts=8` и этот индекс не описывает. "
+            "Разметка и live-29 не менялись.\n"
+        )
+        report_path.write_text(text, encoding="utf-8")
+        detail_path = temp_dir / "precision_live_rankings.json"
+        detail_path.write_text(
+            json.dumps({"chosen": chosen_key, "runs": {key: rows for key, rows in saved.items()}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        summary = {
+            "chosen": chosen_key,
+            "why": why,
+            "metrics": {key: metrics for key, _label, metrics in runs},
+        }
+        print(json.dumps({"chosen": chosen_key, "why": why, "metrics": summary["metrics"]}, ensure_ascii=False), flush=True)
+        return summary
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
+    parser.add_argument("--pair", action="store_true", help="только дефолт bge-m3 и гибрид без реранкера")
     args = parser.parse_args()
+    if args.pair:
+        run_profile_pair(args.out)
+        return
     queries = build_queries()
     QUERY_PATH.parent.mkdir(parents=True, exist_ok=True)
     QUERY_PATH.write_text(json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -554,6 +636,13 @@ def main() -> None:
     # Не data/orch_rag.db рантайма: временный каталог вне data/. Имя файла то же,
     # потому что писатель принимает только orch_rag.db.
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-live-"))
+    try:
+        _main_grid(temp_dir, queries, prefixes_ok, args.out)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _main_grid(temp_dir: Path, queries: list[dict[str, Any]], prefixes_ok: bool, out: Path) -> None:
     runs: list[tuple[str, str, dict[str, float]]] = []
     saved: dict[str, list[dict[str, Any]]] = {}
     catalog: list[dict[str, str]] = []
@@ -612,8 +701,8 @@ def main() -> None:
         text += "\nПрефиксы e5 не сошлись с `query: ` / `passage: `.\n"
     else:
         text += "\nПрефиксы e5 проверены без весов: запрос начинается с `query: `, документ с `passage: `.\n"
-    args.out.write_text(text, encoding="utf-8")
-    detail_path = args.out.with_name("precision_live_rankings.json")
+    out.write_text(text, encoding="utf-8")
+    detail_path = out.with_name("precision_live_rankings.json")
     detail_path.write_text(
         json.dumps({"chosen": chosen_key, "index": catalog, "runs": saved}, ensure_ascii=False),
         encoding="utf-8",

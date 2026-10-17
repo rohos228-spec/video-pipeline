@@ -118,5 +118,5 @@ def test_precision_at_8_dataset_and_score(tmp_path: Path) -> None:
     # Регрессия закрытого набора с якорями, не порог релиза контура B.
     assert macro >= 0.8
     assert hit_rate == 1.0
-    report = REPORT_PATH.read_text(encoding="utf-8")
-    assert f"{macro:.4f}" in report
+    expected = float(committed["expected_macro_precision_at_8"])
+    assert macro == expected
