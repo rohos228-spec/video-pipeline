@@ -151,6 +151,7 @@ _ALLOW_MARKERS = (
     "{settings.data_dir}/node_overrides",
 )
 _RAG_ID = "rag.reindex"
+_CONTENT_OVERWRITE = frozenset({"open", "write_text", "write_bytes", "os.open"})
 _RAG_SUFFIXES = ("orch_rag.db", "orch_rag.db-wal", "orch_rag.db-shm")
 _SNAPSHOT_DIR = "action_layer_snapshots"
 # Решение куратора: каталог снимков разрешён только этим трём id.
@@ -962,6 +963,86 @@ def _is_allow_path(sketch: str) -> bool:
     return any(_sketch_under(sketch, marker) for marker in _ALLOW_MARKERS)
 
 
+def _norm_sketch(sketch: str | None) -> str | None:
+    if not sketch:
+        return None
+    return _resolve_path(sketch)
+
+
+def _is_tmp_sketch(sketch: str) -> bool:
+    name = sketch.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return name.endswith(".tmp")
+
+
+def _same_sketch_dir(left: str, right: str) -> bool:
+    norm_left = _norm_sketch(left)
+    norm_right = _norm_sketch(right)
+    if not norm_left or not norm_right or "/" not in norm_left or "/" not in norm_right:
+        return False
+    return norm_left.rsplit("/", 1)[0] == norm_right.rsplit("/", 1)[0]
+
+
+def _resolved_is_allow(sketch: str | None) -> bool:
+    resolved = _norm_sketch(sketch)
+    return bool(resolved) and _is_allow_path(resolved)
+
+
+def _mentions_version(fn_node: ast.AST) -> bool:
+    """Атомарная запись без версии не сохраняет прежнее значение."""
+    for node in ast.walk(fn_node):
+        if isinstance(node, ast.Name) and node.id == "version":
+            return True
+        if isinstance(node, ast.arg) and node.arg == "version":
+            return True
+        if isinstance(node, ast.keyword) and node.arg == "version":
+            return True
+        if isinstance(node, ast.Constant) and node.value == "version":
+            return True
+    return False
+
+
+def _atomic_tmp_map(
+    fn_node: ast.AST,
+    env: dict[str, str],
+    os_modules: set[str],
+    os_funcs: dict[str, str],
+    path_names: set[str],
+) -> dict[str, str]:
+    """tmp → назначение для os.replace/rename из того же каталога."""
+    found: dict[str, str] = {}
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Call):
+            continue
+        src_node: ast.AST | None = None
+        dst_node: ast.AST | None = None
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in {"replace", "rename"}:
+            if isinstance(func.value, ast.Name) and func.value.id in os_modules:
+                src_node = _call_arg(node, 0, "src")
+                dst_node = _call_arg(node, 1, "dst")
+            elif func.attr == "replace" and _is_path_replace(node, func, path_names):
+                src_node = func.value
+                dst_node = _call_arg(node, 0, "target")
+        elif (
+            isinstance(func, ast.Name)
+            and func.id in os_funcs
+            and os_funcs[func.id] in {"replace", "rename"}
+        ):
+            src_node = _call_arg(node, 0, "src")
+            dst_node = _call_arg(node, 1, "dst")
+        if src_node is None or dst_node is None:
+            continue
+        src = _sketch(src_node, env)
+        dst = _sketch(dst_node, env)
+        if not src or not dst or not _is_tmp_sketch(src) or not _same_sketch_dir(src, dst):
+            continue
+        norm_src = _norm_sketch(src)
+        norm_dst = _norm_sketch(dst)
+        if norm_src and norm_dst:
+            found[norm_src] = norm_dst
+    return found
+
+
 def _is_rag_path(sketch: str) -> bool:
     if _DYN in sketch or _has_dotdot(sketch):
         return False
@@ -1347,12 +1428,15 @@ def _write_hit(
     path_names: set[str] | None = None,
     os_flags: dict[str, str] | None = None,
     os_open_names: set[str] | None = None,
+    atomic_tmp: dict[str, str] | None = None,
+    versioned: bool = False,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
     path_names = path_names or {"Path"}
     os_flags = os_flags or {}
     os_open_names = os_open_names or set()
+    atomic_tmp = atomic_tmp or {}
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
@@ -1454,7 +1538,28 @@ def _write_hit(
         return None
     sketch = _sketch(dest, env)
     source = _sketch(src, env) if src is not None else None
+    norm_sketch = _norm_sketch(sketch)
+    norm_source = _norm_sketch(source)
+    atomic_dest = atomic_tmp.get(norm_source or "")
+    atomic_ok = bool(
+        versioned
+        and kind in {"os.replace", "Path.replace"}
+        and norm_source
+        and norm_sketch
+        and atomic_dest == norm_sketch
+        and _resolved_is_allow(norm_sketch)
+        and _resolved_is_allow(norm_source)
+    )
     denied = kind in _DELETE_KINDS or kind.startswith("alias:")
+    if atomic_ok:
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=source,
+            allowed=True,
+            snapshot_delete=False,
+        )
     if denied:
         under = sketch is None or _under_snapshot(sketch)
         if source and _under_snapshot(source):
@@ -1478,12 +1583,24 @@ def _write_hit(
             allowed=dest_ok and src_ok,
             snapshot_delete=source is None or _under_snapshot(source),
         )
+    path_ok = bool(sketch) and _path_permitted(sketch, action_id)
+    if (
+        kind in _CONTENT_OVERWRITE
+        and path_ok
+        and _resolved_is_allow(sketch)
+    ):
+        published = atomic_tmp.get(norm_sketch or "")
+        path_ok = bool(
+            versioned
+            and published
+            and _resolved_is_allow(published)
+        )
     return WriteHit(
         kind,
         sketch,
         function,
         source=None,
-        allowed=bool(sketch) and _path_permitted(sketch, action_id),
+        allowed=path_ok,
         snapshot_delete=False,
     )
 
@@ -1552,6 +1669,8 @@ def _scan_writes(
     hits: list[WriteHit] = []
     calls: list[ast.Call] = []
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
+    atomic_tmp = _atomic_tmp_map(fn_node, env, os_modules, os_funcs, path_names)
+    versioned = _mentions_version(fn_node)
 
     def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
         if (
@@ -1586,6 +1705,8 @@ def _scan_writes(
                 path_names,
                 os_flags,
                 os_open_names,
+                atomic_tmp,
+                versioned,
             )
             if hit is not None:
                 hits.append(hit)
@@ -1999,14 +2120,54 @@ def test_fs_allowlist_reports_and_node_overrides() -> None:
         "    Path('data/reports/e.txt').open('w')\n"
         "    Path('data/reports/f.txt').write_bytes(b'z')\n"
     )
-    # path.joinpath(...) не сводится к литералу data/reports — это отказ.
+    # Прямая перезапись allowlist больше не разрешена: нужен tmp + os.replace и версия.
     hits = analyze_module_source(source, "prompt.save_master")
-    allowed = [hit for hit in hits if hit.allowed]
-    denied = [hit for hit in hits if not hit.allowed]
-    assert {hit.kind for hit in allowed} >= {"open", "write_bytes"}
-    assert len(allowed) == 5
-    assert len(denied) == 1
-    assert denied[0].kind == "write_text"
+    assert hits
+    assert all(hit.allowed is False for hit in hits)
+    assert any(hit.kind == "write_text" and hit.sketch is None for hit in hits)
+
+
+def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
+    """Прямой open('w') в allowlist — отказ. tmp + os.replace и версия — разрешение."""
+    bare = (
+        "def save(version):\n"
+        "    open('data/node_overrides/x.json', 'w')\n"
+        "    open('data/reports/a.txt', 'w')\n"
+    )
+    bare_hits = analyze_module_source(bare, "node.set_config")
+    assert [hit.allowed for hit in bare_hits] == [False, False]
+
+    atomic = (
+        "import os\n"
+        "def save(version):\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+        "    open('data/reports/a.txt.tmp', 'w')\n"
+        "    os.replace('data/reports/a.txt.tmp', 'data/reports/a.txt')\n"
+    )
+    hits = analyze_module_source(atomic, "node.set_config")
+    assert [hit.kind for hit in hits] == ["open", "os.replace", "open", "os.replace"]
+    assert [hit.allowed for hit in hits] == [True, True, True, True]
+
+    no_version = (
+        "import os\n"
+        "def save():\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+    )
+    assert all(
+        hit.allowed is False
+        for hit in analyze_module_source(no_version, "node.set_config")
+    )
+
+    from app.orchestrator.node_store.atomic_write import atomic_write_text
+
+    dest = tmp_path / "node_overrides" / "x.json"
+    atomic_write_text(dest, "hello", version=3)
+    assert not dest.with_name(dest.name + ".tmp").exists()
+    body = dest.read_text(encoding="utf-8")
+    assert '"version": 3' in body
+    assert "hello" in body
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
@@ -2258,7 +2419,8 @@ def test_reassigned_name_is_unknown_and_denied() -> None:
     unknown_hits = analyze_module_source(unknown, "prompt.save_master")
     assert len(changed_hits) == 1 and changed_hits[0].allowed is False
     assert changed_hits[0].sketch is None
-    assert len(same_hits) == 1 and same_hits[0].allowed is True
+    assert len(same_hits) == 1 and same_hits[0].sketch == "data/reports/a.txt"
+    assert same_hits[0].allowed is False
     assert len(unknown_hits) == 1 and unknown_hits[0].allowed is False
 
 
@@ -2274,7 +2436,8 @@ def test_allow_prefix_is_component_not_substring() -> None:
         "    open('/etc/data/reports/x', 'w')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    assert [hit.allowed for hit in hits] == [True, False, False, False, False, False, False]
+    assert [hit.allowed for hit in hits] == [False, False, False, False, False, False, False]
+    assert hits[0].sketch == "data/reports/ok.txt"
 
 
 def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
@@ -2337,8 +2500,11 @@ def test_dotdot_segment_is_rejected() -> None:
         "    open('data/node_overrides/../reports/c.txt', 'w')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    # После resolve внутрь allowlist путь разрешён, выход наружу — нет.
-    assert [hit.allowed for hit in hits] == [False, True, False, True, True]
+    # Выход из allowlist — отказ. Путь, который resolve оставляет внутри, всё равно
+    # прямая перезапись: без tmp+os.replace она тоже отказ.
+    assert [hit.allowed for hit in hits] == [False, False, False, False, False]
+    assert _norm_sketch(hits[1].sketch) == "data/node_overrides/b.txt"
+    assert _norm_sketch(hits[3].sketch) == "data/reports/ok.txt"
 
 
 def test_path_constructor_resolves_every_argument() -> None:
@@ -2349,7 +2515,8 @@ def test_path_constructor_resolves_every_argument() -> None:
         "    Path('data/reports', 'ok.txt').write_text('z')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    assert [hit.allowed for hit in hits] == [False, False, True]
+    assert [hit.sketch for hit in hits][2] == "data/reports/ok.txt"
+    assert [hit.allowed for hit in hits] == [False, False, False]
 
 
 def test_parent_is_resolved_before_allowlist() -> None:
@@ -2361,7 +2528,8 @@ def test_parent_is_resolved_before_allowlist() -> None:
         "    outside.write_text('b')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    assert [hit.allowed for hit in hits] == [True, False]
+    assert [hit.sketch for hit in hits][0] == "{settings.data_dir}/reports/ok.txt"
+    assert [hit.allowed for hit in hits] == [False, False]
 
 
 def test_os_path_join_is_resolved_before_allowlist() -> None:
@@ -2373,7 +2541,8 @@ def test_os_path_join_is_resolved_before_allowlist() -> None:
         "    open(os.path.join(ALLOWED, 'ok.txt'), 'w')\n"
     )
     hits = analyze_module_source(source, "prompt.save_master")
-    assert [hit.allowed for hit in hits] == [False, True]
+    assert [hit.sketch for hit in hits][1] == "data/reports/ok.txt"
+    assert [hit.allowed for hit in hits] == [False, False]
 
 
 def test_allowed_root_constant_is_shadowed() -> None:
@@ -2591,9 +2760,7 @@ def test_replace_rename_truncate_are_denied() -> None:
         "open",
         "open",
     ]
-    assert [hit.allowed for hit in hits] == [
-        False, False, False, False, False, False, False, False, True,
-    ]
+    assert [hit.allowed for hit in hits] == [False] * 9
 
 
 def test_sql_delete_drop_truncate_are_denied() -> None:
@@ -2748,17 +2915,7 @@ def test_os_open_flags_outside_allowlist_are_denied() -> None:
     )
     hits = analyze_module_source(source, "prompt.save_master")
     assert [hit.kind for hit in hits] == ["os.open"] * 9
-    assert [hit.allowed for hit in hits] == [
-        True,
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-        True,
-        False,
-    ]
+    assert [hit.allowed for hit in hits] == [False] * 9
 
 
 def test_fs_breach_new_kind_on_known_id_fails() -> None:
