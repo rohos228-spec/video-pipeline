@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import time
+import zlib
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -244,7 +245,7 @@ def verify_archive(path: Path, expected_ids: list[int] | None = None) -> dict:
                 rec = json.loads(line.decode("utf-8"))
                 rows += 1
                 ids.append(rec["id"])
-    except (OSError, ValueError, EOFError, KeyError) as exc:
+    except (OSError, ValueError, EOFError, KeyError, zlib.error) as exc:
         problems.append(f"архив не читается: {type(exc).__name__}")
     if manifest and manifest.get("rows") != rows:
         problems.append(f"в манифесте {manifest.get('rows')} строк, в архиве {rows}")
