@@ -272,6 +272,8 @@ class Supervisor:
         resolved = self._resolve_project_task(session_id, task_id)
         if resolved is None:
             raise ProjectBindError(409, "no such task")
+        if resolved != self.active_task(session_id):
+            raise ProjectBindError(409, "not the active task")
         if self._status(resolved) is not TaskStatus.waiting_approval:
             raise ProjectBindError(409, "not waiting_approval")
         if self._block_reason.get(resolved) != ApprovalReason.missing_project_id.value:

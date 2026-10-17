@@ -84,6 +84,64 @@ async def test_project_route_binds_id_and_reaches_step(token: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_project_route_rejects_task_that_is_not_active(token: str) -> None:
+    """project_id пишется только в активную задачу сессии.
+
+    Вторая задача той же сессии ждёт risk. Тело с task_id первой не
+    снимает missing_project_id и не одобряет риск второй.
+    """
+    del token
+    actions = MockActions(risks={"edit": "none", "charge": "high"})
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="edit", mutating=True)]),
+    )
+    set_runtime(runtime)
+    session = "bind-two-tasks"
+    try:
+        held_id = await runtime.supervisor.start_task(session, "без проекта")
+        await runtime.supervisor.wait(held_id, timeout=5)
+        assert runtime.tasks.get(held_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.supervisor._block_reason.get(held_id) == "missing_project_id"
+        held_before = _row(runtime, held_id)
+
+        runtime.supervisor.planner = FixedPlanner(
+            [PlanStep(action="charge", risk="low", paid=True, mutating=True, estimated_cost=1.0, params={"_cost": 1})]
+        )
+        risk_id = await runtime.supervisor.start_task(session, "риск", project_id=13)
+        await runtime.supervisor.wait(risk_id, timeout=5)
+        assert runtime.supervisor.active_task(session) == risk_id
+        assert runtime.tasks.get(risk_id)["status"] == TaskStatus.waiting_approval.value
+        risk_reasons = [
+            event.payload.get("reason")
+            for event in runtime.bus.replay(session, 0)
+            if event.type == "approval_required" and event.task_id == risk_id
+        ]
+        assert risk_reasons == ["risk"]
+        risk_before = _row(runtime, risk_id)
+        assert actions.calls == []
+
+        transport = ASGITransport(app=_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/api/orchestrator/chat/{session}/project",
+                json={"project_id": 13, "task_id": held_id},
+                headers=_headers(),
+            )
+        assert response.status_code == 409
+        assert _row(runtime, held_id) == held_before
+        assert _row(runtime, risk_id) == risk_before
+        assert runtime.supervisor._block_reason.get(held_id) == "missing_project_id"
+        assert actions.calls == []
+        assert float(runtime.tasks.get(risk_id)["spend_actions"] or 0) == 0
+        assert TEST_TOKEN not in response.text
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
 async def test_project_route_rejects_bad_id_and_other_states(token: str) -> None:
     del token
     actions = MockActions(risks={"charge": "high"})
