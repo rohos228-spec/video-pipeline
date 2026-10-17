@@ -82,6 +82,8 @@ async def auth_status(request: Request) -> dict:
 
 @router.post("/register")
 async def register(body: RegisterBody, request: Request) -> dict:
+    if settings.web_auth_enabled:
+        raise HTTPException(403, "Регистрация закрыта, пока включён вход студии")
     email, username = body.email.strip().lower(), body.username.strip()
     if not _EMAIL.match(email):
         raise HTTPException(422, "Некорректный email")
