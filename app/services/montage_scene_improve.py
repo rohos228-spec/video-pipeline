@@ -56,7 +56,7 @@ from app.services.scene_shot_grammar import (
     is_threshold_step,
 )
 from app.services.shot_templates import format_scene_chain, parse_scene_chain
-from app.services.vo_shot_expand import _flag_attrs, bits_from_attrs, main_action_text
+from app.services.vo_shot_expand import _flag_attrs, main_action_text
 
 GROUP_NODES: tuple[tuple[str, str], ...] = (
     ("fw_action", "Действие сцены"),
@@ -1221,8 +1221,13 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
-    seq = [s.get("якорь_n") for s in shots]
+    """Живые кадры идут по якорям подряд 1..k, у каждого якоря есть кадр.
+
+    Помеченные (карантин) в проверку не входят: они лежат в хвосте и не
+    ломают раскладку.
+    """
+    live = [s for s in shots if not s.get("карантин")]
+    seq = [s.get("якорь_n") for s in (live or shots)]
     if any(not isinstance(v, int) for v in seq):
         return False
     return seq == sorted(seq) and set(seq) == set(range(1, k + 1))
@@ -1527,16 +1532,52 @@ def _group(shots: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     return [s for s in shots if s.get("якорь_n") == n]
 
 
+def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    shot["карантин"] = True
+    shot["пометка"] = reason
+    shot["активен"] = False
+    shot["fw_qc"] = reason
+    logger.warning(
+        "WARN {}: кадр {} помечен, не удалён: {}",
+        where,
+        shot.get("id") or "?",
+        reason,
+    )
+
+
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета режем мосты и перебивки, исходные события и следствие держим."""
+    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем.
+
+    Бюджет считается по живым кадрам: уже помеченные в лимит не входят.
+    """
     out = list(shots)
+    if cap < 1:
+        return out
+    live_at = [i for i, shot in enumerate(out) if not shot.get("карантин")]
+    if len(live_at) <= cap:
+        return out
+    sim = [(i, out[i]) for i in live_at]
+    drop_at: set[int] = set()
     for role in ("мост", "перебивка"):
-        i = len(out) - 1
-        while len(out) > cap and i >= 1:
-            if out[i].get("роль") == role:
-                out.pop(i)
+        i = len(sim) - 1
+        while len(sim) > cap and i >= 1:
+            if sim[i][1].get("роль") == role:
+                drop_at.add(sim[i][0])
+                sim.pop(i)
             i -= 1
-    return out[:cap] if len(out) > cap else out
+    if len(sim) > cap:
+        for orig_i, _shot in sim[cap:]:
+            drop_at.add(orig_i)
+    for idx in sorted(drop_at):
+        shot = out[idx]
+        if shot.get("карантин"):
+            continue
+        _mark_shot_kept(
+            shot,
+            f"сверх бюджета {cap} — кадр сохранён",
+            where="_trim_to_cap",
+        )
+    return out
 
 
 def _ensure_coverage_angle_30(
@@ -1571,24 +1612,42 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
         stem = action_stem(str(shot.get("действие") or ""))
         alone = len(_group(shots, shot.get("якорь_n"))) <= 1
         if stem and stem in seen and not alone:
-            fixed.append(f"убран повтор «{stem[:40]}»")
-            continue
-        if stem:
+            reason = f"повтор «{stem[:40]}» — кадр сохранён"
+            if not shot.get("карантин"):
+                _mark_shot_kept(shot, reason, where="repair_shots")
+            fixed.append(f"помечен повтор «{stem[:40]}»")
+        elif stem:
             seen.add(stem)
         kept.append(shot)
     rebuilt: list[dict[str, Any]] = []
+    placed: set[int] = set()
     for unit in units:
         group = _group(kept, unit["n"])
         if len(group) > unit["бюджет"]:
-            fixed.append(f"якорь {unit['n']}: кадров {len(group)} > {unit['бюджет']} — мосты сжаты")
+            fixed.append(
+                f"якорь {unit['n']}: кадров {len(group)} > {unit['бюджет']} — лишние помечены"
+            )
             group = _trim_to_cap(group, unit["бюджет"])
         piece = _norm(unit["закадр"])
-        empty = any(not _norm(s.get("закадр")) for s in group)
-        if group and (_glue(group) != piece or (empty and len(piece.split()) >= len(group))):
-            for shot, part in zip(group, split_vo_for_shots(piece, len(group)), strict=False):
+        # Закадр перераскладываем только по кадрам без пометки, чтобы
+        # сохранённый «лишний» кадр не размывал кусок якоря.
+        live = [s for s in group if not s.get("карантин")] or group
+        empty = any(not _norm(s.get("закадр")) for s in live)
+        if live and (_glue(live) != piece or (empty and len(piece.split()) >= len(live))):
+            for shot, part in zip(live, split_vo_for_shots(piece, len(live)), strict=False):
                 shot["закадр"] = part
             fixed.append(f"якорь {unit['n']}: закадр кадров = кусок якоря дословно")
         rebuilt.extend(group)
+        placed.update(id(s) for s in group)
+    for shot in kept:
+        if id(shot) in placed:
+            continue
+        reason = f"якорь {shot.get('якорь_n')} не совпал — кадр сохранён"
+        if not shot.get("карантин"):
+            _mark_shot_kept(shot, reason, where="repair_shots")
+        fixed.append(reason)
+        rebuilt.append(shot)
+    # Порядок якорей (units), не исходный порядок GPT. Несовпавшие — в хвост.
     shots[:] = rebuilt
     fixed.extend(smooth_plan_sequence(shots))
     prev: dict[str, Any] | None = None
@@ -1628,15 +1687,18 @@ def qc_reasons(
         hard.append("кадры не разложены по якорям подряд")
     for unit in units:
         group = _group(shots, unit["n"])
-        if group and _glue(group) != _norm(unit["закадр"]):
+        live = [s for s in group if not s.get("карантин")] or group
+        if live and _glue(live) != _norm(unit["закадр"]):
             hard.append(f"якорь {unit['n']}: склейка закадра кадров ≠ куску якоря")
-        if len(_norm(unit["закадр"]).split()) >= len(group):
-            for shot in group:
+        if len(_norm(unit["закадр"]).split()) >= len(live):
+            for shot in live:
                 if not _norm(shot.get("закадр")):
                     hard.append(f"кадр {shot.get('порядок')}: пустой закадр")
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
     for shot in shots:
+        if shot.get("карантин"):
+            continue
         n = shot.get("порядок")
         step = str(shot.get("действие") or "")
         if _COGNITIVE_ONLY_RE.search(step):
@@ -1912,7 +1974,7 @@ async def improve_cell_scene(
         load_character_registry,
         match_registry_characters,
     )
-    from app.services.vo_shot_expand import _flag_attrs, _set_cs
+    from app.services.vo_shot_expand import _set_cs
 
     _ = anchors, passport
     frames = await _load_frames(session, int(project.id))

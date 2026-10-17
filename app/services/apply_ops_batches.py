@@ -37,20 +37,20 @@ from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
-    fill_bit_spans,
-    is_cutaway_shot,
-    merge_same_place_scenes,
     carry_pose,
     character_id_problems,
     ensure_character_ids,
+    ensure_wide_before_dialogue,
+    fill_bit_spans,
+    is_cutaway_shot,
+    merge_same_place_scenes,
+    merge_trivial_shots,
     normalize_reply_cameras,
     reflow_vo_by_sentences,
-    merge_trivial_shots,
-    ensure_wide_before_dialogue,
-    spread_vo_sentences,
     repair_shot_vo_lengths,
     shots_continuity_problems,
     shots_grammar_reason,
+    spread_vo_sentences,
     vo_piece_ends_sentence,
     vo_sentence_problems,
 )
@@ -987,10 +987,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 bit["изменение"] = "смысл из закадра"
                 fixed += 1
             snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
-            if snapped and snapped != str(bit.get("якорь") or "").strip():
-                bit["якорь"] = snapped
-                fixed += 1
-            elif not str(bit.get("якорь") or "").strip() and snapped:
+            if snapped and snapped != str(bit.get("якорь") or "").strip() or not str(bit.get("якорь") or "").strip() and snapped:
                 bit["якорь"] = snapped
                 fixed += 1
         fields["биты"] = raw
@@ -1874,7 +1871,7 @@ def shots_reply_gate_problems(
 import contextvars as _cv
 
 # база персонажей для гейта/фикса id (ставит нода Кадры перед пачками)
-_GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE_CHARACTERS", default=[])
+_GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_CHARACTERS", default=[])
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:

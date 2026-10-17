@@ -160,6 +160,21 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
         )
 
+    from app.services.frame_tombstones import frame_is_active
+
+    marked_numbers = [int(fr.number) for fr in frames_all if not frame_is_active(fr)]
+    if marked_numbers:
+        logger.warning(
+            "WARN [#{}] assemble: кадры {} помечены «удалён» — не входят в ролик, строки сохранены",
+            project.id,
+            marked_numbers,
+        )
+    frames_all = [fr for fr in frames_all if frame_is_active(fr)]
+    if not frames_all:
+        raise RuntimeError(
+            "нет активных кадров — помеченные «удалён» не входят в ролик, строки сохранены"
+        )
+
     frames: list[Frame] = []
     skipped_no_video: list[int] = []
     for fr in frames_all:
@@ -340,6 +355,7 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             bot,
             frames=frames,
             frames_all=frames_all,
+            marked_numbers=marked_numbers,
             skipped_no_video=skipped_no_video,
             audio=audio,
             audio_path=audio_path,
@@ -371,6 +387,7 @@ async def _assemble_body(
     *,
     frames: list[Frame],
     frames_all: list[Frame],
+    marked_numbers: list[int],
     skipped_no_video: list[int],
     audio,
     audio_path: Path,
@@ -394,6 +411,7 @@ async def _assemble_body(
             cells=cells,
             words=words,
             per_frame_tts=True,
+            omit_numbers=set(marked_numbers),
         )
         timeline_mode = "per-frame"
     else:
@@ -401,6 +419,9 @@ async def _assemble_body(
         from app.services.montage.r15 import load_r15_markers, resolve_montage_frame_numbers
 
         frame_numbers = resolve_montage_frame_numbers(project, frame_numbers)
+        if marked_numbers:
+            marked_set = {int(n) for n in marked_numbers}
+            frame_numbers = [n for n in frame_numbers if int(n) not in marked_set]
         markers, ts_row = load_r15_markers(project, frame_numbers)
         audio_duration = await probe_duration(audio_path)
         audio_clips = [
