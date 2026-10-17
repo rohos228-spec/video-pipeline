@@ -15,6 +15,42 @@ from typing import Any
 
 _re = re
 
+_SHOT_IS_ACTIVE: Any = _re  # sentinel: ещё не искали frame_tombstones
+
+
+def _external_shot_is_active() -> Any:
+    """``shot_is_active``, если модуль уже в дереве. Иначе None."""
+
+    global _SHOT_IS_ACTIVE
+    if _SHOT_IS_ACTIVE is not _re:
+        return _SHOT_IS_ACTIVE
+    try:
+        from app.services.frame_tombstones import shot_is_active
+    except Exception:  # noqa: BLE001 — на #351 модуля нет
+        shot_is_active = None
+    _SHOT_IS_ACTIVE = shot_is_active if callable(shot_is_active) else None
+    return _SHOT_IS_ACTIVE
+
+
+def shot_counts_as_active(shot: Any) -> bool:
+    """Живой шот: импорт ``shot_is_active``, иначе ``активен is not False``."""
+
+    checker = _external_shot_is_active()
+    if checker is not None:
+        return bool(checker(shot))
+    if not isinstance(shot, dict):
+        return True
+    return shot.get("активен") is not False
+
+
+def active_shots(shots: list[Any] | None) -> list[Any] | None:
+    """Оставить живые шоты. None — списка не было. Сами объекты не меняются."""
+
+    if shots is None:
+        return None
+    return [shot for shot in shots if shot_counts_as_active(shot)]
+
+
 # ---- временная копия предиката (r0a scene_shot_grammar, 2026-10-15) ----
 _POV_OBJ = {"взгляд"}
 _NOTICE_RE = _re.compile(
@@ -231,17 +267,26 @@ def wide_notes(shots: Any) -> list[str]:
 
 
 def shots_of(context: dict[str, Any]) -> list[Any] | None:
-    """Кадры из context. None — проверять нечего."""
+    """Кадры из context. None — проверять нечего.
+
+    Неактивные (``активен is False``) в проверку не входят и из context не
+    выкидываются: наружу уходит новый список.
+    """
 
     if "shots" in context:
         value = context.get("shots")
-        return value if isinstance(value, list) else []
-    after = context.get("after")
-    if isinstance(after, dict):
-        for key in ("shots", "frames", "кадры"):
-            if key in after and isinstance(after[key], list):
-                return after[key]
-    for key in ("frames", "кадры"):
-        if key in context and isinstance(context[key], list):
-            return context[key]
-    return None
+        raw = value if isinstance(value, list) else []
+    else:
+        raw = None
+        after = context.get("after")
+        if isinstance(after, dict):
+            for key in ("shots", "frames", "кадры"):
+                if key in after and isinstance(after[key], list):
+                    raw = after[key]
+                    break
+        if raw is None:
+            for key in ("frames", "кадры"):
+                if key in context and isinstance(context[key], list):
+                    raw = context[key]
+                    break
+    return active_shots(raw)
