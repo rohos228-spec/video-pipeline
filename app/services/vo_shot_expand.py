@@ -1804,6 +1804,9 @@ def relink_shot_roles_by_scene(
             existing = planned_shots_from_attrs(parent)
             if len(existing) > len(shots):
                 shots = existing
+        from app.services.frame_tombstones import merge_kadry_keep_missing
+
+        shots = merge_kadry_keep_missing(pattrs.get("кадры"), shots)
         pattrs["кадры"] = shots
         if full:
             pattrs["vo_cell_full"] = full
@@ -1879,7 +1882,9 @@ def relink_shot_roles_by_scene(
             cattrs = dict(getattr(fr, "attrs", None) or {})
             one = shots[i - 1] if i - 1 < len(shots) else {}
             if one:
-                cattrs["кадры"] = [one]
+                cattrs["кадры"] = merge_kadry_keep_missing(
+                    cattrs.get("кадры"), [one]
+                )
             if child_place and not str(cattrs.get("place") or "").strip():
                 cattrs["place"] = child_place
             fr.attrs = cattrs

@@ -917,6 +917,68 @@ def test_relink_shot_roles_groups_parent_id_chain() -> None:
     assert d.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
 
 
+def test_relink_keeps_ids_missing_from_rebuild(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Id, которого нет в новой склейке, остаётся с активен: False."""
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.services.vo_shot_expand import relink_shot_roles_by_scene
+
+    def _fr(number: int, shots: list[dict], vo: str):
+        uid = f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid,
+            voiceover_text=vo,
+            attrs={
+                "кадры": shots,
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": uid,
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                    "scene_split": 1,
+                },
+            },
+        )
+
+    parent = _fr(
+        1,
+        [
+            {"id": "f001", "parent_id": None, "действие": "шаг", "закадр": "Первая."},
+            {"id": "orphan", "действие": "смотрит", "закадр": "хвост родителя"},
+        ],
+        "Первая.",
+    )
+    child = _fr(
+        2,
+        [
+            {"id": "f002", "parent_id": "f001", "действие": "шаг", "закадр": "Вторая."},
+            {"id": "child-extra", "действие": "ждёт", "закадр": "хвост ребёнка"},
+        ],
+        "Вторая.",
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        relink_shot_roles_by_scene([parent, child])
+    finally:
+        logger.remove(sink)
+    parent_ids = {s["id"]: s for s in parent.attrs["кадры"]}
+    assert parent_ids["orphan"]["активен"] is False
+    assert parent_ids["orphan"]["закадр"] == "хвост родителя"
+    assert parent_ids["f001"].get("активен") is not False
+    assert parent_ids["f002"].get("активен") is not False
+    child_ids = {s["id"]: s for s in child.attrs["кадры"]}
+    assert child_ids["child-extra"]["активен"] is False
+    assert child_ids["child-extra"]["закадр"] == "хвост ребёнка"
+    assert "orphan" in caplog.text
+    assert "child-extra" in caplog.text
+
+
 def test_relink_skips_existing_parent_child() -> None:
     from types import SimpleNamespace
 
