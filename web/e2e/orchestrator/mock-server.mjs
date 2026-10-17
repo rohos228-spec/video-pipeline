@@ -11,7 +11,8 @@
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
- * Сверено с #358 @ b599033f: forecast_usd, decisions, retry_grant (флаг, не токен).
+ * Сверено с #358 @ c9221498: forecast_usd, decisions, retry_grant (флаг, не токен).
+ * change_id платного approval_required — только `orch-appr-<task_id>-<n>`.
  * TODO(ws3-358): HTTP-пути grant в #358 нет, мок держит POST .../approve.
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
@@ -845,7 +846,7 @@ async function runPaidOutcome(session, taskId, restartOffered) {
     detail: "paid_outcome_unknown",
   });
   emit(session, "step_started", taskId, PAID_STEP);
-  const approvalId = `chg-paid-${session.id}`;
+  const approvalId = `orch-appr-${taskId}-1`;
   const approval = {
     change_id: approvalId,
     title: "Исход платного шага неизвестен",

@@ -930,8 +930,8 @@ test.describe("orchestrator chat", () => {
     expect(execute).toEqual([]);
     const approvals = posts.filter((item) => item.url.includes("/approvals/"));
     expect(approvals).toHaveLength(1);
-    expect(approvals[0]?.url).toContain("/approvals/chg-paid-paid-done/approve");
-    expect(approvals[0]?.body).toMatchObject({ decision: "approve", approval_id: "chg-paid-paid-done" });
+    expect(approvals[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
+    expect(approvals[0]?.body).toMatchObject({ decision: "approve", approval_id: "orch-appr-1-1" });
     expect(approvals[0]?.body).not.toHaveProperty("retry_grant");
   });
 
@@ -951,11 +951,11 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveAttribute("data-status", "running");
     const retry = posts.filter((item) => item.url.includes("/approve"));
     expect(retry).toHaveLength(2);
-    expect(retry[0]?.url).toContain("/approvals/chg-paid-paid-retry/approve");
-    expect(retry[0]?.body).toMatchObject({ decision: "retry_step", approval_id: "chg-paid-paid-retry" });
+    expect(retry[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
+    expect(retry[0]?.body).toMatchObject({ decision: "retry_step", approval_id: "orch-appr-1-1" });
     expect(retry[0]?.body).not.toHaveProperty("retry_grant");
-    expect(retry[1]?.url).toContain("/approvals/chg-paid-paid-retry/approve");
-    expect(retry[1]?.body).toMatchObject({ retry_grant: true, approval_id: "chg-paid-paid-retry" });
+    expect(retry[1]?.url).toContain("/approvals/orch-appr-1-1/approve");
+    expect(retry[1]?.body).toMatchObject({ retry_grant: true, approval_id: "orch-appr-1-1" });
     expect(retry[1]?.body).not.toHaveProperty("decision");
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
@@ -974,8 +974,8 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
     const denials = posts.filter((item) => item.url.includes("/approve"));
     expect(denials).toHaveLength(1);
-    expect(denials[0]?.url).toContain("/approvals/chg-paid-paid-deny/approve");
-    expect(denials[0]?.body).toMatchObject({ decision: "deny", approval_id: "chg-paid-paid-deny" });
+    expect(denials[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
+    expect(denials[0]?.body).toMatchObject({ decision: "deny", approval_id: "orch-appr-1-1" });
     expect(denials[0]?.body).not.toHaveProperty("retry_grant");
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });

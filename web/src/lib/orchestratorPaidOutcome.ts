@@ -4,10 +4,11 @@
  *
  * `decision` закреплён: approve | retry_step | deny.
  *
- * Имена сверены с #358 @ b599033f0f30537574e28c3b3bcea89a58672896
+ * Имена сверены с #358 @ c9221498373f98be930727ce6b9096e4802529d0
  * (`origin/cursor/ws3-nonblocking-350`). Источник: `ApprovalDecisionBody`,
  * `approval_required.forecast_usd` / `decisions` / `retry_armed`.
- * `change_id` и `orch-appr-<task_id>-<n>` в payload `paid_outcome_unknown` нет.
+ * Сервер сам ставит `change_id` вида `orch-appr-<task_id>-<n>`
+ * (`tests/agents/test_change_id.py`, `_paid_id`). Клиентский id отбрасывается.
  *
  * TODO(ws3-358): HTTP-роутера `grant_approval` в #358 нет. Мок принимает то же
  * тело на POST `.../approvals/{id}/approve`. Если WS3 опубликует другой путь,
