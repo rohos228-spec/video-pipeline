@@ -135,12 +135,13 @@ async def test_start_step_img_pr_explicit_wipes_image_prompt(
     session.add(fr)
     await session.flush()
 
+    # R0a: явный ▶ img_pr всегда сбрасывает готовый image_prompt.
     status = await start_step(
         session, p, "img_pr", skip_queue_guard=True, explicit_ui_start=True
     )
     assert status is ProjectStatus.generating_image_prompts
     await session.refresh(fr)
-    assert fr.image_prompt == "old clay prompt that must be wiped"
+    assert not (fr.image_prompt or "").strip()
 
     p.status = ProjectStatus.image_prompts_ready
     await session.flush()
