@@ -144,7 +144,7 @@ Node Store (app/orchestrator/node_store/*): templates/ (git, RO) + node_defs/nod
 2. fast: read-only вопрос, классификация, подтверждение, суммаризация.
 3. Спорное → fast-классификатор, порог уверенности 0.8; ниже → strong.
 
-**SLA:** fast p95 < 3 с. Таймауты: 60 с fast / 300 с strong; 2 ретрая с бэкоффом → следующая модель. Лог в `orch_llm_calls` (model, tier, latency, tokens, cost, deterministic_flag) → spend ledger (D4, суб-бюджет $10/run на внутренние ходы). Разнос параллельных батчей 2–5 с (правило 1).
+**SLA:** fast p95 < 3 с. Таймауты: 60 с fast / 300 с strong; 2 ретрая с бэкоффом → следующая модель. Лог в `orch_llm_calls` (model, tier, latency, tokens, cost, deterministic_flag) → spend ledger (D4, суб-бюджет $10/run на внутренние ходы). Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10).
 
 **Интерфейс для моков (D7):** роутер — единственная точка LLM-вызовов; за интерфейсом `router.call()` стоят три реализации: `LiveRouter` (прод), `ReplayRouter` (фикстуры), `ScriptedRouter` (сценарные ответы для тестов FSM/очереди).
 
@@ -269,7 +269,7 @@ Allowlist (`actions/read_allowlist.yaml`): разрешено `app/services/**`,
    "node_key": {"type": "string", "required": true},
    "params_patch": {"type": "object", "required": true, "note": "model, reasoning_effort, parallel, stagger_sec, temperature, max_tokens"},
    "reason": {"type": "string", "required": true}},
- "constraints": ["понижение reasoning_effort с high — только через approval (правило 2)", "stagger_sec ∈ [2,5] (правило 1)"],
+ "constraints": ["понижение reasoning_effort с high — только через approval (правило 2)"],
  "rollback": "change_control"}
 ```
 
@@ -417,7 +417,7 @@ intent → Planner(strong) → Validators(dry-run) → Critic(strong)
 - **Цель:** fast/strong, детерминированный классификатор + LLM-фолбэк, фолбэк-цепочки, учёт стоимости → ledger (D4, суб-бюджет), интерфейс Live/Replay/Scripted (D7).
 - **Владение:** `app/orchestrator/routing/**` (model_router.py, pay52_routes.yaml, classifier.py, replay.py, scripted.py); `tests/routing/**`. Таблица `orch_llm_calls` — спецификация здесь, миграция у WS3.
 - **Интерфейсы:** `router.call(tier|auto, messages, stream) -> LLMResponse`; `router.classify(message) -> {tier, mode, deterministic}`.
-- **Тесты:** фолбэк при таймауте, детерминированные правила, cost → ledger, разнос 2–5 с, `fixture-miss` в ReplayRouter — fail, не живой вызов.
+- **Тесты:** фолбэк при таймауте, детерминированные правила, cost → ledger, `fixture-miss` в ReplayRouter — fail, не живой вызов.
 - **DoD:** E6 ≥ 90% на 40 запросах; fast p95 < 3 с; доля детерминированных классификаций репортится.
 - **Оценка: 3 дня.**
 
