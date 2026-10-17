@@ -10,6 +10,15 @@
  * Базовый URL можно подменить мок-сервером (`?orchApi=http://127.0.0.1:8799`).
  */
 
+import {
+  PAID_OUTCOME_RETRY_GRANT_FIELD,
+  paidOutcomeApprovalPath,
+  paidOutcomeRetryReady,
+  readPaidOutcomeExecuted,
+  readPaidOutcomeFailureReason,
+  readPaidOutcomeForecast,
+  type PaidOutcomeDecision,
+} from "./orchestratorPaidOutcome";
 import type {
   OrchApprovalDecision,
   OrchEvent,
@@ -162,6 +171,55 @@ export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision
     body,
     signal,
   );
+}
+
+export interface PaidOutcomeDecisionResult {
+  ok: boolean;
+  forecast: number | null;
+  executed: boolean;
+  reason: string | null;
+  /** Ответ `retry_step` с прогнозом и без отказа: можно слать `retry_grant`. */
+  retryReady: boolean;
+}
+
+/** Три `decision` — тело `ApprovalDecisionBody` на grant-пути. Deny тоже шлёт `decision`, не старый reject. */
+export async function postPaidOutcomeDecision(
+  cfg: OrchClientConfig,
+  body: { approval_id: string; task_id?: string | null; decision: PaidOutcomeDecision },
+  signal?: AbortSignal,
+): Promise<PaidOutcomeDecisionResult> {
+  const raw = await postJson<unknown>(cfg, paidOutcomeApprovalPath(body.approval_id), body, signal);
+  const reason = readPaidOutcomeFailureReason(raw);
+  return {
+    ok: reason == null,
+    forecast: readPaidOutcomeForecast(raw),
+    executed: readPaidOutcomeExecuted(raw),
+    reason,
+    retryReady: paidOutcomeRetryReady(raw),
+  };
+}
+
+/** Второй шаг: одноразовый `retry_grant`, без повторного `decision` и без execute до подтверждения. */
+export async function postPaidOutcomeRestartGrant(
+  cfg: OrchClientConfig,
+  body: { approval_id: string; task_id?: string | null },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean }> {
+  const raw = await postJson<unknown>(
+    cfg,
+    paidOutcomeApprovalPath(body.approval_id),
+    {
+      approval_id: body.approval_id,
+      task_id: body.task_id,
+      [PAID_OUTCOME_RETRY_GRANT_FIELD]: true,
+    },
+    signal,
+  );
+  const reason = readPaidOutcomeFailureReason(raw);
+  if (reason || readPaidOutcomeExecuted(raw) !== true) {
+    throw new OrchApiError(409, reason || "retry_grant_required");
+  }
+  return { ok: true };
 }
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {

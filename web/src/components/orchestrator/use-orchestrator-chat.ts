@@ -9,6 +9,8 @@ import {
   postOrchApprove,
   postOrchKill,
   postOrchMessage,
+  postPaidOutcomeDecision,
+  postPaidOutcomeRestartGrant,
   readOrchProjectId,
   postOrchReject,
   probeOrchAuth,
@@ -19,10 +21,15 @@ import {
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
 import {
+  PAID_OUTCOME_DECISION,
+  type PaidOutcomeDecision,
+} from "@/lib/orchestratorPaidOutcome";
+import {
   initialOrchScreen,
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
+import type { PaidOutcomeDecisionResult } from "@/lib/orchestratorApi";
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
@@ -221,6 +228,78 @@ export function useOrchestratorChat() {
     dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
   }, []);
 
+  const decidePaidOutcome = useCallback(
+    async (
+      approvalId: string,
+      taskId: string | null,
+      decision: PaidOutcomeDecision,
+    ): Promise<PaidOutcomeDecisionResult> => {
+      if (decisionLock.current) {
+        return { ok: false, forecast: null, executed: false, reason: null, retryReady: false };
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        const result = await postPaidOutcomeDecision(cfg, {
+          approval_id: approvalId,
+          task_id: taskId,
+          decision,
+        });
+        if (decision !== PAID_OUTCOME_DECISION.retryStep) {
+          dispatch({
+            type: "approval-resolved",
+            id: approvalId,
+            decision: decision === PAID_OUTCOME_DECISION.approve ? "approved" : "rejected",
+          });
+        }
+        setSendError("");
+        return result;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "не записалось решение",
+          });
+        }
+        throw error;
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
+  );
+
+  const confirmPaidRestart = useCallback(
+    async (approvalId: string, taskId: string | null) => {
+      if (decisionLock.current) return;
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        await postPaidOutcomeRestartGrant(cfg, {
+          approval_id: approvalId,
+          task_id: taskId,
+        });
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        setSendError("");
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "не записалось решение",
+          });
+        }
+        throw error;
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
+  );
+
   const kill = useCallback(async () => {
     try {
       const result = await postOrchKill(cfg, {
@@ -256,6 +335,8 @@ export function useOrchestratorChat() {
     submitToken,
     sendMessage,
     decide,
+    decidePaidOutcome,
+    confirmPaidRestart,
     dismissBlock,
     kill,
   };

@@ -115,6 +115,23 @@ test("11 страница оркестратора", async ({ page }) => {
   await shot(page, "11-orchestrator");
 });
 
+test("13 исход платного шага неизвестен", async ({ page }) => {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  const q = new URLSearchParams({ orchApi: MOCK, scenario: "paidoutcome", session: "visual-paid" });
+  await page.goto(`/orchestrator?${q.toString()}`);
+  await expect(page.getByTestId("orch-composer")).toBeVisible();
+  await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+  await page.getByTestId("orch-send").click();
+  await expect(page.getByTestId("orch-paid-outcome")).toHaveText("Исход платного шага неизвестен");
+  await expect(page.getByTestId("orch-paid-retry")).toBeEnabled();
+  await shot(page, "13-paid-outcome");
+});
+
 test("12 редактор отчётов", async ({ page }) => {
   await page.addInitScript(
     ([token]) => {

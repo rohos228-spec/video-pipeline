@@ -26,7 +26,14 @@ import {
   type StepView,
 } from "@/lib/orchestratorSession";
 import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
-import { orchTaskModeEnabled, readOrchProjectId } from "@/lib/orchestratorApi";
+import { orchTaskModeEnabled, readOrchProjectId, type PaidOutcomeDecisionResult } from "@/lib/orchestratorApi";
+import {
+  formatPaidOutcomeForecast,
+  PAID_OUTCOME_COPY,
+  PAID_OUTCOME_DECISION,
+  PAID_OUTCOME_UNKNOWN_REASON,
+  type PaidOutcomeDecision,
+} from "@/lib/orchestratorPaidOutcome";
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
 
@@ -67,6 +74,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     title: "Шаг с риском: нужно подтверждение",
     body: "Реестр действий просит одобрение. Шаг не стартует, пока его не подтвердят.",
     testId: "orch-risk",
+  },
+  [PAID_OUTCOME_UNKNOWN_REASON]: {
+    title: PAID_OUTCOME_COPY.title,
+    body: PAID_OUTCOME_COPY.body,
+    testId: "orch-paid-outcome",
   },
   deletion_blocked: {
     title: "Удаление запрещено",
@@ -252,6 +264,8 @@ export function OrchestratorWorkspace() {
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
                   onClose={() => chat.dismissBlock(approval.id)}
+                  onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, approval.taskId, decision)}
+                  onPaidGrant={() => chat.confirmPaidRestart(approval.id, approval.taskId)}
                 />
               ))}
             </div>
@@ -380,7 +394,13 @@ export function OrchestratorWorkspace() {
                     {item.plan.length > 0 ? <PlanList steps={item.plan} /> : null}
                     <ul className="mt-2 space-y-1.5">
                       {item.steps.map((step) => (
-                        <li key={step.id} className="text-[11px] text-white/75">
+                        <li
+                          key={step.id}
+                          className="text-[11px] text-white/75"
+                          data-testid="orch-step"
+                          data-step-id={step.id}
+                          data-status={step.status}
+                        >
                           <span className="text-white/40">{step.status === "running" ? "…" : step.status === "done" ? "●" : "○"}</span>{" "}
                           {step.title}
                           {step.paid ? " · платный" : ""}
@@ -588,6 +608,8 @@ function ApprovalCard({
   onApprove,
   onReject,
   onClose,
+  onPaidDecision,
+  onPaidGrant,
 }: {
   approval: ApprovalView;
   pending: boolean;
@@ -595,11 +617,33 @@ function ApprovalCard({
   onApprove: () => void;
   onReject: () => void;
   onClose: () => void;
+  onPaidDecision: (decision: PaidOutcomeDecision) => Promise<PaidOutcomeDecisionResult>;
+  onPaidGrant: () => Promise<void>;
 }) {
+  const [retryReady, setRetryReady] = useState(false);
+  const [retryForecast, setRetryForecast] = useState<number | null>(null);
+  const [retryOpen, setRetryOpen] = useState(false);
   const copy = BLOCK_COPY[approval.reason];
+  const paidOutcome = approval.reason === PAID_OUTCOME_UNKNOWN_REASON;
   const terminal = isTerminalBlock(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
+  const showCost = !paidOutcome && approval.costEstimate != null;
+
+  const startRetry = () => {
+    if (!approval.restartOffered || pending) return;
+    void onPaidDecision(PAID_OUTCOME_DECISION.retryStep)
+      .then((result) => {
+        if (!result.ok) return;
+        setRetryForecast(result.forecast);
+        setRetryReady(result.retryReady);
+        setRetryOpen(true);
+      })
+      .catch(() => {
+        /* ошибка уже на карточке */
+      });
+  };
+
   return (
     <div
       data-testid="orch-approval"
@@ -615,28 +659,128 @@ function ApprovalCard({
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}
         {approval.risk ? ` · ${approval.risk}` : ""}
-        {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
+        {showCost ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      <div className="mt-2 flex gap-2">
-        {terminal ? (
-          <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
-            Закрыть
-          </Button>
-        ) : (
-          <>
-            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-              Approve
+      {paidOutcome ? (
+        <PaidOutcomeActions
+          pending={pending}
+          restartOffered={approval.restartOffered}
+          retryOpen={retryOpen}
+          forecast={retryForecast}
+          retryReady={retryReady}
+          onDone={() => void onPaidDecision(PAID_OUTCOME_DECISION.approve)}
+          onRetry={startRetry}
+          onDeny={() => void onPaidDecision(PAID_OUTCOME_DECISION.deny)}
+          onConfirm={() => {
+            if (!retryReady) return;
+            void onPaidGrant().catch(() => {
+              /* ошибка уже на карточке */
+            });
+          }}
+        />
+      ) : (
+        <div className="mt-2 flex gap-2">
+          {terminal ? (
+            <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
+              Закрыть
             </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-              Reject
-            </Button>
-          </>
-        )}
-      </div>
+          ) : (
+            <>
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+                Approve
+              </Button>
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+                Reject
+              </Button>
+            </>
+          )}
+        </div>
+      )}
       {error ? (
         <p data-testid="orch-approval-error" className="mt-2 text-[11px] text-destructive">
           {error}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+function PaidOutcomeActions({
+  pending,
+  restartOffered,
+  retryOpen,
+  forecast,
+  retryReady,
+  onDone,
+  onRetry,
+  onDeny,
+  onConfirm,
+}: {
+  pending: boolean;
+  restartOffered: boolean;
+  retryOpen: boolean;
+  forecast: number | null;
+  retryReady: boolean;
+  onDone: () => void;
+  onRetry: () => void;
+  onDeny: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" data-testid="orch-paid-done" disabled={pending || retryOpen} onClick={onDone}>
+          {PAID_OUTCOME_COPY.done}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-testid="orch-paid-retry"
+          disabled={pending || retryOpen || !restartOffered}
+          title={restartOffered ? undefined : PAID_OUTCOME_COPY.retryUnsupported}
+          onClick={onRetry}
+        >
+          {PAID_OUTCOME_COPY.retry}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-testid="orch-paid-deny"
+          disabled={pending || retryOpen}
+          onClick={onDeny}
+        >
+          {PAID_OUTCOME_COPY.deny}
+        </Button>
+      </div>
+      {!restartOffered ? (
+        <p data-testid="orch-paid-retry-hint" className="text-[11px] text-white/55">
+          {PAID_OUTCOME_COPY.retryUnsupported}
+        </p>
+      ) : null}
+      {retryOpen ? (
+        <div data-testid="orch-paid-forecast" className="rounded-md border border-white/10 px-2 py-2">
+          <p className="text-[11px] text-white/80">
+            {forecast != null ? formatPaidOutcomeForecast(forecast) : PAID_OUTCOME_COPY.forecastMissing}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-2"
+            data-testid="orch-paid-retry-confirm"
+            disabled={pending || !retryReady}
+            title={retryReady ? undefined : forecast == null ? PAID_OUTCOME_COPY.forecastMissing : PAID_OUTCOME_COPY.grantMissing}
+            onClick={onConfirm}
+          >
+            {PAID_OUTCOME_COPY.confirmRetry}
+          </Button>
+          {!retryReady && forecast != null ? (
+            <p data-testid="orch-paid-grant-hint" className="mt-1 text-[11px] text-white/55">
+              {PAID_OUTCOME_COPY.grantMissing}
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

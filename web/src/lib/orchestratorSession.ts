@@ -3,6 +3,7 @@
  * Дедуп по seq делает вызывающий код до dispatch.
  */
 
+import { readPaidOutcomeForecast, readPaidOutcomeRestartOffered } from "./orchestratorPaidOutcome";
 import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
@@ -167,6 +168,10 @@ export interface ApprovalView {
   risk: string;
   action: string;
   costEstimate: number | null;
+  /** Прогноз paid_outcome_unknown (`forecast_usd`). */
+  forecast: number | null;
+  /** В `decisions` есть `retry_step`. Иначе кнопка перезапуска неактивна. */
+  restartOffered: boolean;
   resolved: "approved" | "rejected" | "closed" | null;
 }
 
@@ -313,6 +318,8 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
       risk: str(body.risk),
       action: str(body.action),
       costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      forecast: readPaidOutcomeForecast(body),
+      restartOffered: readPaidOutcomeRestartOffered(body),
       resolved: null,
     });
   }
@@ -489,6 +496,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     step.note = str(payload.note, step.note);
     const node = readNodeDef(payload.node);
     if (node) step.node = node;
+    if (event.type === "step_started") step.status = "running";
     if (event.type === "step_finished") {
       const body = payload as StepPayload & Record<string, unknown>;
       step.status = body.ok === false ? "failed" : "done";
@@ -537,6 +545,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         risk: str(body.risk, "medium"),
         action: str(body.action),
         costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+        forecast: readPaidOutcomeForecast(body),
+        restartOffered: readPaidOutcomeRestartOffered(body),
         resolved: null,
       });
     }
@@ -574,6 +584,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         risk: "",
         action: "",
         costEstimate: null,
+        forecast: null,
+        restartOffered: false,
         resolved: null,
       });
     }

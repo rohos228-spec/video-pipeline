@@ -336,4 +336,100 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
+
+  test("paid_outcome_unknown: карточка и три кнопки", async ({ page }) => {
+    await openWithToken(page, "paidoutcome", "paid-card");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toHaveAttribute("data-terminal", "false");
+    await expect(page.getByTestId("orch-paid-outcome")).toHaveText("Исход платного шага неизвестен");
+    await expect(card).toContainText("Шаг мог выполниться, поэтому автоматически он не повторяется, проверьте результат.");
+    await expect(page.getByTestId("orch-paid-done")).toHaveText("Шаг выполнен, продолжить");
+    await expect(page.getByTestId("orch-paid-retry")).toHaveText("Перезапустить шаг");
+    await expect(page.getByTestId("orch-paid-deny")).toHaveText("Остановить задачу");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    await expect(page.getByTestId("orch-step").filter({ hasText: "Платная генерация" })).toHaveAttribute("data-status", "running");
+  });
+
+  test("paid_outcome_unknown: шаг выполнен без повторного execute", async ({ page }) => {
+    const posts: { url: string; body: unknown }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      posts.push({ url: req.url(), body: req.postDataJSON() });
+    });
+    await openWithToken(page, "paidoutcome", "paid-done");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+    await page.getByTestId("orch-paid-done").click();
+    const paid = page.getByTestId("orch-step").filter({ hasText: "Платная генерация" });
+    await expect(paid).toHaveAttribute("data-status", "done");
+    await expect(page.getByTestId("orch-step").filter({ hasText: "Следующий шаг" })).toHaveAttribute("data-status", "running");
+    await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+    const execute = posts.filter((item) => item.url.includes("/execute"));
+    expect(execute).toEqual([]);
+    const approvals = posts.filter((item) => item.url.includes("/approvals/"));
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.url).toContain("/approve");
+    expect(approvals[0]?.body).toMatchObject({ decision: "approve", approval_id: "ap-paid-outcome-paid-done" });
+    expect(approvals[0]?.body).not.toHaveProperty("retry_grant");
+  });
+
+  test("paid_outcome_unknown: перезапуск показывает прогноз и шлёт одноразовый grant", async ({ page }) => {
+    const posts: { url: string; body: unknown }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      posts.push({ url: req.url(), body: req.postDataJSON() });
+    });
+    await openWithToken(page, "paidoutcome", "paid-retry");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toHaveCount(0);
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveAttribute("data-status", "running");
+    const retry = posts.filter((item) => item.url.includes("/approve"));
+    expect(retry).toHaveLength(2);
+    expect(retry[0]?.body).toMatchObject({ decision: "retry_step", approval_id: "ap-paid-outcome-paid-retry" });
+    expect(retry[0]?.body).not.toHaveProperty("retry_grant");
+    expect(retry[1]?.body).toMatchObject({ retry_grant: true, approval_id: "ap-paid-outcome-paid-retry" });
+    expect(retry[1]?.body).not.toHaveProperty("decision");
+    expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
+  });
+
+  test("paid_outcome_unknown: остановить задачу — deny и failed", async ({ page }) => {
+    const posts: { url: string; body: unknown }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      posts.push({ url: req.url(), body: req.postDataJSON() });
+    });
+    await openWithToken(page, "paidoutcome", "paid-deny");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-deny").click();
+    await expect(page.getByTestId("orch-step").filter({ hasText: "Платная генерация" })).toHaveAttribute("data-status", "failed");
+    await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+    const denials = posts.filter((item) => item.url.includes("/approve"));
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.body).toMatchObject({ decision: "deny", approval_id: "ap-paid-outcome-paid-deny" });
+    expect(denials[0]?.body).not.toHaveProperty("retry_grant");
+    expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
+  });
+
+  test("paid_outcome_unknown: без поддержки перезапуска кнопка неактивна", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/approvals/")) posts.push(req.url());
+    });
+    await openWithToken(page, "paidoutcomeoff", "paid-off");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-retry")).toBeDisabled();
+    await expect(page.getByTestId("orch-paid-retry-hint")).toContainText("Сервер не поддерживает перезапуск");
+    await page.getByTestId("orch-paid-retry").click({ force: true });
+    expect(posts).toEqual([]);
+  });
 });

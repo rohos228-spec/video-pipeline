@@ -6,6 +6,11 @@
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
+ *
+ * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
+ * Сверено с #358 @ 08fb355f: forecast_usd, decisions, retry_grant (флаг, не токен).
+ * TODO(ws3-358): HTTP-пути grant в #358 нет, мок держит POST .../approve.
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -43,6 +48,8 @@ function sessionOf(id) {
       queue: [],
       killed: false,
       approvalWait: null,
+      grantWait: null,
+      grantUsed: false,
       reconnectDropped: false,
     });
   }
@@ -759,7 +766,115 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
+  if (scenario === "paidoutcome") {
+    void runPaidOutcome(session, id, true);
+    return;
+  }
+  if (scenario === "paidoutcomeoff") {
+    void runPaidOutcome(session, id, false);
+    return;
+  }
   void runStream(session, id);
+}
+
+const PAID_FORECAST_USD = 2.4;
+const PAID_DECISIONS = [
+  { decision: "approve", label: "Шаг выполнен, продолжить" },
+  { decision: "retry_step", label: "Перезапустить шаг" },
+  { decision: "deny", label: "Остановить задачу" },
+];
+const PAID_STEP = {
+  step_id: "s-paid",
+  title: "Платная генерация",
+  action: "run_node",
+  paid: true,
+};
+
+async function runPaidOutcome(session, taskId, restartOffered) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "неизвестный исход"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Платный шаг",
+    detail: "paid_outcome_unknown",
+  });
+  emit(session, "step_started", taskId, PAID_STEP);
+  const approvalId = `ap-paid-outcome-${session.id}`;
+  const approval = {
+    approval_id: approvalId,
+    title: "Исход платного шага неизвестен",
+    reason: "paid_outcome_unknown",
+    action: "run_node",
+    risk: "high",
+    decisions: restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+  };
+  if (restartOffered) approval.forecast_usd = PAID_FORECAST_USD;
+  emit(session, "approval_required", taskId, approval);
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: approvalId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision === "approve") {
+    emit(session, "step_finished", taskId, { ...PAID_STEP, ok: true });
+    emit(session, "step_started", taskId, {
+      step_id: "s-next",
+      title: "Следующий шаг",
+      action: "read_pipeline_code",
+      paid: false,
+    });
+    emit(session, "agent_status", taskId, {
+      agent: "executor",
+      status: "running",
+      task_status: "executing",
+      detail: "план продолжен без повторного execute",
+    });
+    return;
+  }
+  if (decision === "deny") {
+    emit(session, "step_finished", taskId, { ...PAID_STEP, ok: false, note: "остановлено" });
+    emit(session, "task_failed", taskId, { error: "задача остановлена" });
+    emit(session, "agent_status", taskId, {
+      agent: "supervisor",
+      status: "failed",
+      task_status: "failed",
+      detail: "deny",
+    });
+    return;
+  }
+  if (decision === "retry_step") {
+    await new Promise((resolve) => {
+      session.grantWait = { id: approvalId, resolve };
+    });
+    session.grantWait = null;
+    if (session.killed) return;
+    emit(session, "step_started", taskId, { ...PAID_STEP, note: "повтор после grant" });
+    emit(session, "agent_status", taskId, {
+      agent: "executor",
+      status: "running",
+      task_status: "executing",
+      detail: "перезапуск после одноразового grant",
+    });
+  }
+}
+
+function consumePaidRetryGrant(res, approvalId) {
+  for (const session of sessions.values()) {
+    const wait = session.grantWait;
+    if (!wait || wait.id !== approvalId) continue;
+    if (session.grantUsed) {
+      sendJson(res, 409, { executed: false, reason: "retry_grant_spent", forecast_usd: PAID_FORECAST_USD });
+      return;
+    }
+    session.grantUsed = true;
+    wait.resolve(true);
+    session.grantWait = null;
+    sendJson(res, 200, { executed: true, decision: "retry_step", forecast_usd: PAID_FORECAST_USD });
+    return;
+  }
+  sendJson(res, 409, { executed: false, reason: "retry_grant_required", forecast_usd: null });
 }
 
 async function runMissingProject(session, taskId) {
@@ -890,11 +1005,11 @@ function handleStream(req, res, sessionId) {
     if (event.seq > last) writeEvent(res, event);
   }
   session.clients.add(res);
-  const detach = () => {
+  // req «close» у GET приходит сразу после заголовков и снимает живого клиента.
+  // Отписка — по закрытию ответа, когда браузер обрывает SSE.
+  res.on("close", () => {
     session.clients.delete(res);
-  };
-  req.on("close", detach);
-  res.on("close", detach);
+  });
 }
 
 const ALLOWLIST = JSON.parse(
@@ -1135,7 +1250,13 @@ const server = http.createServer(async (req, res) => {
     (parts[4] === "approve" || parts[4] === "reject")
   ) {
     const approvalId = decodeURIComponent(parts[3]);
-    const decision = parts[4] === "approve" ? "approve" : "reject";
+    const body = await readBody(req);
+    if (body.retry_grant === true) {
+      consumePaidRetryGrant(res, approvalId);
+      return;
+    }
+    const wireDecision = typeof body.decision === "string" ? body.decision : "";
+    const decision = wireDecision || (parts[4] === "approve" ? "approve" : "reject");
     if (decision === "approve" && scenarioOf(req, url) === "approvefail") {
       await sleep(800);
       sendJson(res, 500, { detail: "approve failed" });
@@ -1151,7 +1272,12 @@ const server = http.createServer(async (req, res) => {
         break;
       }
     }
-    sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched });
+    const payload = { ok: true, approval_id: approvalId, decision, matched };
+    if (decision === "retry_step" && scenarioOf(req, url) === "paidoutcome") {
+      payload.executed = false;
+      payload.forecast_usd = PAID_FORECAST_USD;
+    }
+    sendJson(res, 200, payload);
     return;
   }
 
