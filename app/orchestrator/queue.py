@@ -1,0 +1,223 @@
+"""Очередь входящих сообщений.
+
+Ack («принял, разбираю») уходит сразу, до классификации. Классификация —
+сначала детерминированные правила, спорное отдаётся ``router.classify``.
+Задача супервизора это не ждёт: разбор идёт отдельной asyncio-задачей.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from typing import Any
+
+from loguru import logger
+
+from app.orchestrator.contracts import ClassifyResult, MessageMode
+from app.orchestrator.db.migrations import connect, utc_now
+from app.orchestrator.events import EventBus
+
+_TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+_STOP_TOKENS = frozenset(
+    {
+        "стой",
+        "отмена",
+        "останови",
+        "остановись",
+        "стоп",
+        "прерви",
+        "прекрати",
+        "stop",
+        "cancel",
+    }
+)
+_STEER_PHRASES = (
+    "измени план",
+    "поменяй план",
+    "перепланируй",
+    "скорректируй план",
+    "вместо этого",
+    "учти что",
+    "steer:",
+)
+_QUESTION_STARTS = frozenset(
+    {
+        "что",
+        "как",
+        "почему",
+        "зачем",
+        "когда",
+        "где",
+        "кто",
+        "какой",
+        "какая",
+        "какие",
+        "какое",
+        "сколько",
+        "можно",
+        "нужно",
+    }
+)
+_TASK_MARKERS = ("задач", "план", "шаг", "нод", "кадр", "сцен")
+
+
+def classify_deterministic(text: str) -> ClassifyResult | None:
+    """Правила до LLM. None — спорный случай, нужен fast-классификатор."""
+    norm = " ".join((text or "").lower().split())
+    tokens = _TOKEN_RE.findall(norm)
+    if any(token in _STOP_TOKENS for token in tokens):
+        return ClassifyResult(
+            tier="fast",
+            mode=MessageMode.interrupt,
+            deterministic=True,
+            confidence=1.0,
+        )
+    if any(phrase in norm for phrase in _STEER_PHRASES):
+        return ClassifyResult(
+            tier="strong",
+            mode=MessageMode.steer,
+            deterministic=True,
+            confidence=1.0,
+        )
+    mentions_task = any(marker in norm for marker in _TASK_MARKERS)
+    is_question = norm.endswith("?") or (bool(tokens) and tokens[0] in _QUESTION_STARTS)
+    if is_question and not mentions_task:
+        return ClassifyResult(
+            tier="fast",
+            mode=MessageMode.append,
+            deterministic=True,
+            confidence=1.0,
+        )
+    return None
+
+
+class MessageQueue:
+    def __init__(self, bus: EventBus, router: Any, supervisor: Any) -> None:
+        self.bus = bus
+        self.router = router
+        self.supervisor = supervisor
+        self._pending: set[asyncio.Task[Any]] = set()
+
+    async def accept(self, session_id: str, text: str) -> int:
+        """Записать реплику, опубликовать ack и поставить классификацию в фон.
+
+        Возвращает seq события ack. Не ждёт классификацию.
+        """
+        task_id = self.supervisor.active_task(session_id)
+        _insert_message(session_id, "user", text, task_id=task_id, mode=None)
+        ack = await self.bus.publish(
+            session_id,
+            "ack",
+            {"text": text, "accepted": True},
+            task_id=task_id,
+        )
+        job = asyncio.create_task(self._classify(session_id, text), name=f"orch-classify-{session_id}")
+        self._pending.add(job)
+        job.add_done_callback(self._pending.discard)
+        return ack.seq
+
+    async def _classify(self, session_id: str, text: str) -> None:
+        try:
+            decided = classify_deterministic(text)
+            if decided is None:
+                decided = await self.router.classify(text)
+                decided = decided.model_copy(update={"deterministic": False})
+            await self.bus.publish(
+                session_id,
+                "classification",
+                {
+                    "mode": decided.mode.value,
+                    "tier": decided.tier,
+                    "deterministic": decided.deterministic,
+                    "confidence": decided.confidence,
+                },
+            )
+            _set_message_mode(session_id, text, decided.mode.value)
+            await self._apply(session_id, text, decided)
+        except Exception:
+            logger.exception("orch classification failed for session {}", session_id)
+            await self.bus.publish(
+                session_id,
+                "classification",
+                {"mode": MessageMode.append.value, "deterministic": False, "error": "classifier_failed"},
+            )
+
+    async def _apply(self, session_id: str, text: str, decided: ClassifyResult) -> None:
+        if decided.mode is MessageMode.interrupt:
+            self.supervisor.request_cancel(session_id)
+            return
+        if decided.mode is MessageMode.steer:
+            self.supervisor.request_steer(session_id, text)
+            return
+        await self._stream_fast(session_id, text, decided.tier or "fast")
+
+    async def _stream_fast(self, session_id: str, text: str, tier: str) -> None:
+        response = await self.router.call(
+            tier,
+            [{"role": "user", "content": text}],
+            stream=True,
+        )
+        parts = _token_pieces(response.text)
+        for part in parts:
+            await self.bus.publish(session_id, "token", {"text": part})
+        task_id = self.supervisor.active_task(session_id)
+        _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
+        await self.bus.publish(
+            session_id,
+            "message",
+            {"role": "assistant", "text": response.text},
+            task_id=task_id,
+        )
+
+
+def _token_pieces(text: str) -> list[str]:
+    if not text:
+        return []
+    bits = text.split(" ")
+    pieces: list[str] = []
+    for index, bit in enumerate(bits):
+        pieces.append(bit if index == len(bits) - 1 else bit + " ")
+    return pieces
+
+
+def _insert_message(
+    session_id: str,
+    role: str,
+    content: str,
+    *,
+    task_id: int | None,
+    mode: str | None,
+) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO orch_messages (session_id, task_id, role, content, mode, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, task_id, role, content, mode, utc_now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_message_mode(session_id: str, content: str, mode: str) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            UPDATE orch_messages
+            SET mode = ?
+            WHERE id = (
+                SELECT id FROM orch_messages
+                WHERE session_id = ? AND role = 'user' AND content = ? AND mode IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (mode, session_id, content),
+        )
+        conn.commit()
+    finally:
+        conn.close()
