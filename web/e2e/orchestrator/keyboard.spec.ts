@@ -156,3 +156,31 @@ test("клавиатура: Kill switch Tab, фокус и один Enter-зап
   expect(kills).toHaveLength(1);
 });
 
+test("клавиатура: статус агентов читается через aria-live", async ({ page }) => {
+  await openWithToken(page, "idle", "kbd-status");
+  const status = page.getByRole("status", { name: "Статусы агентов" });
+  await expect(status).toHaveAttribute("aria-live", "polite");
+  await expect(status).toContainText("idle");
+  const before = await status.ariaSnapshot();
+  expect(before).toMatch(/status/i);
+  const res = await page.request.post(`${MOCK}/api/orchestrator/test/emit`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: {
+      session_id: "kbd-status",
+      type: "agent_status",
+      task_id: 1,
+      payload: {
+        agent: "supervisor",
+        status: "planning",
+        detail: "разбор клавиатуры",
+      },
+    },
+  });
+  expect(res.ok()).toBeTruthy();
+  await expect(status).toContainText("planning");
+  await expect(status).toContainText("разбор клавиатуры");
+  const after = await status.ariaSnapshot();
+  expect(after).not.toBe(before);
+  expect(after).toContain("planning");
+});
+

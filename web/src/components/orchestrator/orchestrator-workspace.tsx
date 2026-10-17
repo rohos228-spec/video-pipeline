@@ -366,7 +366,12 @@ export function OrchestratorWorkspace() {
           <aside className="flex w-[340px] shrink-0 flex-col bg-black/30" data-testid="orch-task-panel">
             <div className="border-b border-white/[0.06] px-4 py-3">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Агенты</div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <div
+                className="mt-2 grid grid-cols-2 gap-2"
+                role="status"
+                aria-live="polite"
+                aria-label="Статусы агентов"
+              >
                 {chat.state.agents.map((agent) => (
                   <div
                     key={agent.role}
