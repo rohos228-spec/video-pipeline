@@ -1722,6 +1722,19 @@ class PassStopError(RuntimeError):
         self.diary = diary
 
 
+def _pack_transport_failure(exc: BaseException) -> bool:
+    """Обрыв сети. Контракт QC (пустой JSON, отказ, аудит) сюда не входит."""
+    msg = str(exc)
+    if type(exc).__name__ in {
+        "ReadTimeout",
+        "ConnectError",
+        "RemoteProtocolError",
+        "TimeoutError",
+    }:
+        return True
+    return "ConnectError" in msg or "All connection attempts failed" in msg
+
+
 SHOTS_GATE_KINDS = frozenset({"shots_coverage", "shots"})
 SHOTS_GATE_RULE = "R-SHOTS-GATE"
 
@@ -3537,9 +3550,11 @@ async def run_apply_ops_batched(
                 node_key,
                 exc,
             )
-            # Стоп правил доходит до вызывающего.
-            # Обрыв GPT при allow_empty_ops пачку не дробит и шаг не валит.
-            if isinstance(exc, PassStopError):
+            # Стоп правил и отказ QC-контракта доходят до вызывающего.
+            # Обрыв сети при allow_empty_ops пачку не дробит и шаг не валит.
+            if isinstance(exc, PassStopError) or (
+                allow_empty_ops and not _pack_transport_failure(exc)
+            ):
                 raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)
