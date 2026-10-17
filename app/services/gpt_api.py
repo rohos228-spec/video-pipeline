@@ -3451,6 +3451,8 @@ async def _chat_single(
                 body["reasoning_effort"] = effort
     if not is_anthropic and temperature is not None:
         body["temperature"] = temperature
+    if output_cap:
+        body["max_output_tokens" if responses_mode and not is_anthropic else "max_tokens"] = int(output_cap)
     anth_body: dict[str, Any] | None = None
     if routed is None and _is_anthropic_messages_model(use_model):
         anth_body = _anthropic_body_from_messages(
