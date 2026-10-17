@@ -336,15 +336,30 @@ def park_marked_frame_numbers(frames: list, project=None) -> int:
 
 
 def mark_frame_deleted(frame, project, reason: str) -> None:
-    """Пометить кадр удалённым, не стирая строку. Номер попадает в tombstone."""
+    """Пометить кадр удалённым, не стирая строку. Номер попадает в tombstone.
+
+    Повторный вызов не меняет уже стоящие ``удалён`` / ``пометка`` /
+    ``причина`` / ``карантин`` / ``активен``.
+    """
     attrs = dict(getattr(frame, "attrs", None) or {})
+    number = getattr(frame, "number", None)
+    if frame_marked_deleted(frame):
+        logger.warning(
+            "WARN frame_tombstones: кадр #{} id={} уже помечен «удалён», "
+            "пометка и флаги не перезаписаны ({})",
+            number,
+            getattr(frame, "id", None),
+            attrs.get(REASON_MARK) or attrs.get("причина") or reason,
+        )
+        if project is not None and number is not None:
+            remember_deleted(project, int(number))
+        return
     attrs[DELETED_MARK] = True
     attrs[REASON_MARK] = reason
     attrs["карантин"] = True
     attrs[ACTIVE_MARK] = False
     frame.attrs = attrs
     _flag_frame(frame)
-    number = getattr(frame, "number", None)
     if project is not None and number is not None:
         remember_deleted(project, int(number))
     logger.warning(

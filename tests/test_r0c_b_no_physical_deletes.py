@@ -753,6 +753,36 @@ async def test_split_frames_ignores_marked_rows(session: AsyncSession, monkeypat
     assert project.status is ProjectStatus.frames_ready
 
 
+def test_mark_frame_deleted_keeps_existing_flags(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Повторная пометка не затирает причину, карантин и активен."""
+    from types import SimpleNamespace
+
+    frame = SimpleNamespace(
+        id=9,
+        number=4,
+        attrs={
+            "удалён": True,
+            "активен": False,
+            "карантин": True,
+            "пометка": "первая причина",
+            "причина": "ручная",
+        },
+    )
+    project = SimpleNamespace(meta={})
+    before = dict(frame.attrs)
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        mark_frame_deleted(frame, project, "вторая причина")
+    finally:
+        logger.remove(sink)
+    assert frame.attrs == before
+    assert "уже помечен" in caplog.text
+    assert "не перезаписаны" in caplog.text
+    assert 4 in (project.meta or {}).get("deleted_frame_numbers", [])
+
+
 def test_park_does_not_reuse_a_held_number(caplog: pytest.LogCaptureFixture) -> None:
     """Уже занятый 900000 не отдаётся следующему кадру, исходный номер цел."""
     from types import SimpleNamespace
