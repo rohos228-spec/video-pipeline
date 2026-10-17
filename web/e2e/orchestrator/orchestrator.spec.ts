@@ -69,6 +69,7 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-reconnect")).toContainText("восстановлено");
     await expect(page.getByTestId("orch-transcript")).toContainText("REPLAY_OK");
     await expect(page.getByTestId("orch-transcript")).toContainText("до обрыва");
+    await expect(page.getByTestId("orch-reconnect")).toHaveCount(0);
   });
 
   test("сообщение посреди задачи: поле живо, ack ≤ 2 с, затем interrupt", async ({ page }) => {
