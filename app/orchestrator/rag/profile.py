@@ -38,8 +38,14 @@ R5 по nDCG@8 на test взят. hit@5 0.9 на test не взят.
 family_boost 1. Более лёгкие веса BM25 и равные 1/1 дали меньший nDCG.
 hit@5 этой смеси на dev 0.88, порог 0.9 не взят; замена списка реранкером
 на dev выше, но в профиль не входит.
+Dev-плюс (все 50, fp32, 1 поток, сид 0), до holdout:
+``prompt_pool`` hit@5 0.8400, nDCG@8 0.7051, assemble 0.5000, world 0.6667.
+``none`` hit@5 0.9400, nDCG@8 0.6119, assemble 0.6667, world 0.8333.
+В профиль входит ``none``: на dev-плюс это единственный из двух, где hit@5 ≥ 0.9
+и assemble/world выше. nDCG@8 этого варианта на dev-плюс 0.6119, порог 0.65
+не снижался. Holdout в выборе не участвовал.
 Остальное без изменений: RRF k=20, веса лексика/вектор 0.5/1.5,
-BM25 full, реранк топ-12, агрегация ``prompt_pool``, 256 токенов.
+BM25 full, реранк топ-12, family_boost 1, слияние 0.5/1.5, 256 токенов.
 Детерминированный перемер — три прохода, ``intra_op=1``, ``inter_op=1``, сид 0.
 Реранкер эвалов — fp32-граф той же bge-m3: квантованный граф не бит-стабилен.
 Три прохода fp32 совпали. test: hit@5 0.8000, nDCG@8 0.6768.
@@ -61,7 +67,7 @@ CONTOUR_B_RRF_LEXICAL = 0.5
 CONTOUR_B_RRF_VECTOR = 1.5
 CONTOUR_B_BM25_SCOPE = "full"
 CONTOUR_B_RERANK_POOL = 12
-CONTOUR_B_AGGREGATE = "prompt_pool"
+CONTOUR_B_AGGREGATE = "none"
 CONTOUR_B_RERANK_MAX_LENGTH = 256
 # Слияние реранкера с BM25. replace в профиль не входит.
 CONTOUR_B_RERANK_FUSION = "rrf"
