@@ -754,7 +754,13 @@ async function runLlmBudget(session, taskId) {
   });
 }
 
+function paidRearmOnRetry(scenario) {
+  if (scenario === "paidnoarmed" || scenario === "paidzero") return false;
+  return typeof scenario !== "string" || !scenario.startsWith("paidbad-");
+}
+
 function startScenario(session, scenario, text, mode) {
+  session.scenario = scenario;
   session.messageCount += 1;
   session.lastEcho = text;
   if (mode === "task") {
@@ -930,6 +936,25 @@ async function runPaidOutcome(session, taskId, restartOffered) {
     return;
   }
   if (decision === "retry_step") {
+    // Боевой поток #358: решение закрывает карточку, затем новое
+    // approval_required с retry_armed снова показывает прогноз.
+    if (paidRearmOnRetry(session.scenario)) {
+      emit(session, "approval_decided", taskId, {
+        change_id: approvalId,
+        decision: "retry_step",
+        task_id: taskId,
+      });
+      emit(session, "approval_required", taskId, {
+        change_id: approvalId,
+        title: "Исход платного шага неизвестен",
+        reason: "paid_outcome_unknown",
+        action: "run_node",
+        risk: "high",
+        decisions: restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+        retry_armed: true,
+        forecast_usd: PAID_FORECAST_USD,
+      });
+    }
     await new Promise((resolve) => {
       session.grantWait = { id: approvalId, resolve };
     });

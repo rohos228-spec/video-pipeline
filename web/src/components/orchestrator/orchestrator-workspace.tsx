@@ -673,6 +673,14 @@ function ApprovalCard({
       });
   };
 
+  // После approval_decided(retry_step) карточка размонтируется и локальный
+  // retryOpen пропадает. Повторный approval_required(retry_armed) снова открывает
+  // её: прогноз и «Подтвердить перезапуск» берутся из ApprovalView.
+  const serverArmed = paidOutcome && approval.retryArmed && approval.forecast != null;
+  const panelOpen = retryOpen || serverArmed;
+  const shownForecast = serverArmed ? approval.forecast : retryForecast;
+  const shownReady = serverArmed || retryReady;
+
   return (
     <div
       data-testid="orch-approval"
@@ -697,9 +705,9 @@ function ApprovalCard({
           <PaidOutcomeActions
             pending={pending}
             restartOffered={approval.restartOffered}
-            retryOpen={retryOpen}
-            forecast={retryForecast}
-            retryReady={retryReady}
+            retryOpen={panelOpen}
+            forecast={shownForecast}
+            retryReady={shownReady}
             confirmHidden={confirmHidden}
             onDone={() => {
               void onPaidDecision(PAID_OUTCOME_DECISION.approve).catch(() => {
@@ -713,7 +721,7 @@ function ApprovalCard({
               });
             }}
             onConfirm={() => {
-              if (!retryReady) return;
+              if (!shownReady) return;
               void onPaidGrant()
                 .then((result) => {
                   if (!result || result.retryArmed) return;

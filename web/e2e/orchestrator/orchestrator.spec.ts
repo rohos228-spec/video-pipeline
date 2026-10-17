@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
@@ -375,6 +376,39 @@ test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => 
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
+
+/** Снимок шины сессии. Соединение обрывается, как только в буфере есть нужные события. */
+function readSessionEvents(session: string): Promise<string> {
+  const url = new URL(`/api/orchestrator/chat/${encodeURIComponent(session)}/stream`, MOCK);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let req: http.ClientRequest;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      resolve(text);
+    };
+    req = http.get(
+      url,
+      { headers: { Authorization: `Bearer ${TOKEN}`, Accept: "text/event-stream" } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+          const text = Buffer.concat(chunks).toString("utf8");
+          if (text.includes("event: approval_decided") && text.includes('"retry_armed":true')) finish(text);
+        });
+        res.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+      },
+    );
+    req.setTimeout(4_000, () => finish(""));
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled || error.code === "ECONNRESET") return;
+      reject(error);
+    });
+  });
+}
 
 function orchUrl(scenario: string, session = "studio", project?: number): string {
   const q = new URLSearchParams({
@@ -1228,6 +1262,34 @@ test.describe("orchestrator chat", () => {
       retry_grant: true,
     });
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
+  });
+
+  test("paid_outcome_unknown: retry_step → approval_decided → approval_required(retry_armed) → grant", async ({ page }) => {
+    await openWithToken(page, "paidoutcome", "paid-rearm");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toHaveAttribute("data-retry-armed", "false");
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(card).toHaveAttribute("data-retry-armed", "true");
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    const bus = await readSessionEvents("paid-rearm");
+    expect(bus).toContain("event: approval_decided");
+    expect(bus).toContain('"decision":"retry_step"');
+    expect(bus).toContain('"retry_armed":true');
+    const grants: unknown[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/approve")) return;
+      grants.push(req.postDataJSON());
+    });
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveAttribute(
+      "data-status",
+      "running",
+    );
+    expect(grants).toEqual([{ change_id: "orch-appr-1-1", decision: null, retry_grant: true }]);
   });
 
   test("paid_outcome_unknown: остановить задачу — deny и failed", async ({ page }) => {
