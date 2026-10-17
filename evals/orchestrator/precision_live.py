@@ -739,11 +739,261 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# Вариант B: max_parts=3, перенесённые chunk_id, коммит 4b447232. Здесь не переигрывался.
+_VARIANT_B: list[dict[str, Any]] = [
+    {
+        "variant": "B",
+        "system": "гибрид без реранкера",
+        "hit_at_5": 0.82,
+        "ndcg_at_8": 0.45738356018163073,
+        "ndcg_doc": 0.7320796529700101,
+        "p95_s": 0.057675631799338586,
+    },
+    {
+        "variant": "B",
+        "system": "bge-m3 топ-20 / 256",
+        "hit_at_5": 0.82,
+        "ndcg_at_8": 0.45740439515157605,
+        "ndcg_doc": 0.6739302109861469,
+        "p95_s": 1.4471942315503838,
+    },
+]
+
+
+def _label_hit(chunk: Any, query: dict[str, Any], mode: str) -> bool:
+    if mode == "chunk":
+        return _is_relevant_transferred(chunk, query)
+    return _is_relevant_literal(chunk, query)
+
+
+def measure_labelings(
+    engine: RagEngine,
+    labelings: list[tuple[str, list[dict[str, Any]], str]],
+    *,
+    rerank: bool,
+    rrf_k: int,
+    rrf_weights: tuple[float, float],
+    bm25_scope: str,
+    rerank_pool: int,
+) -> dict[str, dict[str, float]]:
+    """Один проход retrieve, несколько разметок. Задержка от разметки не зависит."""
+    indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
+    for chunk in indexed:
+        chunk.metadata.pop("_embedding", None)
+    indexed_source_ids = {chunk.source_id for chunk in indexed}
+    rule_source_ids = {chunk.source_id for chunk in indexed if chunk.corpus == "rules"}
+    counts = {
+        name: [sum(1 for chunk in indexed if _label_hit(chunk, query, mode)) for query in queries]
+        for name, queries, mode in labelings
+    }
+    kwargs = {
+        "rerank": rerank,
+        "rrf_k": rrf_k,
+        "rrf_weights": rrf_weights,
+        "bm25_scope": bm25_scope,
+        "rerank_pool": rerank_pool,
+    }
+    anchor = labelings[0][1][0]["text"]
+    engine.retrieve(anchor, ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+    latencies: list[float] = []
+    scores: dict[str, dict[str, Any]] = {
+        name: {"ndcg": [], "doc": [], "hit5": 0} for name, _queries, _mode in labelings
+    }
+    width = len(labelings[0][1])
+    for index in range(width):
+        text = labelings[0][1][index]["text"]
+        started = time.perf_counter()
+        found = engine.retrieve(text, ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+        latencies.append(time.perf_counter() - started)
+        for name, queries, mode in labelings:
+            query = queries[index]
+            flags = [_label_hit(chunk, query, mode) for chunk in found]
+            scores[name]["ndcg"].append(_ndcg_at_8(flags, counts[name][index]))
+            if any(flags[:5]):
+                scores[name]["hit5"] += 1
+            if query.get("family") == "rules":
+                sources = set(rule_source_ids)
+            else:
+                sources = _relevant_source_ids(query, literal=True)
+            scores[name]["doc"].append(_doc_ndcg(found, sources, indexed_source_ids))
+    p50 = _percentile(latencies, 50)
+    p95 = _percentile(latencies, 95)
+    metrics: dict[str, dict[str, float]] = {}
+    for name, _queries, _mode in labelings:
+        bucket = scores[name]
+        metrics[name] = {
+            "hit_at_5": bucket["hit5"] / width,
+            "ndcg_at_8": sum(bucket["ndcg"]) / width,
+            "ndcg_doc": sum(bucket["doc"]) / width,
+            "p50_s": p50,
+            "p95_s": p95,
+        }
+    return metrics
+
+
+def _abc_row(variant: str, system: str, metrics: dict[str, float]) -> dict[str, Any]:
+    return {
+        "variant": variant,
+        "system": system,
+        "hit_at_5": metrics["hit_at_5"],
+        "ndcg_at_8": metrics["ndcg_at_8"],
+        "ndcg_doc": metrics["ndcg_doc"],
+        "p95_s": metrics["p95_s"],
+    }
+
+
+def render_abc(
+    rows: list[dict[str, Any]],
+    *,
+    chosen_key: str,
+    why: str,
+    ambiguous: dict[str, Any],
+    index_chunks: int,
+) -> str:
+    lines = [
+        "# Контур B: три нарезки",
+        "",
+        "Порог nDCG@8 **0.65 не снижался**. Приёмка и выбор дефолта в `profile.py` — "
+        "только вариант C (8 частей, метки s0–s7): hit@5 ≥ 0.9, p95 ≤ 1.5 с, "
+        "максимальный nDCG@8. Варианты A и B в отбор не входят.",
+        "",
+        f"Индекс A и C: `split_prompt(max_parts=8)`, чанков {index_chunks}. "
+        "Обе системы — e5-large, RRF k=20, веса 0.5/1.5, BM25 по всему тексту. "
+        "Реранкер — bge-m3, пул 20, 256 токенов. "
+        "p95 у A и C одной системы совпадает: разметка не меняет выдачу.",
+        "",
+        "B — уже посчитанный результат `max_parts=3` на перенесённых chunk_id "
+        "(коммит `4b447232`). В этом прогоне не переигрывался.",
+        "",
+        "| Вариант | Система | hit@5 | nDCG@8 | nDCG@8 док | p95, с |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['variant']} | {row['system']} | {row['hit_at_5']:.4f} | "
+            f"{row['ndcg_at_8']:.4f} | {row['ndcg_doc']:.4f} | {row['p95_s']:.3f} |"
+        )
+    c_rows = [row for row in rows if row["variant"] == "C"]
+    passed = [
+        row
+        for row in c_rows
+        if row["hit_at_5"] >= HIT_AT_5_MIN and row["ndcg_at_8"] >= NDCG_AT_8_MIN and row["p95_s"] <= P95_MAX_S
+    ]
+    lines.extend(
+        [
+            "",
+            f"Дефолт по варианту C: **{chosen_key or 'нет дефолта'}**. {why}",
+            "",
+            (
+                "Порог 0.65 на варианте C взят."
+                if passed
+                else "Порог 0.65 на варианте C не взят и не снижался."
+            ),
+            "",
+            "A — буквальные part_key файла (каталог и s0–s2). "
+            "C — `precision_live_labels_s0_s7.json`: s0–s2 тем же предикатом, что `1396ea43`, "
+            "на нарезке из 8 частей; s3–s7 — уточнение `19d050c2`, записанное до этого прогона. "
+            "Правило `1396ea43` после того коммита не менялось. live-29 вручную не правился.",
+            "",
+            f"Неоднозначные метки, вручную не назначенные: **{ambiguous['count']}**.",
+            "",
+            "| query_id | старый chunk_id | причина |",
+            "|---|---|---|",
+        ]
+    )
+    for item in ambiguous["items"]:
+        lines.append(f"| `{item['query_id']}` | `{item['old_chunk_id']}` | {item['reason']} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def run_abc(out: Path | None = None) -> dict[str, Any]:
+    """A и C на нарезке из 8 частей. B подставляется из прогона 4b447232."""
+    queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.label_transfer import AMBIGUOUS_PATH
+
+    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    if [query["id"] for query in queries] != [query["id"] for query in expanded]:
+        raise RuntimeError("порядок запросов в разметке s0–s7 разошёлся с исходным файлом")
+    ambiguous = json.loads(AMBIGUOUS_PATH.read_text(encoding="utf-8"))
+    report_path = out or REPORT_PATH
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-abc-"))
+    labelings = [
+        ("A", queries, "literal"),
+        ("C", expanded, "chunk"),
+    ]
+    try:
+        embedder = build_embedder("e5-large")
+        plain = _engine(temp_dir / "orch_rag.db", embedder, None)
+        try:
+            plain.reindex(["rules", "nodes", "prompts"])
+            index_chunks = len(_index_catalog(plain))
+            print("index chunks", index_chunks, flush=True)
+            hybrid = measure_labelings(
+                plain,
+                labelings,
+                rerank=False,
+                rrf_k=20,
+                rrf_weights=(0.5, 1.5),
+                bm25_scope="full",
+                rerank_pool=20,
+            )
+        finally:
+            plain.close()
+        print("hybrid", {key: {k: round(v, 4) for k, v in row.items()} for key, row in hybrid.items()}, flush=True)
+        reranker = build_reranker("bge-m3", max_length=256)
+        ranked = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        try:
+            ranked.reindex(["rules", "nodes", "prompts"])
+            reranked = measure_labelings(
+                ranked,
+                labelings,
+                rerank=True,
+                rrf_k=20,
+                rrf_weights=(0.5, 1.5),
+                bm25_scope="full",
+                rerank_pool=20,
+            )
+        finally:
+            ranked.close()
+        print("rerank", {key: {k: round(v, 4) for k, v in row.items()} for key, row in reranked.items()}, flush=True)
+        rows = [
+            _abc_row("A", "гибрид без реранкера", hybrid["A"]),
+            _abc_row("A", "bge-m3 топ-20 / 256", reranked["A"]),
+            *_VARIANT_B,
+            _abc_row("C", "гибрид без реранкера", hybrid["C"]),
+            _abc_row("C", "bge-m3 топ-20 / 256", reranked["C"]),
+        ]
+        c_runs = [
+            ("e5-large+k20+w0.5/1.5+full", "C гибрид без реранкера", hybrid["C"]),
+            ("e5-large+bge-m3+p20+t256", "C bge-m3 топ-20 / 256", reranked["C"]),
+        ]
+        chosen_key, why = choose_default(c_runs)
+        text = render_abc(
+            rows,
+            chosen_key=chosen_key,
+            why=why,
+            ambiguous=ambiguous,
+            index_chunks=index_chunks,
+        )
+        report_path.write_text(text, encoding="utf-8")
+        summary = {"chosen": chosen_key, "why": why, "rows": rows, "index_chunks": index_chunks}
+        print(json.dumps(summary, ensure_ascii=False), flush=True)
+        return summary
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
     parser.add_argument("--pair", action="store_true", help="только дефолт bge-m3 и гибрид без реранкера")
+    parser.add_argument("--abc", action="store_true", help="варианты A и C на 8 частях, B из прошлого прогона")
     args = parser.parse_args()
+    if args.abc:
+        run_abc(args.out)
+        return
     if args.pair:
         run_profile_pair(args.out)
         return

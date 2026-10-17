@@ -131,7 +131,7 @@ def test_contour_b_profile_records_the_measured_default() -> None:
     from evals.orchestrator.precision_live import choose_default
 
     assert CONTOUR_B_EMBEDDER == "e5-large"
-    assert CONTOUR_B_RERANKER == "none"
+    assert CONTOUR_B_RERANKER == "bge-m3"
     assert CONTOUR_B_RRF_K == 20
     assert (CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR) == (0.5, 1.5)
     assert CONTOUR_B_RRF_VECTOR > CONTOUR_B_RRF_LEXICAL
@@ -176,6 +176,22 @@ def test_contour_b_profile_records_the_measured_default() -> None:
         ]
     )
     assert transferred_pair[0] == ""
+    # Вариант C: гибрид не проходит hit@5, bge-m3 проходит hit@5 и p95.
+    variant_c = choose_default(
+        [
+            (
+                "e5-large+k20+w0.5/1.5+full",
+                "hybrid",
+                {"ndcg_at_8": 0.606895333872647, "hit_at_5": 0.88, "p95_s": 0.06456130355018104},
+            ),
+            (
+                "e5-large+bge-m3+p20+t256",
+                "m3",
+                {"ndcg_at_8": 0.6234688527392744, "hit_at_5": 0.94, "p95_s": 1.4905728171985175},
+            ),
+        ]
+    )
+    assert variant_c[0] == "e5-large+bge-m3+p20+t256"
 
 
 def test_rerank_flag_is_optional_and_reorders_hybrid(tmp_path: Path) -> None:
