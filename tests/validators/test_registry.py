@@ -34,7 +34,7 @@ def test_vo_length_by_name_is_unavailable_not_an_import_error() -> None:
 
 
 def test_all_ignores_missing_vo_length() -> None:
-    result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True})
+    result = run("all", 1, {VALIDATOR_CONTEXT_DRY_RUN: True, "run_id": "all-dry"})
     assert result.name == "all"
     assert result.passed is True
     assert result.blocking is False

@@ -14,11 +14,12 @@
   нет, остаётся чтение переданного объекта (``spent`` / ``totals``).
   С ``eefc08b4`` пустой ``run_id`` у ``spent`` / ``totals`` даёт 0 и не
   блокирует, а внутренний вызов без ``run_id`` бросает ``ValueError``.
-  Вне ``dry_run`` такой контекст закрывается здесь: ledger не зовётся,
-  результат ``blocking`` с ``reason=missing_run_id``. Тот же ответ, если
-  ledger сам бросил ``ValueError`` про ``run_id``. В ``dry_run`` чтение
-  как раньше. ``TypeError`` при чтении не повторяет вызов без аргументов:
-  результат ``blocking`` с ``reason=spend_unreadable``, вызова нет.
+  Без ``run_id`` ledger не зовётся и в ``dry_run`` тоже: результат
+  ``blocking`` с ``reason=missing_run_id``. ``dry_run`` проходит те же
+  проверки, что и боевой вызов. Тот же ответ, если ledger сам бросил
+  ``ValueError`` про ``run_id``. ``TypeError`` при чтении не повторяет
+  вызов без аргументов: результат ``blocking`` с ``reason=spend_unreadable``,
+  вызова нет.
 - spend action layer (#342) через ``SpendReader.read_totals`` или снимок
   ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
@@ -48,7 +49,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from app.orchestrator.validators.result import is_dry_run, make_result
+from app.orchestrator.validators.result import make_result
 
 _NAME = "spend_guard"
 
@@ -140,9 +141,9 @@ def get_spend_reader() -> SpendReader | None:
 
 
 def check(project_id: int, context: dict[str, Any]) -> Any:
-    """Чтение бюджета. Без ``run_id`` вне dry-run ledger не вызывается."""
+    """Чтение бюджета. Без ``run_id`` ledger не вызывается, включая dry_run."""
 
-    if not is_dry_run(context) and not _context_has_run_id(context):
+    if not _context_has_run_id(context):
         return _missing_run_id()
     try:
         return _checked(project_id, context)

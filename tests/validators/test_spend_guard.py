@@ -145,7 +145,7 @@ def test_callable_reader_and_injected_reader() -> None:
 
 
 def test_missing_snapshot_does_not_invent_spend() -> None:
-    result = run("spend_guard", 1, {VALIDATOR_CONTEXT_DRY_RUN: True})
+    result = run("spend_guard", 1, {"run_id": "empty"})
     assert result.passed is True
     assert result.details["reason"] == "no_spend_snapshot"
     assert get_spend_reader() is None
@@ -716,36 +716,64 @@ def test_missing_run_id_blocks_without_calling_ledger() -> None:
         assert reader.reads == []
 
 
-def test_dry_run_without_run_id_keeps_previous_behavior() -> None:
+def test_dry_run_uses_the_same_checks() -> None:
+    """dry_run не снимает run_id и не читает нули через totals(None)."""
+
     empty = run("spend_guard", 1, {VALIDATOR_CONTEXT_DRY_RUN: True})
-    assert empty.passed is True
-    assert empty.blocking is False
-    assert empty.details["reason"] == "no_spend_snapshot"
+    live = run("spend_guard", 1, {})
+    assert empty.passed is False
+    assert empty.blocking is True
+    assert empty.details == {"reason": "missing_run_id"}
+    assert live.details == empty.details
 
     def read(*, project_id: int, run_id: str | None = None) -> dict[str, float]:
-        assert project_id == 2
-        assert run_id is None
-        return _totals(run_spent_usd=51)
+        del project_id, run_id
+        raise AssertionError("reader не зовётся без run_id")
 
     via_reader = run("spend_guard", 2, {"spend_reader": read, VALIDATOR_CONTEXT_DRY_RUN: True})
-    assert via_reader.passed is False
-    assert via_reader.blocking is True
-    assert via_reader.details["reason"] == "spend_cap_run"
+    assert via_reader.details == {"reason": "missing_run_id"}
 
     ledger = _CallSpy()
-    exhausted = run("spend_guard", 1, {"spend_ledger": ledger, VALIDATOR_CONTEXT_DRY_RUN: True})
-    assert ledger.calls == 1
-    assert exhausted.passed is False
-    assert exhausted.blocking is True
-    assert exhausted.details["reason"] == "budget_exhausted"
+    skipped = run("spend_guard", 1, {"spend_ledger": ledger, VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert ledger.calls == 0
+    assert skipped.details == {"reason": "missing_run_id"}
 
     zeros = _ContractLedger(internal=10.0, pipeline=80.0, exhausted=True)
     quiet = run("spend_guard", 1, {"spend_ledger": zeros, VALIDATOR_CONTEXT_DRY_RUN: True})
-    assert zeros.totals_runs == [None]
-    assert zeros.spent(None) == 0.0
-    assert quiet.passed is True
-    assert quiet.details["reason"] == "ok"
-    assert quiet.details["reason"] != "missing_run_id"
+    assert zeros.totals_runs == []
+    assert quiet.passed is False
+    assert quiet.details == {"reason": "missing_run_id"}
+
+    attack = run(
+        "spend_guard",
+        1,
+        {"spend": {}, "spend_ledger": {}, VALIDATOR_CONTEXT_DRY_RUN: True},
+    )
+    assert attack.passed is False
+    assert attack.blocking is True
+    assert attack.details == {"reason": "missing_run_id"}
+
+    exhausted = run(
+        "spend_guard",
+        1,
+        {
+            "spend": _totals(internal_spent_usd=10),
+            "run_id": "r",
+            VALIDATOR_CONTEXT_DRY_RUN: True,
+        },
+    )
+    assert exhausted.passed is False
+    assert exhausted.blocking is True
+    assert exhausted.details["reason"] == "budget_exhausted"
+    assert validator_budget_exhausted(exhausted) is True
+
+    cap = run(
+        "spend_guard",
+        1,
+        {"spend": _totals(run_spent_usd=51), "run_id": "r", VALIDATOR_CONTEXT_DRY_RUN: True},
+    )
+    assert cap.blocking is True
+    assert cap.details["reason"] == "spend_cap_run"
 
 
 def test_with_run_id_keeps_previous_behavior() -> None:
