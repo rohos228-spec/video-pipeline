@@ -1241,6 +1241,8 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             continue
         seen.add(pid)
         cells.append((parent, live))
+    from app.services.frame_tombstones import mark_shots_inactive
+
     cells.sort(key=lambda item: int(getattr(item[0], "number", 0) or 0))
     earlier: set[str] = set()
     first_parent_key = ""
@@ -1279,15 +1281,21 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
                     extra["use_parent_still"] = False
                 _set_cs(m, **extra)
                 detached += 1
-            pattrs = dict(getattr(parent, "attrs", None) or {})
-            planned = planned_shots_from_attrs(parent)
-            if planned:
-                pattrs["кадры"] = planned[:1]
-            vo = str(getattr(parent, "voiceover_text", "") or "").strip()
-            if vo:
-                pattrs["vo_cell_full"] = vo
-            parent.attrs = pattrs
-            _flag_attrs(parent)
+            for m in members:
+                mattrs = dict(getattr(m, "attrs", None) or {})
+                # Сырой список, не planned_shots_from_attrs: не-dict и шоты
+                # без сцены не отфильтровываются до пометки.
+                raw = mattrs.get("кадры")
+                if isinstance(raw, list):
+                    mattrs["кадры"] = mark_shots_inactive(
+                        raw, where="detach_duplicate_vo_replica_cells"
+                    )
+                if m is parent:
+                    vo = str(getattr(parent, "voiceover_text", "") or "").strip()
+                    if vo:
+                        mattrs["vo_cell_full"] = vo
+                m.attrs = mattrs
+                _flag_attrs(m)
             _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:
@@ -2757,7 +2765,10 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
 
     Не делает adopt/expand/rebuild — только обновляет meta уже существующих
     vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
+    Id, которого нет в новом плане, остаётся в ``кадры[]`` с ``активен: False``.
     """
+    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
+
     updated = 0
     work = [f for f in frames if _is_pipeline_frame(f)]
     for members in _group_by_parent(work).values():
@@ -2778,10 +2789,14 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
         # Ensure parent carries full ladder (QC SoT).
+        # Сравнение с сырым списком: хвост активен: False не считается новой записью.
         pattrs = dict(getattr(parent, "attrs", None) or {})
-        if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
-            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+        merged_parent = merge_kadry_keep_missing(
+            pattrs.get("кадры"),
+            [dict(s) for s in planned if isinstance(s, dict)],
+        )
+        if merged_parent != pattrs.get("кадры"):
+            pattrs["кадры"] = merged_parent
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
@@ -2799,13 +2814,34 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             before_plan = str(_cs(fr).get("план") or "")
             before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             _apply_shot_meta(fr, shot)
-            # Children keep single-shot кадры mirror for report overlays.
+            # Зеркало ребёнка — один живой шот. Прочие id остаются неактивными.
+            # Старый неактивный шот не оживает: если живых в зеркале не осталось — WARN.
             if fr is not parent and is_shot_child(fr):
                 cattrs = dict(getattr(fr, "attrs", None) or {})
-                cattrs["кадры"] = [dict(shot)]
+                merged = merge_kadry_keep_missing(
+                    cattrs.get("кадры"),
+                    [dict(shot)],
+                )
+                cattrs["кадры"] = merged
                 # раскладка already set by _apply_shot_meta on attrs
                 fr.attrs = cattrs
                 _flag_attrs(fr)
+                if not any(shot_is_active(item) for item in merged):
+                    frame_id = str(getattr(fr, "uuid", "") or "") or str(
+                        getattr(fr, "number", "") or "?"
+                    )
+                    shot_id = str(
+                        shot.get("id")
+                        or shot.get("id_shot")
+                        or shot.get("shot_id")
+                        or "?"
+                    )
+                    logger.warning(
+                        "WARN mirror_inactive: кадр {} шот {} — "
+                        "в зеркале живого кадра нет активного шота, пометка не снята",
+                        frame_id,
+                        shot_id,
+                    )
             after_plan = str(_cs(fr).get("план") or "")
             after_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             if before_plan != after_plan or before_lay != after_lay:
