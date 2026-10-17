@@ -83,6 +83,60 @@ def test_filter_assembly_keeps_overlapping_scenes_and_shots():
     assert chunk2["scenes_chrono"][0]["id_scene"] == "scene_02"
 
 
+def test_filter_keeps_frame_outside_chunk_inactive():
+    """Кадр сцены вне чанка остаётся в хвосте с активен: False, id не меняется."""
+    vo = "Альфа один. Бета два. Гамма три. Дельта четыре."
+    frames = [
+        _fr(1, "a", "Альфа один."),
+        _fr(2, "b", "Бета два."),
+        _fr(3, "c", "Гамма три."),
+        _fr(4, "d", "Дельта четыре."),
+    ]
+    assembly = {
+        "characters": [{"id": "c01", "имя": "X"}],
+        "locations": [],
+        "style_arc": [],
+        "scenes_chrono": [
+            {
+                "id_scene": "scene_01",
+                "start_words": "Альфа один",
+                "end_words": "Бета два",
+                "кадры": [
+                    {"uuid": "a", "id": "a", "number": 1, "время_сек": 5},
+                    {"uuid": "b", "id": "b", "number": 2, "время_сек": 5},
+                    {
+                        "uuid": "gone",
+                        "id": "gone",
+                        "number": 9,
+                        "время_сек": 5,
+                        "закадр": "вне чанка",
+                    },
+                ],
+                "кадров": 3,
+                "время_сек": 15,
+            }
+        ],
+        "shot_plan_chrono": [],
+    }
+    chunk = ac.filter_assembly_input_for_frames(
+        assembly, frames[:2], frames, vo, include_characters=True
+    )
+    kids = chunk["scenes_chrono"][0]["кадры"]
+    by_id = {k["id"]: k for k in kids}
+    assert [k["id"] for k in kids] == ["a", "b", "gone"]
+    assert by_id["a"].get("активен") is not False
+    assert by_id["b"].get("активен") is not False
+    assert by_id["gone"]["активен"] is False
+    assert by_id["gone"]["закадр"] == "вне чанка"
+    assert chunk["scenes_chrono"][0]["кадров"] == 2
+    assert [k["id"] for k in assembly["scenes_chrono"][0]["кадры"]] == [
+        "a",
+        "b",
+        "gone",
+    ]
+    assert assembly["scenes_chrono"][0]["кадры"][2].get("активен") is not False
+
+
 def test_merge_remaps_scene_ids_and_dedups_ops():
     p1 = {
         "characters": [{"id": "c01"}],

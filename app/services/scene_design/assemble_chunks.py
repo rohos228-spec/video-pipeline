@@ -75,6 +75,48 @@ def split_frame_batches(
     return [ordered[i : i + n] for i in range(0, len(ordered), n)]
 
 
+_KADRY_ID_KEYS = ("id", "uuid", "frame_id", "shot_id", "id_shot")
+
+
+def _kadry_identity(item: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in _KADRY_ID_KEYS:
+        val = str(item.get(key) or "").strip()
+        if val and val not in found:
+            found.append(val)
+    return found
+
+
+def _with_missing_kadry(
+    original: list[Any],
+    kept: list[dict[str, Any]],
+) -> list[Any]:
+    """Кадры чанка остаются первыми. Пропавшие id — в хвосте, активен: False."""
+    present: set[str] = set()
+    for item in kept:
+        present.update(_kadry_identity(item))
+    tail: list[Any] = []
+    for item in original:
+        if not isinstance(item, dict):
+            if item not in kept and item not in tail:
+                tail.append(item)
+            continue
+        ident = _kadry_identity(item)
+        if ident and all(token in present for token in ident):
+            if item.get("активен") is False:
+                for kid in kept:
+                    if set(_kadry_identity(kid)) & set(ident):
+                        kid["активен"] = False
+            continue
+        if not ident and any(kid == item for kid in kept):
+            continue
+        marked = copy.deepcopy(item)
+        marked["активен"] = False
+        tail.append(marked)
+        present.update(ident)
+    return [*kept, *tail]
+
+
 def filter_assembly_input_for_frames(
     assembly_input: dict[str, Any],
     chunk_frames: list[Frame],
@@ -99,15 +141,16 @@ def filter_assembly_input_for_frames(
         sc_span = _scene_span_tuple(sc, vo_norm)
         if _overlaps(sc_span, lo, hi):
             row = copy.deepcopy(sc)
-            # Оставляем только кадры этого чанка внутри сцены.
+            # Кадры этого чанка остаются живыми. Остальные id сцены — в хвосте.
+            original = list(row.get("кадры") or [])
             chunk_uuids = {f.uuid for f in chunk_frames if f.uuid}
             kids = [
                 k
-                for k in (row.get("кадры") or [])
+                for k in original
                 if isinstance(k, dict) and k.get("uuid") in chunk_uuids
             ]
             if kids:
-                row["кадры"] = kids
+                row["кадры"] = _with_missing_kadry(original, kids)
                 row["кадров"] = len(kids)
                 row["время_сек"] = round(
                     sum(float(k.get("время_сек") or 0.0) for k in kids), 1
