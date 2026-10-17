@@ -551,8 +551,10 @@ def requeue_failed_frames_without_png(
     """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
     n = 0
     for fr in frames:
-        if fr.status is FrameStatus.failed and not disk_has_valid_frame_image(
-            out_dir, fr.number
+        if (
+            fr.status is FrameStatus.failed
+            and not (fr.attrs or {}).get("rejected_by_human")
+            and not disk_has_valid_frame_image(out_dir, fr.number)
         ):
             logger.warning(
                 "[#{}] frame {}: failed без PNG — обратно в очередь",
