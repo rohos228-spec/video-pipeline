@@ -193,10 +193,9 @@ def _enforce_cap(conn: Any, session_id: str, cap: int) -> int:
     if overflow <= 0:
         return 0
     ordinary = [row["id"] for row in rows if row["type"] not in RETAINED_EVENT_TYPES]
-    protected = [row["id"] for row in rows if row["type"] in RETAINED_EVENT_TYPES]
     victims = ordinary[:overflow]
-    if len(victims) < overflow:
-        victims.extend(protected[: overflow - len(victims)])
+    if not victims:
+        return 0
     conn.executemany("DELETE FROM orch_events WHERE id = ?", [(item,) for item in victims])
     return len(victims)
 

@@ -1522,10 +1522,7 @@ class Supervisor:
                         return
 
             index += len(batch)
-            if any(done.mutating or done.paid for done, _ in started):
-                await self._checkpoint(task_id, session_id, plan, index)
-            else:
-                self.tasks.mirror_progress(task_id, plan, index, self._spend(task_id))
+            await self._checkpoint(task_id, session_id, plan, index)
 
             if session_id in self._cancel or session_id in self._kill:
                 if paid_in_batch:
