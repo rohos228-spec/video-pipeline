@@ -1049,41 +1049,77 @@ def _is_version_operand(node: ast.AST) -> bool:
     return False
 
 
-def _compares_version(fn_node: ast.AST) -> bool:
-    """Разрешение на запись: сравнение версии с текущим значением, не упоминание имени."""
-    found = False
+def _read_path(node: ast.AST, env: dict[str, str]) -> str | None:
+    """Путь, который выражение читает, а не пишет."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr in {"read", "read_text", "read_bytes"}:
+            return _read_path(node.func.value, env)
+        if node.func.attr == "load" and node.args:
+            return _read_path(node.args[0], env)
+    if isinstance(node, ast.Call) and _call_name(node.func) in {
+        "open",
+        "read_version",
+        "_stored_version",
+    }:
+        return _sketch(_call_arg(node, 0, "file", "path", "dest"), env)
+    return None
 
-    def walk(node: ast.AST, *, nested: bool) -> None:
-        nonlocal found
-        if found:
-            return
-        if nested and isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
-        ):
-            return
-        if (
-            isinstance(node, ast.Compare)
-            and len(node.ops) == 1
-            and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE))
-        ):
-            operands = [node.left, *node.comparators]
-            version_ops = [item for item in operands if _is_version_operand(item)]
-            others = [item for item in operands if item not in version_ops]
-            dynamic = all(not isinstance(item, ast.Constant) for item in operands)
-            distinct = not (
-                len(operands) == 2
-                and isinstance(operands[0], ast.Name)
-                and isinstance(operands[1], ast.Name)
-                and operands[0].id == operands[1].id
-            )
-            if version_ops and dynamic and distinct and (others or len(version_ops) >= 2):
-                found = True
-                return
-        for child in ast.iter_child_nodes(node):
-            walk(child, nested=True)
 
-    walk(fn_node, nested=False)
+def _read_bindings(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        path = _read_path(node.value, env)
+        if path:
+            found[target.id] = path
     return found
+
+
+def _body_aborts(body: list[ast.stmt]) -> bool:
+    return any(isinstance(stmt, (ast.Raise, ast.Return)) for stmt in body)
+
+
+def _contains(node: ast.AST, target: ast.AST) -> bool:
+    if node is target:
+        return True
+    return any(_contains(child, target) for child in ast.iter_child_nodes(node))
+
+
+def _guard_paths_for_call(fn_node: ast.AST, env: dict[str, str], call: ast.Call) -> set[str]:
+    """Пути, чья версия уже сверена чтением файла и raise/return до этой записи."""
+    reads = _read_bindings(fn_node, env)
+    paths: set[str] = set()
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.If):
+            continue
+        if getattr(node, "lineno", 0) > getattr(call, "lineno", 0):
+            continue
+        if any(_contains(stmt, call) for stmt in node.body):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+        ):
+            continue
+        operands = [test.left, *test.comparators]
+        if len(operands) == 2 and ast.dump(operands[0]) == ast.dump(operands[1]):
+            continue
+        if not any(_is_version_operand(item) for item in operands):
+            continue
+        if not _body_aborts(node.body):
+            continue
+        for item in operands:
+            if isinstance(item, ast.Name) and item.id in reads:
+                norm = _norm_sketch(reads[item.id])
+                if norm:
+                    paths.add(norm)
+    return paths
 
 
 def _is_atomic_helper(func: ast.AST) -> bool:
@@ -1513,8 +1549,8 @@ def _write_hit(
     path_names: set[str] | None = None,
     os_flags: dict[str, str] | None = None,
     os_open_names: set[str] | None = None,
-    versioned: bool = False,
     mkstemp_names: dict[str, str] | None = None,
+    fn_node: ast.AST | None = None,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
@@ -1654,6 +1690,11 @@ def _write_hit(
             allowed=bool(sketch) and _resolved_is_allow(sketch),
             snapshot_delete=False,
         )
+    versioned = bool(
+        fn_node is not None
+        and norm_sketch
+        and norm_sketch in _guard_paths_for_call(fn_node, env, call)
+    )
     mkstemp_publish = bool(
         kind in {"os.replace", "Path.replace"}
         and isinstance(src, ast.Name)
@@ -1773,7 +1814,6 @@ def _scan_writes(
     calls: list[ast.Call] = []
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
     mkstemp_names = _mkstemp_names(fn_node, env)
-    versioned = _compares_version(fn_node)
 
     def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
         if (
@@ -1808,8 +1848,8 @@ def _scan_writes(
                 path_names,
                 os_flags,
                 os_open_names,
-                versioned,
                 mkstemp_names,
+                fn_node,
             )
             if hit is not None:
                 hits.append(hit)
@@ -2477,6 +2517,55 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     dest.unlink(missing_ok=True)
     dest.with_name(dest.name + ".lock").unlink(missing_ok=True)
     previous.unlink(missing_ok=True)
+
+
+def test_version_compare_must_guard_write() -> None:
+    """Сравнение версии разрешает запись только если оно прерывает функцию и читает файл."""
+    logged = (
+        "import os, tempfile\n"
+        "def save(version, cur):\n"
+        "    if version != cur:\n"
+        "        log('x')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    logged_hits = [
+        hit
+        for hit in analyze_module_source(logged, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert logged_hits and logged_hits[0].allowed is False
+
+    identical = (
+        "import os, tempfile\n"
+        "def save(self):\n"
+        "    if self.version != self.version:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    identical_hits = [
+        hit
+        for hit in analyze_module_source(identical, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert identical_hits and identical_hits[0].allowed is False
+
+    guarded = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    guarded_hits = [
+        hit
+        for hit in analyze_module_source(guarded, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert guarded_hits and guarded_hits[0].allowed is True
 
 
 def test_fixed_tmp_denied_helper_and_mkstemp_allowed() -> None:
