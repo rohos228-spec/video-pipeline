@@ -420,7 +420,13 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite."""
+    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite.
+
+    Неопределённый submit уже мог быть оплачен. Шаг, который ретраит по
+    этому предикату, не должен слать второй POST.
+    """
+    if _outsee_submit_uncertain(err):
+        return False
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
