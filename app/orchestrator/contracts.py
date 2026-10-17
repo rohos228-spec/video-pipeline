@@ -997,28 +997,41 @@ def _sql_unproven(value: Any) -> bool:
     return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
 
 
-def params_request_deletion(value: Any) -> bool:
-    """Маркер удаления в параметрах.
+_OP_PARAM_KEYS = frozenset({"op", "action", "operation"})
 
-    HTTP-метод и SQL, которые нельзя доказать (не литерал, шаблон, неизвестный
-    метод), тоже ``deletion_blocked``. В литерале SQL ``TRUNCATE`` и
-    ``executemany`` достаточны сами по себе.
+
+def _is_sql_action(action: str) -> bool:
+    return "sql" in _text_tokens(action or "")
+
+
+def _op_requests_deletion(value: Any) -> bool:
+    """``op`` / ``action`` блокируют только глагол удаления, не свободный текст."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        return False
+    return bool(_text_tokens(value) & _DELETION_TOKENS)
+
+
+def params_request_deletion(value: Any, *, action: str = "") -> bool:
+    """Структурные ключи, не свободный текст промпта.
+
+    ``method`` — HTTP. ``op`` / ``action`` / ``operation`` — глагол.
+    ``sql`` / ``query`` / ``statement`` смотрятся только у SQL-действия.
+    Нелитеральный HTTP-метод по-прежнему ``deletion_blocked``.
     """
-    if isinstance(value, str):
-        tokens = _text_tokens(value)
-        return bool(tokens & _DELETION_TOKENS or "executemany" in tokens)
     if isinstance(value, dict):
         for key, item in value.items():
             kind = _param_key(key)
             if kind in _HTTP_PARAM_KEYS and _http_method_unproven(item):
                 return True
-            if kind in _SQL_PARAM_KEYS and _sql_unproven(item):
+            if kind in _OP_PARAM_KEYS and _op_requests_deletion(item):
                 return True
-            if params_request_deletion(key) or params_request_deletion(item):
+            if _is_sql_action(action) and kind in _SQL_PARAM_KEYS and _sql_unproven(item):
+                return True
+            if isinstance(item, (dict, list, tuple)) and params_request_deletion(item, action=action):
                 return True
         return False
     if isinstance(value, (list, tuple)):
-        return any(params_request_deletion(item) for item in value)
+        return any(params_request_deletion(item, action=action) for item in value)
     return False
 
 
@@ -1091,7 +1104,11 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
 
 def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
     """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен."""
-    if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params):
+    if (
+        is_deletion_action(step.action)
+        or _protects_media(step.action)
+        or params_request_deletion(step.params, action=step.action)
+    ):
         return True
     return not explicitly_safe(step.action, registry)
 
@@ -1125,7 +1142,9 @@ def plan_deletions(plan: list[PlanStep]) -> list[str]:
     return [
         step.action
         for step in plan
-        if is_deletion_action(step.action) or _protects_media(step.action) or params_request_deletion(step.params)
+        if is_deletion_action(step.action)
+        or _protects_media(step.action)
+        or params_request_deletion(step.params, action=step.action)
     ]
 
 

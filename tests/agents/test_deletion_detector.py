@@ -44,12 +44,13 @@ _NAMES = [
     "remove_watermark",
 ]
 
-_PARAMS = [
-    {"sql": "DELETE FROM scenes WHERE id = 1"},
-    {"query": "DROP TABLE vo"},
+_HTTP_PARAMS = [
     {"method": "DELETE"},
     {"http_method": "delete"},
-    {"path": "replace frame"},
+]
+_SQL_PARAMS = [
+    {"sql": "DELETE FROM scenes WHERE id = 1"},
+    {"query": "DROP TABLE vo"},
 ]
 
 
@@ -58,13 +59,22 @@ def test_common_deletion_names_are_blocked(action: str) -> None:
     assert is_deletion_action(action)
 
 
-@pytest.mark.parametrize("params", _PARAMS)
-def test_sql_and_http_delete_in_params_are_blocked(params: dict) -> None:
+@pytest.mark.parametrize("params", _HTTP_PARAMS)
+def test_http_delete_in_params_is_blocked(params: dict) -> None:
     assert params_request_deletion(params)
     registry = MockActions()
     step = PlanStep(action="look", params=params)
     assert step_is_deletion(step, registry)
     assert not step_is_deletion(PlanStep(action="look"), registry)
+
+
+@pytest.mark.parametrize("params", _SQL_PARAMS)
+def test_sql_delete_is_blocked_only_for_sql_actions(params: dict) -> None:
+    assert params_request_deletion(params, action="run_sql")
+    assert not params_request_deletion(params, action="look")
+    registry = MockActions()
+    assert step_is_deletion(PlanStep(action="run_sql", params=params), registry)
+    assert not step_is_deletion(PlanStep(action="look", params=params), registry)
 
 
 @pytest.mark.parametrize(
@@ -81,8 +91,10 @@ def test_sql_and_http_delete_in_params_are_blocked(params: dict) -> None:
     ],
 )
 def test_non_literal_http_or_sql_is_blocked(params: dict) -> None:
-    step = PlanStep(action="look", params=params)
-    assert params_request_deletion(params)
+    structural = next(iter(params))
+    action = "run_sql" if structural in {"sql", "query", "statement"} else "look"
+    step = PlanStep(action=action, params=params)
+    assert params_request_deletion(params, action=action)
     assert step_is_deletion(step, MockActions())
 
 
@@ -96,8 +108,10 @@ def test_non_literal_http_or_sql_is_blocked(params: dict) -> None:
     ],
 )
 def test_computed_http_or_sql_is_blocked(params: dict) -> None:
-    assert params_request_deletion(params)
-    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+    structural = next(iter(params))
+    action = "run_sql" if structural in {"sql", "query", "statement"} else "look"
+    assert params_request_deletion(params, action=action)
+    assert step_is_deletion(PlanStep(action=action, params=params), MockActions())
 
 
 @pytest.mark.parametrize("params", [{"method": "CUSTOM"}, {"verb": "NOPE"}, {"http_method": ""}])
@@ -111,8 +125,8 @@ def test_unknown_http_method_is_blocked(params: dict) -> None:
 
 @pytest.mark.parametrize("params", [{"sql": "TRUNCATE TABLE frames"}, {"query": "truncate vo"}])
 def test_sql_truncate_is_blocked(params: dict) -> None:
-    assert params_request_deletion(params)
-    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+    assert params_request_deletion(params, action="run_sql")
+    assert step_is_deletion(PlanStep(action="run_sql", params=params), MockActions())
 
 
 @pytest.mark.parametrize(
@@ -123,8 +137,8 @@ def test_sql_truncate_is_blocked(params: dict) -> None:
     ],
 )
 def test_sql_executemany_is_blocked(params: dict) -> None:
-    assert params_request_deletion(params)
-    assert step_is_deletion(PlanStep(action="look", params=params), MockActions())
+    assert params_request_deletion(params, action="run_sql")
+    assert step_is_deletion(PlanStep(action="run_sql", params=params), MockActions())
 
 
 @pytest.mark.parametrize(
@@ -175,6 +189,25 @@ async def test_erase_and_camel_case_names_are_not_granted(action: str, token: st
         assert runtime.tasks.get(task_id)["error"] == "deletion_blocked"
     finally:
         set_runtime(None)
+
+
+def test_free_text_and_safe_ops_are_not_deletions() -> None:
+    registry = MockActions()
+    safe = [
+        PlanStep(action="edit_prompt", params={"prompt": "clear blue sky, replace background"}),
+        PlanStep(action="edit_prompt", params={"node_key": "n_remove_bg"}),
+        PlanStep(action="read_pipeline_code", params={"path": "app/services/delete_frame.py"}),
+        PlanStep(action="edit_prompt", params={"overwrite": False}),
+        PlanStep(action="retrieve", params={"query": "how to delete a frame and reset the shot"}),
+    ]
+    for step in safe:
+        assert not params_request_deletion(step.params, action=step.action)
+        assert not step_is_deletion(step, registry)
+    assert params_request_deletion({"method": "delete"})
+    assert params_request_deletion({"op": "remove"})
+    assert params_request_deletion({"action": "remove"})
+    assert params_request_deletion({"sql": "DELETE FROM scenes"}, action="run_sql")
+    assert step_is_deletion(PlanStep(action="run_sql", params={"sql": "DELETE FROM scenes"}), registry)
 
 
 def test_dropdown_is_not_a_deletion_segment() -> None:
