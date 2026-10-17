@@ -1492,8 +1492,19 @@ def _http_method_expr(call: ast.Call) -> ast.AST | None:
     return None
 
 
+_HTTP_DELETE_RECEIVERS = frozenset({"client", "requests", "httpx", "ctx"})
+
+
 def _http_kind(call: ast.Call, env: dict[str, str]) -> str | None:
-    if _call_name(call.func) not in {"call", "request"}:
+    func = call.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "delete"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in _HTTP_DELETE_RECEIVERS
+    ):
+        return "http.delete"
+    if _call_name(func) not in {"call", "request"}:
         return None
     folded = _fold_string(_http_method_expr(call), env)
     if not isinstance(folded, str):
@@ -3228,6 +3239,21 @@ def test_sql_delete_drop_truncate_are_denied() -> None:
     )
     hits = analyze_module_source(source, "prompt.save_master")
     assert [hit.kind for hit in hits] == ["sql", "sql", "sql", "sql"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_client_delete_method_is_http_delete() -> None:
+    source = (
+        "def save(client, requests, httpx, ctx, session):\n"
+        "    client.delete('/projects/1')\n"
+        "    requests.delete('/y')\n"
+        "    httpx.delete('/z')\n"
+        "    ctx.delete('/w')\n"
+        "    session.delete(row)\n"
+        "    client.get('/ok')\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == ["http.delete", "http.delete", "http.delete", "http.delete"]
     assert all(hit.allowed is False for hit in hits)
 
 
