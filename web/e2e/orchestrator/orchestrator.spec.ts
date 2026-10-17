@@ -1260,6 +1260,7 @@ test.describe("orchestrator chat", () => {
       ["paid404foreign", "foreign change_id"],
       ["paid409", "change_id already decided"],
       ["paid409stale", "change_id is not current"],
+      ["paid409transition", "invalid transition"],
       ["paid422", "approval unprocessable"],
     ] as const;
     for (const [scenario, detail] of cases) {
