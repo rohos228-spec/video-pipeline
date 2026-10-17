@@ -207,6 +207,42 @@ async def test_approve_route_404_409_passthrough(token: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_approve_route_invalid_transition_is_409(token: str) -> None:
+    """Повторный grant без change_id после done — 409, не 500, и без записи."""
+    del token
+    session = "approve-not-waiting"
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="look", risk="none", expected="see")]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task(session, "посмотреть", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+        before = _effects(runtime, session, task_id)
+        decided = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_decided"]
+        transport = ASGITransport(app=_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/api/orchestrator/chat/{session}/approve",
+                json={},
+                headers=_headers(),
+            )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "invalid transition"
+        assert _effects(runtime, session, task_id) == before
+        assert [event for event in runtime.bus.replay(session, 0) if event.type == "approval_decided"] == decided
+        assert [call["name"] for call in actions.calls] == ["look"]
+        assert TEST_TOKEN not in response.text
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
 async def test_approve_route_invalid_body_422(token: str) -> None:
     del token
     session = "approve-422"
