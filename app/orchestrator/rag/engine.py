@@ -152,6 +152,7 @@ class RagEngine:
         rrf_weights: tuple[float, float] | None = None,
         rerank: bool | None = None,
         rerank_pool: int = 30,
+        bm25_scope: str = "full",
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
@@ -167,6 +168,8 @@ class RagEngine:
             raise ValueError("channel должен быть hybrid, bm25 или vector")
         if rerank_pool <= 0:
             raise ValueError("rerank_pool должен быть > 0")
+        if bm25_scope not in {"full", "head"}:
+            raise ValueError("bm25_scope должен быть full или head")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -175,7 +178,11 @@ class RagEngine:
         pool = max(top_k * 4, 20)
         if use_rerank:
             pool = max(pool, rerank_pool)
-        lexical = self.store.bm25(fts_match_query(query), selected, limit=pool) if channel != "vector" else []
+        lexical = (
+            self.store.bm25(fts_match_query(query), selected, limit=pool, scope=bm25_scope)
+            if channel != "vector"
+            else []
+        )
         lexical_ids = [chunk_id for chunk_id, _score in lexical]
         lexical_scores = dict(lexical)
         stored = self.store.fetch_chunks(selected)
@@ -210,7 +217,7 @@ class RagEngine:
         rerank_scores: dict[str, float] = {}
         if use_rerank and self.reranker is not None:
             candidates = ordered[:rerank_pool]
-            passages = [by_id[chunk_id].text for chunk_id in candidates]
+            passages = [_rerank_passage(by_id[chunk_id]) for chunk_id in candidates]
             raw_scores = self.reranker.score(query, passages)
             if len(raw_scores) != len(candidates):
                 raise RuntimeError("реранкер вернул не столько оценок, сколько пассажей")
@@ -304,6 +311,16 @@ class RagEngine:
         if unknown:
             raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {', '.join(CORPORA)}")
         return selected
+
+
+def _rerank_passage(chunk: Chunk) -> str:
+    """В cross-encoder уходит заголовок и начало чанка, не весь текст."""
+    title = (chunk.title or "").strip()
+    node_key = str(chunk.metadata.get("node_key") or "").strip()
+    role = str(chunk.metadata.get("group_role") or "").strip()
+    body = (chunk.text or "").strip()[:1200]
+    parts = [part for part in (title, node_key, role, body) if part]
+    return "\n".join(parts)
 
 
 def _group_docs(docs: list[SourceDoc], embedder_id: str) -> dict[str, tuple[str, list[SourceDoc]]]:

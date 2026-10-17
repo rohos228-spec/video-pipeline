@@ -1,4 +1,4 @@
-"""Контур B: hit@5 и nDCG@8 на живых корпусах, четыре локальных варианта.
+"""Контур B: hit@5 и nDCG@8, мультиязычный реранкер и перебор гибрида.
 
 Не для CI. Запуск качает веса в стандартный кэш Hugging Face
 (``~/.cache/huggingface`` или ``HF_HOME`` / ``FASTEMBED_CACHE_PATH``), не в ``data/``.
@@ -29,12 +29,21 @@ from typing import Any
 
 from app.orchestrator.rag.embedder import build_embedder
 from app.orchestrator.rag.engine import RagEngine
-from app.orchestrator.rag.profile import CONTOUR_B_EMBEDDER, CONTOUR_B_RERANKER
+from app.orchestrator.rag.profile import (
+    CONTOUR_B_BM25_SCOPE,
+    CONTOUR_B_EMBEDDER,
+    CONTOUR_B_RERANK_MAX_LENGTH,
+    CONTOUR_B_RERANK_POOL,
+    CONTOUR_B_RERANKER,
+    CONTOUR_B_RRF_K,
+    CONTOUR_B_RRF_LEXICAL,
+    CONTOUR_B_RRF_VECTOR,
+)
 from app.orchestrator.rag.rerank import Reranker, build_reranker
 
 HIT_AT_5_MIN = 0.9
 NDCG_AT_8_MIN = 0.7
-LARGE_RERANK_P95_MAX_S = 1.5
+P95_MAX_S = 1.5
 
 ROOT = Path(__file__).resolve().parents[2]
 QUERY_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_queries.json"
@@ -208,18 +217,25 @@ def measure(
     engine: RagEngine,
     *,
     rerank: bool,
-) -> dict[str, float]:
-    """Метрики и задержка retrieve. Холодная загрузка весов в замер не входит."""
+    rrf_k: int = 60,
+    rrf_weights: tuple[float, float] | None = None,
+    bm25_scope: str = "full",
+    rerank_pool: int = 20,
+) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    """Метрики, задержка и top-8 по запросам. Холодная загрузка весов не входит."""
     indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
     for chunk in indexed:
         chunk.metadata.pop("_embedding", None)
     labeled_by_query = [sum(1 for chunk in indexed if _is_relevant(chunk, query)) for query in queries]
-    engine.retrieve(
-        queries[0]["text"],
-        ["rules", "nodes", "prompts"],
-        top_k=8,
-        rerank=rerank,
-    )
+    kwargs = {
+        "rerank": rerank,
+        "rrf_k": rrf_k,
+        "bm25_scope": bm25_scope,
+        "rerank_pool": rerank_pool,
+    }
+    if rrf_weights is not None:
+        kwargs["rrf_weights"] = rrf_weights
+    engine.retrieve(queries[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
     precisions: list[float] = []
     recalls: list[float] = []
     ndcgs: list[float] = []
@@ -227,9 +243,10 @@ def measure(
     hit5 = 0
     hit8 = 0
     latencies: list[float] = []
+    details: list[dict[str, Any]] = []
     for query, labeled in zip(queries, labeled_by_query, strict=True):
         started = time.perf_counter()
-        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, rerank=rerank)
+        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
         latencies.append(time.perf_counter() - started)
         flags = [_is_relevant(chunk, query) for chunk in found]
         matched = sum(1 for flag in flags if flag)
@@ -237,12 +254,30 @@ def measure(
         recalls.append(matched / labeled if labeled else 0.0)
         ndcgs.append(_ndcg_at_8(flags, labeled))
         ceilings.append(min(8, labeled) / 8)
-        if any(flags[:5]):
+        hit_at_5 = any(flags[:5])
+        if hit_at_5:
             hit5 += 1
         if matched:
             hit8 += 1
+        details.append(
+            {
+                "id": query["id"],
+                "hit5": hit_at_5,
+                "top": [
+                    {
+                        "corpus": chunk.corpus,
+                        "source_id": chunk.source_id,
+                        "part_key": chunk.metadata.get("part_key"),
+                        "title": chunk.title,
+                        "node_key": chunk.metadata.get("node_key"),
+                        "group_role": chunk.metadata.get("group_role"),
+                    }
+                    for chunk in found
+                ],
+            }
+        )
     count = len(queries)
-    return {
+    metrics = {
         "hit_at_5": hit5 / count,
         "ndcg_at_8": sum(ndcgs) / count,
         "precision_at_8": sum(precisions) / count,
@@ -252,42 +287,68 @@ def measure(
         "p95_s": _percentile(latencies, 95),
         "ceiling": sum(ceilings) / count,
     }
+    return metrics, details
 
 
 def _passes(metrics: dict[str, float]) -> bool:
     return metrics["hit_at_5"] >= HIT_AT_5_MIN and metrics["ndcg_at_8"] >= NDCG_AT_8_MIN
 
 
+def _rank_key(row: tuple[str, str, dict[str, float]]) -> tuple[float, float, float]:
+    return (row[2]["ndcg_at_8"], row[2]["hit_at_5"], -row[2]["p95_s"])
+
+
+def _is_rerank_key(key: str) -> bool:
+    return "+jina+" in key or "+bge-m3+" in key
+
+
 def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, str]:
-    """Правило куратора. Возвращает (ключ варианта, объяснение)."""
-    by_key = {key: metrics for key, _label, metrics in runs}
-    large = by_key["e5-large+rerank"]
-    if large["p95_s"] > LARGE_RERANK_P95_MAX_S:
-        return (
-            "e5-small+rerank",
-            f"p95 e5-large + реранкер = {large['p95_s']:.3f} с > {LARGE_RERANK_P95_MAX_S:.1f} с, "
-            "поэтому дефолт — e5-small + реранкер.",
+    """Лучший по nDCG@8 среди p95 ≤ 1.5 с.
+
+    Если реранкер не поднимает nDCG выше гибрида e5-large, дефолт — этот гибрид
+    без реранкера, даже когда гибрид e5-small набрал больше.
+    """
+    eligible = [row for row in runs if row[2]["p95_s"] <= P95_MAX_S]
+    pool = eligible or runs
+    best = max(pool, key=_rank_key)
+    large = [row for row in pool if row[0].startswith("e5-large+k")]
+    best_large = max(large, key=_rank_key) if large else None
+    rerank_helps = (
+        best_large is not None
+        and _is_rerank_key(best[0])
+        and best[2]["ndcg_at_8"] > best_large[2]["ndcg_at_8"]
+    )
+    if rerank_helps or best_large is None:
+        chosen = best
+        why = (
+            f"Среди вариантов с p95 ≤ {P95_MAX_S:.1f} с лучший nDCG@8 у «{chosen[1]}»: "
+            f"{chosen[2]['ndcg_at_8']:.4f}, hit@5={chosen[2]['hit_at_5']:.4f}, "
+            f"p95={chosen[2]['p95_s']:.3f} с."
         )
-    ranked = sorted(
-        runs,
-        key=lambda item: (
-            _passes(item[2]),
-            item[2]["hit_at_5"],
-            item[2]["ndcg_at_8"],
-            -item[2]["p95_s"],
-        ),
-        reverse=True,
-    )
-    key, label, metrics = ranked[0]
-    return (
-        key,
-        f"p95 e5-large + реранкер = {large['p95_s']:.3f} с ≤ {LARGE_RERANK_P95_MAX_S:.1f} с, "
-        f"лучший по hit@5 и nDCG@8 — {label} "
-        f"(hit@5={metrics['hit_at_5']:.4f}, nDCG@8={metrics['ndcg_at_8']:.4f}).",
-    )
+    else:
+        chosen = best_large
+        why = (
+            f"Реранкер не поднимает nDCG@8 выше гибрида e5-large. Дефолт — «{chosen[1]}»: "
+            f"nDCG@8={chosen[2]['ndcg_at_8']:.4f}, hit@5={chosen[2]['hit_at_5']:.4f}, "
+            f"p95={chosen[2]['p95_s']:.3f} с."
+        )
+        if best[0] != chosen[0]:
+            why += (
+                f" Глобальный максимум nDCG среди p95 ≤ {P95_MAX_S:.1f} с — «{best[1]}» "
+                f"({best[2]['ndcg_at_8']:.4f}); он не выбран, потому что реранкер не помогает."
+            )
+    if not eligible:
+        why = f"Ни один вариант не уложился в p95 ≤ {P95_MAX_S:.1f} с. " + why
+    return chosen[0], why
 
 
-def render_report(rows: list[tuple[str, str, dict[str, float]]], *, chosen_key: str, why: str) -> str:
+def render_report(
+    rows: list[tuple[str, str, dict[str, float]]],
+    *,
+    chosen_key: str,
+    why: str,
+    misses: list[str] | None = None,
+) -> str:
     lines = [
         "# Контур B: hit@5 и nDCG@8 на живых корпусах",
         "",
@@ -295,12 +356,13 @@ def render_report(rows: list[tuple[str, str, dict[str, float]]], *, chosen_key: 
         f"**hit@5 ≥ {HIT_AT_5_MIN}** и **nDCG@8 ≥ {NDCG_AT_8_MIN}**. "
         "precision@8, recall@8 и hit@8 посчитаны для сведения.",
         "",
-        "Модели локальные, CPU. e5 — официальный ONNX intfloat (mean pooling). "
-        "Реранкер — квантованный ONNX `BAAI/bge-reranker-base` (экспорт Xenova, "
-        "тот же cross-encoder, что в каталоге FastEmbed), поверх топ-30 гибрида RRF k=60, веса 1/1. "
+        "Модели локальные, CPU. e5 — официальный ONNX intfloat, префиксы `query: ` и `passage: `. "
+        "Реранкеры — квантованный ONNX `jinaai/jina-reranker-v2-base-multilingual` "
+        "(тот же файл, что в каталоге FastEmbed) и `BAAI/bge-reranker-v2-m3`. "
+        "Пул 10 или 20, пара обрезана до 256 или 384 токенов, в чанк идут заголовок и начало. "
+        "Батч onnxruntime, intra_op = число ядер. "
         "CI этот прогон не запускает: hashing, без реранкера, веса не качаются. "
-        "Кэш весов — стандартный каталог Hugging Face, не `data/`. "
-        "Живых вызовов провайдера нет.",
+        "Кэш весов — каталог Hugging Face, не `data/`. Живых вызовов провайдера нет.",
         "",
         "Корпуса: правила `docs/fable/user_rules.md`; ноды `NODE_GROUPS` "
         "(каталога `templates/node_groups` на этом main нет); промпты этих нод "
@@ -337,19 +399,31 @@ def render_report(rows: list[tuple[str, str, dict[str, float]]], *, chosen_key: 
             "",
             f"Дефолт контура B: **{chosen_label}** (ключ `{chosen_key}`). {why} "
             f"В `app/orchestrator/rag/profile.py` для явного включения записано "
-            f"embedder `{CONTOUR_B_EMBEDDER}`, реранкер `{CONTOUR_B_RERANKER}`.",
+            f"embedder `{CONTOUR_B_EMBEDDER}`, реранкер `{CONTOUR_B_RERANKER}`, "
+            f"RRF k={CONTOUR_B_RRF_K}, веса {CONTOUR_B_RRF_LEXICAL}/{CONTOUR_B_RRF_VECTOR}, "
+            f"BM25 `{CONTOUR_B_BM25_SCOPE}`, пул {CONTOUR_B_RERANK_POOL}, "
+            f"обрезка {CONTOUR_B_RERANK_MAX_LENGTH} токенов. "
+            "`get_engine()` эти константы не читает.",
             "",
             "Критерии выбранного дефолта: "
             f"hit@5 = {chosen['hit_at_5']:.4f} (порог {HIT_AT_5_MIN}), "
             f"nDCG@8 = {chosen['ndcg_at_8']:.4f} (порог {NDCG_AT_8_MIN}). "
             + ("Оба порога взяты." if _passes(chosen) else "Пороги не взяты."),
             "",
-            "Гибрид по умолчанию в коде ретривера — RRF k=60, веса 1/1. "
+            "Гибрид по умолчанию в коде ретривера — RRF k=60, веса 1/1, BM25 по всему тексту. "
+            "Константы контура B в `profile.py` на этот дефолт не подменяют `get_engine()`. "
             "Реранкер опционален: `RagEngine(reranker=None)` и `retrieve(..., rerank=False)`. "
             "`get_engine()` реранкер не включает и остаётся на hashing.",
             "",
+            "## Запросы, где hit@5 промахнулись все варианты",
+            "",
         ]
     )
+    if misses:
+        lines.extend(misses)
+    else:
+        lines.append("Таких запросов нет.")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -365,6 +439,109 @@ def _engine(db_path: Path, embedder: Any, reranker: Reranker | None) -> RagEngin
     )
 
 
+def _prefix_ok() -> bool:
+    """Живые веса не грузит: проверяет, что обёртка e5 ставит префиксы."""
+    from app.orchestrator.rag.embedder import PASSAGE_PREFIX, QUERY_PREFIX, E5PrefixEmbedder
+
+    class _Probe:
+        embedder_id = "probe"
+
+        def __init__(self) -> None:
+            self.last: list[str] = []
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            self.last = list(texts)
+            return [[0.0] * 8 for _ in texts]
+
+    probe = _Probe()
+    wrapper = E5PrefixEmbedder(probe)
+    wrapper.embed_query("проверка префикса")
+    query_ok = probe.last == [QUERY_PREFIX + "проверка префикса"]
+    wrapper.embed_passages(["текст документа"])
+    passage_ok = probe.last == [PASSAGE_PREFIX + "текст документа"]
+    return query_ok and passage_ok
+
+
+def _hybrid_grid(embedder_kind: str) -> list[tuple[str, str, dict[str, Any]]]:
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    for rrf_k in (20, 60):
+        for lexical, vector in ((0.5, 1.5), (1.0, 2.0)):
+            for scope in ("full", "head"):
+                scope_label = "весь текст" if scope == "full" else "title+key+роль"
+                key = f"{embedder_kind}+k{rrf_k}+w{lexical}/{vector}+{scope}"
+                label = (
+                    f"{embedder_kind} гибрид k={rrf_k} веса {lexical}/{vector} BM25 {scope_label}"
+                )
+                rows.append(
+                    (
+                        key,
+                        label,
+                        {
+                            "rerank": False,
+                            "rrf_k": rrf_k,
+                            "rrf_weights": (lexical, vector),
+                            "bm25_scope": scope,
+                        },
+                    )
+                )
+    return rows
+
+
+def _rerank_grid(embedder_kind: str, base: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    lexical, vector = base["rrf_weights"]
+    for model in ("jina", "bge-m3"):
+        for length in (256, 384):
+            for pool in (10, 20):
+                key = f"{embedder_kind}+{model}+p{pool}+t{length}"
+                label = (
+                    f"{embedder_kind} + {model} топ-{pool} {length} ток. "
+                    f"(база k={base['rrf_k']} веса {lexical}/{vector} BM25 {base['bm25_scope']})"
+                )
+                spec = dict(base)
+                spec.update({"rerank": True, "rerank_pool": pool, "model": model, "max_length": length})
+                rows.append((key, label, spec))
+    return rows
+
+
+def _index_catalog(engine: RagEngine) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for chunk in engine.store.fetch_chunks(["rules", "nodes", "prompts"]):
+        rows.append(
+            {
+                "corpus": chunk.corpus,
+                "source_id": chunk.source_id,
+                "part_key": str(chunk.metadata.get("part_key") or ""),
+                "title": chunk.title,
+                "node_key": str(chunk.metadata.get("node_key") or ""),
+                "group_role": str(chunk.metadata.get("group_role") or ""),
+            }
+        )
+    return rows
+
+
+def _miss_lines(
+    queries: list[dict[str, Any]],
+    saved: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    if not saved:
+        return []
+    keys = list(saved)
+    sample_key = next((key for key in keys if key.startswith("e5-large+k")), keys[0])
+    lines: list[str] = []
+    for index, query in enumerate(queries):
+        if any(saved[key][index]["hit5"] for key in keys):
+            continue
+        lines.append(f"- `{query['id']}` ({query['family']}): {query['text']}")
+        top = saved[sample_key][index]["top"][:5]
+        for item in top:
+            lines.append(
+                f"  - {item['corpus']} `{item['source_id']}` {item.get('part_key') or ''} "
+                f"{item.get('title') or ''}"
+            )
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
@@ -372,43 +549,75 @@ def main() -> None:
     queries = build_queries()
     QUERY_PATH.parent.mkdir(parents=True, exist_ok=True)
     QUERY_PATH.write_text(json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    prefixes_ok = _prefix_ok()
+    print("e5 prefixes", prefixes_ok, flush=True)
     # Не data/orch_rag.db рантайма: временный каталог вне data/. Имя файла то же,
     # потому что писатель принимает только orch_rag.db.
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-live-"))
-    reranker = build_reranker("bge")
     runs: list[tuple[str, str, dict[str, float]]] = []
-    blocks = (
-        (
-            "e5-small",
-            (
-                (False, "e5-small+hybrid", "e5-small + гибрид"),
-                (True, "e5-small+rerank", "e5-small + гибрид + реранкер"),
-            ),
-        ),
-        (
-            "e5-large",
-            (
-                (False, "e5-large+hybrid", "e5-large + гибрид"),
-                (True, "e5-large+rerank", "e5-large + гибрид + реранкер"),
-            ),
-        ),
-    )
-    for embedder_kind, modes in blocks:
+    saved: dict[str, list[dict[str, Any]]] = {}
+    catalog: list[dict[str, str]] = []
+    for embedder_kind in ("e5-small", "e5-large"):
         embedder = build_embedder(embedder_kind)
-        engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        engine = _engine(temp_dir / "orch_rag.db", embedder, None)
         try:
             engine.reindex(["rules", "nodes", "prompts"])
-            for use_rerank, key, label in modes:
-                metrics = measure(queries, engine, rerank=use_rerank)
+            if not catalog:
+                catalog = _index_catalog(engine)
+                print("index chunks", len(catalog), flush=True)
+            for key, label, spec in _hybrid_grid(embedder_kind):
+                metrics, details = measure(queries, engine, **{k: spec[k] for k in spec})
                 runs.append((key, label, metrics))
-                print(label, metrics, flush=True)
+                saved[key] = details
+                print(label, {k: round(v, 4) if isinstance(v, float) else v for k, v in metrics.items()}, flush=True)
         finally:
             engine.close()
-            del engine, embedder
+        best_key, best_label, best_metrics = max(
+            (row for row in runs if row[0].startswith(embedder_kind + "+k")),
+            key=lambda row: (row[2]["ndcg_at_8"], row[2]["hit_at_5"]),
+        )
+        print("best hybrid", embedder_kind, best_label, best_metrics["ndcg_at_8"], flush=True)
+        base_spec = next(spec for key, _label, spec in _hybrid_grid(embedder_kind) if key == best_key)
+        loaded: dict[tuple[str, int], Reranker] = {}
+        try:
+            for key, label, spec in _rerank_grid(embedder_kind, base_spec):
+                slot = (spec["model"], spec["max_length"])
+                if slot not in loaded:
+                    loaded[slot] = build_reranker(spec["model"], max_length=spec["max_length"])
+                rerank_engine = _engine(temp_dir / "orch_rag.db", embedder, loaded[slot])
+                try:
+                    rerank_engine.reindex(["rules", "nodes", "prompts"])
+                    metrics, details = measure(
+                        queries,
+                        rerank_engine,
+                        rerank=True,
+                        rrf_k=spec["rrf_k"],
+                        rrf_weights=spec["rrf_weights"],
+                        bm25_scope=spec["bm25_scope"],
+                        rerank_pool=spec["rerank_pool"],
+                    )
+                finally:
+                    rerank_engine.close()
+                runs.append((key, label, metrics))
+                saved[key] = details
+                print(label, {k: round(v, 4) if isinstance(v, float) else v for k, v in metrics.items()}, flush=True)
+        finally:
+            loaded.clear()
+            del embedder
             gc.collect()
     chosen_key, why = choose_default(runs)
-    text = render_report(runs, chosen_key=chosen_key, why=why)
+    misses = _miss_lines(queries, saved)
+    text = render_report(runs, chosen_key=chosen_key, why=why, misses=misses)
+    if not prefixes_ok:
+        text += "\nПрефиксы e5 не сошлись с `query: ` / `passage: `.\n"
+    else:
+        text += "\nПрефиксы e5 проверены без весов: запрос начинается с `query: `, документ с `passage: `.\n"
     args.out.write_text(text, encoding="utf-8")
+    detail_path = args.out.with_name("precision_live_rankings.json")
+    detail_path.write_text(
+        json.dumps({"chosen": chosen_key, "index": catalog, "runs": saved}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     print(text)
 
 

@@ -84,6 +84,79 @@ class _LastWins:
         return [float(index) for index in range(len(passages))]
 
 
+def test_head_bm25_matches_title_key_and_role_not_the_body(tmp_path: Path) -> None:
+    docs = [
+        SourceDoc(
+            corpus="nodes",
+            source_id="n_camera",
+            title="Камера",
+            text="общий текст без искомого слова",
+            metadata={"node_key": "n_excel_gpt_sd_camera", "group_role": "постановка кадра"},
+        ),
+        SourceDoc(
+            corpus="nodes",
+            source_id="n_world",
+            title="Мир",
+            text="постановка кадра упомянута только в теле чанка",
+            metadata={"node_key": "n_excel_gpt_sd_world", "group_role": "локации и интерьеры"},
+        ),
+    ]
+    engine = RagEngine(
+        db_path=tmp_path / "orch_rag.db",
+        rules_path=tmp_path / "no-rules.md",
+        static_docs={"nodes": docs, "prompts": [], "rules": [], "history": []},
+        scan_git=False,
+    )
+    try:
+        engine.reindex("nodes")
+        head = engine.retrieve("постановка", ["nodes"], top_k=2, channel="bm25", bm25_scope="head")
+        full = engine.retrieve("постановка", ["nodes"], top_k=2, channel="bm25", bm25_scope="full")
+    finally:
+        engine.close()
+    assert [chunk.source_id for chunk in head] == ["n_camera"]
+    assert [chunk.source_id for chunk in full] == ["n_world"]
+
+
+def test_contour_b_profile_records_the_measured_default() -> None:
+    from app.orchestrator.rag.profile import (
+        CONTOUR_B_BM25_SCOPE,
+        CONTOUR_B_EMBEDDER,
+        CONTOUR_B_RERANK_MAX_LENGTH,
+        CONTOUR_B_RERANK_POOL,
+        CONTOUR_B_RERANKER,
+        CONTOUR_B_RRF_K,
+        CONTOUR_B_RRF_LEXICAL,
+        CONTOUR_B_RRF_VECTOR,
+    )
+    from evals.orchestrator.precision_live import choose_default
+
+    assert CONTOUR_B_EMBEDDER == "e5-large"
+    assert CONTOUR_B_RERANKER == "bge-m3"
+    assert CONTOUR_B_RRF_K == 20
+    assert (CONTOUR_B_RRF_LEXICAL, CONTOUR_B_RRF_VECTOR) == (0.5, 1.5)
+    assert CONTOUR_B_RRF_VECTOR > CONTOUR_B_RRF_LEXICAL
+    assert CONTOUR_B_BM25_SCOPE == "full"
+    assert CONTOUR_B_RERANK_POOL == 20
+    assert CONTOUR_B_RERANK_MAX_LENGTH == 256
+    assert build_reranker("none") is None
+    kept = choose_default(
+        [
+            ("e5-small+k20+w0.5/1.5+full", "small", {"ndcg_at_8": 0.9, "hit_at_5": 0.9, "p95_s": 0.01}),
+            ("e5-large+k20+w0.5/1.5+full", "large", {"ndcg_at_8": 0.6, "hit_at_5": 0.8, "p95_s": 0.06}),
+            ("e5-large+jina+p10+t256", "jina", {"ndcg_at_8": 0.59, "hit_at_5": 0.9, "p95_s": 0.4}),
+        ]
+    )
+    assert kept[0] == "e5-large+k20+w0.5/1.5+full"
+    led = choose_default(
+        [
+            ("e5-large+k20+w0.5/1.5+full", "large", {"ndcg_at_8": 0.60, "hit_at_5": 0.88, "p95_s": 0.06}),
+            ("e5-large+bge-m3+p20+t256", "m3", {"ndcg_at_8": 0.65, "hit_at_5": 0.96, "p95_s": 1.4}),
+            ("e5-large+bge-m3+p20+t384", "slow", {"ndcg_at_8": 0.70, "hit_at_5": 0.98, "p95_s": 2.8}),
+        ]
+    )
+    assert led[0] == "e5-large+bge-m3+p20+t256"
+
+
 def test_rerank_flag_is_optional_and_reorders_hybrid(tmp_path: Path) -> None:
     docs = [
         SourceDoc(corpus="nodes", source_id="n_first", title="первый", text="якорь общий первый документ"),

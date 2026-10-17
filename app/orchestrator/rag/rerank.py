@@ -1,10 +1,11 @@
-"""Локальный cross-encoder поверх топ-30 гибрида. По умолчанию выключен.
+"""Локальный cross-encoder поверх гибрида. По умолчанию выключен.
 
-CI остаётся на hashing и не вызывает ``build_reranker("bge")``: веса не качаются.
+CI остаётся на hashing и не вызывает живые виды: веса не качаются.
 ``stub`` — детерминированный лексический overlap без сети.
-``bge`` — ONNX ``BAAI/bge-reranker-base`` (квантованный экспорт Xenova, тот же,
-что каталог FastEmbed отдаёт как cross-encoder). Кэш — ``weight_cache_dir()``,
-не ``data/``.
+``jina`` — квантованный ONNX ``jinaai/jina-reranker-v2-base-multilingual``
+(тот же файл, что каталог FastEmbed). ``bge-m3`` — квантованный ONNX
+``BAAI/bge-reranker-v2-m3``. ``bge`` — прежний английский ``bge-reranker-base``.
+Кэш — ``weight_cache_dir()``, не ``data/``.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ _TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 
 BGE_REPO = "Xenova/bge-reranker-base"
 BGE_FILE = "onnx/model_quantized.onnx"
+JINA_REPO = "jinaai/jina-reranker-v2-base-multilingual"
+JINA_FILE = "onnx/model_quantized.onnx"
+BGE_M3_REPO = "onnx-community/bge-reranker-v2-m3-ONNX"
+BGE_M3_FILE = "onnx/model_quantized.onnx"
 
 
 class Reranker(Protocol):
@@ -45,16 +50,15 @@ class StubReranker:
         return scored
 
 
-class OnnxBgeReranker:
-    """Cross-encoder ``bge-reranker-base``. Выше логит — релевантнее.
+class OnnxPairReranker:
+    """Cross-encoder ONNX. Выше логит — релевантнее.
 
-    Пара ``query`` / пассаж кодируется токенайзером модели (``<s> q </s></s> p </s>``).
+    Пара обрезается токенайзером до ``max_length`` (256–384 на контуре B).
+    Батч идёт одним прогоном onnxruntime, ``intra_op`` равен числу ядер.
     Холодная загрузка весов — в конструкторе, не в ``score``.
     """
 
-    reranker_id = "onnx-bge-reranker-base"
-
-    def __init__(self) -> None:
+    def __init__(self, *, repo: str, filename: str, reranker_id: str, max_length: int = 384) -> None:
         import numpy as np
         import onnxruntime as ort
         from huggingface_hub import hf_hub_download
@@ -62,14 +66,20 @@ class OnnxBgeReranker:
 
         from app.orchestrator.rag.embedder import weight_cache_dir
 
+        if max_length < 32:
+            raise ValueError("max_length слишком мал")
+        self.reranker_id = reranker_id
+        self.max_length = max_length
         cache = weight_cache_dir()
-        model_path = hf_hub_download(BGE_REPO, BGE_FILE, cache_dir=str(cache))
-        tokenizer_path = hf_hub_download(BGE_REPO, "tokenizer.json", cache_dir=str(cache))
+        model_path = hf_hub_download(repo, filename, cache_dir=str(cache))
+        tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
         tokenizer = Tokenizer.from_file(tokenizer_path)
         tokenizer.enable_padding(pad_id=1, pad_token="<pad>")
-        tokenizer.enable_truncation(max_length=512)
+        tokenizer.enable_truncation(max_length=max_length)
+        threads = max(1, os.cpu_count() or 1)
         options = ort.SessionOptions()
-        options.intra_op_num_threads = max(1, os.cpu_count() or 1)
+        options.intra_op_num_threads = threads
+        options.inter_op_num_threads = 1
         self._np = np
         self._tokenizer = tokenizer
         self._session = ort.InferenceSession(
@@ -103,12 +113,55 @@ class OnnxBgeReranker:
         return [float(value) for value in flat]
 
 
-def build_reranker(kind: str = "none") -> Reranker | None:
-    """``none`` — реранкера нет (дефолт CI). ``stub`` — без весов. ``bge`` — локальный cross-encoder."""
+class OnnxBgeReranker(OnnxPairReranker):
+    """Прежний ``bge-reranker-base``. На русских корпусах nDCG не поднимает."""
+
+    def __init__(self, *, max_length: int = 384) -> None:
+        super().__init__(
+            repo=BGE_REPO,
+            filename=BGE_FILE,
+            reranker_id="onnx-bge-reranker-base",
+            max_length=max_length,
+        )
+
+
+class OnnxJinaReranker(OnnxPairReranker):
+    """``jina-reranker-v2-base-multilingual``, квантованный ONNX."""
+
+    def __init__(self, *, max_length: int = 384) -> None:
+        super().__init__(
+            repo=JINA_REPO,
+            filename=JINA_FILE,
+            reranker_id="onnx-jina-reranker-v2-base-multilingual",
+            max_length=max_length,
+        )
+
+
+class OnnxBgeM3Reranker(OnnxPairReranker):
+    """``bge-reranker-v2-m3``, квантованный ONNX."""
+
+    def __init__(self, *, max_length: int = 384) -> None:
+        super().__init__(
+            repo=BGE_M3_REPO,
+            filename=BGE_M3_FILE,
+            reranker_id="onnx-bge-reranker-v2-m3",
+            max_length=max_length,
+        )
+
+
+def build_reranker(kind: str = "none", *, max_length: int = 384) -> Reranker | None:
+    """``none`` — реранкера нет (дефолт CI). ``stub`` — без весов.
+
+    ``jina`` и ``bge-m3`` — мультиязычные cross-encoder. ``bge`` — английский base.
+    """
     if kind in {"none", "off", ""}:
         return None
     if kind == "stub":
         return StubReranker()
     if kind == "bge":
-        return OnnxBgeReranker()
+        return OnnxBgeReranker(max_length=max_length)
+    if kind == "jina":
+        return OnnxJinaReranker(max_length=max_length)
+    if kind == "bge-m3":
+        return OnnxBgeM3Reranker(max_length=max_length)
     raise ValueError(f"неизвестный реранкер: {kind}")

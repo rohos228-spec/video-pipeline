@@ -49,6 +49,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     corpus UNINDEXED,
     tokenize='unicode61 remove_diacritics 2'
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_head_fts USING fts5(
+    chunk_id UNINDEXED,
+    head,
+    corpus UNINDEXED,
+    tokenize='unicode61 remove_diacritics 2'
+);
 """
 
 
@@ -63,6 +69,13 @@ def unpack_vector(blob: bytes) -> list[float]:
 
 def chunk_id_for(corpus: str, source_id: str, part_key: str) -> str:
     return sha256_payload({"corpus": corpus, "part_key": part_key, "source_id": source_id})
+
+
+def lexical_head(title: str, metadata: dict | None) -> str:
+    """Текст для BM25 только по названию, ключу ноды и роли в группе."""
+    meta = metadata or {}
+    parts = [title or "", str(meta.get("node_key") or ""), str(meta.get("group_role") or "")]
+    return " ".join(part.strip() for part in parts if part and part.strip())
 
 
 RAG_DB_NAME = "orch_rag.db"
@@ -203,6 +216,7 @@ class RagStore:
         ).fetchall()
         for row in rows:
             conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (row["chunk_id"],))
+            conn.execute("DELETE FROM chunks_head_fts WHERE chunk_id = ?", (row["chunk_id"],))
         conn.execute(
             "DELETE FROM chunks WHERE corpus = ? AND source_id = ?",
             (corpus, source_id),
@@ -249,6 +263,10 @@ class RagStore:
         conn.execute(
             "INSERT INTO chunks_fts(chunk_id, title, text, corpus) VALUES (?, ?, ?, ?)",
             (chunk_id, doc.title, doc.text, doc.corpus),
+        )
+        conn.execute(
+            "INSERT INTO chunks_head_fts(chunk_id, head, corpus) VALUES (?, ?, ?)",
+            (chunk_id, lexical_head(doc.title, metadata), doc.corpus),
         )
 
     def existing_revisions(self, corpus: str) -> dict[str, str]:
@@ -297,17 +315,28 @@ class RagStore:
             chunks.append(chunk)
         return chunks
 
-    def bm25(self, match: str, corpora: list[str], *, limit: int) -> list[tuple[str, float]]:
+    def bm25(
+        self,
+        match: str,
+        corpora: list[str],
+        *,
+        limit: int,
+        scope: str = "full",
+    ) -> list[tuple[str, float]]:
+        """``scope=full`` — title и текст. ``scope=head`` — title, node_key и роль."""
         if not match.strip():
             return []
+        if scope not in {"full", "head"}:
+            raise ValueError("scope должен быть full или head")
+        table = "chunks_head_fts" if scope == "head" else "chunks_fts"
         conn = connect(self.db_path, readonly=True)
         try:
             marks = ",".join("?" for _ in corpora)
             rows = conn.execute(
                 f"""
-                SELECT chunk_id, bm25(chunks_fts) AS score
-                FROM chunks_fts
-                WHERE chunks_fts MATCH ? AND corpus IN ({marks})
+                SELECT chunk_id, bm25({table}) AS score
+                FROM {table}
+                WHERE {table} MATCH ? AND corpus IN ({marks})
                 ORDER BY score ASC
                 LIMIT ?
                 """,
