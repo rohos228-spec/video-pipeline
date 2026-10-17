@@ -1,491 +1,358 @@
-"""Адаптер запрета физического удаления.
+"""Точка входа сохранности для этой ветки.
 
-Пока WS1 не опубликовал вход в ``db_apply.py`` (ветка
-``cursor/ws1-r1-validators``), сравнение живёт здесь. Подмена на
-настоящую точку WS1 — правка только этой функции.
+Единственное место импорта. Если на ветке уже есть
+``app.orchestrator.validators.preservation`` (#379), берём его.
+Иначе остаётся шим с той же сигнатурой и теми же формами
+``Violation`` / ``PreservationRejected``.
+
+Шим не повторяет три ложных отказа #379 @ ``40da86ed``: закадр на
+неактивном шоте, смена номера при том же id, возврат неактивного в
+активные без отдельной операции. Закадр при пометке не переносится.
 """
 
 from __future__ import annotations
 
-import hashlib
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from loguru import logger
 
-from app.services.frame_tombstones import (
-    mark_shots_inactive,
-    merge_kadry_keep_missing,
-)
-
-_SHOT_LIST_KEYS = ("кадры", "shots")
-_ROW_LIST_KEYS = {
-    "frame_texts": "text",
-    "texts": "text",
-    "frame_edges": "edge",
-    "edges": "edge",
-    "characters": "character",
-    "персонажи": "character",
-    "persons": "character",
-    "blocks": "block",
-    "scenes": "scene",
-    "сцены": "scene",
-    "frames": "frame",
-}
-_FLAG_KEYS = {"активен", "удалён", "карантин", "пометка", "порядок"}
-_TEXT_KIND_IGNORED = True
+_IMPL = "shim"
 
 
-def guard(
-    before: Any,
-    after: Any,
-    *,
-    project_id: Any,
-    source: str,
-    mode: str = "warn_mark",
-) -> dict[str, Any]:
-    """Сравнить снимок до записи и после.
-
-    ``refuse`` — не писать: ``after`` в ответе это прежний снимок.
-    ``warn_mark`` — вернуть ``after`` с пропавшими шотами обратно,
-    ``активен: False``.
-    """
-    applied = mode if mode in {"refuse", "warn_mark"} else "warn_mark"
-    invalid = _invalid_kadry(after)
-    missing = sorted(_collect(before) - _collect(after))
-    if not invalid and not missing:
-        return {
-            "ok": True,
-            "mode": applied,
-            "missing_ids": [],
-            "reason": "",
-            "after": after,
-        }
-    reason = ",".join(
-        part for part, hit in (("invalid_shape", invalid), ("missing_ids", missing)) if hit
-    )
-    logger.warning(
-        "WARN no_deletions_guard: source={} project={} mode={} reason={} missing={}",
-        source,
-        project_id,
-        applied,
-        reason,
-        ", ".join(missing) or "-",
-    )
-    if applied == "refuse":
-        return {
-            "ok": False,
-            "mode": "refuse",
-            "missing_ids": missing,
-            "reason": reason,
-            "after": before,
-        }
-    _repair(before, after, set(missing))
-    return {
-        "ok": False,
-        "mode": "warn_mark",
-        "missing_ids": missing,
-        "reason": reason,
-        "after": after,
-    }
-
-
-def _invalid_kadry(node: Any, seen: set[int] | None = None) -> bool:
-    seen = seen if seen is not None else set()
-    mark = id(node)
-    if mark in seen:
-        return False
-    if isinstance(node, (dict, list)) or _frame_like(node):
-        seen.add(mark)
-    mapping = _mapping(node)
-    if mapping is None:
-        if isinstance(node, list):
-            return any(_invalid_kadry(item, seen) for item in node)
-        return False
-    bad = False
-    for key in _SHOT_LIST_KEYS:
-        if key in mapping and not isinstance(mapping.get(key), list):
-            bad = True
-    for key, value in mapping.items():
-        if key in _SHOT_LIST_KEYS:
-            if isinstance(value, list):
-                bad = any(_invalid_kadry(item, seen) for item in value) or bad
-            continue
-        if isinstance(value, (dict, list)) or _frame_like(value):
-            bad = _invalid_kadry(value, seen) or bad
-    return bad
-
-
-def _collect(node: Any, seen: set[int] | None = None) -> set[str]:
-    seen = seen if seen is not None else set()
-    mark = id(node)
-    if mark in seen:
-        return set()
-    if isinstance(node, (dict, list)) or _frame_like(node):
-        seen.add(mark)
-    found: set[str] = set()
-    mapping = _mapping(node)
-    if mapping is None:
-        if isinstance(node, list):
-            for item in node:
-                found |= _collect(item, seen)
-        return found
-    if isinstance(node, dict):
-        found |= _own_identities(node)
-    frame_key = _frame_identity(node)
-    if frame_key:
-        found.add(frame_key)
-    for key in _SHOT_LIST_KEYS:
-        rows = mapping.get(key)
-        if isinstance(rows, list):
-            for row in rows:
-                ident = _shot_identity(row)
-                if ident:
-                    found.add(ident)
-                found |= _collect(row, seen)
-    for key, kind in _ROW_LIST_KEYS.items():
-        rows = mapping.get(key)
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            ident = _row_identity(row, kind)
-            if ident:
-                found.add(ident)
-            found |= _collect(row, seen)
-    for key, value in mapping.items():
-        if key in _SHOT_LIST_KEYS or key in _ROW_LIST_KEYS:
-            continue
-        if isinstance(value, (dict, list)) or _frame_like(value):
-            found |= _collect(value, seen)
-    return found
-
-
-def _repair(before: Any, after: Any, missing: set[str], seen: set[int] | None = None) -> None:
-    seen = seen if seen is not None else set()
-    pair = (id(before), id(after))
-    if pair in seen:
-        return
-    seen.add(pair)
-    if isinstance(before, list) and isinstance(after, list):
-        _repair_row_list(before, after, missing, "shot")
-        for ident, child in _pair_children_list(before).items():
-            other = _pair_children_list(after).get(ident)
-            if other is not None:
-                _repair(child, other, missing, seen)
-        return
-    for bcont in _containers(before):
-        aconts = _containers(after)
-        acont = _matching_container(bcont, aconts)
-        if acont is None:
-            continue
-        _restore_lists(bcont, acont, missing)
-    bmap = _mapping(before)
-    amap = _mapping(after)
-    if not bmap or not amap:
-        return
-    for key, bval in bmap.items():
-        if key in _SHOT_LIST_KEYS or key in _ROW_LIST_KEYS:
-            rows = bval if isinstance(bval, list) else []
-            arows = amap.get(key) if isinstance(amap.get(key), list) else []
-            for ident, child in _pair_children_list(rows).items():
-                other = _pair_children_list(arows).get(ident)
-                if other is not None:
-                    _repair(child, other, missing, seen)
-            continue
-        aval = amap.get(key)
-        if isinstance(bval, (dict, list)) and isinstance(aval, (dict, list)):
-            _repair(bval, aval, missing, seen)
-
-
-def _containers(node: Any) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-    if isinstance(node, dict):
-        found.append(node)
-        attrs = node.get("attrs")
-        if isinstance(attrs, dict):
-            found.append(attrs)
-    elif _frame_like(node):
-        attrs = getattr(node, "attrs", None)
-        if isinstance(attrs, dict):
-            found.append(attrs)
-    return found
-
-
-def _matching_container(
-    source: dict[str, Any], targets: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    if not targets:
+def _load_real() -> tuple[Any, Any, Any] | None:
+    try:
+        from app.orchestrator.validators.preservation import (
+            PreservationRejected as _Rejected,
+            Violation as _Violation,
+            run_preservation_validators as _run,
+        )
+    except ImportError:
         return None
-    if source in targets:
-        return source
-    for key in (*_SHOT_LIST_KEYS, *_ROW_LIST_KEYS):
-        if key in source:
-            for target in targets:
-                if key in target:
-                    return target
-    return targets[0]
+    return _run, _Violation, _Rejected
 
 
-def _restore_lists(before: dict[str, Any], after: dict[str, Any], missing: set[str]) -> None:
-    for key in _SHOT_LIST_KEYS:
-        if key not in before:
-            if key in after and not isinstance(after.get(key), list):
-                after[key] = []
-            continue
-        brows = before.get(key)
-        if not isinstance(brows, list):
-            continue
-        if not any(_shot_identity(row) in missing for row in brows):
-            if isinstance(after.get(key), list):
+_REAL = _load_real()
+
+
+if _REAL is not None:
+    run_preservation_validators, Violation, PreservationRejected = _REAL
+    PRESERVATION_IMPL = "ws1"
+else:
+    PRESERVATION_IMPL = _IMPL
+
+    @dataclass(frozen=True)
+    class Violation:
+        code: str
+        severity: str
+        path: str
+        id: str
+
+        def as_dict(self) -> dict[str, str]:
+            return asdict(self)
+
+    class PreservationRejected(Exception):
+        """Отказ записи: среди нарушений есть error.
+
+        ``violations`` — полный список, включая warn. Вызывающий не коммитит.
+        """
+
+        def __init__(self, violations: list[Violation]) -> None:
+            self.violations = list(violations)
+            text = ", ".join(
+                f"{item.code}:{item.id or item.path}"
+                for item in self.violations
+                if item.severity == "error"
+            )
+            super().__init__(f"сохранность: {text}")
+
+    def run_preservation_validators(
+        before: Any,
+        after: Any,
+        ops: Any = None,
+        *,
+        mode: str = "reject",
+    ) -> list[Violation]:
+        """Прогон сохранности перед записью.
+
+        ``mode="reject"`` — любой error поднимает ``PreservationRejected``,
+        ``after`` не меняется. ``mode="soft"`` — пропавший живой кадр
+        дописывается в ``кадры[]`` с ``активен: False`` и warn
+        ``kept_inactive``. Закадр остаётся на кадре. Сцена и персонаж
+        по-прежнему отказ.
+        """
+
+        if mode not in {"reject", "soft"}:
+            raise ValueError(f"mode должен быть reject или soft, не {mode!r}")
+        violations = _collect(before, after)
+        if mode == "soft":
+            restored = _keep_missing_shots(before, after)
+            if restored:
+                parked = {fid for _, fid in restored}
+                absorbed = {
+                    "frame_deleted",
+                    "shot_dropped",
+                    "vo_on_inactive",
+                    "inactive_shot_used",
+                }
+                violations = [
+                    item
+                    for item in _collect(before, after)
+                    if not (item.id in parked and item.code in absorbed)
+                ]
+                violations.extend(
+                    Violation(code="kept_inactive", severity="warn", path=path, id=fid)
+                    for path, fid in restored
+                )
+                violations = _sorted(violations)
+                logger.warning(
+                    "WARN kept_inactive: {}",
+                    ", ".join(fid for _, fid in restored),
+                )
+        if any(item.severity == "error" for item in violations):
+            raise PreservationRejected(violations)
+        return violations
+
+    def _collect(before: Any, after: Any) -> list[Violation]:
+        found: list[Violation] = []
+        found.extend(_check_scenes(before, after))
+        found.extend(_check_frames(before, after))
+        found.extend(_check_characters(before, after))
+        return _sorted(found)
+
+    def _keep_missing_shots(before: Any, after: Any) -> list[tuple[str, str]]:
+        if not isinstance(after, dict):
+            return []
+        after_by_id, after_by_number = _index_scenes(_scenes(after))
+        restored: list[tuple[str, str]] = []
+        for scene in _scenes(before):
+            status, frames = _kadry(scene)
+            if status != "list":
                 continue
-        arows = after.get(key) if key in after else None
-        if not isinstance(arows, list):
-            restored = merge_kadry_keep_missing(brows, arows if arows is not None else brows)
-            after[key] = _mark_missing_shots(restored, missing)
-            continue
-        merged = merge_kadry_keep_missing(brows, arows)
-        head, tail = merged[: len(arows)], merged[len(arows) :]
-        after[key] = head + [row for row in tail if _shot_identity(row) in missing]
-    for key, kind in _ROW_LIST_KEYS.items():
-        if key not in before or not isinstance(before.get(key), list):
-            continue
-        brows = before[key]
-        lost = [row for row in brows if _row_identity(row, kind) in missing]
-        if not lost:
-            continue
-        arows = after.get(key) if key in after else None
-        restored = mark_shots_inactive(
-            [row for row in lost if isinstance(row, dict)],
-            where="no_deletions_guard",
-        )
-        if not isinstance(arows, list):
-            after[key] = restored
-            continue
-        arows.extend(restored)
+            sid = _scene_id(scene)
+            number = _scene_number(scene)
+            match = _match_scene(sid, number, after_by_id, after_by_number)
+            if match is None:
+                continue
+            after_status, after_frames = _kadry(match)
+            if after_status != "list" or not isinstance(after_frames, list):
+                continue
+            have = {fid for item in after_frames if (fid := _frame_id(item))}
+            entity = sid or number or ""
+            for frame in frames:
+                if _exempt(frame):
+                    continue
+                fid = _frame_id(frame)
+                if not fid or fid in have:
+                    continue
+                kept = dict(frame) if isinstance(frame, dict) else {"id": fid}
+                kept["активен"] = False
+                after_frames.append(kept)
+                have.add(fid)
+                path = f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}"
+                restored.append((path, fid))
+        return restored
 
+    def _check_scenes(before: Any, after: Any) -> list[Violation]:
+        """Пропавший id сцены — error. Смена номера при том же id — нет."""
 
-def _repair_row_list(before: list[Any], after: list[Any], missing: set[str], kind: str) -> None:
-    del kind
-    if any(
-        isinstance(row, dict) and _looks_like_shot(row) and _shot_identity(row) in missing
-        for row in before
-    ):
-        merged = merge_kadry_keep_missing(before, after)
-        head, tail = merged[: len(after)], merged[len(after) :]
-        after[:] = head + [row for row in tail if _shot_identity(row) in missing]
-    present: set[str] = set()
-    for row in after:
-        if isinstance(row, dict):
-            present |= _identities_of(row)
-    lost = [
-        row
-        for row in before
-        if isinstance(row, dict) and (_identities_of(row) & missing) and not (_identities_of(row) & present)
-    ]
-    if not lost:
-        return
-    after.extend(mark_shots_inactive(lost, where="no_deletions_guard"))
-
-
-def _mark_missing_shots(rows: Any, missing: set[str]) -> Any:
-    if not isinstance(rows, list):
-        return rows
-    marked: list[Any] = []
-    for row in rows:
-        if isinstance(row, dict) and _shot_identity(row) in missing:
-            item = dict(row)
-            item["активен"] = False
-            marked.append(item)
-            continue
-        marked.append(row)
-    return marked
-
-
-def _identities_of(node: dict[str, Any]) -> set[str]:
-    found = _own_identities(node)
-    frame = _frame_identity(node)
-    if frame:
-        found.add(frame)
-    return found
-
-
-_SHOT_MARK_KEYS = (
-    "id_shot",
-    "shot_id",
-    "сцена",
-    "номер",
-    "закадр",
-    "описание",
-    "описание_кадра",
-    "description",
-    "действие",
-)
-_NOT_SHOT_KEYS = (
-    "uuid",
-    "number",
-    "voiceover_text",
-    "attrs",
-    "text",
-    "kind",
-    "name",
-    "имя",
-    "from",
-    "to",
-    "source",
-    "target",
-    "blocks",
-    "n",
-)
-
-
-def _looks_like_shot(node: dict[str, Any]) -> bool:
-    if any(str(node.get(key) or "").strip() for key in _SHOT_MARK_KEYS):
-        return True
-    if node.get("id") in (None, ""):
-        return False
-    if any(key in node for key in _NOT_SHOT_KEYS):
-        return False
-    return True
-
-
-def _own_identities(node: dict[str, Any]) -> set[str]:
-    found: set[str] = set()
-    if _looks_like_shot(node):
-        ident = _shot_identity(node)
-        if ident:
-            found.add(ident)
-    if "text" in node or str(node.get("kind") or "") in {"voiceover", "vo_archived"}:
-        ident = _row_identity(node, "text")
-        if ident:
-            found.add(ident)
-    if "name" in node or "имя" in node:
-        ident = _row_identity(node, "character")
-        if ident:
-            found.add(ident)
-    if any(key in node for key in ("from", "to", "source", "target")):
-        ident = _row_identity(node, "edge")
-        if ident:
-            found.add(ident)
-    if not _looks_like_shot(node) and ("n" in node or node.get("номер") not in (None, "")):
-        ident = _row_identity(node, "scene")
-        if ident:
-            found.add(ident)
-    return found
-
-
-def _pair_children_list(rows: list[Any]) -> dict[str, Any]:
-    found: dict[str, Any] = {}
-    if not isinstance(rows, list):
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return []
+        after_ids = {_scene_id(scene) for scene in _scenes(after)}
+        after_ids.discard(None)
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for scene in _scenes(before):
+            sid = _scene_id(scene)
+            number = _scene_number(scene)
+            if sid:
+                if sid in after_ids or sid in seen:
+                    continue
+                seen.add(sid)
+                found.append(
+                    Violation(
+                        code="scene_deleted",
+                        severity="error",
+                        path=f"scenes/{sid}",
+                        id=sid,
+                    )
+                )
+                continue
+            if number is None:
+                continue
+            if any(_scene_number(item) == number for item in _scenes(after)):
+                continue
+            if number in seen:
+                continue
+            seen.add(number)
+            found.append(
+                Violation(
+                    code="scene_deleted",
+                    severity="error",
+                    path=f"scenes/{number}",
+                    id=number,
+                )
+            )
         return found
-    for row in rows:
-        ident = (
-            _frame_identity(row)
-            or _row_identity(row, "block")
-            or _row_identity(row, "scene")
-            or _shot_identity(row)
-        )
-        if ident and _mapping(row) is not None:
-            found.setdefault(ident, row)
-    return found
 
+    def _check_frames(before: Any, after: Any) -> list[Violation]:
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return []
+        after_by_id, after_by_number = _index_scenes(_scenes(after))
+        found: list[Violation] = []
+        seen: set[tuple[str, str]] = set()
+        for scene in _scenes(before):
+            sid = _scene_id(scene)
+            number = _scene_number(scene)
+            entity = sid or number or ""
+            status, frames = _kadry(scene)
+            match = _match_scene(sid, number, after_by_id, after_by_number)
+            after_status, after_frames = _kadry(match) if match is not None else ("absent", None)
+            if status == "nodata" or after_status == "nodata":
+                key = ("frames_no_data", entity)
+                if key not in seen:
+                    seen.add(key)
+                    found.append(
+                        Violation(
+                            code="frames_no_data",
+                            severity="warn",
+                            path=f"scenes/{entity}/кадры" if entity else "кадры",
+                            id=entity,
+                        )
+                    )
+                continue
+            if status != "list":
+                continue
+            if not isinstance(after_frames, list):
+                after_frames = []
+            kept = {fid for item in after_frames if (fid := _frame_id(item))}
+            for frame in frames:
+                if _exempt(frame):
+                    continue
+                fid = _frame_id(frame)
+                if not fid or fid in kept:
+                    continue
+                key = ("frame_deleted", fid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    Violation(
+                        code="frame_deleted",
+                        severity="error",
+                        path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
+                        id=fid,
+                    )
+                )
+        return found
 
-def _mapping(node: Any) -> dict[str, Any] | None:
-    if isinstance(node, dict):
-        return node
-    if _frame_like(node):
-        attrs = getattr(node, "attrs", None)
-        view: dict[str, Any] = {}
-        if isinstance(attrs, dict):
-            view["attrs"] = attrs
-            for key in _SHOT_LIST_KEYS:
-                if key in attrs:
-                    view[key] = attrs[key]
-        for key in ("frame_texts", "frame_edges", "characters", "texts", "edges"):
-            value = getattr(node, key, None)
+    def _check_characters(before: Any, after: Any) -> list[Violation]:
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return []
+        after_ids = {cid for item in _characters(after) if (cid := _character_id(item))}
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for character in _characters(before):
+            cid = _character_id(character)
+            if not cid or cid in after_ids or cid in seen:
+                continue
+            seen.add(cid)
+            found.append(
+                Violation(
+                    code="character_deleted",
+                    severity="error",
+                    path=f"characters/{cid}",
+                    id=cid,
+                )
+            )
+        return found
+
+    def _scenes(side: Any) -> list[dict[str, Any]]:
+        if not isinstance(side, dict):
+            return []
+        found: list[dict[str, Any]] = []
+        for key in ("scenes", "сцены"):
+            value = side.get(key)
             if isinstance(value, list):
-                view[key] = value
-        return view
-    return None
+                found.extend(item for item in value if isinstance(item, dict))
+        return found
 
+    def _characters(side: Any) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for key in ("characters", "персонажи"):
+            value = side.get(key)
+            if isinstance(value, list):
+                found.extend(item for item in value if isinstance(item, dict))
+        for scene in _scenes(side):
+            for key in ("characters", "персонажи"):
+                value = scene.get(key)
+                if isinstance(value, list):
+                    found.extend(item for item in value if isinstance(item, dict))
+        return found
 
-def _frame_like(node: Any) -> bool:
-    return not isinstance(node, (dict, list, str, bytes)) and isinstance(
-        getattr(node, "attrs", None), dict
-    )
+    def _kadry(scene: dict[str, Any] | None) -> tuple[str, Any]:
+        if not isinstance(scene, dict) or "кадры" not in scene:
+            return "absent", None
+        value = scene.get("кадры")
+        if isinstance(value, list):
+            return "list", value
+        return "nodata", value
 
+    def _index_scenes(
+        scenes: list[dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        by_id: dict[str, dict[str, Any]] = {}
+        by_number: dict[str, dict[str, Any]] = {}
+        for scene in scenes:
+            sid = _scene_id(scene)
+            number = _scene_number(scene)
+            if sid and sid not in by_id:
+                by_id[sid] = scene
+            if number and number not in by_number:
+                by_number[number] = scene
+        return by_id, by_number
 
-def _frame_identity(node: Any) -> str | None:
-    if isinstance(node, dict):
-        uid = str(node.get("uuid") or "").strip()
-        if uid:
-            return f"frame:{uid}"
-        if "number" in node or "voiceover_text" in node or isinstance(node.get("attrs"), dict):
-            raw = node.get("id")
-            if raw not in (None, ""):
-                return f"frame:{raw}"
+    def _match_scene(
+        sid: str | None,
+        number: str | None,
+        by_id: dict[str, dict[str, Any]],
+        by_number: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if sid and sid in by_id:
+            return by_id[sid]
+        if number and number in by_number:
+            return by_number[number]
         return None
-    if not _frame_like(node):
+
+    def _scene_id(scene: dict[str, Any]) -> str | None:
+        return _first(scene, ("id", "scene_id", "uuid"))
+
+    def _scene_number(scene: dict[str, Any]) -> str | None:
+        return _first(scene, ("номер", "number"))
+
+    def _frame_id(frame: Any) -> str | None:
+        if isinstance(frame, dict):
+            return _first(frame, ("id", "uuid", "frame_id", "shot_id"))
+        if isinstance(frame, (str, int)) and not isinstance(frame, bool):
+            return str(frame)
         return None
-    uid = str(getattr(node, "uuid", "") or "").strip()
-    if uid:
-        return f"frame:{uid}"
-    raw = getattr(node, "id", None)
-    if raw not in (None, ""):
-        return f"frame:{raw}"
-    return None
 
+    def _character_id(character: dict[str, Any]) -> str | None:
+        return _first(character, ("id", "character_id", "код", "code"))
 
-def _shot_identity(shot: Any) -> str | None:
-    if not isinstance(shot, dict):
+    def _first(entity: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        for key in keys:
+            value = entity.get(key)
+            if value not in (None, ""):
+                return str(value)
         return None
-    for key in ("id", "id_shot", "shot_id"):
-        val = str(shot.get(key) or "").strip()
-        if val:
-            return f"shot:{val}"
-    scene = shot.get("сцена")
-    number = shot.get("номер")
-    if scene not in (None, "") or number not in (None, ""):
-        return f"shot:{scene}:{number}"
-    blob = "|".join(
-        f"{key}={str(shot.get(key) or '').strip()}"
-        for key in ("закадр", "описание", "описание_кадра", "description", "действие")
-        if str(shot.get(key) or "").strip()
-    )
-    if not blob:
-        plain = [
-            (key, shot.get(key))
-            for key in sorted(shot)
-            if key not in _FLAG_KEYS and shot.get(key) not in (None, "", [], {})
-        ]
-        blob = repr(plain)
-    digest = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
-    return f"shot:hash:{digest}"
 
+    def _exempt(frame: Any) -> bool:
+        if not isinstance(frame, dict):
+            return False
+        from app.services.frame_tombstones import shot_is_active
 
-def _row_identity(row: Any, kind: str) -> str | None:
-    if not isinstance(row, dict):
-        return None
-    raw = row.get("id")
-    if raw not in (None, ""):
-        return f"{kind}:{raw}"
-    if kind == "text":
-        body = str(row.get("text") or "").strip()
-        if body:
-            digest = hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
-            return f"text:hash:{digest}"
-    if kind == "character":
-        name = str(row.get("name") or row.get("имя") or "").strip()
-        if name:
-            return f"character:name:{name}"
-    if kind == "edge":
-        ends = (
-            str(row.get("from") or row.get("source") or ""),
-            str(row.get("to") or row.get("target") or ""),
-            str(row.get("type") or ""),
-        )
-        if any(ends):
-            return f"edge:{ends[0]}:{ends[1]}:{ends[2]}"
-    if kind == "scene":
-        number = row.get("n") if row.get("n") not in (None, "") else row.get("номер")
-        if number not in (None, ""):
-            return f"scene:{number}"
-    return None
+        return not shot_is_active(frame)
+
+    def _sorted(items: list[Violation]) -> list[Violation]:
+        return sorted(items, key=lambda item: (item.code, item.path, item.id, item.severity))

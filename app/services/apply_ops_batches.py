@@ -1047,6 +1047,7 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
         if not isinstance(shots, list):
             continue
         uid = str(op.get("frame_uuid") or "").strip()
+        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         cell_vo = _frame_vo(by_uid.get(uid))
         cell = " ".join((cell_vo or "").split())
         if not cell:
@@ -1069,6 +1070,18 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
             if _shot_vo_chunk(shot) != (piece or "").strip():
                 shot["закадр"] = piece
                 fixed += 1
+        from app.pipeline.no_deletions_guard import run_preservation_validators
+
+        frame = by_uid.get(uid) or {}
+        number = frame.get("number")
+        if number is None:
+            number = frame.get("номер") or 0
+        run_preservation_validators(
+            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": before_rows}]},
+            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": shots}]},
+            ops,
+            mode="soft",
+        )
         if "кадры" in fields:
             fields["кадры"] = shots
         elif "shots" in fields:
@@ -2115,6 +2128,49 @@ def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(s) if isinstance(s, dict) else {"значение": s} for s in raw]
 
 
+def _preserve_pack_ops(ops: list[Any], chunk: list[dict[str, Any]]) -> None:
+    """Перед коммитом пачки: живой кадр из снимка не выпадает из кадры[]."""
+    from app.pipeline.no_deletions_guard import run_preservation_validators
+
+    by_uid = {
+        str(fr.get("uuid") or "").strip(): fr
+        for fr in chunk or []
+        if isinstance(fr, dict) and str(fr.get("uuid") or "").strip()
+    }
+    last: dict[str, dict[str, Any]] = {}
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        if not uid:
+            continue
+        if "кадры" in fields or "shots" in fields:
+            last[uid] = op
+    if not last:
+        return
+    before_scenes: list[dict[str, Any]] = []
+    after_scenes: list[dict[str, Any]] = []
+    for uid, op in last.items():
+        frame = by_uid.get(uid) or {}
+        fields = op["fields"]
+        key = "кадры" if "кадры" in fields else "shots"
+        new = fields.get(key)
+        number = frame.get("number")
+        if number is None:
+            number = frame.get("номер") or 0
+        before_scenes.append({"id": uid, "номер": number, "кадры": _frame_shot_rows(frame)})
+        after_scenes.append({"id": uid, "номер": number, "кадры": new})
+    run_preservation_validators(
+        {"сцены": before_scenes},
+        {"сцены": after_scenes},
+        ops,
+        mode="soft",
+    )
+
+
 def _frame_shot_rows(frame: dict[str, Any]) -> list[dict[str, Any]]:
     raw = frame.get("кадры")
     if not isinstance(raw, list):
@@ -3082,6 +3138,7 @@ async def run_apply_ops_batched(
             payload = dict(res.apply_ops or {})
             payload["ops"] = ops
             payload["export_xlsx"] = False
+            _preserve_pack_ops(payload["ops"], chunk)
             async with apply_lock:
                 await apply_fn(payload)
         if (footer_kind or "").strip().lower() in {

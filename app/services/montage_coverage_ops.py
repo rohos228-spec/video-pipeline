@@ -1204,6 +1204,25 @@ def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]
         _patch_kadry_item(member, **{k: v for k, v in (("роль", role), ("объект", obj)) if v})
 
 
+def _preserve_parent_kadry(parent: Any, before_rows: list[Any], kadry: Any) -> Any:
+    """Перед заменой зеркала кадры[]: пропавший живой кадр остаётся неактивным."""
+    from app.pipeline.no_deletions_guard import run_preservation_validators
+
+    if not isinstance(kadry, list):
+        return kadry
+    uid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
+    number = getattr(parent, "number", None)
+    if number is None:
+        number = 0
+    run_preservation_validators(
+        {"сцены": [{"id": uid, "номер": number, "кадры": before_rows}]},
+        {"сцены": [{"id": uid, "номер": number, "кадры": kadry}]},
+        None,
+        mode="soft",
+    )
+    return kadry
+
+
 async def apply_coverage_scene_action(
     session: AsyncSession,
     project: Project,
@@ -1258,6 +1277,10 @@ async def apply_coverage_scene_action(
     from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
 
     old_kadry = (getattr(parent, "attrs", None) or {}).get("кадры")
+    before_rows = [
+        dict(shot) if isinstance(shot, dict) else shot
+        for shot in old_kadry
+    ] if isinstance(old_kadry, list) else []
     kadry = merge_kadry_keep_missing(old_kadry, kadry)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
     layout = live_kadry
@@ -1269,7 +1292,7 @@ async def apply_coverage_scene_action(
             getattr(parent, "number", "?"),
         )
         attrs = dict(getattr(parent, "attrs", None) or {})
-        attrs["кадры"] = kadry
+        attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
         parent.attrs = attrs
         _flag_attrs(parent)
         return {
@@ -1316,7 +1339,7 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = kadry
+    attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
     parent.attrs = attrs
     _flag_attrs(parent)
 
