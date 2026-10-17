@@ -47,6 +47,12 @@
 | `node_ref.kind` | `node` / `prompt` / `params` / `report` |
 | `before` / `after` | значение до и после. Без `before` нужен `snapshot_id` |
 | `snapshot_id` | снимок прежнего значения, если `before` не передан |
+| `version` | номер версии после успешной правки, целое ≥ 1 |
+| `base_version` | версия, которую читал писатель, целое ≥ 1 |
+
+`update_report` — тот же `EditResult`, поэтому версия и база обязательны и у отчёта.
+Если `base_version` меньше текущей, данные не меняются: конверт `failed`,
+`error` равен `conflict`, HTTP 409. Это не повтор `change_id`.
 | `diff` | ровно одна форма: `unified` (текст) или `fields` (ключ → `{before, after}`) |
 | `open_url` | куда чат открывает результат |
 | `reversible` | откат тем же change_control возможен |
@@ -167,6 +173,8 @@ DOM отчёта на месте не правится.
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "node"},
     "before": null,
     "snapshot_id": "snap-13-1",
+    "version": 1,
+    "base_version": 1,
     "after": {"title": "Сцены", "group": "script_frames_qc"},
     "diff": {"fields": {"title": {"before": null, "after": "Сцены"}}},
     "open_url": "/api/projects/13",
@@ -188,6 +196,8 @@ DOM отчёта на месте не правится.
     "change_id": "orch-appr-13-2",
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "prompt"},
     "before": {"prompt_template": "было"},
+    "version": 2,
+    "base_version": 1,
     "after": {"prompt_template": "стало"},
     "diff": {"unified": "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n"},
     "open_url": "/api/projects/13",
@@ -209,6 +219,8 @@ DOM отчёта на месте не правится.
     "change_id": "orch-appr-13-3",
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "params"},
     "before": {"temperature": 0.2},
+    "version": 3,
+    "base_version": 2,
     "after": {"temperature": 0.4},
     "diff": {"fields": {"temperature": {"before": 0.2, "after": 0.4}}},
     "open_url": "/api/projects/13",
@@ -248,6 +260,8 @@ DOM отчёта на месте не правится.
     "change_id": "orch-appr-13-4",
     "node_ref": {"project_id": 13, "node_id": "7", "kind": "report"},
     "before": {"html": "<h1>Сводка</h1><p>Кадры на месте.</p>"},
+    "version": 2,
+    "base_version": 1,
     "after": {"html": "<h1>Сводка</h1><p>Кадры сверены.</p>"},
     "diff": {"unified": "--- a/report\n+++ b/report\n@@\n-<p>Кадры на месте.</p>\n+<p>Кадры сверены.</p>\n"},
     "open_url": "/api/orchestrator/reports/7",
@@ -270,6 +284,8 @@ DOM отчёта на месте не правится.
     "change_id": "orch-appr-13-5",
     "node_ref": {"project_id": 13, "node_id": "n_scene_writer", "kind": "node"},
     "before": {"source": "db", "db_version": 4},
+    "version": 5,
+    "base_version": 4,
     "after": {"source": "git", "db_version": null},
     "diff": {"fields": {"source": {"before": "db", "after": "git"}}},
     "open_url": "/api/projects/13",

@@ -131,6 +131,8 @@ class EditResult(BaseModel):
     before: Any = None
     after: Any = None
     snapshot_id: str | None = None
+    version: int = Field(ge=1)
+    base_version: int = Field(ge=1)
     diff: Diff
     open_url: str = Field(min_length=1)
     reversible: bool
@@ -390,6 +392,20 @@ _WIRE_MODELS: dict[str, type[BaseModel]] = {
     "SoftDeleteResult": SoftDeleteResult,
     "ActionResult": ActionResult,
 }
+
+
+EDIT_CONFLICT_HTTP = 409
+
+
+def reject_stale_edit(*, base_version: int, current_version: int) -> ActionResult:
+    """Устаревшая base_version не меняет данные.
+
+    Конверт ``status=failed``, ``error=conflict``. HTTP-статус — 409.
+    """
+
+    if base_version >= current_version:
+        raise ValueError("версия не устарела")
+    return ActionResult(status="failed", result=None, error="conflict")
 
 
 def export_action_result_schema() -> dict[str, Any]:

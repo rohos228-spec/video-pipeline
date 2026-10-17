@@ -26,7 +26,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "712645e80e6b2447bf49a440d9b74a3618c2bd9bdf98f532420912de3861d290",
+    "ws2-r2.0": "7973fdea41ecdb4b4a04bc8c094e3d79e288f45be2590d8829ef298e66ee7bd8",
 }
 
 
@@ -154,9 +154,48 @@ def _edit_payload(**extra: object) -> dict:
         "diff": {"unified": "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n"},
         "open_url": "/api/projects/1",
         "reversible": True,
+        "version": 2,
+        "base_version": 1,
     }
     payload.update(extra)
     return payload
+
+
+def test_edit_result_has_required_version() -> None:
+    missing = _edit_payload(before={"prompt_template": "было"})
+    missing.pop("version")
+    missing.pop("base_version")
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(missing)
+    edited = EditResult.model_validate(
+        _edit_payload(before={"prompt_template": "было"}, version=2, base_version=1)
+    )
+    report = EditResult.model_validate(
+        _edit_payload(
+            action="update_report",
+            before={"html": "<p>a</p>"},
+            node_ref={"project_id": 1, "node_id": "7", "kind": "report"},
+            version=4,
+            base_version=3,
+        )
+    )
+    assert edited.version == 2 and edited.base_version == 1
+    assert report.action == "update_report"
+    assert report.version == 4 and report.base_version == 3
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(before={"a": 1}, version=0, base_version=1))
+
+
+def test_edit_stale_version_returns_409() -> None:
+    from app.orchestrator.actions.contracts import EDIT_CONFLICT_HTTP, reject_stale_edit
+
+    assert EDIT_CONFLICT_HTTP == 409
+    failed = reject_stale_edit(base_version=1, current_version=3)
+    assert failed.status == "failed"
+    assert failed.error == "conflict"
+    assert failed.result is None
+    with pytest.raises(ValueError):
+        reject_stale_edit(base_version=3, current_version=3)
 
 
 def test_edit_result_requires_before_or_snapshot() -> None:
