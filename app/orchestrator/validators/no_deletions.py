@@ -236,10 +236,10 @@ def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
 
 
 def check_scenes(before: Any, after: Any, ops: Any = None) -> list[Violation]:
-    """Сцена на месте, если живы её id и номер. Архив и ``активен: False`` допустимы.
+    """Сцена на месте, если жив её id. Архив и ``активен: False`` допустимы.
 
-    Снимок только читается. ``ops`` сюда не пишет: удаление сцены видно по
-    пропаже id или номера между ``before`` и ``after``.
+    Сопоставление по id. Номер смотрим только у сцены без id: смена номера
+    при том же id — не ``scene_deleted``. Снимок только читается.
     """
 
     del ops
@@ -261,10 +261,7 @@ def check_scenes(before: Any, after: Any, ops: Any = None) -> list[Violation]:
         path = f"scenes/{entity}" if entity else "scenes"
         lost = False
         if sid:
-            same = by_id.get(sid) or []
-            if not same:
-                lost = True
-            elif number is not None and all(scene_number(item) != number for item in same):
+            if not by_id.get(sid):
                 lost = True
         elif number is not None and not any(scene_number(item) == number for item in after_scenes):
             lost = True
