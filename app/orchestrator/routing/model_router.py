@@ -179,14 +179,15 @@ def estimate_usage(
 
 
 def _abort_should_bill(exc: BaseException) -> bool:
-    """Таймаут, обрыв, cancel и пустой completion — платные. Промах фикстуры — нет."""
-    if isinstance(exc, FixtureMiss):
-        return False
+    """Списываем обрыв только если провайдер уже отдал тело или пустой 200.
+
+    ConnectError, таймаут до первого байта и любой статус >=400 не
+    списываются: иначе авария 52pay съедает $10 и гасит фолбэк на Kie.
+    Пустой completion (``empty …``, это ответ 200) по-прежнему платный.
+    """
     if isinstance(exc, RouterError):
         return False
-    if isinstance(exc, ProviderError):
-        return bool(exc.retryable) or _is_empty_completion(exc)
-    return True
+    return bool(getattr(exc, "billable", False))
 
 
 def _partial_text(exc: BaseException) -> str:
@@ -200,16 +201,6 @@ def _partial_model(exc: BaseException, hop: Hop) -> str:
     partial = getattr(exc, "partial", None)
     model = "" if partial is None else str(getattr(partial, "model", "") or "")
     return model or hop.model
-
-
-def _is_empty_completion(exc: BaseException) -> bool:
-    """Пустой completion: провайдер мог взять деньги за промпт и reasoning."""
-    if "empty" in str(exc).lower():
-        return True
-    partial = getattr(exc, "partial", None)
-    if partial is None:
-        return False
-    return not str(getattr(partial, "text", "") or "").strip()
 
 
 def _usage_from_partial(partial: CompletionResult | None) -> LLMUsage:
