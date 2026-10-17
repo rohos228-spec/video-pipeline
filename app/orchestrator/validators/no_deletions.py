@@ -6,6 +6,8 @@ from typing import Any
 
 from app.orchestrator.validators.entities import (
     archived_frame_ids,
+    character_id,
+    collect_characters,
     collect_scenes,
     frame_id,
     frame_is_exempt,
@@ -117,6 +119,50 @@ def _diff(before: list[Any], after: list[Any]) -> dict[str, Any]:
         "count_decreased": len(after) < len(before),
         "missing_ids": missing,
     }
+
+
+_DELETE_VERBS = {"delete", "remove", "drop", "удалить"}
+_CHAR_KINDS = {"character", "characters", "персонаж", "персонажи"}
+
+
+def check_characters(before: Any, after: Any, ops: Any = None) -> list[Violation]:
+    """Персонаж остаётся в снимке. ``archived`` допустим, op удаления — нет."""
+
+    violations: list[Violation] = []
+    seen: set[tuple[str, str, str]] = set()
+    if before is not None and after is not None:
+        after_ids = {
+            cid for item in collect_characters(after) if (cid := character_id(item))
+        }
+        for character in collect_characters(before):
+            cid = character_id(character)
+            if not cid or cid in after_ids:
+                continue
+            _append(
+                violations,
+                seen,
+                Violation(
+                    code="character_deleted",
+                    severity="error",
+                    path=f"characters/{cid}",
+                    id=cid,
+                ),
+            )
+    for index, op in enumerate(list(ops or [])):
+        cid = _character_delete_id(op)
+        if cid is None:
+            continue
+        _append(
+            violations,
+            seen,
+            Violation(
+                code="character_deleted",
+                severity="error",
+                path=f"ops/{index}",
+                id=cid,
+            ),
+        )
+    return sorted_violations(violations)
 
 
 def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
@@ -260,6 +306,28 @@ def _match_scene(
 
 def _anonymous_live(frames: list[Any]) -> int:
     return sum(1 for frame in frames if frame_id(frame) is None and not frame_is_exempt(frame))
+
+
+def _character_delete_id(op: Any) -> str | None:
+    if not isinstance(op, dict):
+        return None
+    verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+    kind = str(op.get("entity") or op.get("target") or op.get("kind") or "").strip().casefold()
+    if verb in {"archive", "archived", "архив"} or verb.startswith("archive"):
+        return None
+    is_delete = (
+        verb in _DELETE_VERBS
+        or verb.startswith("delete")
+        or verb.startswith("remove")
+        or verb.startswith("удал")
+    )
+    is_character = kind in _CHAR_KINDS or "character" in verb or "персонаж" in verb
+    if not (is_delete and is_character):
+        return None
+    for key in ("id", "character_id", "entity_id"):
+        if op.get(key) not in (None, ""):
+            return str(op[key])
+    return ""
 
 
 def _append(violations: list[Violation], seen: set[tuple[str, str, str]], item: Violation) -> None:
