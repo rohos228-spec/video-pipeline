@@ -976,7 +976,8 @@ def test_deleted_first_shot_stays_inactive_when_full_vo_lands(monkeypatch, warn_
         [foreign, {"id": "b", "закадр": ""}],
         "Целое предложение сцены.",
     )
-    assert out[0]["закадр"] == "Целое предложение сцены."
+    assert out[0]["закадр"] == ""
+    assert out[1]["закадр"] == "Целое предложение сцены."
     assert out[0]["удалён"] is True
     assert out[0]["карантин"] is True
     assert out[0]["активен"] is False

@@ -1968,7 +1968,9 @@ def rebalance_shot_vo(shots: list[Any]) -> list[str]:
     (2) кусок >80 — режем по границе слова, хвост/голову на соседний кадр. Только если склейка
     непустых кусков не меняется (между донором и приёмником нет непустого закадра) и кусок ≤80.
     Иначе оставляем как есть (неизбежно) — гейт сообщит."""
-    rows = [s for s in shots if isinstance(s, dict)]
+    from app.services.frame_tombstones import shot_is_active
+
+    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
     notes: list[str] = []
 
     def vo(s: dict[str, Any]) -> str:
