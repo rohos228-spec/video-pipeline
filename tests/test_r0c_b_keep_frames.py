@@ -243,6 +243,60 @@ def test_repair_shots_keeps_anchor_order_when_input_is_scrambled() -> None:
     assert not any("повтор действия" in item for item in hard)
 
 
+def test_repair_angles_use_last_live_shot_and_second_pass_is_stable() -> None:
+    """Помеченный кадр между двумя живыми не сдвигает точку отсчёта 30°."""
+    from app.services.montage_scene_improve import qc_reasons, repair_shots
+
+    units = [{"n": 1, "бюджет": 3, "закадр": "Он стоит у стола и берёт папку."}]
+
+    def row(sid: str, action: str, vo: str, plan: str, angle: str, *, marked: bool = False) -> dict:
+        shot = {
+            "id": sid,
+            "якорь_n": 1,
+            "действие": action,
+            "закадр": vo,
+            "роль": "действие",
+            "план": plan,
+            "ракурс": angle,
+            "объект": "тело",
+            "движение": "статика",
+            "стык": "cut",
+            "порядок": 1,
+            "место": "дом",
+        }
+        if marked:
+            shot["карантин"] = True
+            shot["пометка"] = "повтор — кадр сохранён"
+            shot["активен"] = False
+        return shot
+
+    shots = [
+        row("a", "стоит у стола", "Он стоит у стола", "СРЕДНИЙ", "фронт"),
+        row("m", "смотрит в сторону", "мимо", "КРУПНЫЙ", "сверху", marked=True),
+        row("b", "берёт папку", "и берёт папку.", "КРУПНЫЙ", "фронт"),
+    ]
+    repair_shots(shots, units)
+    assert [s["id"] for s in shots] == ["a", "m", "b"]
+    assert shots[1]["карантин"] is True
+    assert shots[1]["ракурс"] == "сверху"
+    hard, _soft = qc_reasons(shots, units)
+    assert hard == []
+    assert shots[0]["ракурс"] == "фронт"
+    assert shots[2]["ракурс"] != shots[0]["ракурс"]
+    snapshot = [
+        (s["id"], s.get("план"), s.get("ракурс"), s.get("закадр"), s.get("карантин"), s.get("пометка"))
+        for s in shots
+    ]
+    second = repair_shots(shots, units)
+    assert [
+        (s["id"], s.get("план"), s.get("ракурс"), s.get("закадр"), s.get("карантин"), s.get("пометка"))
+        for s in shots
+    ] == snapshot
+    assert not any("30°" in item for item in second)
+    hard_again, _soft_again = qc_reasons(shots, units)
+    assert hard_again == []
+
+
 def test_assign_scene_vo_keeps_shots_when_voiceover_empty(warn_log) -> None:
     from app.services.shot_templates import _assign_scene_vo, fill_kadry_from_catalog
 
