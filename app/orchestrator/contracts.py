@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -63,6 +64,9 @@ EVENT_TYPES = (
     "task_failed",
     "classification",
     "message",
+    "kill_switch",
+    "paid_retry_blocked",
+    "step_skipped",
 )
 
 
@@ -391,20 +395,36 @@ class OrchEvent(BaseModel):
 
 
 class ClassifyResult(BaseModel):
-    """Ответ ``router.classify`` (WS5): tier, mode, deterministic."""
+    """Ответ ``router.classify`` (WS5): tier, mode, deterministic.
+
+    ``kill_switch`` — аварийный стоп §3.3: тот же режим interrupt, плюс запрет
+    новых действий и взвод стоп-ключа only_node. Поле опционально для WS5.
+    """
 
     tier: str
     mode: MessageMode
     deterministic: bool
     confidence: float = 1.0
+    kill_switch: bool = False
 
 
 class PlanStep(BaseModel):
+    """Шаг плана R3: whitelist-действие, параметры, ожидаемый результат.
+
+    ``risk`` medium/high останавливает исполнителя на ``waiting_approval``
+    (reason=risk) до выполнения шага. ``parallel_group`` — независимые
+    read-only шаги с одним именем группы можно выполнять параллельно.
+    ``estimated_cost`` — прогноз spend для критика, не фактическая оплата.
+    """
+
     action: str
     params: dict[str, Any] = Field(default_factory=dict)
     expected: str = ""
     paid: bool = False
     mutating: bool = False
+    risk: str = "none"
+    parallel_group: str | None = None
+    estimated_cost: float = 0.0
 
 
 class SpendSnapshot(BaseModel):
@@ -482,9 +502,21 @@ class ModelRouter(Protocol):
         """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``."""
 
 
+class Retriever(Protocol):
+    """WS6: ``rag.retrieve``. Реализация не импортируется, только этот контракт."""
+
+    async def retrieve(
+        self,
+        query: str,
+        corpora: list[str] | None = None,
+        top_k: int = 8,
+    ) -> list[Chunk]:
+        """Чанки правил и истории. Planner кладёт корпус ``rules`` в system."""
+
+
 class Planner(Protocol):
     async def make_plan(self, goal: str, context: str = "") -> list[PlanStep]:
-        """Заглушка в R1, реальный planner — R3."""
+        """План через router + правила из ``rag.retrieve``."""
 
 
 class Critic(Protocol):
@@ -494,7 +526,65 @@ class Critic(Protocol):
 
 class StepExecutor(Protocol):
     async def run(self, step: PlanStep, ctx: dict[str, Any]) -> ActionResult:
-        """Исполнение одного шага. В R1 — обёртка над моком ``actions.execute``."""
+        """Один шаг только через ``actions.execute``."""
+
+
+# Правило 9: перед run_node обязателен verify_code_state
+# (read_pipeline_code + get_node). Имена действий — мини-RFC для WS1/WS2.
+RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step.run_step"})
+DELETION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "montage.delete_frame",
+        "montage.delete_child_frame",
+        "montage.delete_image",
+        "montage.delete_video",
+        "montage.delete_manual_ref",
+    }
+)
+APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
+PIPELINE_FORECAST_LIMIT_USD = 40.0
+
+
+def is_deletion_action(action: str) -> bool:
+    """Удаление кадра или сцены. Синтетический delete_frame обязан блокироваться."""
+    name = (action or "").strip()
+    if name in DELETION_ACTIONS:
+        return True
+    lowered = name.lower()
+    return "delete_frame" in lowered or "delete_scene" in lowered
+
+
+def plan_deletions(plan: list[PlanStep]) -> list[str]:
+    return [step.action for step in plan if is_deletion_action(step.action)]
+
+
+def plan_missing_verify(plan: list[PlanStep]) -> bool:
+    """True, если run_node стоит раньше verify_code_state (или пары read+get_node)."""
+    for index, step in enumerate(plan):
+        if step.action not in RUN_NODE_ACTIONS:
+            continue
+        prior = plan[:index]
+        if any(item.action == "verify_code_state" for item in prior):
+            continue
+        seen = {item.action for item in prior}
+        if "read_pipeline_code" in seen and "get_node" in seen:
+            continue
+        return True
+    return False
+
+
+def forecast_cost(plan: list[PlanStep]) -> float:
+    total = 0.0
+    for step in plan:
+        total += float(step.estimated_cost or 0)
+        total += float(step.params.get("estimated_cost") or 0)
+    return total
+
+
+def paid_step_identity(action: str, params: dict[str, Any]) -> str:
+    """Ключ paid-retry: то же действие и те же параметры без служебных ``_``-полей."""
+    kept = {key: value for key, value in params.items() if not str(key).startswith("_")}
+    return action + "\n" + json.dumps(kept, ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -926,4 +1016,10 @@ def export_contract_schemas() -> dict[str, Any]:
             "EventType": list(EVENT_TYPES),
         },
         "fsm": {src.value: sorted(dst.value for dst in allowed) for src, allowed in FSM_TRANSITIONS.items()},
+        "rules": {
+            "run_node_actions": sorted(RUN_NODE_ACTIONS),
+            "deletion_actions": sorted(DELETION_ACTIONS),
+            "approval_risks": sorted(APPROVAL_RISKS),
+            "pipeline_forecast_limit_usd": PIPELINE_FORECAST_LIMIT_USD,
+        },
     }

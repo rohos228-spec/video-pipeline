@@ -1,17 +1,24 @@
 """Супервизор: единственная точка записи статусов FSM.
 
-R1: planner / critic / executor — заглушки. Есть cancel-флаг и пауза
-на границе шага. Неплатный шаг отменяется через ``asyncio.Task.cancel``,
-платный не рвётся mid-flight (``asyncio.shield``), пауза — после него.
+R3: planner → dry-run валидаторов → critic (≤2 revise, затем
+waiting_approval reason=critic_escalation) → executor только через
+actions.execute. Read-only одной parallel_group идут параллельно,
+мутации — последовательно. Чекпоинт после каждой мутации. Риск
+medium/high — approval_required до шага. Paid-retry guard не даёт
+повторно оплатить тот же шаг. Interrupt отменяет неплатный ход,
+платный ждёт границы. Kill switch запрещает новые действия и взводит
+стоп-ключ, не разрывая платный шаг mid-flight.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from loguru import logger
 
+from app.orchestrator.agents.executor import run_many
 from app.orchestrator.agents.stubs import (
     ActionBackedExecutor,
     StubCritic,
@@ -20,17 +27,22 @@ from app.orchestrator.agents.stubs import (
     UnlinkedValidators,
 )
 from app.orchestrator.agents.task_store import TaskStore
-from app.orchestrator.agents.validator_call import run_validator
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
+    APPROVAL_RISKS,
     TERMINAL_STATUSES,
     CheckpointData,
     PlanStep,
     SpendSnapshot,
     TaskStatus,
     can_transition,
+    paid_step_identity,
+    plan_deletions,
+    plan_missing_verify,
 )
 from app.orchestrator.events import EventBus
+
+_DRY_RUN = ("plan_sanity", "no_deletions", "spend_guard")
 
 
 class InvalidTransition(RuntimeError):
@@ -62,18 +74,19 @@ class Supervisor:
         self._unpaid: dict[str, asyncio.Task[Any]] = {}
         self._cancel: set[str] = set()
         self._pause: set[str] = set()
+        self._kill: set[str] = set()
         self._steer: dict[str, str] = {}
         self._approval: dict[str, str] = {}
         self._session_task: dict[str, int] = {}
         self._change_ids: dict[int, list[str]] = {}
         self._context: dict[int, str] = {}
-        self._step_recorded: set[int] = set()
-        self._paid_open: set[int] = set()
-        self._shield_orphaned: set[int] = set()
+        self._risk_granted: set[tuple[int, int]] = set()
+        self._paid_done: dict[int, set[str]] = {}
 
     async def start_task(self, session_id: str, goal: str) -> int:
         self._cancel.discard(session_id)
         self._pause.discard(session_id)
+        self._kill.discard(session_id)
         self._steer.pop(session_id, None)
         self._approval.pop(session_id, None)
         task_id = await self._set_status(
@@ -85,6 +98,7 @@ class Supervisor:
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = []
         self._context[task_id] = ""
+        self._paid_done[task_id] = set()
         self._runs[task_id] = asyncio.create_task(
             self._drive(task_id, session_id, goal),
             name=f"orch-task-{task_id}",
@@ -102,13 +116,7 @@ class Supervisor:
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         session_id = str(row["session_id"])
-        self._cancel.discard(session_id)
-        self._pause.discard(session_id)
-        self._steer.pop(session_id, None)
-        self._approval.pop(session_id, None)
-        self._session_task[session_id] = task_id
-        self._change_ids[task_id] = list(data.change_ids)
-        self._context[task_id] = data.context
+        self._arm_resume(session_id, task_id, data)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         self._runs[task_id] = asyncio.create_task(
             self._execute_plan(
@@ -121,6 +129,35 @@ class Supervisor:
             name=f"orch-resume-{task_id}",
         )
 
+    async def grant_approval(self, session_id: str) -> None:
+        """Продолжить с чекпоинта после waiting_approval. Риск этого шага уже принят."""
+        task_id = self._session_task.get(session_id)
+        if task_id is None:
+            raise LookupError(session_id)
+        if self._status(task_id) is not TaskStatus.waiting_approval:
+            raise InvalidTransition("grant_approval только из waiting_approval")
+        data = self.checkpoints.load_latest(task_id)
+        if data is None:
+            raise LookupError(f"нет чекпоинта для задачи {task_id}")
+        self._risk_granted.add((task_id, int(data.position)))
+        self._arm_resume(session_id, task_id, data)
+        await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
+        self._runs[task_id] = asyncio.create_task(
+            self._execute_plan(task_id, session_id, list(data.plan), int(data.position), goal),
+            name=f"orch-approve-{task_id}",
+        )
+
+    def _arm_resume(self, session_id: str, task_id: int, data: CheckpointData) -> None:
+        self._cancel.discard(session_id)
+        self._pause.discard(session_id)
+        self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
+        self._session_task[session_id] = task_id
+        self._change_ids[task_id] = list(data.change_ids)
+        self._context[task_id] = data.context
+        self._remember_paid(task_id)
+
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть."""
         self._cancel.add(session_id)
@@ -130,6 +167,20 @@ class Supervisor:
         inflight = self._unpaid.get(session_id)
         if inflight is not None and not inflight.done():
             inflight.cancel()
+
+    def request_kill(self, session_id: str) -> None:
+        """Kill switch §3.3: неплатное — сразу, новые действия запрещены, стоп-ключ взведён.
+
+        Платный шаг этим вызовом не обрывается: пауза на его границе.
+        """
+        self._kill.add(session_id)
+        self.request_cancel(session_id)
+        task_id = self._session_task.get(session_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._publish_kill(session_id, task_id))
 
     def request_pause(self, session_id: str) -> None:
         self._pause.add(session_id)
@@ -154,6 +205,14 @@ class Supervisor:
     def active_task(self, session_id: str) -> int | None:
         return self._session_task.get(session_id)
 
+    async def _publish_kill(self, session_id: str, task_id: int | None) -> None:
+        await self.bus.publish(
+            session_id,
+            "kill_switch",
+            {"stop_key_set": True, "only_node": True, "task_id": task_id},
+            task_id=task_id,
+        )
+
     async def _drive(self, task_id: int, session_id: str, goal: str) -> None:
         try:
             plan = await self._plan_and_review(task_id, session_id, goal, self._context.get(task_id, ""))
@@ -162,10 +221,6 @@ class Supervisor:
             await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
             await self._execute_plan(task_id, session_id, plan, 0, goal)
         except asyncio.CancelledError:
-            if task_id in self._paid_open or task_id in self._shield_orphaned:
-                if asyncio.current_task() and asyncio.current_task().cancelling():
-                    raise
-                return
             current = self._status(task_id)
             if current not in TERMINAL_STATUSES:
                 await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
@@ -196,12 +251,15 @@ class Supervisor:
         context: str,
     ) -> list[PlanStep] | None:
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = list(await self.planner.make_plan(goal, context=context))
+        plan = list(await self._cancellable(session_id, self.planner.make_plan(goal, context=context)))
         self.tasks.save_plan(task_id, plan)
         revises = 0
         while True:
+            blocked = await self._screen_plan(task_id, session_id, plan)
+            if blocked:
+                return None
             await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
-            verdict = str(await self.critic.review(plan, context=context))
+            verdict = str(await self._cancellable(session_id, self.critic.review(plan, context=context)))
             if verdict == "approve":
                 return plan
             if verdict == "reject":
@@ -209,13 +267,32 @@ class Supervisor:
                 return None
             revises += 1
             if revises > 2:
-                await self._escalate(task_id, session_id, "revise_limit")
+                await self._escalate(task_id, session_id, "critic_escalation")
                 return None
-            context = (context + "\n" + f"critic: {verdict}").strip()
-            self._context[task_id] = context
             await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-            plan = list(await self.planner.make_plan(goal, context=context))
+            plan = list(
+                await self._cancellable(
+                    session_id,
+                    self.planner.make_plan(goal, context=context or "revise"),
+                )
+            )
             self.tasks.save_plan(task_id, plan)
+
+    async def _screen_plan(self, task_id: int, session_id: str, plan: list[PlanStep]) -> bool:
+        """Dry-run валидаторов и локальные правила 9 / запрет удалений. True — план отклонён."""
+        if not plan:
+            await self._escalate(task_id, session_id, "plan_sanity")
+            return True
+        if not await self._dry_run(task_id, session_id, plan):
+            await self._escalate(task_id, session_id, "validator_blocked")
+            return True
+        if plan_deletions(plan):
+            await self._escalate(task_id, session_id, "deletion_blocked")
+            return True
+        if plan_missing_verify(plan):
+            await self._escalate(task_id, session_id, "plan_sanity")
+            return True
+        return False
 
     async def _execute_plan(
         self,
@@ -225,15 +302,16 @@ class Supervisor:
         start: int,
         goal: str,
     ) -> None:
+        self._remember_paid(task_id)
         index = start
         while index < len(plan):
             if await self._hold_for_approval(task_id, session_id, plan, index):
                 return
-            if session_id in self._pause:
+            if session_id in self._pause and session_id not in self._kill:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
                 return
-            if session_id in self._cancel:
+            if session_id in self._cancel or session_id in self._kill:
                 await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
                 return
             if session_id in self._steer:
@@ -243,53 +321,63 @@ class Supervisor:
                 plan, index = steered
                 continue
 
-            step = plan[index]
-            if step.paid:
+            batch = _readonly_batch(plan, index)
+            step = batch[0]
+            if step.risk in APPROVAL_RISKS and (task_id, index) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
-            if step.mutating and not await self._validate(task_id, session_id, step):
-                await self._set_status(
+                await self._escalate(
                     task_id,
-                    TaskStatus.failed,
-                    session_id=session_id,
-                    error="validator_blocked",
-                )
-                await self.bus.publish(
                     session_id,
-                    "task_failed",
-                    {"error": "validator_blocked"},
-                    task_id=task_id,
+                    "risk",
+                    extra={"action": step.action, "risk": step.risk},
                 )
                 return
 
-            await self.bus.publish(
-                session_id,
-                "step_started",
-                {"position": index, "action": step.action, "paid": step.paid},
-                task_id=task_id,
-            )
-            step_id = self.tasks.insert_step(task_id, self._next_step_position(task_id), step)
-            try:
-                result = await self._run_one(
+            skip = self._skip_reason(task_id, step) if len(batch) == 1 else None
+            if skip:
+                await self.bus.publish(
                     session_id,
-                    step,
-                    {"task_id": task_id, "session_id": session_id},
+                    "paid_retry_blocked" if skip == "paid_retry" else "step_skipped",
+                    {"position": index, "action": step.action, "reason": skip},
                     task_id=task_id,
-                    step_id=step_id,
-                    plan=plan,
-                    index=index,
                 )
+                index += 1
+                continue
+
+            if step.paid:
+                await self._checkpoint(task_id, session_id, plan, index)
+            for item in batch:
+                if item.mutating and not await self._validate(task_id, session_id, item, "before"):
+                    await self._fail_validation(task_id, session_id)
+                    return
+
+            ctx = {"task_id": task_id, "session_id": session_id}
+            started: list[tuple[PlanStep, int]] = []
+            db_pos = self._next_step_position(task_id)
+            for offset, item in enumerate(batch):
+                await self.bus.publish(
+                    session_id,
+                    "step_started",
+                    {"position": index + offset, "action": item.action, "paid": item.paid},
+                    task_id=task_id,
+                )
+                started.append((item, self.tasks.insert_step(task_id, db_pos + offset, item)))
+            try:
+                if len(batch) == 1:
+                    results = [await self._run_one(session_id, batch[0], ctx)]
+                else:
+                    results = await self._run_parallel(session_id, batch, ctx)
             except asyncio.CancelledError:
-                if step.paid:
-                    self._shield_orphaned.add(task_id)
-                    raise
-                self.tasks.finish_step(step_id, "cancelled", None, 0.0)
+                for _, step_id in started:
+                    self.tasks.finish_step(step_id, "cancelled", None, 0.0)
                 current = self._status(task_id)
                 if current not in TERMINAL_STATUSES:
                     await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
                 return
             except Exception:
                 logger.exception("orch step {} failed", step.action)
-                self.tasks.finish_step(step_id, "failed", None, 0.0)
+                for _, step_id in started:
+                    self.tasks.finish_step(step_id, "failed", None, 0.0)
                 await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="step_failed")
                 await self.bus.publish(
                     session_id,
@@ -299,27 +387,27 @@ class Supervisor:
                 )
                 return
 
-            if self._claim_step(step_id):
-                self._write_step_done(task_id, step, step_id, result)
-            await self.bus.publish(
-                session_id,
-                "step_finished",
-                {
-                    "position": index,
-                    "action": step.action,
-                    "ok": result.ok,
-                    "change_id": result.change_id,
-                },
-                task_id=task_id,
-            )
-            index += 1
-            if step.mutating or step.paid:
+            paid_in_batch = False
+            for offset, (item, result) in enumerate(zip(started, results, strict=True)):
+                done_step, step_id = item
+                await self._record(task_id, session_id, done_step, step_id, result, index + offset)
+                if done_step.paid:
+                    paid_in_batch = True
+                    self._paid_done.setdefault(task_id, set()).add(
+                        paid_step_identity(done_step.action, done_step.params)
+                    )
+                if done_step.mutating and not await self._validate(task_id, session_id, done_step, "after"):
+                    await self._fail_validation(task_id, session_id)
+                    return
+
+            index += len(batch)
+            if any(done.mutating or done.paid for done, _ in started):
                 await self._checkpoint(task_id, session_id, plan, index)
             else:
                 self.tasks.mirror_progress(task_id, plan, index, self._spend(task_id))
 
-            if session_id in self._cancel:
-                if step.paid:
+            if session_id in self._cancel or session_id in self._kill:
+                if paid_in_batch:
                     await self._checkpoint(task_id, session_id, plan, index)
                     await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
                 else:
@@ -348,49 +436,20 @@ class Supervisor:
         self._context[task_id] = ctx
         await self._checkpoint(task_id, session_id, plan, index)
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        revised = list(await self.planner.make_plan(goal, context=ctx))
+        revised = list(await self._cancellable(session_id, self.planner.make_plan(goal, context=ctx)))
         self.tasks.save_plan(task_id, revised, position=0)
+        if await self._screen_plan(task_id, session_id, revised):
+            return None
         await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
-        verdict = str(await self.critic.review(revised, context=ctx))
+        verdict = str(await self._cancellable(session_id, self.critic.review(revised, context=ctx)))
         if verdict != "approve":
             await self._escalate(task_id, session_id, "steer_not_approved")
             return None
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         return revised, 0
 
-    async def _run_one(
-        self,
-        session_id: str,
-        step: PlanStep,
-        ctx: dict[str, Any],
-        *,
-        task_id: int,
-        step_id: int,
-        plan: list[PlanStep],
-        index: int,
-    ) -> Any:
-        async def _call() -> Any:
-            return await self.executor.run(step, ctx)
-
-        if step.paid:
-            inner: asyncio.Task[Any] = asyncio.create_task(_call())
-            self._paid_open.add(task_id)
-            inner.add_done_callback(
-                lambda done: self._on_shield_done(
-                    done,
-                    task_id=task_id,
-                    session_id=session_id,
-                    step=step,
-                    step_id=step_id,
-                    plan=plan,
-                    index=index,
-                )
-            )
-            try:
-                return await asyncio.shield(inner)
-            finally:
-                self._paid_open.discard(task_id)
-        inner = asyncio.create_task(_call())
+    async def _cancellable(self, session_id: str, awaitable: Any) -> Any:
+        inner: asyncio.Task[Any] = asyncio.create_task(awaitable)
         self._unpaid[session_id] = inner
         try:
             return await inner
@@ -398,59 +457,79 @@ class Supervisor:
             if self._unpaid.get(session_id) is inner:
                 self._unpaid.pop(session_id, None)
 
-    def _on_shield_done(
+    async def _run_one(self, session_id: str, step: PlanStep, ctx: dict[str, Any]) -> Any:
+        async def _call() -> Any:
+            return await self.executor.run(step, ctx)
+
+        if step.paid:
+            inner: asyncio.Task[Any] = asyncio.create_task(_call())
+            return await asyncio.shield(inner)
+        return await self._cancellable(session_id, _call())
+
+    async def _run_parallel(self, session_id: str, steps: list[PlanStep], ctx: dict[str, Any]) -> list[Any]:
+        return await self._cancellable(session_id, run_many(self.executor, steps, ctx))
+
+    async def _validate(self, task_id: int, session_id: str, step: PlanStep, phase: str) -> bool:
+        project_id = int(step.params.get("project_id") or 0)
+        names = ("no_deletions", "plan_sanity", "spend_guard") if phase == "after" else ("plan_sanity", "no_deletions")
+        for name in names:
+            result = await self.validators.run(
+                name,
+                project_id,
+                {"action": step.action, "task_id": task_id, "phase": phase},
+            )
+            await self.bus.publish(
+                session_id,
+                "validator_result",
+                result.model_dump(by_alias=True),
+                task_id=task_id,
+            )
+            if not bool(result.passed) and bool(result.blocking):
+                return False
+        return True
+
+    async def _dry_run(self, task_id: int, session_id: str, plan: list[PlanStep]) -> bool:
+        project_id = 0
+        for step in plan:
+            if step.params.get("project_id"):
+                project_id = int(step.params["project_id"])
+                break
+        payload = {"phase": "dry_run", "plan": [step.model_dump() for step in plan], "task_id": task_id}
+        for name in _DRY_RUN:
+            result = await self.validators.run(name, project_id, payload)
+            await self.bus.publish(
+                session_id,
+                "validator_result",
+                result.model_dump(by_alias=True),
+                task_id=task_id,
+            )
+            if not bool(result.passed) and bool(result.blocking):
+                return False
+        return True
+
+    async def _fail_validation(self, task_id: int, session_id: str) -> None:
+        await self._set_status(
+            task_id,
+            TaskStatus.failed,
+            session_id=session_id,
+            error="validator_blocked",
+        )
+        await self.bus.publish(
+            session_id,
+            "task_failed",
+            {"error": "validator_blocked"},
+            task_id=task_id,
+        )
+
+    async def _record(
         self,
-        done: asyncio.Task[Any],
-        *,
         task_id: int,
         session_id: str,
         step: PlanStep,
         step_id: int,
-        plan: list[PlanStep],
-        index: int,
-    ) -> None:
-        """Сторож: платный шаг дожил после отмены внешней задачи — записать результат."""
-        if done.cancelled():
-            return
-        try:
-            exc = done.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            return
-        if task_id not in self._shield_orphaned:
-            return
-        if not self._claim_step(step_id):
-            return
-        self._write_step_done(task_id, step, step_id, done.result())
-        loop = asyncio.get_running_loop()
-        loop.create_task(
-            self._pause_after_shield(task_id, session_id, plan, index + 1),
-            name=f"orch-shield-{task_id}",
-        )
-
-    async def _pause_after_shield(
-        self,
-        task_id: int,
-        session_id: str,
-        plan: list[PlanStep],
+        result: Any,
         position: int,
     ) -> None:
-        self._shield_orphaned.discard(task_id)
-        current = self._status(task_id)
-        if current in TERMINAL_STATUSES:
-            return
-        await self._checkpoint(task_id, session_id, plan, position)
-        if current is TaskStatus.executing:
-            await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
-
-    def _claim_step(self, step_id: int) -> bool:
-        if step_id in self._step_recorded:
-            return False
-        self._step_recorded.add(step_id)
-        return True
-
-    def _write_step_done(self, task_id: int, step: PlanStep, step_id: int, result: Any) -> None:
         cost = float(getattr(result, "cost", 0) or 0)
         change_id = getattr(result, "change_id", None)
         self.tasks.finish_step(step_id, "done", change_id, cost)
@@ -461,30 +540,39 @@ class Supervisor:
                 self.tasks.add_spend(task_id, actions=cost)
             else:
                 self.tasks.add_spend(task_id, internal=cost)
+        await self.bus.publish(
+            session_id,
+            "step_finished",
+            {
+                "position": position,
+                "action": step.action,
+                "ok": bool(getattr(result, "ok", False)),
+                "change_id": change_id,
+            },
+            task_id=task_id,
+        )
+
+    def _skip_reason(self, task_id: int, step: PlanStep) -> str | None:
+        change_id = step.params.get("_change_id")
+        if change_id and str(change_id) in self._change_ids.get(task_id, []):
+            return "change_already_applied"
+        if step.paid and paid_step_identity(step.action, step.params) in self._paid_done.get(task_id, set()):
+            return "paid_retry"
+        return None
 
     def _next_step_position(self, task_id: int) -> int:
-        """Монотонный номер попытки. Не индекс плана."""
         rows = self.tasks.list_steps(task_id)
         if not rows:
             return 0
         return max(int(row["position"]) for row in rows) + 1
 
-    async def _validate(self, task_id: int, session_id: str, step: PlanStep) -> bool:
-        project_id = int(step.params.get("project_id") or 0)
-        result = await run_validator(
-            self.validators,
-            "plan_sanity",
-            project_id,
-            {"action": step.action, "task_id": task_id},
-        )
-        passed = bool(result.passed)
-        await self.bus.publish(
-            session_id,
-            "validator_result",
-            result.model_dump(by_alias=True),
-            task_id=task_id,
-        )
-        return passed or not bool(result.blocking)
+    def _remember_paid(self, task_id: int) -> None:
+        found = self._paid_done.setdefault(task_id, set())
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "done" or not row.get("paid"):
+                continue
+            params = json.loads(row.get("params_json") or "{}")
+            found.add(paid_step_identity(str(row.get("action_name") or ""), params))
 
     async def _checkpoint(
         self,
@@ -523,14 +611,18 @@ class Supervisor:
         await self._escalate(task_id, session_id, reason)
         return True
 
-    async def _escalate(self, task_id: int, session_id: str, reason: str) -> None:
+    async def _escalate(
+        self,
+        task_id: int,
+        session_id: str,
+        reason: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
-        await self.bus.publish(
-            session_id,
-            "approval_required",
-            {"reason": reason, "task_id": task_id},
-            task_id=task_id,
-        )
+        payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
+        if extra:
+            payload.update(extra)
+        await self.bus.publish(session_id, "approval_required", payload, task_id=task_id)
 
     async def _set_status(
         self,
@@ -572,3 +664,29 @@ class Supervisor:
             internal=float(row.get("spend_internal") or 0),
             actions=float(row.get("spend_actions") or 0),
         )
+
+
+def _readonly_batch(plan: list[PlanStep], index: int) -> list[PlanStep]:
+    step = plan[index]
+    group = step.parallel_group
+    if (
+        not group
+        or step.mutating
+        or step.paid
+        or step.risk in APPROVAL_RISKS
+    ):
+        return [step]
+    batch = [step]
+    cursor = index + 1
+    while cursor < len(plan):
+        nxt = plan[cursor]
+        if (
+            nxt.parallel_group != group
+            or nxt.mutating
+            or nxt.paid
+            or nxt.risk in APPROVAL_RISKS
+        ):
+            break
+        batch.append(nxt)
+        cursor += 1
+    return batch

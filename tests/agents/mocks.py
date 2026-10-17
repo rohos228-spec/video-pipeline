@@ -31,6 +31,10 @@ class ScriptedRouter:
         self.fail_if_called = False
         self.last_call: dict[str, Any] = {}
         self.deltas: list[str] = []
+        self.call_delay = 0.0
+        self.call_started = asyncio.Event()
+        self.seen_messages: list[list[dict[str, Any]]] = []
+        self.script: list[str] = []
 
     async def classify(self, message: str) -> ClassifyResult:
         del message
@@ -62,8 +66,9 @@ class ScriptedRouter:
         reasoning_effort: str | None = None,
         on_delta: Any = None,
     ) -> LLMResponse:
-        del messages
+        self.seen_messages.append([dict(item) for item in messages])
         self.call_count += 1
+        self.call_started.set()
         self.last_call = {
             "tier": tier,
             "stream": stream,
@@ -77,8 +82,11 @@ class ScriptedRouter:
         if self.deltas and on_delta is not None:
             for piece in self.deltas:
                 on_delta(piece)
+        if self.call_delay:
+            await asyncio.sleep(self.call_delay)
+        text = self.script.pop(0) if self.script else self.answer
         return LLMResponse(
-            text=self.answer,
+            text=text,
             call_id="scripted-call",
             model="scripted",
             provider="52pay",

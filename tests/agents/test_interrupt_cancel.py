@@ -65,7 +65,7 @@ async def test_interrupt_pauses_paid_step_at_boundary(token: str) -> None:
         planner=FixedPlanner(
             [
                 PlanStep(
-                    action="run_node",
+                    action="paid_mock",
                     params={"_wait": True, "_change_id": "chg-paid", "_cost": 1},
                     expected="paid",
                     paid=True,

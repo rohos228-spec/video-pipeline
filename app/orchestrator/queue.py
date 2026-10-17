@@ -38,6 +38,11 @@ _STOP_TOKENS = frozenset(
         "cancel",
     }
 )
+_KILL_PHRASES = (
+    "аварийный стоп",
+    "kill switch",
+    "kill-switch",
+)
 _STEER_PHRASES = (
     "измени план",
     "поменяй план",
@@ -72,6 +77,14 @@ def classify_deterministic(text: str) -> ClassifyResult | None:
     """Правила до LLM. None — спорный случай, нужен fast-классификатор."""
     norm = " ".join((text or "").lower().split())
     tokens = _TOKEN_RE.findall(norm)
+    if any(phrase in norm for phrase in _KILL_PHRASES):
+        return ClassifyResult(
+            tier="fast",
+            mode=MessageMode.interrupt,
+            deterministic=True,
+            confidence=1.0,
+            kill_switch=True,
+        )
     if any(token in _STOP_TOKENS for token in tokens):
         return ClassifyResult(
             tier="fast",
@@ -137,6 +150,7 @@ class MessageQueue:
                     "tier": decided.tier,
                     "deterministic": decided.deterministic,
                     "confidence": decided.confidence,
+                    "kill_switch": decided.kill_switch,
                 },
             )
             _set_message_mode(session_id, text, decided.mode.value)
@@ -150,6 +164,9 @@ class MessageQueue:
             )
 
     async def _apply(self, session_id: str, text: str, decided: ClassifyResult) -> None:
+        if decided.kill_switch:
+            self.supervisor.request_kill(session_id)
+            return
         if decided.mode is MessageMode.interrupt:
             self.supervisor.request_cancel(session_id)
             return
