@@ -175,11 +175,13 @@ async def replace_all_frames(
     project: Project,
     specs: list[dict[str, Any]],
 ) -> list[Frame]:
-    """Добавить кадры проекта по specs. Старые кадры архивируются, не удаляются.
+    """Добавить кадры проекта по specs. Старые кадры помечаются, не удаляются.
 
     ``specs`` — список ``{"voiceover_text"|"закадр": str,
     "duration_seconds"|"длительность"?: float, "uuid"?: str, "meaning"|"смысл"?: str}``.
     Артефакты, промты и тексты старых кадров остаются на них.
+    Номер и sort_key старого кадра не меняются: ``mark_frame_deleted``
+    сам пишет номер в ``remember_deleted``. Новые кадры берут свободный номер.
     Если в spec есть ``uuid`` — сохраняем его (restore / import), иначе генерируем.
     """
     if not specs or len(specs) < 2:
@@ -193,20 +195,31 @@ async def replace_all_frames(
         ).scalars()
     )
     if old_frames:
-        # Номера строго выше текущего максимума: повторный replace не
-        # сталкивается с уже архивным кадром (uq_frame_number).
-        hi = max(int(fr.number or 0) for fr in old_frames)
-        park = hi + 1_000_000
-        for i, fr in enumerate(old_frames):
+        from app.services.frame_tombstones import mark_frame_deleted
+
+        for fr in old_frames:
             attrs = dict(fr.attrs or {})
             cs = dict(attrs.get("camera_subdivide") or {})
             cs["leftover"] = True
             attrs["camera_subdivide"] = cs
             attrs["archived"] = True
             fr.attrs = attrs
-            fr.number = park + i
-            fr.sort_key = float(park + i)
+            mark_frame_deleted(
+                fr,
+                project,
+                "replace_all_frames: кадр заменён новым списком",
+            )
     await session.flush()
+    used_numbers = {int(fr.number) for fr in old_frames if fr.number is not None}
+    number_cursor = max(used_numbers, default=0)
+
+    def _take_number() -> int:
+        nonlocal number_cursor
+        number_cursor += 1
+        while number_cursor in used_numbers:
+            number_cursor += 1
+        used_numbers.add(number_cursor)
+        return number_cursor
 
     # Одна сцена-контейнер
     scene = (
@@ -257,14 +270,15 @@ async def replace_all_frames(
             while frame_uuid in seen_uuids:
                 frame_uuid = new_frame_uuid()
             seen_uuids.add(frame_uuid)
+        number = _take_number()
         fr = Frame(
             project_id=project.id,
-            number=i,
+            number=number,
             voiceover_text=vo,
             meaning=meaning,
             duration_seconds=dur,
             uuid=frame_uuid,
-            sort_key=float(i) * _SORT_STEP,
+            sort_key=float(number) * _SORT_STEP,
             scene_id=scene.id,
             status=FrameStatus.planned,
             attrs={},

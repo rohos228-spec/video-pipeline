@@ -75,3 +75,63 @@ async def test_kadry_replace_keeps_missing_shots_inactive(session: AsyncSession)
     assert shot_is_active(by_id["7-K1"]) is True
     assert shot_is_active(by_id["7-K4"]) is True
     assert fr.voiceover_text == "закадр ячейки"
+
+
+@pytest.mark.asyncio
+async def test_replace_all_frames_marks_without_renumber(session: AsyncSession) -> None:
+    from app.services.montage_board_frames import restore_montage_frame
+
+    project = Project(slug="ws1-replace", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    old = Frame(
+        project_id=project.id,
+        number=4,
+        uuid="old-keep-uuid",
+        voiceover_text="старый закадр",
+        sort_key=4.0,
+        attrs={"keep": 1},
+    )
+    session.add(old)
+    await session.commit()
+    old_id = int(old.id)
+
+    created = await db_v2.replace_all_frames(
+        session,
+        project,
+        [
+            {"voiceover_text": "первая новая ячейка"},
+            {"voiceover_text": "вторая новая ячейка"},
+        ],
+    )
+    await session.commit()
+
+    rows = list(
+        (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars()
+    )
+    assert len(created) == 2
+    assert len(rows) == 3
+    kept = next(fr for fr in rows if fr.uuid == "old-keep-uuid")
+    assert int(kept.id) == old_id
+    assert int(kept.number) == 4
+    assert float(kept.sort_key) == 4.0
+    assert kept.voiceover_text == "старый закадр"
+    assert (kept.attrs or {}).get("удалён") is True
+    assert (kept.attrs or {}).get("активен") is False
+    assert frame_is_active(kept) is False
+    assert 4 in deleted_numbers(project)
+    assert {int(fr.number) for fr in rows} == {4, int(created[0].number), int(created[1].number)}
+    assert int(created[0].number) != 4
+
+    restored = await restore_montage_frame(session, project, old_id)
+    await session.refresh(kept)
+    assert restored["restored"] == 1
+    assert int(kept.number) == 4
+    assert kept.voiceover_text == "старый закадр"
+    assert frame_is_active(kept) is True
+    assert (kept.attrs or {}).get("удалён") is not True
+    still = list(
+        (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars()
+    )
+    assert len(still) == 3
+    assert any(fr.uuid == "old-keep-uuid" for fr in still)
