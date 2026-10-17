@@ -144,27 +144,28 @@ class TaskStore:
             conn.close()
 
     def add_spend(self, task_id: int, *, internal: float = 0.0, actions: float = 0.0) -> SpendSnapshot:
-        row = self.get(task_id)
-        if row is None:
-            raise LookupError(task_id)
-        spend = SpendSnapshot(
-            internal=float(row["spend_internal"] or 0) + internal,
-            actions=float(row["spend_actions"] or 0) + actions,
-        )
         conn = connect()
         try:
-            conn.execute(
+            row = conn.execute(
                 """
                 UPDATE orch_tasks
-                SET spend_internal = ?, spend_actions = ?, updated_at = ?
+                SET spend_internal = spend_internal + ?,
+                    spend_actions = spend_actions + ?,
+                    updated_at = ?
                 WHERE id = ?
+                RETURNING spend_internal, spend_actions
                 """,
-                (spend.internal, spend.actions, utc_now(), task_id),
-            )
+                (float(internal), float(actions), utc_now(), task_id),
+            ).fetchone()
+            if row is None:
+                raise LookupError(task_id)
             conn.commit()
         finally:
             conn.close()
-        return spend
+        return SpendSnapshot(
+            internal=float(row["spend_internal"] or 0),
+            actions=float(row["spend_actions"] or 0),
+        )
 
     def insert_step(self, task_id: int, position: int, step: PlanStep) -> int:
         conn = connect()
