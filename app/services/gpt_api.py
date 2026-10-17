@@ -3054,7 +3054,7 @@ async def _chat_packed_parallel(
     """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
     import asyncio
 
-    from app.services.spend_guard import llm_pack_limit
+    from app.services.llm_pack_limit import llm_pack_limit
     from app.services.volume_batches import is_db_frames_path
 
     sem = asyncio.Semaphore(llm_pack_limit())

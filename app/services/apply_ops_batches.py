@@ -152,7 +152,7 @@ class _PackSendGate:
     """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
 
     def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
-        from app.services.spend_guard import llm_pack_limit
+        from app.services.llm_pack_limit import llm_pack_limit
 
         cap = llm_pack_limit()
         if in_flight is not None and int(in_flight) > 0:

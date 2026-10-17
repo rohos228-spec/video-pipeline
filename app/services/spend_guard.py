@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 
 CALL_ESTIMATE = 1.0
-_DEFAULT_PACK_LIMIT = 8
 
 
 class SpendBlocked(RuntimeError):
@@ -76,15 +74,3 @@ async def cannot_reserve(estimate: float = CALL_ESTIMATE) -> bool:
     """Повтор не влезает. Чтение inflight и cap под lock, без await между ними."""
     async with _state.lock:
         return _state.inflight + float(estimate) > _state.cap
-
-
-def llm_pack_limit() -> int:
-    """Общий потолок пачек. Env LLM_PACK_PARALLEL, иначе 8."""
-    raw = os.environ.get("LLM_PACK_PARALLEL", "").strip()
-    if not raw:
-        return _DEFAULT_PACK_LIMIT
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_PACK_LIMIT
-    return max(1, value)
