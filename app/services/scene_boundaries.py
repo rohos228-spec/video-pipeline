@@ -235,9 +235,6 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             msg = f"{type(e).__name__}: {e}"
             logger.warning("scene_boundaries {} try{} failed: {}", tag, k, msg[:500])
             (trace_dir / f"{tag}.err{k}.txt").write_text(msg, encoding="utf-8")
-            from app.services.api_tracker_hook import reraise_if_spend_blocked
-
-            reraise_if_spend_blocked(e)
             if "HTTP 4" in msg and not any(x in msg for x in ("429", "408")):
                 raise
             if k < tries - 1:

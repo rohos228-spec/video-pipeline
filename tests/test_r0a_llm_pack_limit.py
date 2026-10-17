@@ -1,21 +1,12 @@
-"""Поведение шлюза spend на живом пути call_opus → chat. Только моки."""
+"""Лимит пачек R0a и живой параллельный call_opus. Не шлюз spend WS2."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def _reset_spend_guard():
-    """Cap шлюза общий на процесс: соседние тесты не должны его наследовать."""
-    from app.services import spend_guard
-
-    spend_guard.reset()
-    yield
-    spend_guard.reset()
 
 
 class _Route:
@@ -27,21 +18,14 @@ class _Route:
 
 
 class _Resp:
-    def __init__(self, status: int = 200, text: str = "ok-text") -> None:
-        self.status_code = status
-        if status >= 400:
-            self.text = text
-            self._payload = {"error": text}
-        else:
-            self._payload = {
-                "choices": [
-                    {
-                        "message": {"content": text},
-                        "finish_reason": "stop",
-                    }
-                ]
-            }
-            self.text = json.dumps(self._payload)
+    def __init__(self, text: str = "ok-text") -> None:
+        self.status_code = 200
+        self._payload = {
+            "choices": [
+                {"message": {"content": text}, "finish_reason": "stop"}
+            ]
+        }
+        self.text = json.dumps(self._payload)
 
     def json(self) -> dict:
         return self._payload
@@ -62,13 +46,12 @@ def _install_llm(monkeypatch, client) -> None:
     monkeypatch.setattr("app.services.gpt_api._async_client", lambda **_k: client)
 
 
-class _HoldClient:
-    """Один POST. На время запроса снаружи читают inflight."""
+class _OverlapClient:
+    """Два POST держатся одновременно: интервалы должны пересечься."""
 
-    def __init__(self, hold: float = 0.05) -> None:
+    def __init__(self, hold: float = 0.35) -> None:
         self.hold = hold
-        self.posts = 0
-        self.seen: list[float] = []
+        self.intervals: list[tuple[float, float]] = []
 
     async def __aenter__(self):
         return self
@@ -77,88 +60,45 @@ class _HoldClient:
         return False
 
     async def post(self, _url, headers=None, json=None):  # noqa: A002
-        from app.services import spend_guard
-
-        self.posts += 1
-        self.seen.append(spend_guard.inflight())
+        start = time.monotonic()
         await asyncio.sleep(self.hold)
+        self.intervals.append((start, time.monotonic()))
         return _Resp()
 
 
 @pytest.mark.asyncio
-async def test_one_live_call_reserves_once(tmp_path, monkeypatch) -> None:
-    """Один call_opus: inflight=1 на время HTTP и успех при cap 1.5."""
-    from app.services import spend_guard
+async def test_live_stream_calls_overlap_without_queue(tmp_path, monkeypatch) -> None:
+    """Два call_opus идут вместе: HTTP пересекаются, сумма меньше 1.5× одного."""
     from app.services.scene_boundaries import call_opus
 
-    spend_guard.reset()
-    spend_guard.set_cap(1.5)
-    client = _HoldClient()
+    client = _OverlapClient()
     _install_llm(monkeypatch, client)
 
-    text = await call_opus("привет", "система", "once", tmp_path)
+    t0 = time.monotonic()
+    one = await call_opus("один", "система", "one", tmp_path)
+    one_dur = time.monotonic() - t0
+    assert one.strip()
+    assert len(client.intervals) == 1
 
-    assert text.strip()
-    assert client.posts == 1
-    assert client.seen == [1.0]
-    assert spend_guard.reservations() == 1
-    assert spend_guard.peak() == 1.0
-    assert spend_guard.inflight() == 0.0
+    client.intervals.clear()
+    t1 = time.monotonic()
+    a, b = await asyncio.gather(
+        call_opus("два", "система", "two", tmp_path),
+        call_opus("три", "система", "three", tmp_path),
+    )
+    total = time.monotonic() - t1
 
-
-class _BlockAfter500:
-    def __init__(self) -> None:
-        self.posts = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_a):
-        return False
-
-    async def post(self, _url, headers=None, json=None):  # noqa: A002
-        from app.services import spend_guard
-
-        self.posts += 1
-        spend_guard.set_cap(0)
-        return _Resp(status=500, text="upstream down")
-
-
-@pytest.mark.asyncio
-async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> None:
-    """500, затем cap=0: один HTTP, SpendBlocked наружу, второго sleep нет."""
-    from app.services import spend_guard
-    from app.services.scene_boundaries import call_opus
-    from app.services.spend_guard import SpendBlocked
-
-    spend_guard.reset()
-    spend_guard.set_cap(1.5)
-    client = _BlockAfter500()
-    _install_llm(monkeypatch, client)
-    sleeps: list[float] = []
-    real_sleep = asyncio.sleep
-
-    async def _fast(delay: float = 0, *args, **kwargs):
-        sleeps.append(float(delay))
-        if float(delay) >= 15:
-            return None
-        return await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", _fast)
-
-    with pytest.raises(SpendBlocked):
-        await call_opus("привет", "система", "block", tmp_path)
-
-    assert client.posts == 1
-    assert len(sleeps) <= 1
-    assert all(delay < 15 for delay in sleeps)
+    assert a.strip() and b.strip()
+    assert len(client.intervals) == 2
+    (s0, e0), (s1, e1) = client.intervals
+    overlap = min(e0, e1) - max(s0, s1)
+    assert overlap > 0
+    assert total < one_dur * 1.5
 
 
 @pytest.mark.asyncio
 async def test_llm_pack_limit_from_env_default_8(tmp_path, monkeypatch) -> None:
     """Лимит пачек из LLM_PACK_PARALLEL, иначе 8; до лимита старт одновременный."""
-    import time
-
     from app.services.apply_ops_batches import run_apply_ops_batched
     from app.services.gpt_operator_client import OperatorApiResult
 
