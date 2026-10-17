@@ -129,8 +129,9 @@ def write_golden_fixtures(dest: Path | None = None) -> Path:
             False,
             reasoning_effort="high",
         )
+    # D6 (fast-tier без high) в правиле 2 не подтверждён. Классификатор пишется как strong + high.
     for row in e6_queries():
         if row["deterministic"]:
             continue
-        recorder.call("fast", classifier_messages(row["text"]), False)
+        recorder.call("strong", classifier_messages(row["text"]), False, reasoning_effort="high")
     return directory
