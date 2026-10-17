@@ -194,3 +194,18 @@ def test_aggregate_waiting_approval_is_not_done() -> None:
     assert run.finished_at is None
 
 
+def test_managed_launch_refuses_over_parked_node() -> None:
+    from app.services.managed_launch import validate_scope
+
+    run = SimpleNamespace(
+        nodes_snapshot=[{"id": "n_plan", "type": "plan", "data": {}}],
+        edges_snapshot=[],
+    )
+    project = SimpleNamespace(meta={}, status=ProjectStatus.new)
+    parked = SimpleNamespace(
+        node_key="n_plan",
+        status=NodeRunStatus.waiting_approval,
+        attempts=0,
+    )
+    with pytest.raises(ValueError, match="active node"):
+        validate_scope(run, project, [parked], ["n_plan"])

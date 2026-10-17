@@ -295,7 +295,7 @@ async def continue_managed_image(session, project, source_key, target_key, node_
     target = next((n for n in rows if n.node_key == target_key), None)
     if (not source or source.status != NodeRunStatus.done or not target
             or target.node_type != node_type or target.status != NodeRunStatus.pending
-            or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in rows)):
+            or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl, NodeRunStatus.waiting_approval} for n in rows)):
         return denied("node_state_not_ready")
     replicas = {n.node_key: n for n in master_nodes}
     if set(replicas) != {n.node_key for n in rows} or any(
@@ -397,7 +397,7 @@ class ActionSupervisor:
                 NodeRun.workflow_run_id == scope.workflow_run_id,
                 NodeRun.node_key.in_(node_keys),
             ))).all()
-            if any(row.status in {NodeRunStatus.running, NodeRunStatus.queued} for row in rows):
+            if any(row.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_approval} for row in rows):
                 raise ValueError("selected group already has queued/running nodes")
             if {row.node_key for row in rows} != set(node_keys):
                 raise ValueError("selected nodes do not match workflow run")
@@ -576,7 +576,7 @@ class ActionSupervisor:
             active = (await session.scalars(select(NodeRun).where(
                 NodeRun.workflow_run_id == control.workflow_run_id,
                 NodeRun.node_key.in_(control.node_keys),
-                NodeRun.status.in_([NodeRunStatus.queued, NodeRunStatus.running]),
+                NodeRun.status.in_([NodeRunStatus.queued, NodeRunStatus.running, NodeRunStatus.waiting_approval]),
             ))).all()
             if active:
                 raise ValueError("cannot revoke while a managed node is queued/running")

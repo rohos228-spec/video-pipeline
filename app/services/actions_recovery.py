@@ -305,7 +305,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             node = next((n for n in nodes if n.node_key == node_key), None)
             if not node or node.status != NodeRunStatus.failed or not node.finished_at:
                 raise ValueError("previous node attempt is not terminal")
-            if any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in nodes):
+            if any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl, NodeRunStatus.waiting_approval} for n in nodes):
                 raise ValueError("another node or HITL is active")
             replica = await session.get(WorkflowRun, control.workflow_run_id)
             if not replica:

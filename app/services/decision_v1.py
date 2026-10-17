@@ -476,7 +476,7 @@ class DecisionSupervisor:
         return {'context_version':version,'stable_version':stable,'execution_id':row.execution_id,'node_key':row.node_key,
             'attempt_id':row.source_attempt_id,'incident_id':row.incident_id,
             'incident':panel_safe(incident.details),'incident_type':incident.type,'incident_status':incident.status,
-            'native_active':bool(native_node and native_node.status in {NodeRunStatus.running,NodeRunStatus.queued,NodeRunStatus.waiting_hitl}),
+            'native_active':bool(native_node and native_node.status in {NodeRunStatus.running,NodeRunStatus.queued,NodeRunStatus.waiting_hitl,NodeRunStatus.waiting_approval}),
             'open_model_requests':open_requests,'evidence_ids':[e.event_id for e in events],
             'facts':[panel_safe({k:getattr(e,k) for k in ('event_id','kind','attempt_id','request_id','payload')}) for e in events[:20]],
             'approved_profiles':approved,
