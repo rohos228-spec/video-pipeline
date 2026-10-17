@@ -3038,8 +3038,15 @@ async def run_apply_ops_batched(
                          kind="stop", note=str(exc)[:500])],
                 error=str(exc),
             )
+            await _emit_rule_diary(
+                list(getattr(exc, "diary", []) or []),
+                call=my_i,
+                level=level,
+                stop_exc=exc,
+            )
             raise
         ops = passes.ops
+        await _emit_rule_diary(passes.entries, call=my_i, level=level)
         by_frame = {
             str(fr.get("uuid") or "").strip(): fr
             for fr in chunk
