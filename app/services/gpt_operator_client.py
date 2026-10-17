@@ -586,6 +586,7 @@ async def _run_operator_api_real(
             await _record_parse_for_task_request(
                 reply_text or "",
                 apply_ops,
+                payload_required=not is_check,
                 empty_ops_allowed=allow_empty_ops,
                 empty_ops_accepted=empty_accepted,
             )
