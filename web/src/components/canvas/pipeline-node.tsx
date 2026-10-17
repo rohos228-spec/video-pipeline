@@ -175,7 +175,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const actions = useCanvasActionsOptional();
   const disabled = actions?.disabledNodes.has(d.nodeKey) ?? false;
 
-  const statusConfig = STATUS_CONFIG[d.status];
+  const statusConfig = STATUS_CONFIG[d.status] ?? STATUS_CONFIG.pending;
   const StatusIcon = statusConfig.icon;
   const running = d.status === "running";
   const wide = needsWidePanel(d.type);
@@ -775,6 +775,7 @@ const STATUS_CONFIG: Record<
   queued: { icon: Hourglass, label: "в очереди", bg: "bg-sky-500/15 border-sky-400/30", text: "text-sky-300" },
   running: { icon: Loader2, label: "в работе", bg: "bg-amber-500/20 border-amber-400/40", text: "text-amber-300" },
   waiting_hitl: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15 border-amber-400/30", text: "text-amber-300" },
+  waiting_approval: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15 border-amber-400/30", text: "text-amber-300" },
   done: { icon: CheckCircle2, label: "готово", bg: "bg-emerald-500/15 border-emerald-400/30", text: "text-emerald-300" },
   failed: { icon: AlertCircle, label: "ошибка", bg: "bg-red-500/15 border-red-400/30", text: "text-red-300" },
   skipped: { icon: MinusCircle, label: "пропуск", bg: "bg-white/[0.04] border-white/5", text: "text-zinc-500" },

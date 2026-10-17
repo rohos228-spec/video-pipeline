@@ -1164,7 +1164,9 @@ export function FlowCanvas({
             if (data.status === "queued") return "hsl(200 80% 50%)";
             if (data.status === "done") return "hsl(var(--success))";
             if (data.status === "failed") return "hsl(var(--destructive))";
-            if (data.status === "waiting_hitl") return "hsl(var(--warning))";
+            if (data.status === "waiting_hitl" || data.status === "waiting_approval") {
+              return "hsl(var(--warning))";
+            }
             return "hsl(var(--muted-foreground) / 0.4)";
           }}
           nodeStrokeWidth={2}

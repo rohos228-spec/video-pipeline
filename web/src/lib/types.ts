@@ -40,7 +40,7 @@ export interface ExcelHeroCharacter {
 }
 
 export type NodeRunStatus =
-  | "pending" | "queued" | "running" | "waiting_hitl"
+  | "pending" | "queued" | "running" | "waiting_hitl" | "waiting_approval"
   | "done" | "failed" | "skipped";
 
 export type WorkflowRunStatus =
