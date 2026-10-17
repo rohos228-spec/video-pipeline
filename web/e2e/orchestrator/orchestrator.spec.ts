@@ -8,6 +8,7 @@ import {
   isSameOriginApiBase,
   orchAuthHeaders,
   orchTestModeEnabled,
+  postOrchKill,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
@@ -174,6 +175,26 @@ test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает о�
     envOrchApiBase();
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
     else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
+test("postOrchKill на 204 возвращает status и body null", async () => {
+  const previous = globalThis.fetch;
+  const cfg = { apiBase: "", session: "s", token: "t", scenario: "idle" };
+  try {
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    await expect(postOrchKill(cfg, { session_id: "s" })).resolves.toEqual({ status: 204, body: null });
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ ok: true, stop_key_set: true, detail: "ключ установлен" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    await expect(postOrchKill(cfg, { session_id: "s" })).resolves.toEqual({
+      status: 200,
+      body: { ok: true, stop_key_set: true, detail: "ключ установлен" },
+    });
+  } finally {
+    globalThis.fetch = previous;
   }
 });
 

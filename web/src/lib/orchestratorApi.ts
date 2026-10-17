@@ -256,7 +256,25 @@ async function readError(res: Response): Promise<string> {
   return text.slice(0, 300);
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+/** Тот же конверт, что у postApproval: 204 — `{status:204, body:null}`, не `undefined`. */
+export type OrchHttpResult<T> = {
+  status: number;
+  body: T | null;
+};
+
+async function readJsonObject<T>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  if (!text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text) as T;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<OrchHttpResult<T>> {
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -272,16 +290,23 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
   if (!res.ok) {
     throw new OrchApiError(res.status, await readError(res));
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  if (res.status === 204) return { status: 204, body: null };
+  return { status: res.status, body: await readJsonObject<T>(res) };
 }
 
-export function postOrchMessage(
+function requireJsonBody<T>(result: OrchHttpResult<T>): T {
+  if (result.body == null) throw new OrchApiError(result.status, "пустой ответ");
+  return result.body;
+}
+
+export async function postOrchMessage(
   cfg: OrchClientConfig,
   body: OrchOutboundMessage,
   signal?: AbortSignal,
 ): Promise<OrchMessageAckHttp> {
-  return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
+  return requireJsonBody(
+    await postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal),
+  );
 }
 
 export type ApprovalHttpResult = {
@@ -351,7 +376,13 @@ export function postOrchReject(
   );
 }
 
-export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
+export type OrchKillHttpBody = OrchKillResult & { stop_key_set?: boolean };
+
+export function postOrchKill(
+  cfg: OrchClientConfig,
+  body: OrchKillRequest,
+  signal?: AbortSignal,
+): Promise<OrchHttpResult<OrchKillHttpBody>> {
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
 }
 
@@ -416,29 +447,29 @@ export function getOrchReport(cfg: OrchClientConfig, reportId: number, signal?: 
   return getJson(cfg, `/api/orchestrator/reports/${reportId}`, signal);
 }
 
-export function postCreateReport(
+export async function postCreateReport(
   cfg: OrchClientConfig,
   body: { title: string; project_id: number; sections: ReportSection[]; editable?: boolean },
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, "/api/orchestrator/actions/create_report", body, signal);
+  return requireJsonBody(await postJson(cfg, "/api/orchestrator/actions/create_report", body, signal));
 }
 
-export function postUpdateReport(
+export async function postUpdateReport(
   cfg: OrchClientConfig,
   body: { report_id: number; base_version: number; sections_patch: ReportSection[]; reason?: string },
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, "/api/orchestrator/actions/update_report", body, signal);
+  return requireJsonBody(await postJson(cfg, "/api/orchestrator/actions/update_report", body, signal));
 }
 
-export function postRollbackReport(
+export async function postRollbackReport(
   cfg: OrchClientConfig,
   reportId: number,
   version: number,
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
-  return postJson(cfg, `/api/orchestrator/reports/${reportId}/rollback`, { version }, signal);
+  return requireJsonBody(await postJson(cfg, `/api/orchestrator/reports/${reportId}/rollback`, { version }, signal));
 }
 
 export interface ParsedSse {

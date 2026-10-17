@@ -275,12 +275,12 @@ export function useOrchestratorChat() {
       dispatch({ type: "kill-notice", detail, paidBoundary: false, phase: "error", ...notice });
     };
     try {
-      const result = (await postOrchKill(
+      const result = await postOrchKill(
         cfg,
         { session_id: boot.session, reason: "kill switch из чата" },
         ac.signal,
-      )) as { ok?: boolean; detail?: string; stop_key_set?: boolean } | undefined;
-      const body = result ?? {};
+      );
+      const body = result.body ?? {};
       if (body.stop_key_set === true && body.ok !== false) {
         dispatch({
           type: "kill-notice",
