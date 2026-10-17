@@ -311,9 +311,31 @@ _ACTION_TABLE_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _DELETE_PHRASE_RE = re.compile(
-    r"(?<!не )(?:удаляются|удаляет|с диска|без архива|стирает|перезаписыва)",
+    r"(?<!не )(?:удаляются|удаляет|снимаются|снимает|убираются|убирает|"
+    r"очищаются|очищает|отменяются|отменяет|с диска|без архива|стирает|перезаписыва)",
     re.IGNORECASE,
 )
+# keep при глаголе удаления допустим только здесь. Причина обязана быть в аудите.
+_DELETE_WORDING_EXCEPTIONS = {
+    "node.set_disabled": (
+        "исключение формулировки: убирает ноду из списка флагов, файлы и кадры не трогает"
+    ),
+    "media.release_unknown": (
+        "исключение формулировки: снимает блокировку повторной отправки, файлы не удаляет"
+    ),
+    "montage.cancel_queue_ops": (
+        "исключение формулировки: очередь операций, не кадры и не файлы"
+    ),
+    "montage.set_voiceover_span": (
+        "исключение формулировки: снимает закрепление фрагмента, кадр не удаляет"
+    ),
+    "montage.upload_video": (
+        "исключение формулировки: снимается пометка устарело, прежний клип остаётся в old/"
+    ),
+    "project.continue_pipeline": (
+        "исключение формулировки: снимает стоп и паузу, данные проекта не удаляет"
+    ),
+}
 
 
 def action_table_rows(text: str | None = None) -> list[dict[str, str]]:
@@ -2111,7 +2133,11 @@ def test_documented_deletes_are_modify() -> None:
     rows = action_table_rows()
     flagged = [row for row in rows if _DELETE_PHRASE_RE.search(row["what"])]
     assert flagged, "в таблице нет описаний удаления или перезаписи"
-    bad = [row["id"] for row in flagged if row["verdict"] != "modify"]
+    bad = [
+        row["id"]
+        for row in flagged
+        if row["verdict"] != "modify" and row["id"] not in _DELETE_WORDING_EXCEPTIONS
+    ]
     assert not bad, "описание удаляет или перезаписывает, вердикт не modify: " + ", ".join(bad)
     flagged_ids = {row["id"] for row in flagged}
     for action_id in (
@@ -2143,6 +2169,46 @@ def test_documented_deletes_are_modify() -> None:
         "os.replace",
     ]
     assert all(hit.allowed is False for hit in hits)
+
+
+def test_reworded_delete_still_requires_modify() -> None:
+    """Замена «удаляет» на синоним не оставляет физическое удаление в keep."""
+    for sample in (
+        "Снимает файл кадра.",
+        "Убирает прежний xlsx.",
+        "Очищает каталог результатов.",
+        "Отменяет запись клипа.",
+        "Удаляет файл пользовательской группы.",
+    ):
+        assert _DELETE_PHRASE_RE.search(sample), sample
+    rewritten = "Удаляет файл пользовательской группы.".replace("Удаляет", "Снимает")
+    assert rewritten.startswith("Снимает")
+    assert _DELETE_PHRASE_RE.search(rewritten)
+
+    audit = _audit_text()
+    assert "Детектор не видит удалений внутри обработчиков студии" in audit
+    rows = action_table_rows()
+    by_id = {row["id"]: row for row in rows}
+    matched_keep: list[str] = []
+    for row in rows:
+        if not _DELETE_PHRASE_RE.search(row["what"]):
+            continue
+        if row["verdict"] == "modify":
+            assert row["id"] not in _DELETE_WORDING_EXCEPTIONS
+            continue
+        reason = _DELETE_WORDING_EXCEPTIONS.get(row["id"])
+        assert reason, "синоним удаления без modify и без исключения: " + row["id"]
+        assert reason in audit
+        matched_keep.append(row["id"])
+    assert set(matched_keep) == set(_DELETE_WORDING_EXCEPTIONS)
+
+    queue = by_id["montage.cancel_queue_ops"]
+    assert queue["verdict"] == "keep"
+    assert _DELETE_PHRASE_RE.search(queue["what"])
+    assert _DELETE_WORDING_EXCEPTIONS["montage.cancel_queue_ops"] in audit
+    hidden = {key: value for key, value in _DELETE_WORDING_EXCEPTIONS.items() if key != queue["id"]}
+    assert queue["id"] not in hidden
+    assert _DELETE_PHRASE_RE.search(queue["what"])
 
 
 def test_empty_registry_is_not_green() -> None:
