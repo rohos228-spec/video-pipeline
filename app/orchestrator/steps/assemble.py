@@ -33,7 +33,7 @@ from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline, has_all_frame_audio
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
-from app.services.media_probe import probe_duration, probe_video_size
+from app.services.media_probe import probe_video_size
 from app.services.montage.variant2 import MONTAGE_ENGINE_V2, run_variant2
 from app.services.montage_board_meta import montage_meta
 from app.services.montage_asr import ensure_montage_words
@@ -423,17 +423,36 @@ async def _assemble_body(
     else:
         from app.services.frame_audio import FrameAudioClip
         from app.services.montage.r15 import load_r15_markers, resolve_montage_frame_numbers
+        from app.services.montage.variant2 import prepare_r15_live_voice
 
         frame_numbers = resolve_montage_frame_numbers(project, frame_numbers)
-        if marked_numbers:
-            marked_set = {int(n) for n in marked_numbers}
-            frame_numbers = [n for n in frame_numbers if int(n) not in marked_set]
-        markers, ts_row = load_r15_markers(project, frame_numbers)
-        audio_duration = await probe_duration(audio_path)
+        marked_set = {int(n) for n in marked_numbers}
+        marked_in_sheet = [n for n in frame_numbers if int(n) in marked_set]
+        kept_numbers = [n for n in frame_numbers if int(n) not in marked_set]
+        if not kept_numbers:
+            raise RuntimeError(
+                "нет активных меток R15 — помеченные «удалён» не входят в ролик"
+            )
+        markers, ts_row = load_r15_markers(project, kept_numbers)
+        if marked_in_sheet:
+            marked_markers, _marked_row = load_r15_markers(project, marked_in_sheet)
+            markers = [*markers, *marked_markers]
+        markers, mux_audio, audio_duration = await prepare_r15_live_voice(
+            markers, audio_path, marked_set
+        )
+        frame_numbers = [m.frame_number for m in markers]
+        if mux_audio.resolve() != audio_path.resolve():
+            logger.warning(
+                "WARN [#{}] assemble R15: mux {} ({:.2f}s), исходный {} не тронут",
+                project.id,
+                mux_audio.name,
+                audio_duration,
+                audio_path.name,
+            )
         audio_clips = [
             FrameAudioClip(
                 m.frame_number,
-                audio_path,
+                mux_audio,
                 "",
                 m.start_s,
                 m.end_s,
@@ -561,10 +580,12 @@ async def _assemble_body(
         await run_variant2(
             project,
             frame_numbers,
-            audio_path,
+            mux_audio,
             out_path,
             bgm=bgm,
             sfx=sfx_inputs,
+            markers=markers,
+            ts_row=ts_row,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.
