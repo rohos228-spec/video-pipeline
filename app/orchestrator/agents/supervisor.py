@@ -16,8 +16,10 @@ Paid-retry guard не даёт
 только из терминального статуса. После рестарта ``recover_after_restart``
 снова поднимает строки ``queued`` и продолжает оборванное выполнение
 с последнего чекпоинта. Платный шаг со строкой ``running`` (исход
-неизвестен) повторно не исполняется: ``waiting_approval`` /
-``paid_outcome_unknown``, без записи в ``_paid_done``.
+неизвестен) сам не исполняется снова: ``waiting_approval`` /
+``paid_outcome_unknown``. «Шаг выполнен, продолжить» пишет шаг ``done``
+и в ``_paid_done``. «Перезапустить шаг» сначала отдаёт прогноз, потом
+одноразовый grant. «Остановить задачу» ставит шаг и задачу в ``failed``.
 
 Dry-run валидаторов (``dry_run=True``) идёт до критика и только читает.
 Live — до и после мутации и может остановить задачу. ``project_id``
@@ -62,6 +64,7 @@ from app.orchestrator.contracts import (
     TERMINAL_STATUSES,
     VALIDATOR_CONTEXT_DRY_RUN,
     AgentRole,
+    ApprovalDecision,
     ApprovalEvent,
     ApprovalReason,
     BudgetScope,
@@ -71,9 +74,11 @@ from app.orchestrator.contracts import (
     TaskStatus,
     ValidatorResult,
     action_guard,
+    approval_decision_choices,
     block_status,
     budget_exhausted_response,
     can_transition,
+    forecast_cost,
     grant_forbidden,
     orch_run_id,
     paid_step_identity,
@@ -92,6 +97,14 @@ _HOLD_STATUSES = frozenset({TaskStatus.paused, TaskStatus.waiting_approval})
 
 class InvalidTransition(RuntimeError):
     pass
+
+
+def _coerce_decision(decision: ApprovalDecision | str | None) -> ApprovalDecision | None:
+    if decision is None or decision == "":
+        return None
+    if isinstance(decision, ApprovalDecision):
+        return decision
+    return ApprovalDecision(str(decision))
 
 
 class Supervisor:
@@ -127,6 +140,8 @@ class Supervisor:
         self._context: dict[int, str] = {}
         self._risk_granted: set[tuple[int, int, str]] = set()
         self._paid_done: dict[int, set[str]] = {}
+        self._retry_armed: dict[int, str] = {}
+        self._retry_spent: set[tuple[int, str]] = set()
         self._queued: dict[str, list[tuple[int, str]]] = {}
         self._budget_stop: set[int] = set()
         self._shield_orphaned: set[int] = set()
@@ -192,7 +207,13 @@ class Supervisor:
             name=f"orch-resume-{task_id}",
         )
 
-    async def grant_approval(self, session_id: str) -> None:
+    async def grant_approval(
+        self,
+        session_id: str,
+        decision: ApprovalDecision | str | None = None,
+        *,
+        retry_grant: bool = False,
+    ) -> dict[str, Any] | None:
         """Продолжить с чекпоинта после waiting_approval.
 
         Терминальная причина из ``BLOCK_OUTCOMES`` не исполняется.
@@ -202,6 +223,12 @@ class Supervisor:
         задачу: записать ``project_id`` после старта нечем.
         Грант риска покрывает только шаг чекпоинта и только это действие
         с этими публичными params.
+
+        ``decision`` пустой — прежний путь. Для ``paid_outcome_unknown``
+        пустой decision по-прежнему не вызывает ``execute``. Явные значения:
+        ``approve`` помечает шаг сделанным и идёт дальше, ``retry_step``
+        только отдаёт прогноз, ``deny`` проваливает шаг и задачу.
+        ``retry_grant`` — отдельный одноразовый перезапуск после прогноза.
         """
         task_id = self._session_task.get(session_id)
         if task_id is None:
@@ -210,6 +237,22 @@ class Supervisor:
             raise InvalidTransition("grant_approval только из waiting_approval")
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
+        decided = _coerce_decision(decision)
+        reason = self._block_reason.get(task_id)
+        if retry_grant:
+            return await self._consume_paid_retry_grant(task_id, session_id)
+        if reason == "paid_outcome_unknown" and decided is not None:
+            if decided is ApprovalDecision.approve:
+                await self._approve_paid_unknown(task_id, session_id)
+                return {"executed": False, "decision": ApprovalDecision.approve.value}
+            if decided is ApprovalDecision.deny:
+                await self._deny_paid_unknown(task_id, session_id)
+                return {"executed": False, "decision": ApprovalDecision.deny.value}
+            if decided is ApprovalDecision.retry_step:
+                return await self._arm_paid_retry_forecast(task_id, session_id)
+            raise InvalidTransition(f"неизвестное decision {decided.value}")
+        if decided in {ApprovalDecision.retry_step, ApprovalDecision.deny}:
+            raise InvalidTransition("retry_step и deny только для paid_outcome_unknown")
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
@@ -330,8 +373,7 @@ class Supervisor:
 
         Платный шаг с ``orch_steps.status=running`` доходит до ``_execute_plan``
         и там останавливается: ``waiting_approval`` / ``paid_outcome_unknown``.
-        ``execute`` не вызывается. В ``_paid_done`` шаг не пишется — неизвестное
-        списание нельзя провести как успех и пойти дальше.
+        ``execute`` не вызывается, пока человек не выберет кнопку.
         """
         rows = await asyncio.to_thread(self.tasks.list_open)
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -473,8 +515,11 @@ class Supervisor:
 
     def _paid_outcome_unknown(self, task_id: int, step: PlanStep) -> bool:
         """Платная строка ``running``: шаг уже стартовал, результат не записан."""
+        return self._running_paid_row(task_id, step) is not None
+
+    def _running_paid_row(self, task_id: int, step: PlanStep) -> dict[str, Any] | None:
         if not step.paid:
-            return False
+            return None
         ident = _public_params(step.params)
         for row in self.tasks.list_steps(task_id):
             if str(row.get("status")) != "running" or not row.get("paid"):
@@ -486,8 +531,122 @@ class Supervisor:
             except json.JSONDecodeError:
                 stored = {}
             if isinstance(stored, dict) and _public_params(stored) == ident:
-                return True
-        return False
+                return row
+        return None
+
+    def _retry_grant_key(self, step: PlanStep) -> str:
+        """Действие + публичные params + признак retry. Одноразовый ключ grant."""
+        return paid_step_identity(step.action, step.params) + "\nretry"
+
+    async def _checkpoint_step(self, task_id: int) -> tuple[CheckpointData, PlanStep]:
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
+        if data is None:
+            raise LookupError(f"нет чекпоинта для задачи {task_id}")
+        if data.position < 0 or data.position >= len(data.plan):
+            raise LookupError(f"нет шага чекпоинта для задачи {task_id}")
+        return data, data.plan[int(data.position)]
+
+    async def _continue_from_checkpoint(self, task_id: int, session_id: str, data: CheckpointData) -> None:
+        self._arm_resume(session_id, task_id, data)
+        await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+        goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
+        self._runs[task_id] = asyncio.create_task(
+            self._execute_plan(task_id, session_id, list(data.plan), int(data.position), goal),
+            name=f"orch-paid-unknown-{task_id}",
+        )
+
+    async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
+        """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""
+        data, step = await self._checkpoint_step(task_id)
+        row = self._running_paid_row(task_id, step)
+        if row is not None:
+            self.tasks.finish_step(int(row["id"]), "done", None, 0.0)
+        self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
+        self._block_reason.pop(task_id, None)
+        await self._continue_from_checkpoint(task_id, session_id, data)
+
+    async def _deny_paid_unknown(self, task_id: int, session_id: str) -> None:
+        """«Остановить задачу»: шаг и задача failed, execute не вызывается."""
+        _data, step = await self._checkpoint_step(task_id)
+        row = self._running_paid_row(task_id, step)
+        if row is not None:
+            self.tasks.finish_step(int(row["id"]), "failed", None, 0.0)
+        self._block_reason.pop(task_id, None)
+        await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="paid_outcome_unknown")
+        await self.bus.publish(
+            session_id,
+            "task_failed",
+            {"error": "paid_outcome_unknown", "action": step.action},
+            task_id=task_id,
+        )
+
+    async def _arm_paid_retry_forecast(self, task_id: int, session_id: str) -> dict[str, Any]:
+        """«Перезапустить шаг»: прогноз, без execute. Grant вооружается отдельно."""
+        data, step = await self._checkpoint_step(task_id)
+        key = self._retry_grant_key(step)
+        if (task_id, key) not in self._retry_spent:
+            self._retry_armed[task_id] = key
+        forecast = forecast_cost([step])
+        await self.bus.publish(
+            session_id,
+            "approval_required",
+            {
+                "reason": "paid_outcome_unknown",
+                "task_id": task_id,
+                "action": step.action,
+                "position": int(data.position),
+                "forecast_usd": forecast,
+                "decisions": approval_decision_choices(),
+                "retry_armed": self._retry_armed.get(task_id) == key,
+            },
+            task_id=task_id,
+        )
+        return {
+            "executed": False,
+            "decision": ApprovalDecision.retry_step.value,
+            "forecast_usd": forecast,
+        }
+
+    async def _consume_paid_retry_grant(self, task_id: int, session_id: str) -> dict[str, Any]:
+        """Одноразовый retry grant. Без прогноза и повторно execute не зовётся.
+
+        Пока задача в ``_budget_stop``, ключ не сгорает и шаг не стартует.
+        """
+        if self._retry_armed.get(task_id) is None and any(stored == task_id for stored, _key in self._retry_spent):
+            return {"executed": False, "reason": "retry_grant_spent", "forecast_usd": None}
+        if task_id not in self._retry_armed:
+            return {"executed": False, "reason": "retry_grant_required", "forecast_usd": None}
+        data, step = await self._checkpoint_step(task_id)
+        key = self._retry_grant_key(step)
+        forecast = forecast_cost([step])
+        if (task_id, key) in self._retry_spent or self._retry_armed.get(task_id) != key:
+            reason = "retry_grant_spent" if (task_id, key) in self._retry_spent else "retry_grant_required"
+            return {"executed": False, "reason": reason, "forecast_usd": forecast}
+        if task_id in self._budget_stop:
+            await self.bus.publish(
+                session_id,
+                "approval_required",
+                {
+                    "reason": ApprovalReason.budget_exhausted.value,
+                    "task_id": task_id,
+                    "action": step.action,
+                    "forecast_usd": forecast,
+                },
+                task_id=task_id,
+            )
+            return {
+                "executed": False,
+                "reason": ApprovalReason.budget_exhausted.value,
+                "forecast_usd": forecast,
+            }
+        self._retry_spent.add((task_id, key))
+        self._retry_armed.pop(task_id, None)
+        row = self._running_paid_row(task_id, step)
+        if row is not None:
+            self.tasks.finish_step(int(row["id"]), "cancelled", None, 0.0)
+        self._block_reason.pop(task_id, None)
+        await self._continue_from_checkpoint(task_id, session_id, data)
+        return {"executed": True, "decision": ApprovalDecision.retry_step.value, "forecast_usd": forecast}
 
     def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
         return {
@@ -844,13 +1003,18 @@ class Supervisor:
 
             if any(item.paid and self._paid_outcome_unknown(task_id, item) for item in batch):
                 # Строка running уже есть: шаг стартовал до рестарта, исход не записан.
-                # Не исполнять снова и не считать успехом через _paid_done.
+                # Сам шаг не исполняется. Кнопки решают approve / retry / deny.
                 self._block_reason[task_id] = "paid_outcome_unknown"
                 await self._escalate(
                     task_id,
                     session_id,
                     "paid_outcome_unknown",
-                    extra={"action": step.action, "position": index},
+                    extra={
+                        "action": step.action,
+                        "position": index,
+                        "forecast_usd": forecast_cost([step]),
+                        "decisions": approval_decision_choices(),
+                    },
                 )
                 return
 

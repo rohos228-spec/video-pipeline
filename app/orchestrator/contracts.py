@@ -64,7 +64,12 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "и перед платным шагом. ok=False — failed, не done и не paid-retry. "
         "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
         "таблица действий); флаги плана только ужесточают. Пока metadata_of "
-        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
+        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve. "
+        "paid_outcome_unknown: опциональное decision approve|retry_step|deny. "
+        "Кнопки: «Шаг выполнен, продолжить», «Перезапустить шаг», «Остановить задачу». "
+        "Без decision grant как раньше. retry_step сначала forecast_cost шага; "
+        "исполнение — отдельный одноразовый retry_grant (действие + публичные params + retry) "
+        "и проходит через _budget_stop.",
     ),
 )
 
@@ -184,6 +189,41 @@ class ApprovalReason(StrEnum):
     risk = "risk"
     critic_escalation = "critic_escalation"
     missing_project_id = "missing_project_id"
+
+
+class ApprovalDecision(StrEnum):
+    """Решение человека по ``paid_outcome_unknown``. Поле тела опционально.
+
+    Нет значения — прежний ``grant_approval`` (для этой причины execute не
+    вызывается повторно). Кнопки WS4:
+
+    - ``approve`` — «Шаг выполнен, продолжить»
+    - ``retry_step`` — «Перезапустить шаг»
+    - ``deny`` — «Остановить задачу»
+    """
+
+    approve = "approve"
+    retry_step = "retry_step"
+    deny = "deny"
+
+
+APPROVAL_DECISION_LABELS: dict[str, str] = {
+    ApprovalDecision.approve.value: "Шаг выполнен, продолжить",
+    ApprovalDecision.retry_step.value: "Перезапустить шаг",
+    ApprovalDecision.deny.value: "Остановить задачу",
+}
+
+
+def approval_decision_choices() -> list[dict[str, str]]:
+    """Порядок кнопок для payload ``approval_required`` и экспорта WS4."""
+    return [
+        {"decision": decision, "label": APPROVAL_DECISION_LABELS[decision]}
+        for decision in (
+            ApprovalDecision.approve.value,
+            ApprovalDecision.retry_step.value,
+            ApprovalDecision.deny.value,
+        )
+    ]
 
 
 class Risk(StrEnum):
@@ -400,6 +440,17 @@ class ApprovalEvent(BaseModel):
     risk: str = ""
     change_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalDecisionBody(BaseModel):
+    """Тело решения по approval. Оба поля опциональны, старый grant их не шлёт.
+
+    ``decision`` — кнопки ``paid_outcome_unknown`` (см. ``ApprovalDecision``).
+    ``retry_grant`` — отдельный одноразовый grant «Перезапустить шаг» после прогноза.
+    """
+
+    decision: ApprovalDecision | None = None
+    retry_grant: bool = False
 
 
 class LLMResponse(BaseModel):
@@ -1370,6 +1421,7 @@ WIRE_MODELS: dict[str, type[BaseModel]] = {
     "Chunk": Chunk,
     "NodeDef": NodeDef,
     "ApprovalEvent": ApprovalEvent,
+    "ApprovalDecisionBody": ApprovalDecisionBody,
     "OrchEvent": OrchEvent,
     "ClassifyResult": ClassifyResult,
     "PlanStep": PlanStep,
@@ -1395,6 +1447,7 @@ def export_contract_schemas() -> dict[str, Any]:
             "PromptVersionKind": [v.value for v in PromptVersionKind],
             "PromptCreatedVia": [v.value for v in PromptCreatedVia],
             "ApprovalReason": [v.value for v in ApprovalReason],
+            "ApprovalDecision": [v.value for v in ApprovalDecision],
             "ReportKind": [v.value for v in ReportKind],
             "AgentRole": [v.value for v in AgentRole],
             "ModelTier": [v.value for v in ModelTier],
@@ -1416,5 +1469,6 @@ def export_contract_schemas() -> dict[str, Any]:
             "risk_order": [item.value for item in Risk],
             "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
             "default_block_outcome": TaskStatus.failed.value,
+            "approval_decision_labels": approval_decision_choices(),
         },
     }

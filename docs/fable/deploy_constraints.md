@@ -40,11 +40,19 @@ uvicorn, что поднимает Studio (`app/main.py` → `uvicorn.Config` б
   - `planning`, `critic_review` и `executing` продолжаются с последнего чекпоинта
     (`orch_checkpoints`, иначе план и позиция из строки задачи).
   - `paused` и `waiting_approval` сами не стартуют и держат очередь сессии.
-- Платный шаг со строкой `orch_steps.status=running` (исход неизвестен) повторно
-  не исполняется. Задача переводится в `waiting_approval` с причиной
-  `paid_outcome_unknown`. В `_paid_done` шаг не записывается: неизвестное списание
-  нельзя провести как успех. Пока строка `running`, `grant_approval`, дошедший до
-  исполнения, тоже не вызывает `execute`.
+- Платный шаг со строкой `orch_steps.status=running` (исход неизвестен) сам
+  повторно не исполняется. Задача ждёт `waiting_approval` с причиной
+  `paid_outcome_unknown`. В событии `approval_required` есть `forecast_usd`
+  (`forecast_cost` этого шага) и три кнопки:
+  - «Шаг выполнен, продолжить» (`decision=approve`) — шаг `done`, попадает в
+    `_paid_done`, `execute` не вызывается, план идёт со следующего шага;
+  - «Перезапустить шаг» (`decision=retry_step`) — сервер снова отдаёт прогноз и
+    вооружает отдельный grant. Исполнение только по `retry_grant`: ключ =
+    действие + публичные params + признак retry, одноразовый, через `_budget_stop`
+    (пока стоп бюджета включён, ключ не сгорает и `execute` не вызывается);
+  - «Остановить задачу» (`decision=deny`) — шаг и задача `failed`, без `execute`.
+- `grant_approval` без `decision` остаётся прежним: для `paid_outcome_unknown`
+  он не вызывает `execute` и не пишет шаг в `_paid_done`.
 
 ## Доступ
 

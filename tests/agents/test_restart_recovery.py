@@ -7,7 +7,17 @@ import pytest
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.task_store import TaskStore
 from app.orchestrator.checkpoints import CheckpointStore
-from app.orchestrator.contracts import CheckpointData, PlanStep, TaskStatus
+from app.orchestrator.contracts import (
+    CONTRACT_VERSION,
+    ApprovalDecision,
+    CheckpointData,
+    PlanStep,
+    TaskStatus,
+    approval_decision_choices,
+    export_contract_schemas,
+    forecast_cost,
+    paid_step_identity,
+)
 from tests.agents.mocks import MockActions, MockValidators, ScriptedRouter
 
 
@@ -126,5 +136,175 @@ async def test_restart_does_not_rerun_paid_step(token: str) -> None:
         await runtime.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+    finally:
+        set_runtime(None)
+
+
+def _paid_unknown(session: str, steps: list[PlanStep]) -> int:
+    tasks = TaskStore()
+    task_id = tasks.insert(session, "списать", TaskStatus.executing.value, project_id=13)
+    tasks.save_plan(task_id, steps, position=0)
+    tasks.insert_step(task_id, 0, steps[0])
+    CheckpointStore().save(task_id, session, CheckpointData(plan=steps, position=0))
+    return task_id
+
+
+@pytest.mark.asyncio
+async def test_paid_outcome_unknown_approve_marks_done_and_continues(token: str) -> None:
+    del token
+    session = "paid-approve"
+    paid = PlanStep(
+        action="charge",
+        params={"_change_id": "chg-paid", "_cost": 1.5},
+        expected="paid",
+        paid=True,
+        mutating=True,
+    )
+    nxt = PlanStep(
+        action="next",
+        params={"_change_id": "chg-next"},
+        expected="second",
+        paid=False,
+        mutating=True,
+    )
+    task_id = _paid_unknown(session, [paid, nxt])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        schema = export_contract_schemas()
+        assert schema["version"] == CONTRACT_VERSION == "ws3-r3.3"
+        body = schema["models"]["ApprovalDecisionBody"]
+        assert "decision" in body["properties"]
+        assert "decision" not in body.get("required", [])
+        assert schema["enums"]["ApprovalDecision"] == ["approve", "retry_step", "deny"]
+        labels = {item["decision"]: item["label"] for item in approval_decision_choices()}
+        assert labels == {
+            "approve": "Шаг выполнен, продолжить",
+            "retry_step": "Перезапустить шаг",
+            "deny": "Остановить задачу",
+        }
+        assert schema["rules"]["approval_decision_labels"] == approval_decision_choices()
+
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        opened = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]
+        assert opened[-1].payload["decisions"] == approval_decision_choices()
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["next"]
+        rows = runtime.tasks.list_steps(task_id)
+        assert rows[0]["status"] == "done"
+        assert rows[0]["action_name"] == "charge"
+        assert paid_step_identity(paid.action, paid.params) in runtime.supervisor._paid_done[task_id]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_paid_outcome_unknown_retry_requires_forecast_and_own_grant(token: str) -> None:
+    del token
+    session = "paid-retry"
+    paid = PlanStep(
+        action="charge",
+        params={"_cost": 1.5},
+        expected="paid",
+        paid=True,
+        mutating=True,
+        estimated_cost=4.25,
+    )
+    task_id = _paid_unknown(session, [paid])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        opened = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]
+        assert opened[-1].payload["forecast_usd"] == forecast_cost([paid]) == 4.25
+        forecast = await runtime.supervisor.grant_approval(session, "retry_step")
+        assert forecast is not None
+        assert forecast["executed"] is False
+        assert forecast["forecast_usd"] == 4.25
+        assert actions.calls == []
+        await runtime.supervisor.grant_approval(session)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        started = await runtime.supervisor.grant_approval(session, retry_grant=True)
+        assert started is not None and started["executed"] is True
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_paid_outcome_unknown_retry_grant_is_single_use(token: str) -> None:
+    del token
+    session = "paid-retry-once"
+    paid = PlanStep(
+        action="charge",
+        params={"_cost": 2},
+        expected="paid",
+        paid=True,
+        mutating=True,
+        estimated_cost=3,
+    )
+    task_id = _paid_unknown(session, [paid])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.retry_step)
+        runtime.supervisor._budget_stop.add(task_id)
+        blocked = await runtime.supervisor.grant_approval(session, retry_grant=True)
+        assert blocked is not None
+        assert blocked["executed"] is False
+        assert blocked["reason"] == "budget_exhausted"
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        runtime.supervisor._budget_stop.discard(task_id)
+        started = await runtime.supervisor.grant_approval(session, retry_grant=True)
+        assert started is not None and started["executed"] is True
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        runtime.tasks.set_status(task_id, TaskStatus.waiting_approval.value)
+        again = await runtime.supervisor.grant_approval(session, retry_grant=True)
+        assert again is not None
+        assert again["executed"] is False
+        assert again["reason"] == "retry_grant_spent"
+        assert [call["name"] for call in actions.calls] == ["charge"]
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_paid_outcome_unknown_deny_fails_task(token: str) -> None:
+    del token
+    session = "paid-deny"
+    paid = PlanStep(
+        action="charge",
+        params={"_cost": 1.5},
+        expected="paid",
+        paid=True,
+        mutating=True,
+    )
+    task_id = _paid_unknown(session, [paid])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.deny)
+        assert actions.calls == []
+        assert runtime.tasks.list_steps(task_id)[0]["status"] == "failed"
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert runtime.tasks.get(task_id)["error"] == "paid_outcome_unknown"
     finally:
         set_runtime(None)
