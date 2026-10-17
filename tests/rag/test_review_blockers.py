@@ -248,15 +248,20 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
     assert payload["identical"] is True
     assert payload["pass_count"] == 3
     assert payload["acceptance"]["threshold"] == 0.65
-    assert payload["acceptance"]["experimental"] is True
-    assert payload["acceptance"]["mark"] == "R5 не достигнут"
+    assert payload["median"]["test"]["ndcg_at_8"] >= 0.65
+    assert payload["acceptance"]["experimental"] is False
+    assert payload["acceptance"]["mark"] == ""
+    assert payload["median"]["test"]["hit_at_5"] < 0.9
+    assert payload["prod_p95"]["median_s"] <= P95_MAX_S
+    assert str(payload["prod_p95"]["commit"]).startswith("fadcb6cf")
+    assert len({item["pid"] for item in payload["pass_meta"]}) == 3
     for name in payload["passes"][0]:
         hits = [item[name]["hit_at_5"] for item in payload["passes"]]
         ndcgs = [item[name]["ndcg_at_8"] for item in payload["passes"]]
         assert hits[0] == hits[1] == hits[2]
         assert ndcgs[0] == ndcgs[1] == ndcgs[2]
-    assert CONTOUR_B_EXPERIMENTAL is True
-    assert CONTOUR_B_R5_NOTE == "R5 не достигнут"
+    assert CONTOUR_B_EXPERIMENTAL is False
+    assert CONTOUR_B_R5_NOTE == ""
     assert NDCG_AT_8_MIN == 0.65
 
 
