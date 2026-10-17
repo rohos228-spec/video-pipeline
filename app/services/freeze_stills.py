@@ -46,17 +46,19 @@ def layout_text(frame: Any) -> str:
             shot_index = 0
     kadry = attrs.get("кадры")
     if isinstance(kadry, list) and kadry:
+        from app.services.frame_tombstones import shot_is_active
+
+        live = [item for item in kadry if isinstance(item, dict) and shot_is_active(item)]
         if shot_index >= 1 and shot_index <= len(kadry):
             item = kadry[shot_index - 1]
-            if isinstance(item, dict):
+            if isinstance(item, dict) and shot_is_active(item):
                 piece = str(item.get("раскладка") or "").strip()
                 if piece:
                     return piece
-        for item in kadry:
-            if isinstance(item, dict):
-                piece = str(item.get("раскладка") or "").strip()
-                if piece:
-                    return piece
+        for item in live:
+            piece = str(item.get("раскладка") or "").strip()
+            if piece:
+                return piece
     return ""
 
 

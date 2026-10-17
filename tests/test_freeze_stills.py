@@ -243,3 +243,21 @@ async def test_claim_shot2_video_skips_freeze_end_still(
         )
         assert [fr.number for fr, _p, _img in claimed] == [2]
     await engine.dispose()
+
+
+def test_layout_text_skips_inactive_shot() -> None:
+    """Раскладка рендера берёт живой шот. Неактивный остаётся в кадры[]."""
+    from app.services.freeze_stills import layout_text
+
+    dead = "СТАРТ (первый кадр, до действия): мёртвая раскладка. КОНЕЦ (последний кадр действия): тоже мёртвая."
+    live = "СТАРТ (первый кадр, до действия): живая рука. КОНЕЦ (последний кадр действия): живая ладонь."
+    kadry = [
+        {"id": "1-K1", "раскладка": dead, "активен": False},
+        {"id": "1-K2", "раскладка": live},
+    ]
+    frame = {"attrs": {"кадры": kadry, "camera_subdivide": {"shot_index": 1}}}
+    assert "живая рука" in layout_text(frame)
+    assert "мёртвая" not in layout_text(frame)
+    assert len(kadry) == 2
+    assert kadry[0]["активен"] is False
+    assert kadry[0]["раскладка"] == dead
