@@ -410,8 +410,12 @@ def _write_report(out_path: Path, result: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os
+
+    if os.environ.get("VP_DEV_SEED") != "1":
+        raise SystemExit("нужен VP_DEV_SEED=1 и явный --project")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", type=int, default=57)
+    parser.add_argument("--project", type=int, required=True)
     parser.add_argument("--out", default="tasks/GROUP-SCENE-DESIGN.md")
     args = parser.parse_args(argv)
     report = asyncio.run(_run(args.project, ROOT / args.out))
