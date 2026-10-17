@@ -2390,22 +2390,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,
+                    is_coverage_leftover,
                 )
 
                 collapsed = await collapse_flattened_coverage_cells(
                     session, project
                 )
-                if collapsed.get("deleted"):
+                if collapsed.get("deleted") or collapsed.get("archived"):
                     await session.flush()
-                    frames_for_map = list(
-                        (
+                    frames_for_map = [
+                        fr
+                        for fr in (
                             await session.execute(
                                 _select(Frame)
                                 .where(Frame.project_id == project.id)
                                 .order_by(Frame.sort_key, Frame.number)
                             )
                         ).scalars().all()
-                    )
+                        if not is_coverage_leftover(fr)
+                    ]
                     logger.info(
                         "[#{}] {} collapse flattened coverage {}",
                         project.id,
