@@ -1172,20 +1172,27 @@ async def apply_coverage_scene_action(
         kadry = explode_scene_action_to_kadry(
             raw, place=place, vo=scene_vo, cell_number=int(parent.number)
         )
-    if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
-        kadry = fold_excess_shot_voiceover(kadry, MAX_IMPROVE_SHOTS)
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    if lock_parent_plan:
-        parent_plan = parent_establishing_plan(kadry[0].get("план"))
-    else:
-        parent_plan = str(kadry[0].get("план") or "").strip() or "СРЕДНИЙ"
-    kadry[0]["план"] = parent_plan
-    kadry[0]["parent_id"] = None
-    master_id = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
-    kadry[0]["id"] = master_id
-    for shot in kadry[1:]:
-        shot["parent_id"] = master_id
+    from app.services.vo_shot_expand import shot_is_active
+
+    # attrs["кадры"] хранит полный список, включая помеченные и хвост
+    # длиннее MAX_IMPROVE_SHOTS. На кадры идёт только layout живых шотов.
+    # Свёртка MAX_IMPROVE_SHOTS в «кадры» не пишется: fold режет список.
+    layout = [shot for shot in kadry if shot_is_active(shot)]
+    parent_plan = "СРЕДНИЙ"
+    master_id = f"{int(parent.number)}-K1"
+    if layout:
+        if lock_parent_plan:
+            parent_plan = parent_establishing_plan(layout[0].get("план"))
+        else:
+            parent_plan = str(layout[0].get("план") or "").strip() or "СРЕДНИЙ"
+        layout[0]["план"] = parent_plan
+        layout[0]["parent_id"] = None
+        master_id = str(layout[0].get("id") or master_id)
+        layout[0]["id"] = master_id
+        for shot in layout[1:]:
+            shot["parent_id"] = master_id
     if with_coverage and parse_scene_chain(raw):
         chain_text = raw
     else:
@@ -1219,8 +1226,8 @@ async def apply_coverage_scene_action(
     group = _visible_cell_members(parent, members)
     inserted: list[Frame] = []
     remap: dict[int, int] = {}
-    if grow and len(kadry) > len(group):
-        need = len(kadry) - len(group)
+    if grow and len(layout) > len(group):
+        need = len(layout) - len(group)
         group, inserted, remap = await _grow_cell_shots(
             session,
             project,
@@ -1232,22 +1239,27 @@ async def apply_coverage_scene_action(
         frames = await _load_frames(session, int(project.id))
         parent, members = scene_group(frames, parent)
         group = _visible_cell_members(parent, members)
-    elif len(kadry) > len(group):
+    elif len(layout) > len(group):
         logger.info(
             "montage scene_action #{} ячейка {} цепь={} кадров, в ячейке {} — без вставки",
             project.id,
             parent.number,
-            len(kadry),
+            len(layout),
             len(group),
         )
 
     shot_total = len(kadry)
-    used = min(shot_total, len(group))
-    if used and shot_total > used:
-        kadry = fold_excess_shot_voiceover(kadry, used)
-    parent_sid = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
+    used = min(len(layout), len(group))
+    # Хвост закадра живых шотов клеится на последний кадр. Помеченный
+    # в layout не входит — его закадр не садится на живой кадр.
+    voiced = (
+        fold_excess_shot_voiceover(layout, used)
+        if used and len(layout) > used
+        else layout
+    )
+    parent_sid = str((layout[0].get("id") if layout else "") or master_id)
     for i, member in enumerate(group[:used]):
-        shot = kadry[i]
+        shot = voiced[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 
