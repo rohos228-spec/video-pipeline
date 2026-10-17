@@ -57,13 +57,13 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
   expect(res.ok()).toBeTruthy();
 }
 
-test("схема ws2-r2.1 закреплена sha256", () => {
+test("схема ws2-r2.2 закреплена sha256", () => {
   const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorActionResults.schema.json");
   const hash = createHash("sha256").update(readFileSync(file)).digest("hex");
   expect(hash).toBe(ACTION_SCHEMA_SHA256);
-  expect(hash).toBe("e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d");
-  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.1");
-  expect(ACTION_CONTRACT_REF).toBe("ed35599772d3280760c405c4c8236db7833dd58e");
+  expect(hash).toBe("26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013");
+  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.2");
+  expect(ACTION_CONTRACT_REF).toBe("a17ff283153cc1dd51fec23a99ed38e178f4ebb6");
 });
 
 test("версия, снимок и marked обязательны", () => {
@@ -76,7 +76,7 @@ test("версия, снимок и marked обязательны", () => {
 
   const created = readActionEnvelope(EXAMPLE_NODE_CREATE, 2);
   expect(created?.snapshotId).toBe("snap-13-1");
-  expect(created?.version).toBe(1);
+  expect(created?.version).toBe(2);
   expect(created?.baseVersion).toBe(1);
 
   const marked = readActionEnvelope(EXAMPLE_DELETE_OK, 3);
@@ -110,6 +110,46 @@ test("версия, снимок и marked обязательны", () => {
   const unmarked = structuredClone(EXAMPLE_DELETE_OK);
   (unmarked.result as { marked?: boolean }).marked = false;
   expect(readActionEnvelope(unmarked, 8)).toBeNull();
+});
+
+test("невалидный ответ действия остаётся карточкой", async ({ page }) => {
+  const stale = structuredClone(EXAMPLE_PROMPT_EDIT);
+  const staleResult = stale.result as { version?: number; base_version?: number };
+  staleResult.version = 2;
+  staleResult.base_version = 2;
+  expect(readActionEnvelope(stale, 1)?.kind).toBe("invalid");
+
+  const blank = structuredClone(EXAMPLE_DELETE_OK);
+  (blank.result as { snapshot_id?: string }).snapshot_id = " \n\t";
+  expect(readActionEnvelope(blank, 2)?.kind).toBe("invalid");
+  expect(readActionEnvelope(blank, 2)?.error).toBe("Некорректный ответ действия");
+
+  const implied = structuredClone(EXAMPLE_PARAMS_EDIT);
+  const impliedResult = implied.result as { skipped?: string[]; partial?: boolean };
+  impliedResult.skipped = ["shot-2"];
+  impliedResult.partial = false;
+  const partial = readActionEnvelope(implied, 3);
+  expect(partial?.kind).toBe("params");
+  expect(partial?.partial).toBe(true);
+  expect(partial?.skipped).toEqual(["shot-2"]);
+
+  await openWithToken(page, "act-invalid");
+  await emit(page, "act-invalid", "step_finished", stale);
+  const card = page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" });
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute("data-kind", "invalid");
+  await expect(card.getByTestId("orch-diff")).toHaveCount(0);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-invalid", "step_finished", blank);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" })).toHaveCount(2);
+  await expect(page.getByTestId("orch-soft-delete")).toHaveCount(0);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-invalid", "step_finished", implied);
+  const kept = page.getByTestId("orch-action-card").filter({ hasText: "shot-2" });
+  await expect(kept.getByTestId("orch-action-partial")).toContainText("Частично");
+  await expect(kept).not.toContainText("Некорректный ответ действия");
 });
 
 test("построчный дифф промта не теряет строки", () => {

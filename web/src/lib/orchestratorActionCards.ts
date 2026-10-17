@@ -1,9 +1,13 @@
 /**
  * Карточки результатов действий по контракту WS2.
  *
- * ws2-r2.1 — PR #378 @ ed355997.
+ * ws2-r2.2 — PR #378 @ a17ff283.
  * Схема: web/src/lib/orchestratorActionResults.schema.json
- * sha256 e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d
+ * sha256 26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013
+ *
+ * r2.2: version строго больше base_version; пустой snapshot_id и archive_ref
+ * недействительны; непустой skipped включает partial. Иначе карточка
+ * «Некорректный ответ действия», интерфейс не падает.
  *
  * Моки — JSON из docs/fable/action_results_contract.md этой версии.
  * Обязательны: version и base_version у правки, before или snapshot_id,
@@ -20,9 +24,10 @@
  * Тело POST «Править» и «Восстановить» моделью не задано.
  */
 
-export const ACTION_CONTRACT_VERSION = "ws2-r2.1";
-export const ACTION_CONTRACT_REF = "ed35599772d3280760c405c4c8236db7833dd58e";
-export const ACTION_SCHEMA_SHA256 = "e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d";
+export const ACTION_CONTRACT_VERSION = "ws2-r2.2";
+export const ACTION_CONTRACT_REF = "a17ff283153cc1dd51fec23a99ed38e178f4ebb6";
+export const ACTION_SCHEMA_SHA256 = "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013";
+export const INVALID_ACTION_TEXT = "Некорректный ответ действия";
 export const REPORT_EDIT_ACTION = "update_report";
 const CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
 
@@ -60,7 +65,7 @@ export interface FieldDiffRow {
   after: string | null;
 }
 
-export type ActionCardKind = "create" | "node" | "prompt" | "params" | "report" | "mark" | "error" | "waiting" | "neutral";
+export type ActionCardKind = "create" | "node" | "prompt" | "params" | "report" | "mark" | "error" | "waiting" | "neutral" | "invalid";
 
 export interface ActionResultView {
   id: string;
@@ -330,8 +335,19 @@ function diffShape(result: Record<string, unknown>): "unified" | "fields" | null
 function partialPair(result: Record<string, unknown> | null, payload: Record<string, unknown>): { partial: boolean; skipped: string[] } {
   const fromResult = result ? stringList(result.skipped) : [];
   const skipped = fromResult.length ? fromResult : stringList(payload.skipped);
-  const partial = result?.partial === true || payload.partial === true;
+  let partial = result?.partial === true || payload.partial === true;
+  if (skipped.length > 0) partial = true;
   return { partial, skipped };
+}
+
+function blankRef(value: unknown): boolean {
+  return typeof value === "string" && value.trim() === "";
+}
+
+function invalidView(seq: number): ActionResultView {
+  const view = blankView(`invalid-${seq}`, QUIET, "invalid");
+  view.error = INVALID_ACTION_TEXT;
+  return view;
 }
 
 /** Правка ws2-r2.1: версия, база, before или снимок, ровно один diff. */
@@ -388,6 +404,16 @@ function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unk
 }
 
 export function readActionEnvelope(payload: Record<string, unknown>, seq: number): ActionResultView | null {
+  try {
+    return readActionEnvelopeInner(payload, seq);
+  } catch {
+    const status = payload.status;
+    if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
+    return invalidView(seq);
+  }
+}
+
+function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number): ActionResultView | null {
   const status = payload.status;
   if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
   const result = plainObject(payload.result);
@@ -419,6 +445,10 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
     return view;
   }
   if (!result) return null;
+  if (blankRef(result.snapshot_id) || blankRef(result.archive_ref)) return invalidView(seq);
+  const version = intGe1(result.version);
+  const baseVersion = intGe1(result.base_version);
+  if (version != null && baseVersion != null && version <= baseVersion) return invalidView(seq);
   const reportId = num(result.report_id);
   const html = typeof result.html === "string" ? result.html : null;
   if (reportId != null && html != null && result.edit_action === REPORT_EDIT_ACTION) {
@@ -513,7 +543,7 @@ export const EXAMPLE_NODE_CREATE = stepPayload("s-create", "новая нода"
     node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "node" },
     before: null,
     snapshot_id: "snap-13-1",
-    version: 1,
+    version: 2,
     base_version: 1,
     after: { title: "Сцены", group: "script_frames_qc" },
     diff: { fields: { title: { before: null, after: "Сцены" } } },

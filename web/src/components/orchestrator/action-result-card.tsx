@@ -17,6 +17,7 @@ const TITLES: Record<ActionResultView["kind"], string> = {
   error: "Ошибка",
   waiting: "Ждёт подтверждения",
   neutral: "Действие",
+  invalid: "Некорректный ответ действия",
 };
 
 function NodeLink({ result }: { result: ActionResultView }) {
@@ -201,7 +202,7 @@ export function ActionResultCard({
       data-conflict={result.conflict ? "true" : "false"}
     >
       <div className="text-xs font-semibold text-white">{TITLES[result.kind]}</div>
-      <RiskLine result={result} />
+      {result.kind === "invalid" ? null : <RiskLine result={result} />}
       <Extras result={result} />
       {result.kind === "waiting" ? (
         <p className="mt-2 text-[11px] text-white/70" data-testid="orch-approval-estimate">
