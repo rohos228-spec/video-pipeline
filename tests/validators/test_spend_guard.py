@@ -334,12 +334,19 @@ def test_unreadable_sources_are_ignored() -> None:
     class NoArg:
         internal_budget_usd = None
 
+        def __init__(self) -> None:
+            self.calls = 0
+
         def spent(self) -> float:
+            self.calls += 1
             return 10.0
 
-    numeric = run("spend_guard", 1, {"ledger": NoArg(), "run_id": "run-1"})
-    assert numeric.details["reason"] == "budget_exhausted"
+    no_arg = NoArg()
+    numeric = run("spend_guard", 1, {"ledger": no_arg, "run_id": "run-1"})
+    assert no_arg.calls == 0
+    assert numeric.passed is False
     assert numeric.blocking is True
+    assert numeric.details["reason"] == "spend_unreadable"
 
     class BadReader:
         def read_totals(self, *, project_id: int, run_id: str | None = None) -> str:
@@ -599,15 +606,22 @@ def test_pipeline_reader_without_arguments() -> None:
     class Ledger:
         internal_budget_usd = 10.0
 
+        def __init__(self) -> None:
+            self.calls = 0
+
         def spent(self, run_id: str | None) -> float:
             return 0.0
 
         def pipeline_spent(self) -> float:
+            self.calls += 1
             return 3.0
 
-    result = run("spend_guard", 1, {"ledger": Ledger(), "run_id": "r"})
-    assert result.passed is True
-    assert result.details["pipeline_scope_spent_usd"] == 3.0
+    ledger = Ledger()
+    result = run("spend_guard", 1, {"ledger": ledger, "run_id": "r"})
+    assert ledger.calls == 0
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "spend_unreadable"
 
 
 def test_context_pipeline_reader_without_snapshot() -> None:
@@ -646,6 +660,38 @@ class _CallSpy:
     def pipeline_spent(self, run_id: str | None) -> float:
         self.calls += 1
         return 0.0
+
+
+def test_type_error_does_not_recall_without_arguments() -> None:
+    """Ошибка сигнатуры не приводит к вызову без аргументов и не открывает бюджет."""
+
+    class KeywordOnly:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def totals(self, *, run_id: str | None = None) -> dict[str, float | bool]:
+            self.calls.append(f"totals:{run_id}")
+            return {
+                "internal_spent_usd": 0.0,
+                "internal_limit_usd": 10.0,
+                "budget_exhausted": False,
+            }
+
+        def spent(self) -> float:
+            self.calls.append("spent")
+            return 10.0
+
+        def pipeline_spent(self) -> float:
+            self.calls.append("pipeline")
+            return 40.0
+
+    ledger = KeywordOnly()
+    result = run("spend_guard", 1, {"spend_ledger": ledger, "run_id": "run-1"})
+    assert ledger.calls == []
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "spend_unreadable"
+    assert validator_budget_exhausted(result) is False
 
 
 def test_missing_run_id_blocks_without_calling_ledger() -> None:

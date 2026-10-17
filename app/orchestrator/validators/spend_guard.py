@@ -17,7 +17,8 @@
   Вне ``dry_run`` такой контекст закрывается здесь: ledger не зовётся,
   результат ``blocking`` с ``reason=missing_run_id``. Тот же ответ, если
   ledger сам бросил ``ValueError`` про ``run_id``. В ``dry_run`` чтение
-  как раньше.
+  как раньше. ``TypeError`` при чтении не повторяет вызов без аргументов:
+  результат ``blocking`` с ``reason=spend_unreadable``, вызова нет.
 - spend action layer (#342) через ``SpendReader.read_totals`` или снимок
   ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
@@ -84,6 +85,10 @@ _HARD = (
 _reader: SpendReader | None = None
 
 
+class _SpendReadError(Exception):
+    """Чтение бюджета сорвалось. Повторного вызова без аргументов нет."""
+
+
 class SpendReader(Protocol):
     """Чтение spend action layer (#342). ``read_totals`` WS2 принимает как есть.
 
@@ -141,6 +146,8 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
         return _missing_run_id()
     try:
         return _checked(project_id, context)
+    except _SpendReadError:
+        return _spend_unreadable()
     except ValueError as exc:
         if "run_id" in str(exc):
             return _missing_run_id()
@@ -433,8 +440,8 @@ def _call_pipeline(fn: Any, *, project_id: int, run_id: str | None) -> float:
     except TypeError:
         try:
             value = fn(run_id)
-        except TypeError:
-            value = fn()
+        except TypeError as exc:
+            raise _SpendReadError("pipeline") from exc
     return _num(value)
 
 
@@ -525,8 +532,8 @@ def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:
         return None
     try:
         spent = _num(spent_fn(_run_id(context)))
-    except TypeError:
-        spent = _num(spent_fn())
+    except TypeError as exc:
+        raise _SpendReadError("spent") from exc
     budget_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
     budget = CAP_INTERNAL_USD if budget_raw is None else _num(budget_raw)
     return {"spent_usd": spent, "budget_usd": budget, "budget_exhausted": False}
@@ -540,8 +547,8 @@ def _read_ledger_totals(ledger: Any, run_id: str | None) -> dict[str, Any] | Non
         return None
     try:
         raw = totals_fn(run_id)
-    except TypeError:
-        raw = totals_fn()
+    except TypeError as exc:
+        raise _SpendReadError("totals") from exc
     if not isinstance(raw, Mapping):
         return None
     limit_raw = raw.get("internal_limit_usd", getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD))
@@ -663,6 +670,15 @@ def _missing_run_id() -> Any:
         passed=False,
         blocking=True,
         details={"reason": "missing_run_id"},
+    )
+
+
+def _spend_unreadable() -> Any:
+    return make_result(
+        name=_NAME,
+        passed=False,
+        blocking=True,
+        details={"reason": "spend_unreadable"},
     )
 
 
