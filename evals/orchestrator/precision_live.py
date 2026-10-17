@@ -397,13 +397,13 @@ def _is_rerank_key(key: str) -> bool:
 
 
 class SelectionLeakError(ValueError):
-    """В подбор попал id вне dev-плюс (live-01..live-50) или holdout."""
+    """В подбор попал id вне dev-70 (live-01..50, hold-01..20) или holdout-3."""
 
 
 def require_dev_only(query_ids: list[str]) -> list[str]:
-    """Подбор принимает все 50 старых id. Holdout и прочие id — ошибка, не фильтр.
+    """Подбор принимает 70 id dev. Holdout-3 и прочие id — ошибка, не фильтр.
 
-    Бывший чётный test входит в dev-плюс. Отложенный набор ``hold-*`` не входит.
+    Бывший чётный test и бывший holdout-2 входят в dev. Отложенный набор ``h3-*`` не входит.
     """
     from evals.orchestrator.holdout import HoldoutLeakError, require_dev_plus
 
@@ -414,7 +414,7 @@ def require_dev_only(query_ids: list[str]) -> list[str]:
 
 
 def dev_only_queries(queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Срез для подбора: 50 старых запросов. Holdout в списке — ошибка, не отбрасывание."""
+    """Срез для подбора: id из dev-70. Holdout-3 в списке — ошибка, не отбрасывание."""
     from evals.orchestrator.holdout import HoldoutLeakError, dev_plus_ids, is_holdout_id
 
     leaked = [str(query["id"]) for query in queries if is_holdout_id(str(query["id"]))]
@@ -679,14 +679,15 @@ def run_profile_pair(out: Path | None = None) -> dict[str, Any]:
 
     Запросы не переписывает. Рейтинги пишет во временный файл, не в репозиторий.
     """
-    from evals.orchestrator.holdout import read_for_tuning
-
-    queries = dev_only_queries(json.loads(read_for_tuning(QUERY_PATH)))
+    from evals.orchestrator.holdout import load_dev_queries, read_for_tuning
     from evals.orchestrator.label_transfer import TRANSFERRED_PATH
 
-    transferred = json.loads(TRANSFERRED_PATH.read_text(encoding="utf-8"))["queries"]
-    dev_ids = {str(query["id"]) for query in queries}
-    transferred = [query for query in transferred if str(query["id"]) in dev_ids]
+    queries = load_dev_queries()
+    require_dev_only([str(query["id"]) for query in queries])
+    labeled = {
+        str(query["id"]): query for query in json.loads(read_for_tuning(TRANSFERRED_PATH))["queries"]
+    }
+    transferred = [labeled.get(str(query["id"]), query) for query in queries]
     report_path = out or REPORT_PATH
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-pair-"))
     runs: list[tuple[str, str, dict[str, float]]] = []
@@ -960,15 +961,14 @@ def render_abc(
 
 def run_abc(out: Path | None = None) -> dict[str, Any]:
     """A и C на нарезке из 8 частей. B подставляется из прогона 4b447232."""
-    from evals.orchestrator.holdout import read_for_tuning
-
-    queries = dev_only_queries(json.loads(read_for_tuning(QUERY_PATH)))
-    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.holdout import load_dev_expanded, load_dev_queries, read_for_tuning
     from evals.orchestrator.label_transfer import AMBIGUOUS_PATH
 
-    expanded_all = json.loads(read_for_tuning(EXPANDED_PATH))["queries"]
+    queries = load_dev_queries()
+    expanded = load_dev_expanded()
+    read_for_tuning(AMBIGUOUS_PATH)
     dev_ids = [str(query["id"]) for query in queries]
-    expanded = [query for query in expanded_all if str(query["id"]) in set(dev_ids)]
+    require_dev_only(dev_ids)
     if dev_ids != [str(query["id"]) for query in expanded]:
         raise RuntimeError("порядок dev-запросов в разметке s0–s7 разошёлся с исходным файлом")
     ambiguous = json.loads(AMBIGUOUS_PATH.read_text(encoding="utf-8"))
@@ -1081,12 +1081,11 @@ def _median(values: list[float]) -> float:
 
 
 def run_tune() -> dict[str, Any]:
-    """Подбор только на dev-плюс (все 50 старых). Holdout не открывается."""
-    from evals.orchestrator.holdout import read_for_tuning
-    from evals.orchestrator.label_expand import EXPANDED_PATH
+    """Подбор только на dev-70. Holdout-3 не открывается."""
+    from evals.orchestrator.holdout import load_dev_expanded
 
-    expanded = json.loads(read_for_tuning(EXPANDED_PATH))["queries"]
-    dev = dev_only_queries(expanded)
+    dev = load_dev_expanded()
+    require_dev_only([str(query["id"]) for query in dev])
     configs: list[dict[str, Any]] = [
         {"aggregate": "none", "rerank_pool": 20, "lexical": 0.5, "vector": 1.5},
     ]
@@ -1987,11 +1986,11 @@ def main() -> None:
 
 
 def _main_grid(temp_dir: Path, queries: list[dict[str, Any]], prefixes_ok: bool, out: Path) -> None:
-    from evals.orchestrator.holdout import read_for_tuning
+    from evals.orchestrator.holdout import load_dev_queries, read_for_tuning
 
-    if queries and isinstance(queries, list):
-        read_for_tuning(QUERY_PATH)
-    queries = dev_only_queries(queries)
+    read_for_tuning(QUERY_PATH)
+    queries = load_dev_queries()
+    require_dev_only([str(query["id"]) for query in queries])
     selection_ids = [str(query["id"]) for query in queries]
     runs: list[tuple[str, str, dict[str, float]]] = []
     saved: dict[str, list[dict[str, Any]]] = {}

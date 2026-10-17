@@ -1,9 +1,9 @@
-"""Отложенный набор контура B. В подбор конфига не входит.
+"""Dev контура B и заморозка бывшего holdout-2.
 
-Dev-плюс — все 50 запросов ``precision_live_queries.json`` (и нечётные, и бывший test).
-Этот файл — 20 новых запросов. Сетка, ``run_tune``, ``run_abc`` и пара профилей
-его не открывают. Подписи релевантности — те же, что у живого набора: у семейства
-все реальные чанки каталога и промпта двух нод, у правила один ``part_key``.
+Dev — 70 запросов: ``live-01``..``live-50`` и бывший holdout-2 ``hold-01``..``hold-20``.
+Новый отложенный файл — ``precision_live_holdout3.json``. Сетка, ``run_tune``,
+``run_abc`` и пара профилей его не открывают. Подписи релевантности — те же:
+у семейства все реальные чанки каталога и промпта двух нод, у правила один ``part_key``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from app.orchestrator.rag.store import chunk_id_for
 
 HOLDOUT_NAME = "precision_live_holdout.json"
 HOLDOUT_PATH = Path(__file__).resolve().parent / "datasets" / HOLDOUT_NAME
+HOLDOUT3_NAME = "precision_live_holdout3.json"
 
 # Совпадает с ``precision_live._FAMILIES``. Импорт оттуда зациклил бы модули.
 FAMILY_NODES: dict[str, tuple[str, str]] = {
@@ -175,29 +176,58 @@ class HoldoutLeakError(ValueError):
 
 
 def is_holdout_id(query_id: str) -> bool:
-    return str(query_id).startswith("hold-")
+    return str(query_id).startswith("h3-")
 
 
 def dev_plus_ids() -> list[str]:
-    """Все 50 старых запросов. Бывший чётный test тоже здесь."""
-    return [f"live-{number:02d}" for number in range(1, 51)]
+    """70 запросов: 50 старых и бывший holdout-2. Holdout-3 сюда не входит."""
+    live = [f"live-{number:02d}" for number in range(1, 51)]
+    former = [f"hold-{number:02d}" for number in range(1, 21)]
+    return live + former
 
 
 def assert_tuning_path(path: Path) -> Path:
-    """Путь holdout для сетки и подбора закрыт."""
-    if Path(path).name == HOLDOUT_NAME:
-        raise HoldoutLeakError(f"тюнинг не читает {HOLDOUT_NAME}")
+    """Путь holdout-3 для сетки и подбора закрыт. Бывший holdout-2 — это dev."""
+    if Path(path).name == HOLDOUT3_NAME:
+        raise HoldoutLeakError(f"тюнинг не читает {HOLDOUT3_NAME}")
     return Path(path)
 
 
 def read_for_tuning(path: Path) -> str:
-    """Чтение датасета из инструментов подбора. Holdout — ошибка, не фильтр."""
+    """Чтение датасета из инструментов подбора. Holdout-3 — ошибка, не фильтр."""
     target = assert_tuning_path(path)
     return target.read_text(encoding="utf-8")
 
 
+def load_dev_queries() -> list[dict[str, Any]]:
+    """70 запросов dev: файл 50 и бывший holdout-2. Holdout-3 не открывается."""
+    from evals.orchestrator.precision_live import QUERY_PATH
+
+    live = json.loads(read_for_tuning(QUERY_PATH))
+    former = json.loads(read_for_tuning(HOLDOUT_PATH))["queries"]
+    queries = [*list(live), *list(former)]
+    if [str(query["id"]) for query in queries] != dev_plus_ids():
+        raise RuntimeError("dev-70 разошёлся с live-01..50 + hold-01..20")
+    return queries
+
+
+def load_dev_expanded() -> list[dict[str, Any]]:
+    """Разметка dev-70: s0–s7 для 50 и уже полные чанки бывшего holdout-2."""
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+
+    expanded = json.loads(read_for_tuning(EXPANDED_PATH))["queries"]
+    former = json.loads(read_for_tuning(HOLDOUT_PATH))["queries"]
+    expected_live = [f"live-{number:02d}" for number in range(1, 51)]
+    if [str(query["id"]) for query in expanded] != expected_live:
+        raise RuntimeError("разметка s0–s7 не покрывает live-01..live-50 по порядку")
+    queries = [*list(expanded), *list(former)]
+    if [str(query["id"]) for query in queries] != dev_plus_ids():
+        raise RuntimeError("dev-70 разошёлся с live-01..50 + hold-01..20")
+    return queries
+
+
 def require_dev_plus(query_ids: list[str]) -> list[str]:
-    """Подбор принимает только live-01..live-50. Holdout и прочие id — ошибка."""
+    """Подбор принимает live-01..live-50 и hold-01..hold-20. Holdout-3 — ошибка."""
     allowed = set(dev_plus_ids())
     leaked = [str(query_id) for query_id in query_ids if str(query_id) not in allowed]
     if leaked:

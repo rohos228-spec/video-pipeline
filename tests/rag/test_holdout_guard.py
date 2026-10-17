@@ -157,33 +157,40 @@ def test_rewrite_of_existing_holdout_is_refused() -> None:
     assert HOLDOUT_PATH.read_bytes() == before
 
 
-def test_tuning_reader_rejects_holdout_and_accepts_dev_plus() -> None:
+def test_tuning_reader_rejects_holdout3_and_accepts_dev_70(tmp_path: Path) -> None:
+    blocked = tmp_path / "precision_live_holdout3.json"
     with pytest.raises(HoldoutLeakError):
-        read_for_tuning(HOLDOUT_PATH)
+        read_for_tuning(blocked)
+    former = read_for_tuning(HOLDOUT_PATH)
+    assert "hold-01" in former
+    accepted_ids = require_dev_plus(dev_plus_ids())
+    assert len(accepted_ids) == 70
+    assert accepted_ids[:2] == ["live-01", "live-02"]
+    assert accepted_ids[-2:] == ["hold-19", "hold-20"]
     with pytest.raises(HoldoutLeakError):
-        require_dev_plus(["live-01", "hold-01"])
+        require_dev_plus(["live-01", "h3-01"])
     with pytest.raises(SelectionLeakError):
-        require_dev_only(["live-02", "hold-03"])
-    accepted = require_dev_only(["live-02", "live-50", "live-29"])
-    assert accepted == ["live-02", "live-50", "live-29"]
-    assert "live-02" in dev_plus_ids()
+        require_dev_only(["live-02", "h3-03"])
+    accepted = require_dev_only(["live-02", "hold-03", "live-50"])
+    assert accepted == ["live-02", "hold-03", "live-50"]
     chosen = dev_only_queries(
         [
+            {"id": "hold-01", "text": "бывший holdout"},
             {"id": "live-02", "text": "бывший test"},
             {"id": "live-01", "text": "dev"},
         ]
     )
-    assert [query["id"] for query in chosen] == ["live-02", "live-01"]
+    assert [query["id"] for query in chosen] == ["hold-01", "live-02", "live-01"]
     with pytest.raises(HoldoutLeakError):
         dev_only_queries(
             [
                 {"id": "live-01", "text": "dev"},
-                {"id": "hold-01", "text": "отложенный"},
+                {"id": "h3-01", "text": "отложенный"},
             ]
         )
     key, _why = select_on_dev(
         [("fit", "fit", {"ndcg_at_8": 0.7, "hit_at_5": 0.95, "p95_s": 0.2})],
-        ["live-02", "live-49"],
+        ["live-02", "hold-20"],
     )
     assert key == "fit"
 
@@ -221,6 +228,69 @@ def test_tuning_entry_points_read_through_the_guard() -> None:
         start = source.index(name)
         nxt = source.find("\ndef ", start + 1)
         body = source[start:nxt]
-        assert "read_for_tuning" in body
-        assert "precision_live_holdout" not in body
+        assert "load_dev_queries" in body or "load_dev_expanded" in body or "read_for_tuning" in body
+        assert "precision_live_holdout3" not in body
+        assert "load_holdout3" not in body
         assert "HOLDOUT_PATH" not in body
+
+
+def test_holdout3_sampler_reads_project65_and_keeps_the_seed() -> None:
+    from evals.orchestrator.holdout3 import QUOTA, SEED, draw, project65_records, query_text
+
+    records = project65_records()
+    assert records
+    assert {row["project_id"] for row in records} == {65}
+    assert {row["dataset"] for row in records} == {"65-clean", "65-seeded"}
+    drawn = draw(SEED, records, ["rule-1", "rule-9"])
+    assert [item["id"] for item in drawn] == [f"h3-{number:02d}" for number in range(1, 25)]
+    families = [item["family"] for item in drawn]
+    for family, count in QUOTA:
+        assert families.count(family) == count
+    assert draw(SEED, records, ["rule-1", "rule-9"]) == drawn
+    other = draw(SEED + 1, records, ["rule-1", "rule-9"])
+    assert [item["source"]["record_id"] for item in other] != [item["source"]["record_id"] for item in drawn]
+    pool = {(row["dataset"], row["record_type"], row["record_id"]): row for row in records}
+    for item in drawn:
+        source = item["source"]
+        record = pool[(source["dataset"], source["record_type"], source["record_id"])]
+        assert item["text"] == query_text(record)
+        assert item["text"]
+    rules = [item for item in drawn if item["family"] == "rules"]
+    assert len(rules) == 1
+    assert rules[0]["part_key"] in {"rule-1", "rule-9"}
+
+
+def test_holdout3_file_is_frozen_normalized_and_tuning_does_not_load_it() -> None:
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, SEED, build_holdout3_document, load_holdout3_queries, write_holdout3_file
+
+    assert FROZEN_SHA256["precision_live_holdout3.json"]["sha256"] == file_sha256(HOLDOUT3_PATH)
+    assert_frozen(HOLDOUT3_PATH)
+    document = json.loads(HOLDOUT3_PATH.read_text(encoding="utf-8"))
+    assert document["seed"] == SEED
+    assert build_holdout3_document()["queries"] == document["queries"]
+    queries = load_holdout3_queries()
+    assert len(queries) == 24
+    families = [query["family"] for query in queries]
+    assert families.count("assemble") >= 5
+    assert families.count("world") >= 5
+    assert families.count("camera") >= 3
+    assert families.count("action") >= 3
+    assert families.count("script") >= 3
+    for query in queries:
+        assert query["id"].startswith("h3-")
+        for item in query["relevant"]:
+            assert item["grade"] == 1
+            assert item["chunk_id"] == chunk_id_for(item["corpus"], item["source_id"], item["part_key"])
+        if query["family"] == "rules":
+            assert len({item["part_key"] for item in query["relevant"]}) == 1
+        else:
+            assert {item["source_id"] for item in query["relevant"]} == set(FAMILY_NODES[query["family"]])
+    before = HOLDOUT3_PATH.read_bytes()
+    write_holdout3_file()
+    assert HOLDOUT3_PATH.read_bytes() == before
+    with pytest.raises(Exception):
+        write_holdout3_file(rewrite=True)
+    source = Path("evals/orchestrator/precision_live.py").read_text(encoding="utf-8")
+    tune = source[source.index("def run_tune"): source.index("def contour_c_acceptance")]
+    assert "load_holdout3_queries" not in tune
+    assert "holdout3" not in tune
