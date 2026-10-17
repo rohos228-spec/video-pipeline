@@ -982,7 +982,8 @@ test.describe("orchestrator chat", () => {
 
   test("paid_outcome_unknown: 404, 409 и 422 оставляют карточку", async ({ page }) => {
     const cases = [
-      ["paid404", "approval not found"],
+      ["paid404", "unknown change_id"],
+      ["paid404foreign", "foreign change_id"],
       ["paid409", "approval conflict"],
       ["paid422", "approval unprocessable"],
     ] as const;

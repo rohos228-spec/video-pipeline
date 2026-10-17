@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid409 | paid422 | paidgrant409
+ *   | paid404 | paid404foreign | paid409 | paid422 | paidgrant409
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -805,6 +805,7 @@ function startScenario(session, scenario, text, mode) {
   if (
     scenario === "paidoutcome" ||
     scenario === "paid404" ||
+    scenario === "paid404foreign" ||
     scenario === "paid409" ||
     scenario === "paid422" ||
     scenario === "paidgrant409" ||
@@ -1323,7 +1324,11 @@ const server = http.createServer(async (req, res) => {
     const scenario = scenarioOf(req, url);
     if (body.retry_grant === true) {
       if (scenario === "paid404") {
-        sendJson(res, 404, { detail: "approval not found" });
+        sendJson(res, 404, { detail: "unknown change_id" });
+        return;
+      }
+      if (scenario === "paid404foreign") {
+        sendJson(res, 404, { detail: "foreign change_id" });
         return;
       }
       if (scenario === "paid409" || scenario === "paidgrant409") {
@@ -1344,8 +1349,16 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 500, { detail: "approve failed" });
       return;
     }
-    if ((scenario === "approve404" && decision === "approve") || scenario === "paid404") {
+    if (scenario === "approve404" && decision === "approve") {
       sendJson(res, 404, { detail: "approval not found" });
+      return;
+    }
+    if (scenario === "paid404") {
+      sendJson(res, 404, { detail: "unknown change_id" });
+      return;
+    }
+    if (scenario === "paid404foreign") {
+      sendJson(res, 404, { detail: "foreign change_id" });
       return;
     }
     if ((scenario === "approve409" && decision === "approve") || scenario === "paid409") {

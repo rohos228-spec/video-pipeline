@@ -10,6 +10,11 @@
  * Сервер сам ставит `change_id` вида `orch-appr-<task_id>-<n>`
  * (`tests/agents/test_change_id.py`, `_paid_id`). Клиентский id отбрасывается.
  *
+ * `grant_approval` отвечает 404 `unknown change_id` или `foreign change_id`,
+ * если id не выдан этим сервером или принадлежит другой задаче/сессии.
+ * Проверка владельца идёт раньше 409. HTTP-роутера под этот код в #358 нет:
+ * мок отдаёт тот же `detail` на временном POST.
+ *
  * TODO(ws3-358): HTTP-роутера `grant_approval` в #358 нет. Мок принимает то же
  * тело на POST `.../approvals/{id}/approve`. Если WS3 опубликует другой путь,
  * менять только `PAID_OUTCOME_GRANT_SEGMENT` и копию строк в
