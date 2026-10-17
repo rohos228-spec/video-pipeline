@@ -174,10 +174,10 @@ export function ReportEditor() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background" data-testid="orch-reports">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-input px-4">
         <div className="flex min-w-0 items-center gap-2">
           <FileText className="h-4 w-4 shrink-0 text-primary" />
-          <span className="text-sm font-semibold tracking-tight text-white">Отчёты</span>
+          <span className="text-sm font-semibold tracking-tight text-foreground">Отчёты</span>
           <Badge variant="muted" className="normal-case tracking-normal">
             проект {projectId ?? "не выбран"}
           </Badge>
@@ -199,18 +199,18 @@ export function ReportEditor() {
       </div>
 
       {!ready ? null : projectId == null ? (
-        <p className="p-6 text-xs text-white/50" data-testid="orch-reports-project">
+        <p className="p-6 text-xs text-muted-foreground" data-testid="orch-reports-project">
           Выберите проект в студии или откройте отчёты с параметром project.
         </p>
       ) : !token ? (
-        <p className="p-6 text-xs text-white/50" data-testid="orch-reports-token">
+        <p className="p-6 text-xs text-muted-foreground" data-testid="orch-reports-token">
           Нужен токен оркестратора. Откройте чат и сохраните его.
         </p>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_340px] overflow-hidden">
-          <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/[0.06]" data-testid="orch-report-list">
-            <div className="shrink-0 space-y-2 border-b border-white/[0.06] p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Новый отчёт</div>
+          <aside className="flex min-h-0 flex-col overflow-hidden border-r border-input" data-testid="orch-report-list">
+            <div className="shrink-0 space-y-2 border-b border-input p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Новый отчёт</div>
               <Input
                 data-testid="orch-create-title"
                 value={createTitle}
@@ -239,14 +239,14 @@ export function ReportEditor() {
               </Button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {reports.length === 0 ? <p className="text-[11px] text-white/35">Нет отчётов.</p> : null}
+              {reports.length === 0 ? <p className="text-[11px] text-muted-foreground/70">Нет отчётов.</p> : null}
               {reports.map((report) => (
                 <button
                   key={report.id}
                   type="button"
                   data-testid="orch-report-item"
                   className={`mb-2 w-full rounded-lg border px-2.5 py-2 text-left ${
-                    report.id === selectedId ? "border-primary/50 bg-white/[0.05]" : "border-white/[0.08]"
+                    report.id === selectedId ? "border-primary/50 bg-white/[0.05]" : "border-border"
                   }`}
                   onClick={() => {
                     void openReport(report.id).catch((err: unknown) => {
@@ -254,8 +254,8 @@ export function ReportEditor() {
                     });
                   }}
                 >
-                  <div className="truncate text-xs font-medium text-white/90">{report.title}</div>
-                  <div className="mt-1 text-[10px] text-white/40">
+                  <div className="truncate text-xs font-medium text-foreground/90">{report.title}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground/70">
                     v{report.version} · {stamp(report.updated_at)}
                   </div>
                 </button>
@@ -267,7 +267,7 @@ export function ReportEditor() {
             {conflict ? (
               <div
                 data-testid="orch-report-conflict"
-                className="mb-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-white"
+                className="mb-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
               >
                 <p>Конфликт версий. Отчёт уже изменён. Перезагрузите его, локальный черновик останется до перезагрузки.</p>
                 <Button
@@ -290,7 +290,7 @@ export function ReportEditor() {
             {detail ? (
               <>
                 <div className="mb-3 flex items-center justify-between gap-2">
-                  <h1 className="truncate text-sm font-semibold text-white" data-testid="orch-report-title" data-report-id={detail.report.id}>
+                  <h1 className="truncate text-sm font-semibold text-foreground" data-testid="orch-report-title" data-report-id={detail.report.id}>
                     {detail.report.title}
                   </h1>
                   <Button type="button" size="sm" className="text-xs" data-testid="orch-report-save" disabled={busy || detail.report.editable === 0} onClick={() => void save()}>
@@ -325,25 +325,25 @@ export function ReportEditor() {
                 ))}
               </>
             ) : (
-              <p className="text-xs text-white/35">Выберите отчёт слева.</p>
+              <p className="text-xs text-muted-foreground/70">Выберите отчёт слева.</p>
             )}
           </section>
 
-          <aside className="flex min-h-0 flex-col border-l border-white/[0.06] bg-black/30">
-            <div className="border-b border-white/[0.06] p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Просмотр</div>
+          <aside className="flex min-h-0 flex-col border-l border-input bg-black/30">
+            <div className="border-b border-input p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Просмотр</div>
               <iframe
                 title="Просмотр отчёта"
                 data-testid="orch-report-preview"
                 sandbox=""
                 srcDoc={preview}
-                className="mt-2 h-52 w-full rounded-md border border-white/[0.08] bg-white"
+                className="mt-2 h-52 w-full rounded-md border border-border bg-white"
               />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Версии</div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Версии</div>
               {detail?.versions.map((version) => (
-                <div key={version.id} className="mt-2 flex items-center justify-between gap-2 text-[11px] text-white/70" data-testid="orch-report-version">
+                <div key={version.id} className="mt-2 flex items-center justify-between gap-2 text-[11px] text-foreground/70" data-testid="orch-report-version">
                   <span>
                     v{version.version}
                     {version.version === detail.report.version ? " · текущая" : ""} · {stamp(version.created_at)}

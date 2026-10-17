@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -695,6 +695,48 @@ test.describe("orchestrator chat", () => {
   expect(live.rootBg).toBe(fixture.body.backgroundColor);
   expect(live.rootFont).toBe(live.font);
   expect(live.border).toBe(fixture.body.borderTopColor);
+});
+
+test("зона оркестратора рисуется токенами INT", async ({ page }) => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src");
+  const zone = [
+    "app/orchestrator",
+    "components/orchestrator",
+    "lib",
+  ];
+  const banned = /border-white\b|text-white\b|#0c0c0c/;
+  const hits: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) continue;
+      if (entry.name.startsWith("orchestrator") || full.includes(`${path.sep}orchestrator${path.sep}`)) {
+        const text = readFileSync(full, "utf8");
+        if (banned.test(text)) hits.push(path.relative(srcRoot, full));
+      }
+    }
+  };
+  for (const rel of zone) walk(path.join(srcRoot, rel));
+  expect(hits).toEqual([]);
+
+  await openWithToken(page, "idle", "int-zone");
+  const header = page.locator("[data-orch-page] > div").first();
+  await expect(header).toHaveClass(/border-input/);
+  await expect(page.locator("[data-orch-page] .font-semibold").first()).toHaveClass(/text-foreground/);
+  const swatch = await page.evaluate(() => {
+    const title = document.querySelector("[data-orch-page] .font-semibold");
+    const bar = document.querySelector("[data-orch-page] > div");
+    return {
+      title: title instanceof HTMLElement ? getComputedStyle(title).color : "",
+      border: bar instanceof HTMLElement ? getComputedStyle(bar).borderBottomColor : "",
+    };
+  });
+  expect(swatch.title).toBe("rgb(240, 240, 240)");
+  expect(swatch.border).toBe("rgba(255, 255, 255, 0.06)");
 });
 
 test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
