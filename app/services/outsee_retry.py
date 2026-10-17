@@ -1141,9 +1141,6 @@ async def generate_image_with_retries(
                     return await outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
                     )
-                return await outsee.generate_image(
-                    send_prompt, out_path, **attempt_kwargs
-                )
             except StepCancelledError:
                 raise
             except OutseeDownloadError as e:
@@ -1348,16 +1345,22 @@ async def generate_image_with_retries(
         str(raw_slug) if raw_slug else None
     )
     if fb and outsee_error_is_moderation(last_err):
-        logger.warning(
-            "outsee.generate_image: {} CONTENT_POLICY → fallback {}",
-            raw_slug,
-            fb,
+        from app.services.model_substitution import note_model_substitution
+
+        pid = kwargs.get("project_id")
+        line = note_model_substitution(
+            original_model=str(raw_slug or "gpt-image-2"),
+            substituted_model=str(fb),
+            reason="CONTENT_POLICY: модерация gpt-image-2, картинка уходит на nano-banana-2",
+            node="image",
+            run=pid if isinstance(pid, int) else None,
+            project_id=pid if isinstance(pid, int) else None,
         )
         fb_kwargs = dict(kwargs)
         fb_kwargs["model_slug"] = fb
         fb_kwargs.pop("quality", None)
         fb_kwargs["_image_model_fallback_done"] = True
-        return await generate_image_with_retries(
+        result = await generate_image_with_retries(
             outsee,
             gpt,
             prompt=current_prompt,
@@ -1366,6 +1369,8 @@ async def generate_image_with_retries(
             gpt_rewrite=False,
             **fb_kwargs,
         )
+        result.model_substitution = line
+        return result
     raise last_err
 
 
