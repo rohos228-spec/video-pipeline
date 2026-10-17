@@ -471,11 +471,27 @@ async function runBudget(session, taskId) {
     title: "Бюджет",
     detail: "budget_exhausted",
   });
+  const approvalId = "chg-budget-d4";
   emit(session, "approval_required", taskId, {
+    change_id: approvalId,
     reason: "budget_exhausted",
     action: "run_node",
     risk: "high",
+    title: "Добавить суб-бюджет",
   });
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: approvalId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision !== "approve") return;
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "running",
+    task_status: "executing",
+    title: "Бюджет",
+    detail: "суб-бюджет выдан",
+  });
+  emit(session, "message", taskId, { role: "assistant", text: "Суб-бюджет добавлен." });
 }
 
 async function runPlan(session, taskId) {

@@ -179,6 +179,23 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).not.toContainText("готово");
   });
 
+  test("бюджет: approve по change_id выдаёт суб-бюджет", async ({ page }) => {
+    await openWithToken(page, "budget", "budget-grant");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    const posted = page.waitForRequest(
+      (req) => req.method() === "POST" && req.url().includes("/approvals/chg-budget-d4/approve"),
+    );
+    await page.getByTestId("orch-approve").click();
+    const body = (await posted).postDataJSON() as { approval_id?: string };
+    expect(body.approval_id).toBe("chg-budget-d4");
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByTestId("orch-transcript")).toContainText("Суб-бюджет добавлен");
+    await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+  });
+
   test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
     await openWithToken(page, "budget", "budget-1");
     await page.getByTestId("orch-composer").fill("ещё кадры");

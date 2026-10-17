@@ -299,9 +299,23 @@ function taskKey(value: unknown): string | null {
   return null;
 }
 
-/** approval_id только из payload. Пустая строка и нестрока — не id. */
+/** Непустая строка. Число и пустота — не id. */
 export function serverApprovalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Id решения из шины ws3-r3.3: `ApprovalEvent.change_id`.
+ * Явный `approval_id` оставлен для моков, у которых это поле уже есть.
+ * Вложенный `payload` — тот же объект, если событие завернуло ApprovalEvent.
+ */
+export function approvalServerKey(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.approval_id) ?? serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  const inner = nested as Record<string, unknown>;
+  return serverApprovalId(inner.approval_id) ?? serverApprovalId(inner.change_id);
 }
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
@@ -370,7 +384,7 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
   const body = approval as Record<string, unknown>;
   const reason = str(body.reason);
   if (!reason) return;
-  const fromServer = serverApprovalId(body.approval_id);
+  const fromServer = approvalServerKey(body);
   const id = fromServer ?? `local-llm-${seq}`;
   if (!state.approvals.some((item) => item.id === id)) {
     state.approvals.push({
@@ -611,7 +625,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "approval_required") {
     const body = payload as ApprovalPayload & Record<string, unknown>;
-    const fromServer = serverApprovalId(body.approval_id);
+    const fromServer = approvalServerKey(body);
     const id = fromServer ?? `local-${event.seq}`;
     if (!next.approvals.some((item) => item.id === id)) {
       next.approvals.push({
