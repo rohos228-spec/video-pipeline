@@ -3528,7 +3528,9 @@ async def run_apply_ops_batched(
                 node_key,
                 exc,
             )
-            if isinstance(exc, PassStopError) and "скопирован" in str(exc):
+            # QC-контракт и отмена должны дойти до вызывающего.
+            # Обычная пачка excel по-прежнему не валит шаг.
+            if allow_empty_ops or isinstance(exc, PassStopError) and "скопирован" in str(exc):
                 raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)

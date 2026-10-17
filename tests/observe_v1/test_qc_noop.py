@@ -100,8 +100,11 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.applied,[])
 
     async def test_creating_node_still_rejects_empty_payload(self):
-        with self.assertRaises(RuntimeError): await self.batch(allowed=False)
+        # R0a: пустая пачка создающего узла не валит шаг, её пропускают.
+        result = await self.batch(allowed=False)
+        self.assertEqual(self.applied, [])
         self.assertEqual(len(self.posts), 2, 'original JSON retry remains for mandatory writes')
+        self.assertTrue((result.apply_ops or {}).get('skipped_packs'))
 
     async def test_real_correction_reaches_original_batch_apply_callback_once(self):
         self.answer = '{"ops":[{"frame_uuid":"frame-one","fields":{"место":"улица"}}]}'
