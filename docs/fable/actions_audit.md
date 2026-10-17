@@ -5,7 +5,7 @@
 Источник реестра: PR #342, форк `nikitasolonukha/video-pipeline`, ветка `orchestrator-observe-v1`, sha `3ec7c9579716a53ab119cabb340af562cba76b31`.
 База main на момент аудита: `c53a238b`. Тега `pipeline-base-v1` в репозитории нет, R0a (housepc → main) не влит. Rebase #342 не делался.
 
-Предварительный пересчёт против ветки `r0a-pipeline-base` (`a2409eef`; та же картина на `r0a-merge-fable` `72cdf3ee`) — отдельный раздел в конце. Он не заменяет снимок против main. Финальные call-site и конфликтная зона — только после тега `pipeline-base-v1`.
+Граница node_store (какие места читать через `resolve_node`) утверждена куратором Heil: 15 мест, §node_store. Это не черновик. Номера строк этих мест сняты с `r0a-pipeline-base` / #342 и сверяются ещё раз после тега `pipeline-base-v1`. Конфликтная зона rebase против R0a остаётся предварительной до того же тега.
 
 План: `docs/fable/PLAN.md` в ветке `fable-context` (§2.2 этап 0b, §3.6, §6, §9 WS2).
 
@@ -180,15 +180,41 @@
 
 Обёртка history (`shutil.copy2` в `_backup_file`) — это копирование файла данных, не запуск процесса. Она попала в modify по признаку (а), не по (б).
 
-## §node_store — точки загрузки шаблонов нод
+## §node_store — закрытый перечень (утверждён Heil)
 
-Снимок против main (`c53a238b`) и #342. Для планирования R2 смотреть предварительный пересчёт по `r0a-pipeline-base`: на той ветке уже есть `scene_skeleton_batches.py`, `scene_boundaries.py` и `prompts/templates/nii67`. Цифры этого раздела остаются верными как история main.
+**Граница закрыта.** Состав 15 мест ниже — решение куратора, не черновик. Патч R2 заменяет чтение на `node_store.resolve_node()`, не больше 20 строк на место (вызов + import). Патчи загрузчиков пайплайна (строки 1–3 и 9–15) ревьюит WS1. Строки 4–8 — код Action Layer #342, на R0a этих файлов нет. Любой другой файл `app/services/` не трогать.
 
-Искали в `app/services/` на main (`c53a238b`) и на #342 (`3ec7c957`) чтения `templates/node_groups/**` и `prompts/templates`.
+Номера строк — с `r0a-pipeline-base` `a2409eef` и #342 `3ec7c957` (на `r0a-merge-fable` `72cdf3ee` те же). После тега `pipeline-base-v1` строки сверить заново; состав перечня от тега не зависит. Колонка «инв.» — номер строки в инвентаризации чтений ниже.
 
-### `prompts/templates`
+| # | инв. | Источник | Файл | Функция | Строка R0a | Строка #342 |
+|---|---|---|---|---|---|---|
+| 1 | 1 | оба | `app/services/prompt_library.py` | `read_prompt` | 587 | 514 |
+| 2 | 2 | оба | `app/services/montage_action_gpt.py` | `load_action_prompt` | 173 | 168 |
+| 3 | 3 | оба | `app/services/montage_scene_improve.py` | `load_group_prompt` | 216 | 196 |
+| 4 | 4 | #342 | `app/services/change_control/targets.py` | `PromptHandler._effective` | — | 115 |
+| 5 | 5 | #342 | `app/services/change_control/targets.py` | `PromptHandler.describe` | — | 128 |
+| 6 | 6 | #342 | `app/services/change_control/targets.py` | `PromptHandler._variant_text` | — | 170 |
+| 7 | 7 | #342 | `app/services/revisions.py` | `_file_entry` | — | 250 |
+| 8 | 8 | #342 | `app/services/action_layer/builtin_wave3.py` | `_load_basis` | — | 355 |
+| 9 | 9 | R0a | `app/services/frame_style.py` | `load_style_text` | 115 | — |
+| 10 | 15 | оба | `app/services/scene_design/agents.py` | `load_prompt` | 257, 261, 266, 275 | 256, 260, 265, 274 |
+| 11 | 26 | R0a | `app/services/scene_boundaries.py` | `load_prompt` | 53 | — |
+| 12 | 27 | R0a | `app/services/scene_skeleton_batches.py` | `run_registry_prepass` | 451 | — |
+| 13 | 28 | R0a | `app/services/nii67_agent.py` | `load_template` | 24 | — |
+| 14 | 29 | R0a | `app/services/nii67_scenario.py` | `_read` | 72 | — |
+| 15 | 30 | R0a | `app/services/style_agent/agents.py` | `load_prompt` | 53 | — |
 
-Строки `prompts/templates` нет ни на main, ни на #342. Каталога с таким именем нет. В закрытый перечень она не входит.
+Строка 10 — один патч функции `load_prompt`. Вызывающие (`scene_design/runner.py`, `skeleton.py`) файл сами не открывают и в перечень не входят.
+
+В перечень не вошли строки инвентаризации **10, 11–14, 16–25, 31**: бэкап `style_agent.apply._write`, чтения `prompts/<шаг>` и hero, `shot_menu`, `shot_templates`, JSON пользовательских групп, `prompt_composer`, хеш дерева в `revisions._tree_hash`.
+
+### Снимок против main (история, не граница)
+
+Искали в `app/services/` на main (`c53a238b`) и на #342 (`3ec7c957`) чтения `templates/node_groups/**` и `prompts/templates`. На main каталога `templates/node_groups` нет, `scene_skeleton_batches.py` нет, строки `prompts/templates` нет. `apply_ops_batches.py` на обоих деревьях шаблоны нод не читает. Ожидание плана («2–4 call-site») на main не выполнялось. На R0a загрузчики скелета, границ и `prompts/templates/nii67` уже есть — они вошли в утверждённую таблицу выше (строки 11–14).
+
+### `prompts/templates` на main и #342
+
+Строки `prompts/templates` нет ни на main, ни на #342. На R0a каталог есть, и его чтения входят в границу (строки 13–14 таблицы выше).
 
 ### `templates/node_groups/**` на main
 
@@ -196,9 +222,9 @@
 
 Ожидание плана («2–4 call-site: `apply_ops_batches.py`, `scene_skeleton_batches.py`, общий prompt-loader») на main не выполняется: первых двух чтений нет, общий загрузчик читает другие деревья (см. смежные).
 
-### Закрытый перечень исключений из freeze (только #342)
+### Восемь чтений на #342 до решения куратора
 
-Это места, где код **читает байты** файла, и путь может быть `templates/node_groups/script_frames_qc/<имя>.md`. Патч R2 (замена чтения на `node_store.resolve_node()`, ≤ 20 строк, ревью WS1) разрешён только здесь. Любой другой файл `app/services/` не трогать.
+Историческая таблица. Действующая граница — 15 строк в начале §node_store, не этот список.
 
 Общий резолвер на #342: `prompt_library.node_group_prompts_dir` (`app/services/prompt_library.py:148`) возвращает `корень/templates/node_groups/<group_id>`. `resolve_script_frames_qc_prompt_path` (`:239`) для имён группы берёт этот каталог, а для `scene_skeleton_agent` и `action` — не его, а `prompts/scene_design/` (словарь `SCRIPT_FRAMES_QC_SHARED_PROMPTS`, `:130`).
 
@@ -219,13 +245,13 @@
 
 - `prompt_library.node_group_prompts_dir` (`:148`) и `script_frames_qc_prompt_relpath` (`:236`) — только собирают путь.
 - `prompt_library.list_group_owned_prompts` (`:225`) — `is_file()`, без чтения текста.
-- `prompt_library.write_prompt` (`:531–537`) — **пишет** `templates/node_groups` для имён группы. Это не чтение. Вопрос куратору, входит ли запись в исключение freeze.
+- `prompt_library.write_prompt` (`:531–537`) — **пишет** `templates/node_groups` для имён группы. Это не чтение. В границу чтений запись не входит; сохранение из UI при версии в БД обходит файл (раздел «Контракт NodeDef»).
 - `node_rules.PROMPT_DIR` (`app/services/node_rules.py:9`) и описание группы в `node_groups.py:441` — строки в метаданных, файл не открывается.
 - `gpt_operator.collect_source_prompts` (`app/services/gpt_operator.py:247`) — зовёт `read_resolved_project_prompt`. Патчить надо `read_prompt`, не этот вызов.
 
-### Смежные загрузчики (оба дерева, другие пути)
+### Смежные загрузчики на main и #342
 
-Их нет в закрытом перечне. Без решения куратора R2 их не патчит.
+Снимок до R0a. `load_prompt` из этой таблицы теперь в утверждённой границе (строка 10 §node_store). `prompts_dir` и `excel_gpt_template_dir` байты не читают. `prompt_composer` в границу не входит.
 
 | Дерево | Файл | Функция | Строка | Откуда читает |
 |---|---|---|---|---|
@@ -303,24 +329,24 @@
 
 До rebase R0a в main ещё нет housepc-правок `app/orchestrator/*`. Когда R0a вольётся, конфликт надо пересчитать против тега `pipeline-base-v1`, не против сегодняшнего `c53a238b`: housepc мог разойтись с этим main в тех же step-файлах.
 
-`app/services/**` в этот аудит как конфликт rebase не разбирался построчно: freeze сервисов — зона WS1 до конца R0a. Исключение R2 — только таблица §node_store.
+`app/services/**` в этот аудит как конфликт rebase не разбирался построчно: freeze сервисов — зона WS1 до конца R0a. Исключение R2 — 15 мест в §node_store.
 
 ## Расхождения и вопросы куратору
 
 1. Число действий **102**, не «около». Источник расхождения «103 в исходнике / 102 в реестре» — снятый `node.run_step` из `builtin_group.py`. В таблицу он не включён.
 2. План §6.1 пишет, что в 102 уже есть `get_project_state`, `list_nodes` / `get_node`, `get_scenes` / `get_shots`, `get_run_logs`, `get_spend_report`. **Их нет.** Ближайшие чтения: `node.get_config`, `node.get_llm_route`, `group.list`, `group.get`, `shot.get_menu`, `group.shots_report`, `montage.get_board`, `node.get_run_cost_basis`, `step.get_run_cost_basis`, `montage.get_cost_basis`, `history.list_snapshots`. Нужны ли отдельные действия под именами плана, или достаточно этих?
 3. План §6.2 говорит, что `run_node` уже есть в реестре #342 (`POST .../steps/excel_gpt/run?node_key=&only_node=true&mode=resume`). Имени `run_node` нет. Роль выполняют `node.run_step` (excel_gpt, платно, destructive) и `step.run_step` (шаг конвейера). `stop_node` / `resume_node` тоже нет: стоп ближе к `project.stop` и `kill_switch.engage`, продолжение — к `project.resume` / `project.continue_pipeline` / `node.run_step` с resume. Подтвердить, что 11 новых действий плана садятся рядом, а не переименовывают эти id.
-4. Снимок «`prompts/templates` нет, `scene_skeleton_batches.py` нет» верен только для main и #342. На `r0a-pipeline-base` каталог `prompts/templates/nii67` уже читается (`nii67_agent.load_template`, `nii67_scenario._read`), а `scene_skeleton_batches.py` и `scene_boundaries.py` читают `prompts/scene_design`, не `templates/node_groups`. `apply_ops_batches.py` шаблоны по-прежнему не читает. Вопрос куратору тот же и теперь с фактами R0a: расширять ли закрытый перечень freeze за пределы чтений `templates/node_groups/**` (на `prompts/scene_design`, `prompts/templates/nii67`, `prompts/style_agent`, `templates/shot_templates`, composer)? Иначе ноды скелета, границ и NII node_store не увидит. Финальный перечень — после тега `pipeline-base-v1`.
-5. Включать ли в исключение freeze **запись** `prompt_library.write_prompt` (`:531` на #342)? Чтение без записи оставит второй путь мимо node_store.
+4. Закрыто Heil. В границу вошли строки инвентаризации 1–9 и загрузчики в LLM: `scene_design/agents.load_prompt` (один патч), `scene_boundaries.load_prompt`, `scene_skeleton_batches.run_registry_prepass`, `nii67_agent.load_template`, `nii67_scenario._read`, `style_agent/agents.load_prompt`. Не вошли composer, `shot_templates`, `shot_menu`, пользовательские `node_groups/*.json`, бэкап стиля, зонд hero и `_tree_hash`. `apply_ops_batches.py` по-прежнему не читает шаблоны.
+5. Закрыто вместе с контрактом UI. `write_prompt` в перечень чтений не входит. Если у ноды есть версия в БД, сохранение промта из студии не зовёт `write_prompt`, а пишет новую версию через `node_store/writer.py` (раздел «Контракт NodeDef»). Пока версии в БД нет, файл git остаётся базой только для чтения.
 6. Каталог снимков `data/action_layer_snapshots/` (modify у `montage.upload_voice`, `montage.upload_music`, `history.rollback`): переносить в `data/reports/` или явно дописать третьим allowlist-каталогом? Сейчас это единственная прямая запись ФС внутри обработчиков реестра.
 7. `publish.send` оставлен keep: обработчик не ходит в сеть сам, но шаг публикует ролик на площадки. Оставлять в whitelist оркестратора?
 8. `media.release_unknown` оставлен keep (признаков exec нет), но снимает блокировку неизвестного исхода платной отправки. Не забрать ли его у оркестратора отдельно от критерия §2.2.2?
 9. В `db_browser.py` рядом с `edit_files` / `run_tests` исполняются `git_commit_push`, `delete_projects`, `remove_node`. План называет только `fix_bugs` и два ключа. Удалять ли весь набор кодовых ключей одним коммитом R2?
 10. Rebase #342 на текущий main затронет 19 общих файлов `app/orchestrator/` плюс новый `node_spec.py`. Предварительный пересчёт против `r0a-pipeline-base` (`a2409eef`), а не против main: **23 файла** (22 изменённых + `node_spec.py` только на #342). Три файла, одинаковые с main, с R0a уже расходятся: `default_graph.py`, `node_registry.py`, `steps/make_plan.py`. Финальная цифра — после тега `pipeline-base-v1`. Инфраструктура слоя (`app/services/action_layer/**`, change_control, spend) на main и на R0a отсутствует и приезжает из #342 без пары — это не конфликт содержимого, пока housepc туда не писал.
 
-## Предварительный пересчёт по `r0a-pipeline-base`
+## Инвентаризация чтений по `r0a-pipeline-base`
 
-**Статус раздела: предварительный.** Финальный пересчёт call-site и конфликтной зоны — после тега `pipeline-base-v1`, когда R0a реально окажется в main. До тега этот раздел не закрывает freeze и не разрешает патчить `app/services/`.
+Состав границы node_store утверждён (таблица §node_store). Предварительными остаются только номера строк (сверить после тега `pipeline-base-v1`) и конфликтная зона rebase ниже. До тега патчи `app/services/` не ставятся: строки могут сдвинуться, когда R0a войдёт в main.
 
 Деревья сверки (2026-10-17):
 
@@ -331,7 +357,7 @@
 
 В таблицах ниже — чтения **байт** в `app/services/` (вызов `read_text` / `read_bytes` / `shutil.copyfile` исходника). Конструкторы пути, `is_file()` и чистая запись в перечень не входят.
 
-Закрытый перечень freeze для патча R2 — только строки класса `node_groups` (1–10): путь может быть `templates/node_groups/**`. На #342 это прежние 8 мест из §node_store; на R0a к ним добавляются `frame_style.load_style_text` и резервная копия в `style_agent.apply._write`. Строка 10 — чтение ради бэкапа, не загрузка в LLM; в патч R2 её не брать без отдельного решения куратора. Остальные строки — другие деревья шаблонов. В исключение freeze они не входят, пока куратор не ответит на вопрос 4.
+Утверждённая граница — не вся эта таблица. В неё входят строки **1–9, 15, 26, 27, 28, 29, 30**. Исключены: **10, 11–14, 16–25, 31**.
 
 ### Call-sites
 
@@ -375,7 +401,7 @@
 
 - `prompt_library.node_group_prompts_dir` (R0a `:154`, #342 `:148`), `script_frames_qc_prompt_relpath` (R0a `:261`, #342 `:229`), `excel_gpt_template_dir` (оба `:123`) — только путь.
 - `list_group_owned_prompts` — `is_file()` (R0a `:255`, #342 `:225`).
-- `prompt_library.write_prompt` — запись. На R0a `:599` пишет стиль в `templates/node_groups/.../styles`, `:604` пишет промт группы; на #342 запись группы — `:537`. Вопрос 5 (входит ли запись в freeze) на R0a шире: появляется отдельная запись стиля.
+- `prompt_library.write_prompt` — запись, не чтение. На R0a `:599` пишет стиль, `:604` пишет промт группы; на #342 запись группы — `:537`. В freeze-чтения не входит. Обход при сохранении из UI — раздел «Контракт NodeDef».
 - `node_rules.PROMPT_DIR` и строки описания в `node_groups.py` — метаданные, файл не открывается.
 - `apply_ops_batches.py` есть на обоих деревьях и шаблоны нод не читает.
 - `scene_design/runner.py` и `skeleton.py` зовут `load_prompt`, сами файл не открывают. Патчить надо `load_prompt`.
@@ -416,8 +442,79 @@
 | `app/orchestrator/steps/scene_design.py` | оба | **R0a** |
 | `app/orchestrator/steps/split_frames.py` | оба | **R0a** |
 
-`app/services/**` построчно как зона rebase здесь по-прежнему не разбирался: freeze сервисов — зона WS1 до тега. Исключение R2 — только строки 1–10 таблицы call-site, и только после того, как тег подтвердит эти номера.
+`app/services/**` построчно как зона rebase здесь не разбирался. Исключение R2 — 15 мест §node_store. Номера строк сверить после тега, состав мест уже закрыт.
+
+## Контракт NodeDef и правки из UI
+
+Решение куратора, реализация в R2. Код в этом PR не пишется.
+
+`resolve_node` и действие `get_node` возвращают один `NodeDef`. Набор полей фиксирует WS3 в `app/orchestrator/contracts.py` (PR #346):
+
+| Поле | Смысл |
+|---|---|
+| `source` | `"git"` или `"db"` |
+| `db_version` | номер версии в БД |
+| `git_sha256` | sha256 базового git-файла, от которого собрана версия |
+| `stale_base` | git-файл изменился после создания версии в БД |
+
+Полей `overridden_in_db` и `active_version` нет. Короткий набросок плана (`source` + `version` в §3.6) этим набором заменён.
+
+Если у ноды есть версия в БД (`source = "db"`), эндпоинт сохранения промта из UI студии не пишет файл. Он создаёт новую версию через `node_store/writer.py` и возвращает номер версии. UI показывает «сохранено как vN+1». Git-шаблон остаётся базой только для чтения.
+
+### Эндпоинты, которые WS2 переводит на writer
+
+Пишут git-файл промта через `write_prompt_with_history` → `write_prompt` (`prompt_library.py`: R0a `:594`, #342 `:531`). Префикс роутеров — `/api`. Одинаковы на `r0a-pipeline-base` и на #342, если строка не помечена.
+
+| Эндпоинт | Роутер / функция | Строка R0a | Строка #342 | Кто зовёт из UI |
+|---|---|---|---|---|
+| `PUT /api/prompt-files/{step}/{name}` | `prompt_files.save_prompt_file` | 274 | 254 | `PromptFilesPanel`: R0a `:199` и `:368`, #342 `:195`. `node-prompt-block.tsx` только на R0a, `:60`. `studio-workspace.tsx` создаёт пустой файл слота: R0a `:428`, #342 `:412` |
+| `POST /api/prompt-files/{step}/upload` | `prompt_files.upload_prompt_file` | 436 | 416 | `PromptFilesPanel` (`api.uploadPromptFile`): R0a `:312`, #342 `:308` |
+| `POST /api/prompt-files/{step}/{name}/history/{version_id}/restore` | `prompt_files.restore_prompt_file_history` → `prompt_history.restore_prompt_version` (`:307`, внутри `write_prompt_with_history` `:309`) | 387 | 367 | `PromptFilesPanel` (`api.restorePromptFileVersion`): R0a `:256`, #342 `:252` |
+| `POST /api/prompt-studio/projects/{id}/gpt-text/{step}/save-template` | `prompt_studio.save_gpt_text_as_template` (вызов `write_prompt_with_history` `:245`) | 211 | 211 | `gpt-text-panel.tsx` (`api.saveGptTextAsTemplate`), оба дерева, `:56` |
+
+На #342 тот же `write_prompt` зовёт ещё `change_control/targets.py:259` (применение предложения, не клик студии). Это не UI-эндпоинт; в R2 цель промта уходит в node_store вместе с `change.apply`.
+
+Три панели из задачи сами `write_prompt` не вызывают.
+
+`node-step-params-panel.tsx` сохраняет параметры шага в `meta` проекта, не файл промта:
+
+- оба дерева: `api.patchProject` → `PATCH /api/projects/{id}` → `projects.patch_project` (R0a `:461`, #342 `:480`). Вызов панели: R0a `:583`, #342 `:674`. В meta кладётся `withNodeStepParams` (план, сценарий, split, audio, assemble).
+- только R0a: `StreamsPicker` в том же файле, `:666`, пишет `meta.img_streams` / `meta.outsee_streams` тем же `patch_project`.
+
+`excel-gpt-settings-panel.tsx`:
+
+- оба дерева: `api.patchGptOperator` → `PATCH /api/projects/{id}/gpt-operator/{node_key}` → `project_ops.gpt_operator_patch` (R0a `:2115`, #342 `:2146`). Вызов панели: R0a `:43`, #342 `:56`. Пишет конфиг оператора в `meta`, не git-шаблон.
+- оба дерева: `POST` / `DELETE /api/projects/{id}/gpt-operator/{node_key}/check-agent` → `upload_check_agent_file` / `delete_check_agent_file` (R0a `:2333` / `:2360`, #342 `:2360` / `:2391`). Это загруженный файл агента проверки проекта, не шаблон репозитория.
+- только #342: `api.patchProject` на `:143` и `:161` — имя варианта слота (`prompt_slot_variants`), не тело промта.
+
+`node-result-panel.tsx` на обоих деревьях API не вызывает. Он рисует `NodeResultViewBody` из `node-result-views.tsx`. Тело пишет поля проекта, не шаблон ноды: `PATCH /api/projects/{id}` с `script_text` (R0a `:326`, #342 `:497`) и на #342 ещё `general_plan` (`:287`), плюс загрузка xlsx и замена картинки героя. На writer это решение их не переводит.
+
+Рядом в студии пишутся другие промт-файлы. Этим решением они на writer не переводятся (их чтения в границу не вошли):
+
+- `PUT /api/prompt-studio/step-template/{step_id}` → `prompt_studio.save_step_template` (`:521` на обоих) — `prompts/steps/<id>/template.md`, зовёт `step-blocks-editor.tsx`.
+- `POST /api/prompt-studio/projects/{id}/gpt-verdict/{step}/save-template` → `save_gpt_verdict_as_template` (`:752`) — `prompts/check_<step>/`, зовёт `gpt-verdict-panel.tsx`.
+- `PUT /api/prompt-studio/projects/{id}/gpt-text/{step}` → `save_project_gpt_text` (`:185`) — override сопроводительного текста в проекте, git-файл не пишет. Зовёт `gpt-text-panel.tsx`.
+- `PATCH /api/prompt-studio/projects/{id}/prompt-config` → `patch_project_prompt_config` (`:621`) — overrides блоков проекта. Зовут `blocks-v2-toggle.tsx` и `blocks-weight-panel.tsx`.
+
+### Новые действия R2
+
+К списку плана §6.3 добавляется действие куратора. Остальные новые id плана этот аудит не переписывает.
+
+#### `revert_node_to_git` (risk: medium)
+
+```json
+{"params": {
+   "node_key": {"type": "string", "required": true},
+   "reason": {"type": "string", "required": true}},
+ "effects": [
+   "change_control: деактивирует версию ноды в БД",
+   "история версий не удаляется",
+   "git-файл не пишется и не откатывается"
+ ],
+ "semantics": "следующий resolve_node / get_node возвращает source=\"git\". db_version не указывает на активную версию. git_sha256 и stale_base считаются от текущего базового файла.",
+ "rollback": "change_control: снова активировать ту же версию в БД"}
+```
 
 ## Что этот документ не делает
 
-Rebase #342, перенос кода в main, патчи `app/services/`, smoke на :8766 и тег `action-layer-v1` — это сам R0b после R0a. Здесь таблица действий, перечень call-site (снимок main и предварительный пересчёт R0a) и тест-заготовка `tests/actions/test_whitelist_no_exec.py`. Пока реестра в main нет, тест реестра пропускается; детектор exec проверяется на локальных заглушках и падать не должен.
+Rebase #342, перенос кода в main, патчи `app/services/`, smoke на :8766 и тег `action-layer-v1` — это сам R0b после R0a. Здесь таблица действий, закрытый перечень из 15 мест, инвентаризация чтений, контракт NodeDef и тест-заготовка `tests/actions/test_whitelist_no_exec.py`. Пока реестра в main нет, тест реестра пропускается; детектор exec проверяется на локальных заглушках и падать не должен.
