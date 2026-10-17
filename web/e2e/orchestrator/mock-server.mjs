@@ -783,6 +783,8 @@ function handleStream(req, res, sessionId) {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
   });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  res.write(":\n\n");
   for (const event of session.events) {
     if (event.seq > last) writeEvent(res, event);
   }

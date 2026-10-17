@@ -79,17 +79,14 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-composer").fill("стой");
     await page.getByTestId("orch-send").click();
     await expect
-      .poll(
-        async () => {
-          const ack = page.getByTestId("orch-ack");
-          const echo = await ack.getAttribute("data-ack-echo");
-          if (echo !== "стой") throw new Error("ack ещё не для этого сообщения");
-          const ms = Number(await ack.getAttribute("data-ack-ms"));
-          if (!Number.isFinite(ms)) throw new Error("нет замера ack");
-          return ms;
-        },
-        { timeout: 2_000 },
-      )
+      .poll(async () => {
+        const ack = page.getByTestId("orch-ack");
+        const echo = await ack.getAttribute("data-ack-echo");
+        const raw = await ack.getAttribute("data-ack-ms");
+        const ms = raw == null ? Number.NaN : Number(raw);
+        if (echo !== "стой" || !Number.isFinite(ms)) return Number.POSITIVE_INFINITY;
+        return ms;
+      }, { timeout: 2_000 })
       .toBeLessThanOrEqual(2_000);
     await expect(page.getByTestId("orch-ack")).toContainText("стой");
     await expect(page.getByTestId("orch-composer")).toBeEnabled();

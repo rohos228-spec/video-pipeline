@@ -176,13 +176,13 @@ export async function probeOrchAuth(cfg: OrchClientConfig): Promise<void> {
     headers: authHeaders(cfg, { Accept: "text/event-stream" }),
     signal: ac.signal,
   });
-  try {
-    if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
-    if (!res.ok) throw new OrchApiError(res.status, await readError(res));
-  } finally {
-    await res.body?.cancel().catch(() => undefined);
-    ac.abort();
-  }
+  const status = res.status;
+  let message = "";
+  if (status === 401) message = "401 — токен не принят";
+  else if (!res.ok) message = await readError(res);
+  ac.abort();
+  void res.body?.cancel().catch(() => undefined);
+  if (status === 401 || !res.ok) throw new OrchApiError(status, message || `HTTP ${status}`);
 }
 
 /**
