@@ -365,8 +365,10 @@ export async function installStudioMocks(page: Page) {
         await json(route, project);
         return;
       }
-      await json(route, { ok: true });
-      return;
+      const message = `studio-mock: unhandled ${request.method()} ${path}`;
+      console.error(message);
+      await json(route, { detail: "unhandled in studio-mock" }, 501);
+      throw new Error(message);
     }
     await json(route, mockGet(url.pathname));
   });

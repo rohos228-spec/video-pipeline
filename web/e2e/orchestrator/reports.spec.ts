@@ -96,4 +96,52 @@ test.describe("report editor", () => {
       await expectClean(page, hits);
     }
   });
+
+  test("409: чужая версия оставляет черновик и предлагает перезагрузку", async ({ page }) => {
+    await openReports(page);
+    const id = await page.getByTestId("orch-report-title").getAttribute("data-report-id");
+    const currentLabel = await page.getByTestId("orch-report-version").filter({ hasText: "текущая" }).innerText();
+    const baseVersion = Number(/v(\d+)/.exec(currentLabel)?.[1]);
+    expect(baseVersion).toBeGreaterThan(0);
+    const bump = await page.request.post(`${MOCK}/api/orchestrator/actions/update_report`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      data: {
+        report_id: Number(id),
+        base_version: baseVersion,
+        sections_patch: [{ heading: "Сцена 3", html: "<p>чужая правка</p>" }],
+      },
+    });
+    expect(bump.status()).toBe(200);
+    await page.getByTestId("orch-section-html").fill("<p>моя правка</p>");
+    await page.getByTestId("orch-report-save").click();
+    await expect(page.getByTestId("orch-report-conflict")).toBeVisible();
+    await expect(page.getByTestId("orch-report-error")).toContainText("conflict");
+    await expect(page.getByTestId("orch-section-html")).toHaveValue(/моя правка/);
+    await page.getByTestId("orch-report-reload").click();
+    await expect(page.getByTestId("orch-report-conflict")).toHaveCount(0);
+    await expect(page.getByTestId("orch-section-html")).toHaveValue(/чужая правка/);
+  });
+
+  test("heading длиннее 200: мок 422 и поле режет ввод", async ({ page }) => {
+    await openReports(page);
+    await expect(page.getByTestId("orch-create-heading")).toHaveAttribute("maxlength", "200");
+    await expect(page.getByTestId("orch-section-heading")).toHaveAttribute("maxlength", "200");
+    const denied = await page.request.post(`${MOCK}/api/orchestrator/actions/create_report`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      data: {
+        title: "слишком длинный заголовок",
+        project_id: 13,
+        sections: [{ heading: "я".repeat(201), html: "<p>маркер</p>" }],
+      },
+    });
+    expect(denied.status()).toBe(422);
+    expect(await denied.text()).toContain("heading longer than 200");
+
+    await page.getByTestId("orch-create-heading").evaluate((el) => el.removeAttribute("maxLength"));
+    await page.getByTestId("orch-create-title").fill("длинный");
+    await page.getByTestId("orch-create-heading").fill("я".repeat(201));
+    await page.getByTestId("orch-create-html").fill("<p>маркер</p>");
+    await page.getByTestId("orch-report-create").click();
+    await expect(page.getByTestId("orch-report-error")).toContainText("heading longer than 200");
+  });
 });

@@ -25,12 +25,13 @@ import {
   type StepView,
 } from "@/lib/orchestratorSession";
 import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
+import { orchTaskModeEnabled, readOrchProjectId } from "@/lib/orchestratorApi";
+import { cn } from "@/lib/utils";
+import { useOrchestratorChat } from "./use-orchestrator-chat";
 
 /** Значения ApprovalReason из contracts.py. Статус задачи при этом — waiting_approval. */
 const BUDGET_EXHAUSTED = "budget_exhausted" satisfies ApprovalReason;
 const CRITIC_ESCALATION = "critic_escalation" satisfies ApprovalReason;
-import { cn } from "@/lib/utils";
-import { useOrchestratorChat } from "./use-orchestrator-chat";
 
 const KILL_HONEST =
   "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.";
@@ -58,7 +59,7 @@ export function OrchestratorWorkspace() {
     const text = draft;
     if (!text.trim()) return;
     setDraft("");
-    void chat.sendMessage(text, taskMode ? "task" : undefined);
+    void chat.sendMessage(text, orchTaskModeEnabled() && taskMode ? "task" : undefined);
   };
 
   return (
@@ -89,8 +90,11 @@ export function OrchestratorWorkspace() {
             data-testid="orch-reports-link"
             onClick={() => {
               const params = new URLSearchParams(window.location.search);
-              if (!params.get("project")) params.set("project", "13");
-              window.location.assign(`/orchestrator/reports?${params.toString()}`);
+              const project = readOrchProjectId();
+              if (project != null) params.set("project", String(project));
+              else params.delete("project");
+              const q = params.toString();
+              window.location.assign(q ? `/orchestrator/reports?${q}` : "/orchestrator/reports");
             }}
           >
             Отчёты
@@ -145,7 +149,10 @@ export function OrchestratorWorkspace() {
           data-testid="orch-kill-status"
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
-          Kill switch: {chat.state.killNotice.includes("границе") ? chat.state.killNotice : `${chat.state.killNotice} ${KILL_HONEST}`}
+          Kill switch:{" "}
+          {chat.state.killNotice.paidBoundary
+            ? chat.state.killNotice.text
+            : `${chat.state.killNotice.text} ${KILL_HONEST}`}
         </div>
       ) : null}
 
@@ -188,30 +195,39 @@ export function OrchestratorWorkspace() {
                 <ApprovalCard
                   key={approval.id}
                   approval={approval}
+                  pending={chat.decisionPendingId === approval.id}
+                  error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
                 />
               ))}
             </div>
 
-            <label className="flex shrink-0 items-start gap-2 px-4 pb-2 pt-1 text-[11px] text-white/60">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                data-testid="orch-mode-task"
-                checked={taskMode}
-                onChange={(event) => setTaskMode(event.target.checked)}
-              />
-              <span>
-                Новая задача
-                <span className="block text-[10px] text-white/35" data-testid="orch-mode-task-hint">
-                  Встаёт в очередь за текущей и не прерывает её.
+            {orchTaskModeEnabled() ? (
+              <label className="flex shrink-0 items-start gap-2 px-4 pb-2 pt-1 text-[11px] text-white/60">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  data-testid="orch-mode-task"
+                  checked={taskMode}
+                  onChange={(event) => setTaskMode(event.target.checked)}
+                />
+                <span>
+                  Новая задача
+                  <span className="block text-[10px] text-white/35" data-testid="orch-mode-task-hint">
+                    Встаёт в очередь за текущей и не прерывает её.
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            ) : null}
             <div className="shrink-0 space-y-2 border-t border-white/[0.06] px-4 py-3">
               {chat.state.ack ? (
-                <div data-testid="orch-ack" className="text-[11px] text-info">
+                <div
+                  data-testid="orch-ack"
+                  data-ack-ms={chat.ackMs == null ? undefined : String(Math.round(chat.ackMs))}
+                  data-ack-echo={chat.state.ack.echo}
+                  className="text-[11px] text-info"
+                >
                   {chat.state.ack.text || "принял, разбираю"}
                   {chat.state.ack.echo ? ` — «${chat.state.ack.echo}»` : ""}
                 </div>
@@ -514,10 +530,14 @@ function NodeResultCard({ step }: { step: StepView }) {
 
 function ApprovalCard({
   approval,
+  pending,
+  error,
   onApprove,
   onReject,
 }: {
   approval: ApprovalView;
+  pending: boolean;
+  error: string;
   onApprove: () => void;
   onReject: () => void;
 }) {
@@ -547,13 +567,18 @@ function ApprovalCard({
         {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
       </div>
       <div className="mt-2 flex gap-2">
-        <Button type="button" size="sm" data-testid="orch-approve" onClick={onApprove}>
+        <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
           Approve
         </Button>
-        <Button type="button" size="sm" variant="outline" data-testid="orch-reject" onClick={onReject}>
+        <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
           Reject
         </Button>
       </div>
+      {error ? (
+        <p data-testid="orch-approval-error" className="mt-2 text-[11px] text-destructive">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

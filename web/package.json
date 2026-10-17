@@ -10,7 +10,9 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:orch": "playwright test -c e2e/orchestrator/playwright.config.ts",
+    "test:visual": "playwright test -c e2e/visual/playwright.config.ts"
   },
   "dependencies": {
     "next": "^15.5.4",
@@ -40,7 +42,7 @@
     "cmdk": "^1.0.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0",
+    "@playwright/test": "1.64.1",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

@@ -14,6 +14,7 @@ import {
   postRollbackReport,
   postUpdateReport,
   readOrchBoot,
+  readOrchProjectId,
   readOrchToken,
   type ReportDetail,
   type ReportSection,
@@ -27,7 +28,7 @@ function stamp(iso: string): string {
 
 export function ReportEditor() {
   const boot = useMemo(() => readOrchBoot(), []);
-  const [projectId, setProjectId] = useState(13);
+  const [projectId, setProjectId] = useState<number | null>(null);
   const [token, setToken] = useState("");
   const [ready, setReady] = useState(false);
   const [reports, setReports] = useState<OrchReportsRow[]>([]);
@@ -36,15 +37,14 @@ export function ReportEditor() {
   const [sections, setSections] = useState<ReportSection[]>([]);
   const [preview, setPreview] = useState("");
   const [error, setError] = useState("");
+  const [conflict, setConflict] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
   const [createHeading, setCreateHeading] = useState("");
   const [createHtml, setCreateHtml] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const project = Number(params.get("project") || "13");
-    setProjectId(Number.isFinite(project) && project > 0 ? project : 13);
+    setProjectId(readOrchProjectId());
     setToken(readOrchToken());
     setReady(true);
   }, []);
@@ -55,6 +55,7 @@ export function ReportEditor() {
   );
 
   const loadList = useCallback(async () => {
+    if (projectId == null) return [];
     const data = await listOrchReports(cfg, projectId);
     setReports(data.reports);
     return data.reports;
@@ -71,7 +72,7 @@ export function ReportEditor() {
   );
 
   useEffect(() => {
-    if (!ready || !token) return;
+    if (!ready || !token || projectId == null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -87,7 +88,7 @@ export function ReportEditor() {
     return () => {
       cancelled = true;
     };
-  }, [loadList, openReport, ready, token]);
+  }, [loadList, openReport, projectId, ready, token]);
 
   useEffect(() => {
     setPreview(reportPreviewDocument(sections));
@@ -99,21 +100,43 @@ export function ReportEditor() {
     try {
       await postUpdateReport(cfg, {
         report_id: detail.report.id,
+        base_version: detail.report.version,
         sections_patch: sections,
         reason: "правка из редактора",
       });
       await openReport(detail.report.id);
       await loadList();
+      setConflict(false);
       setError("");
     } catch (err) {
-      setError(err instanceof OrchApiError ? err.message : "не сохранилось");
+      if (err instanceof OrchApiError && err.status === 409) {
+        setConflict(true);
+        setError(err.message);
+      } else {
+        setError(err instanceof OrchApiError ? err.message : "не сохранилось");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reload = async () => {
+    if (!detail) return;
+    setBusy(true);
+    try {
+      await openReport(detail.report.id);
+      await loadList();
+      setConflict(false);
+      setError("");
+    } catch (err) {
+      setError(err instanceof OrchApiError ? err.message : "не перезагрузилось");
     } finally {
       setBusy(false);
     }
   };
 
   const create = async () => {
-    if (!createTitle.trim()) return;
+    if (!createTitle.trim() || projectId == null) return;
     setBusy(true);
     try {
       const created = await postCreateReport(cfg, {
@@ -156,7 +179,7 @@ export function ReportEditor() {
           <FileText className="h-4 w-4 shrink-0 text-primary" />
           <span className="text-sm font-semibold tracking-tight text-white">Отчёты</span>
           <Badge variant="muted" className="normal-case tracking-normal">
-            проект {projectId}
+            проект {projectId ?? "не выбран"}
           </Badge>
         </div>
         <Button
@@ -175,7 +198,11 @@ export function ReportEditor() {
         </Button>
       </div>
 
-      {!ready ? null : !token ? (
+      {!ready ? null : projectId == null ? (
+        <p className="p-6 text-xs text-white/50" data-testid="orch-reports-project">
+          Выберите проект в студии или откройте отчёты с параметром project.
+        </p>
+      ) : !token ? (
         <p className="p-6 text-xs text-white/50" data-testid="orch-reports-token">
           Нужен токен оркестратора. Откройте чат и сохраните его.
         </p>
@@ -194,6 +221,7 @@ export function ReportEditor() {
               <Input
                 data-testid="orch-create-heading"
                 value={createHeading}
+                maxLength={200}
                 onChange={(event) => setCreateHeading(event.target.value)}
                 placeholder="Заголовок секции"
                 className="h-8 text-xs"
@@ -232,7 +260,29 @@ export function ReportEditor() {
           </aside>
 
           <section className="min-h-0 overflow-y-auto px-4 py-3">
-            {error ? <p className="mb-2 text-xs text-destructive">{error}</p> : null}
+            {conflict ? (
+              <div
+                data-testid="orch-report-conflict"
+                className="mb-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-white"
+              >
+                <p>Конфликт версий. Отчёт уже изменён. Перезагрузите его, локальный черновик останется до перезагрузки.</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2 text-xs"
+                  data-testid="orch-report-reload"
+                  disabled={busy}
+                  onClick={() => void reload()}
+                >
+                  Перезагрузить
+                </Button>
+              </div>
+            ) : null}
+            {error ? (
+              <p className="mb-2 text-xs text-destructive" data-testid="orch-report-error">
+                {error}
+              </p>
+            ) : null}
             {detail ? (
               <>
                 <div className="mb-3 flex items-center justify-between gap-2">
@@ -248,6 +298,7 @@ export function ReportEditor() {
                     <Input
                       data-testid="orch-section-heading"
                       value={section.heading}
+                      maxLength={200}
                       onChange={(event) => {
                         const next = sections.slice();
                         next[index] = { ...section, heading: event.target.value };

@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import {
   consumeOrchStream,
   isAbortError,
+  orchTaskModeEnabled,
   OrchApiError,
   postOrchApprove,
   postOrchKill,
   postOrchMessage,
   postOrchReject,
+  probeOrchAuth,
   readOrchBoot,
   readOrchToken,
   sleepWithSignal,
@@ -32,9 +34,14 @@ export function useOrchestratorChat() {
   const [conn, setConn] = useState<ConnPhase>("idle");
   const [sendError, setSendError] = useState("");
   const [pending, setPending] = useState(false);
+  const [decisionPendingId, setDecisionPendingId] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<{ id: string; message: string } | null>(null);
+  const [ackMs, setAckMs] = useState<number | null>(null);
   const [state, dispatch] = useReducer(reduceOrchScreen, undefined, initialOrchScreen);
   const lastSeq = useRef(0);
   const seen = useRef(new Set<number>());
+  const sendStartedAt = useRef<number | null>(null);
+  const decisionLock = useRef(false);
 
   useEffect(() => {
     setToken(readOrchToken());
@@ -72,6 +79,9 @@ export function useOrchestratorChat() {
               if (seen.current.has(event.seq)) return;
               seen.current.add(event.seq);
               if (event.seq > lastSeq.current) lastSeq.current = event.seq;
+              if (event.type === "ack" && sendStartedAt.current != null) {
+                setAckMs(performance.now() - sendStartedAt.current);
+              }
               dispatch({ type: "event", event });
             },
           });
@@ -114,19 +124,36 @@ export function useOrchestratorChat() {
     return false;
   }, []);
 
-  const submitToken = useCallback((value: string) => {
-    const next = value.trim();
-    if (!next) return;
-    writeOrchToken(next);
-    lastSeq.current = 0;
-    seen.current = new Set();
-    dispatch({ type: "reset" });
-    setAuthError("");
-    setSendError("");
-    setConn("idle");
-    setBlocked(false);
-    setToken(next);
-  }, []);
+  const submitToken = useCallback(
+    async (value: string) => {
+      const next = value.trim();
+      if (!next) return;
+      try {
+        await probeOrchAuth({ ...cfg, token: next });
+      } catch (error) {
+        if (error instanceof OrchApiError && error.status === 401) {
+          setAuthError(error.message);
+        } else if (!noteAuth(error)) {
+          setAuthError(error instanceof Error ? error.message : "токен не проверен");
+        }
+        return;
+      }
+      writeOrchToken(next);
+      lastSeq.current = 0;
+      seen.current = new Set();
+      sendStartedAt.current = null;
+      setAckMs(null);
+      dispatch({ type: "reset" });
+      setAuthError("");
+      setSendError("");
+      setDecisionError(null);
+      setDecisionPendingId(null);
+      setConn("idle");
+      setBlocked(false);
+      setToken(next);
+    },
+    [cfg, noteAuth],
+  );
 
   const sendMessage = useCallback(
     async (text: string, mode?: "task") => {
@@ -138,9 +165,12 @@ export function useOrchestratorChat() {
         text: trimmed,
         taskId: null,
       });
+      sendStartedAt.current = performance.now();
+      setAckMs(null);
       setPending(true);
+      const asTask = orchTaskModeEnabled() && mode === "task";
       try {
-        await postOrchMessage(cfg, mode === "task" ? { text: trimmed, mode: "task" } : { text: trimmed });
+        await postOrchMessage(cfg, asTask ? { text: trimmed, mode: "task" } : { text: trimmed });
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
@@ -155,16 +185,26 @@ export function useOrchestratorChat() {
 
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
-      dispatch({ type: "approval-resolved", id: approvalId, decision });
+      if (decisionLock.current) return;
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
       try {
         const body = { approval_id: approvalId, task_id: taskId };
         if (decision === "approved") await postOrchApprove(cfg, body);
         else await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        dispatch({ type: "approval-resolved", id: approvalId, decision });
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
-          setSendError(error instanceof Error ? error.message : "не записалось решение");
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "не записалось решение",
+          });
         }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
       }
     },
     [cfg, noteAuth],
@@ -179,6 +219,7 @@ export function useOrchestratorChat() {
       dispatch({
         type: "kill-notice",
         detail: result.detail || "Платный шаг остановится на границе.",
+        paidBoundary: true,
       });
       setSendError("");
     } catch (error) {
@@ -197,6 +238,9 @@ export function useOrchestratorChat() {
     conn,
     sendError,
     pending,
+    decisionPendingId,
+    decisionError,
+    ackMs,
     state: state as OrchScreenState,
     submitToken,
     sendMessage,

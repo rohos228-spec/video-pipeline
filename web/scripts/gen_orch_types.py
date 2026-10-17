@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Генерация web/src/lib/orchestratorTypes.ts из app/orchestrator/contracts.py.
 
+ВНИМАНИЕ: скрипт ИСПОЛНЯЕТ код из ref. ``git show`` пишет contracts.py
+во временный файл, затем модуль импортируется. Не передавайте ref,
+которому не доверяете.
+
 Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
-не копируется: если его нет в дереве, скрипт читает
-
-    git show <ref>:app/orchestrator/contracts.py
-
-во временный файл и импортирует оттуда. ``--ref`` задаёт ветку или sha
-(по умолчанию ветка PR #350). Локальный ``contracts.py`` используется,
-только когда ``--ref`` не передан.
+не копируется. ``--ref`` — только ``origin/*``, SHA (7–40 hex) или
+существующий тег. Голое имя ветки отклоняется. По умолчанию, если
+локального файла нет, берётся origin/cursor/ws3-agents-r3-3c7d.
+Локальный ``contracts.py`` используется, только когда ``--ref`` не передан.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
@@ -34,6 +35,33 @@ LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
 DEFAULT_CONTRACT_REF = "origin/cursor/ws3-agents-r3-3c7d"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def assert_safe_ref(ref: str) -> str:
+    """Разрешить только origin/*, SHA или тег. Иначе скрипт исполнил бы чужой код."""
+    if not ref or ref.startswith("-") or ".." in ref or any(ch in ref for ch in " \t\r\n\\"):
+        raise ValueError(f"ref отклонён: {ref!r}")
+    if ref.startswith("origin/"):
+        rest = ref[len("origin/") :]
+        if rest and not rest.startswith(("/", ".")) and ":" not in rest:
+            return ref
+        raise ValueError(f"ref отклонён: {ref!r}")
+    if _SHA_RE.fullmatch(ref):
+        return ref
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{ref}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode == 0 and probe.stdout.strip():
+        return ref
+    raise ValueError(
+        "ref должен быть origin/*, SHA (7–40 hex) или существующим тегом. "
+        "Скрипт исполняет contracts.py из этого ref."
+    )
 
 # Имена констант, которые уже импортирует UI.
 CONST_NAMES = {
@@ -309,6 +337,7 @@ def _load_module(path: Path) -> Any:
 
 
 def _schema_from_git(ref: str) -> tuple[dict[str, Any], str]:
+    ref = assert_safe_ref(ref)
     raw = subprocess.check_output(
         ["git", "show", f"{ref}:{CONTRACT_GIT_PATH}"],
         cwd=ROOT,
@@ -329,7 +358,7 @@ def _schema_from_git(ref: str) -> tuple[dict[str, Any], str]:
 def load_schema(ref: str | None = None) -> tuple[dict[str, Any], str]:
     """Вернуть (schema, подпись источника). Файл в репозиторий не пишется.
 
-    ``ref`` — ветка или sha. Если задан, локальный contracts.py не читается.
+    ``ref`` — origin/*, SHA или тег. Если задан, локальный contracts.py не читается.
     """
     if ref:
         return _schema_from_git(ref)
@@ -426,11 +455,15 @@ def _self_test() -> int:
         '"task"',
         "task_status?: TaskStatus | null;",
         "approval?: ApprovalEvent | null;",
-        f"git show {DEFAULT_CONTRACT_REF}:{CONTRACT_GIT_PATH}",
         "export const LLM_PROVIDER",
     ]
     if LOCAL_CONTRACTS.is_file():
-        live_need[-1] = "app/orchestrator/contracts.py"
+        expected_label = "app/orchestrator/contracts.py"
+    else:
+        expected_label = f"git show {DEFAULT_CONTRACT_REF}:{CONTRACT_GIT_PATH}"
+    if expected_label not in live:
+        print("self-test failed, source label missing:", expected_label, file=sys.stderr)
+        return 1
     missing_live = [item for item in live_need if item not in live]
     if missing_live:
         print("self-test failed on live contracts, missing:", ", ".join(missing_live), file=sys.stderr)
@@ -438,6 +471,13 @@ def _self_test() -> int:
     forbidden = [item for item in ("overridden_in_db", "Финальное решение куратора", "active_version?:") if item in live]
     if forbidden:
         print("self-test failed, unexpected manual NodeDef overlay:", ", ".join(forbidden), file=sys.stderr)
+        return 1
+    try:
+        assert_safe_ref("main")
+    except ValueError:
+        pass
+    else:
+        print("self-test failed: bare branch name was accepted", file=sys.stderr)
         return 1
     if LOCAL_CONTRACTS.is_file():
         print("self-test note: local contracts.py exists, git show path was not required")
@@ -452,7 +492,7 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         default=None,
-        help="git ref с contracts.py (ветка или sha). Без флага — локальный файл или ветка PR #350",
+        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или origin/cursor/ws3-agents-r3-3c7d",
     )
     args = parser.parse_args()
     if args.self_test:

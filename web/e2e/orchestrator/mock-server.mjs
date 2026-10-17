@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -699,7 +699,7 @@ function startScenario(session, scenario, text, mode) {
     void runInterruptStart(session, id);
     return;
   }
-  if (scenario === "approval") {
+  if (scenario === "approval" || scenario === "approvefail") {
     void runApproval(session, id);
     return;
   }
@@ -818,6 +818,10 @@ function escapeHtml(value) {
   });
 }
 
+/**
+ * Только мок, не референс санитайзера.
+ * Референс для WS2 — allowlist JSON: web/src/lib/orchestratorSanitizeAllowlist.json.
+ */
 function sanitizeHtml(raw) {
   let html = String(raw ?? "");
   html = html.replace(/<!--[\s\S]*?-->/g, "");
@@ -845,13 +849,27 @@ function sanitizeHtml(raw) {
   });
 }
 
+function headingTooLong(list) {
+  const source = Array.isArray(list) ? list : [];
+  return source.some((item) => String(item?.heading || "").length > 200);
+}
+
 function cleanSections(list) {
   const source = Array.isArray(list) ? list : [];
   return source.map((item) => ({
-    heading: String(item?.heading || "").slice(0, 200),
+    heading: String(item?.heading || ""),
     html: sanitizeHtml(item?.html || ""),
     data_table: item?.data_table && typeof item.data_table === "object" ? item.data_table : null,
   }));
+}
+
+function rejectStaleVersion(res, report, body) {
+  const base = body?.base_version;
+  if (typeof base !== "number" || base !== report.version) {
+    sendJson(res, 409, { detail: "conflict", current_version: report.version });
+    return true;
+  }
+  return false;
 }
 
 function reportRow(report) {
@@ -1013,6 +1031,11 @@ const server = http.createServer(async (req, res) => {
   ) {
     const approvalId = decodeURIComponent(parts[3]);
     const decision = parts[4] === "approve" ? "approve" : "reject";
+    if (decision === "approve" && scenarioOf(req, url) === "approvefail") {
+      await sleep(800);
+      sendJson(res, 500, { detail: "approve failed" });
+      return;
+    }
     let matched = false;
     for (const session of sessions.values()) {
       if (session.approvalWait) {
@@ -1054,6 +1077,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "actions" && parts[3] === "create_report") {
     const body = await readBody(req);
+    if (headingTooLong(body.sections)) {
+      sendJson(res, 422, { detail: "heading longer than 200" });
+      return;
+    }
     const created = createReport(body);
     if (!created) {
       sendJson(res, 400, { detail: "title required" });
@@ -1070,6 +1097,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "not found" });
       return;
     }
+    if (headingTooLong(body.sections_patch)) {
+      sendJson(res, 422, { detail: "heading longer than 200" });
+      return;
+    }
+    if (rejectStaleVersion(res, report, body)) return;
     const changeId = `chg-${report.id}-${report.version + 1}`;
     sendJson(res, 200, applySections(report, body.sections_patch, changeId));
     return;
@@ -1082,6 +1114,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "not found" });
       return;
     }
+    if (headingTooLong(body.sections_patch)) {
+      sendJson(res, 422, { detail: "heading longer than 200" });
+      return;
+    }
+    if (rejectStaleVersion(res, report, body)) return;
     const changeId = `chg-${report.id}-${report.version + 1}`;
     sendJson(res, 200, applySections(report, body.sections_patch, changeId));
     return;

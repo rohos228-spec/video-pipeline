@@ -194,6 +194,12 @@ export interface ClassificationView {
   killSwitch: boolean;
 }
 
+export interface KillNoticeView {
+  text: string;
+  /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
+  paidBoundary: boolean;
+}
+
 export interface OrchScreenState {
   messages: ChatMessage[];
   agents: AgentView[];
@@ -201,13 +207,13 @@ export interface OrchScreenState {
   approvals: ApprovalView[];
   ack: AckView | null;
   classification: ClassificationView | null;
-  killNotice: string | null;
+  killNotice: KillNoticeView | null;
 }
 
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
-  | { type: "kill-notice"; detail: string }
+  | { type: "kill-notice"; detail: string; paidBoundary: boolean }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" }
   | { type: "reset" };
 
@@ -317,13 +323,16 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
 
 function appendToken(state: OrchScreenState, taskId: string | null, text: string): void {
   if (!text) return;
-  const last = [...state.messages].reverse().find((message) => message.role === "assistant" && message.taskId === taskId);
-  if (last) {
-    last.text += text;
-    return;
+  const messages = state.messages;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message && message.role === "assistant" && message.taskId === taskId) {
+      message.text += text;
+      return;
+    }
   }
-  state.messages.push({
-    id: `asst-${taskId ?? "none"}-${state.messages.length}`,
+  messages.push({
+    id: `asst-${taskId ?? "none"}-${messages.length}`,
     role: "assistant",
     text,
     taskId,
@@ -342,7 +351,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     };
   }
   if (action.type === "kill-notice") {
-    return { ...state, killNotice: action.detail };
+    return { ...state, killNotice: { text: action.detail, paidBoundary: action.paidBoundary } };
   }
   if (action.type === "approval-resolved") {
     return {
@@ -396,7 +405,10 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         killSwitch,
       };
       if (killSwitch) {
-        next.killNotice = "сработал из сообщения. Платный шаг остановится на границе";
+        next.killNotice = {
+          text: "Сработал из сообщения. Платный шаг остановится на границе",
+          paidBoundary: true,
+        };
       }
     }
     absorbLlmSignal(next, taskId, payload, event.seq);

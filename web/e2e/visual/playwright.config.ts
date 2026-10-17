@@ -53,6 +53,7 @@ export default defineConfig({
       port: 3100,
       reuseExistingServer: !process.env.CI,
       timeout: 240_000,
+      env: { ...process.env, NEXT_PUBLIC_ORCH_TASK_MODE: "1" },
     },
   ],
 });

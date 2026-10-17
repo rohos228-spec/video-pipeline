@@ -1,7 +1,11 @@
 import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
-const SHOTS = "/opt/cursor/artifacts/screenshots";
+const SHOTS =
+  process.env.ORCH_E2E_SHOTS_DIR ??
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../test-results/orch-shots");
 
 async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
@@ -73,10 +77,21 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-transcript")).toContainText("Генерирую");
     await expect(page.getByTestId("orch-composer")).toBeEnabled();
     await page.getByTestId("orch-composer").fill("стой");
-    const started = Date.now();
     await page.getByTestId("orch-send").click();
-    await expect(page.getByTestId("orch-ack")).toContainText("стой", { timeout: 2_000 });
-    expect(Date.now() - started).toBeLessThanOrEqual(2_000);
+    await expect
+      .poll(
+        async () => {
+          const ack = page.getByTestId("orch-ack");
+          const echo = await ack.getAttribute("data-ack-echo");
+          if (echo !== "стой") throw new Error("ack ещё не для этого сообщения");
+          const ms = Number(await ack.getAttribute("data-ack-ms"));
+          if (!Number.isFinite(ms)) throw new Error("нет замера ack");
+          return ms;
+        },
+        { timeout: 2_000 },
+      )
+      .toBeLessThanOrEqual(2_000);
+    await expect(page.getByTestId("orch-ack")).toContainText("стой");
     await expect(page.getByTestId("orch-composer")).toBeEnabled();
     await expect(page.getByTestId("orch-classification")).toContainText("interrupt");
     await expect(page.getByTestId("orch-task-status")).toContainText("пауза");
@@ -94,6 +109,19 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-approve").click();
     await expect(page.getByTestId("orch-task-summary")).toContainText("Одобрено");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+  });
+
+  test("approve 500: карточка остаётся и ошибку можно повторить", async ({ page }) => {
+    await openWithToken(page, "approvefail", "approvefail-1");
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("approve failed");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    await expect(page.getByTestId("orch-task-status")).not.toContainText("готово");
   });
 
   test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
@@ -186,6 +214,7 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-token-input").fill("wrong-token");
     await page.getByTestId("orch-token-submit").click();
     await expect(page.getByTestId("orch-token-error")).toContainText("401");
+    await expect.poll(async () => page.evaluate(() => localStorage.getItem("vp-orch-api-token"))).toBeNull();
     await saveShot(page, "orch-401");
     await page.getByTestId("orch-token-input").fill(TOKEN);
     await page.getByTestId("orch-token-submit").click();

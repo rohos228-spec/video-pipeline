@@ -55,6 +55,34 @@ export function writeOrchToken(token: string): void {
   localStorage.setItem(ORCH_TOKEN_STORAGE_KEY, token);
 }
 
+/** Чекбокс «Новая задача». По умолчанию выключен: NEXT_PUBLIC_ORCH_TASK_MODE не задан. */
+export function orchTaskModeEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_ORCH_TASK_MODE;
+  return raw === "1" || raw === "true";
+}
+
+const STUDIO_PROJECT_STORAGE_KEY = "vp-studio-selected-project-id";
+
+function positiveId(value: unknown): number | null {
+  const id = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(id) && id > 0) return id;
+  return null;
+}
+
+/** Проект из `?project=` или из выбора студии. Без запасного id. */
+export function readOrchProjectId(): number | null {
+  if (typeof window === "undefined") return null;
+  const fromQuery = positiveId(new URLSearchParams(window.location.search).get("project"));
+  if (fromQuery != null) return fromQuery;
+  try {
+    const raw = localStorage.getItem(STUDIO_PROJECT_STORAGE_KEY);
+    if (!raw) return null;
+    return positiveId(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
 export function readOrchBoot(): { apiBase: string; session: string; scenario: string } {
   if (typeof window === "undefined") {
     return { apiBase: "", session: "studio", scenario: "stream" };
@@ -140,6 +168,23 @@ export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signa
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
 }
 
+/** Проверка Bearer до записи в localStorage. Тело стрима закрывается сразу после статуса. */
+export async function probeOrchAuth(cfg: OrchClientConfig): Promise<void> {
+  const ac = new AbortController();
+  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/stream`), {
+    method: "GET",
+    headers: authHeaders(cfg, { Accept: "text/event-stream" }),
+    signal: ac.signal,
+  });
+  try {
+    if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+    if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  } finally {
+    await res.body?.cancel().catch(() => undefined);
+    ac.abort();
+  }
+}
+
 /**
  * Секция отчёта. Форма как в create_report (план §6.3). В таблице это sections_json.
  * Пути ниже — предложение для WS2, мок их уже отвечает.
@@ -182,24 +227,6 @@ export function getOrchReport(cfg: OrchClientConfig, reportId: number, signal?: 
   return getJson(cfg, `/api/orchestrator/reports/${reportId}`, signal);
 }
 
-export async function fetchOrchReportHtml(
-  cfg: OrchClientConfig,
-  reportId: number,
-  signal?: AbortSignal,
-): Promise<{ html: string; csp: string }> {
-  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/reports/${reportId}/html`), {
-    method: "GET",
-    headers: authHeaders(cfg, { Accept: "text/html" }),
-    signal,
-  });
-  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
-  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
-  return {
-    html: await res.text(),
-    csp: res.headers.get("content-security-policy") ?? "",
-  };
-}
-
 export function postCreateReport(
   cfg: OrchClientConfig,
   body: { title: string; project_id: number; sections: ReportSection[]; editable?: boolean },
@@ -210,7 +237,7 @@ export function postCreateReport(
 
 export function postUpdateReport(
   cfg: OrchClientConfig,
-  body: { report_id: number; sections_patch: ReportSection[]; reason?: string },
+  body: { report_id: number; base_version: number; sections_patch: ReportSection[]; reason?: string },
   signal?: AbortSignal,
 ): Promise<ReportMutation> {
   return postJson(cfg, "/api/orchestrator/actions/update_report", body, signal);
