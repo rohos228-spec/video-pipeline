@@ -910,6 +910,7 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approve")).toBeDisabled();
     await expect(page.getByTestId("orch-reject")).toBeDisabled();
     await expect(page.getByTestId("orch-approval-noid")).toHaveText("Решение недоступно: сервер не передал id");
+    await expect(page.getByTestId("orch-approval-hide")).toBeVisible();
     await expect(page.getByTestId("orch-kill")).toBeEnabled();
 
     await emitBus(page, "budget-noid", "agent_status", 2, {
@@ -943,6 +944,23 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-kill").click();
     await page.getByTestId("orch-kill-confirm").click();
     await expect(page.getByTestId("orch-kill-status")).toBeVisible();
+    expect(posts).toEqual([]);
+  });
+
+  test("карточка без change_id: Скрыть закрывает её и не шлёт решение", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/approvals\/.+\/(approve|reject)/.test(req.url())) {
+        posts.push(req.url());
+      }
+    });
+    await openWithToken(page, "budgetnoid", "budget-hide");
+    await page.getByTestId("orch-composer").fill("ещё бюджет");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await page.getByTestId("orch-approval-hide").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     expect(posts).toEqual([]);
   });
 });
