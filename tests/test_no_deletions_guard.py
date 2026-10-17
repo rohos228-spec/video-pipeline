@@ -155,6 +155,63 @@ def test_scene_and_character_still_reject_in_soft_mode() -> None:
     assert any(item.code == "character_deleted" and item.id == "c1" for item in char_exc.value.violations)
 
 
+def test_grammar_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch) -> None:
+    from app.services.scene_shot_grammar import align_shots_to_action_chain, apply_grammar_to_ops
+
+    def _drop_tail(shots, action, **kwargs):
+        del action, kwargs
+        return [dict(shots[0])], None
+
+    monkeypatch.setattr(
+        "app.services.scene_shot_grammar.merge_gpt_shots_with_action",
+        _drop_tail,
+    )
+    ops = [
+        {
+            "frame_uuid": "u",
+            "fields": {
+                "главное_действие": "1. кухня — режет хлеб",
+                "кадры": [
+                    {"id": "a", "закадр": "первый", "сцена": 1, "место": "кухня"},
+                    {"id": "b", "закадр": "фраза на месте", "сцена": 1, "место": "кухня"},
+                ],
+            },
+        }
+    ]
+    apply_grammar_to_ops(ops, [{"uuid": "u", "number": 1, "voiceover_text": "первый"}])
+    rows = {shot["id"]: shot for shot in ops[0]["fields"]["кадры"]}
+    assert rows["b"]["активен"] is False
+    assert rows["b"]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in rows["b"]
+
+    soft = [
+        {
+            "frame_uuid": "u",
+            "fields": {
+                "главное_действие": "1. кухня — режет хлеб",
+                "кадры": [
+                    {"id": "a", "закадр": "первый", "сцена": 1, "место": "кухня"},
+                    {
+                        "id": "b",
+                        "закадр": "фраза на месте",
+                        "сцена": 1,
+                        "место": "кухня",
+                        "активен": False,
+                    },
+                ],
+            },
+        }
+    ]
+    align_shots_to_action_chain(
+        soft,
+        [{"uuid": "u", "number": 1, "главное_действие": "1. кухня — режет хлеб"}],
+    )
+    kept = soft[0]["fields"]["кадры"]
+    assert [shot["id"] for shot in kept].count("b") == 1
+    assert kept[1]["активен"] is False
+    assert kept[1]["закадр"] == "фраза на месте"
+
+
 def test_pack_soft_keeps_missing_shot_and_soft_delete_passes() -> None:
     from app.services.apply_ops_batches import _preserve_pack_ops
 

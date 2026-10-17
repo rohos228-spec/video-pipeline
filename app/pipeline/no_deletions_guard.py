@@ -20,6 +20,30 @@ from loguru import logger
 _IMPL = "shim"
 
 
+def keep_soft_kadry(
+    before_rows: Any,
+    after_rows: Any,
+    *,
+    scene_id: Any,
+    number: Any,
+    ops: Any = None,
+) -> Any:
+    """``mode="soft"`` для одного списка ``кадры``. Живой пропавший кадр возвращается."""
+
+    if not isinstance(after_rows, list):
+        return after_rows
+    sid = str(scene_id or "cell")
+    num = 0 if number is None else number
+    before_list = before_rows if isinstance(before_rows, list) else []
+    run_preservation_validators(
+        {"сцены": [{"id": sid, "номер": num, "кадры": before_list}]},
+        {"сцены": [{"id": sid, "номер": num, "кадры": after_rows}]},
+        ops,
+        mode="soft",
+    )
+    return after_rows
+
+
 def _load_real() -> tuple[Any, Any, Any] | None:
     try:
         from app.orchestrator.validators.preservation import (

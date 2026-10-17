@@ -888,6 +888,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 ).strip()
         if action and isinstance(shots, list) and shots:
             num = int(fr.get("number") or 1)
+            before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
             merged, err = merge_gpt_shots_with_action(
                 shots, action, cell_number=num, prev_place=prev_place, vo=vo
             )
@@ -896,6 +897,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 op["_shots_under_warn"] = err
                 fields.pop("_shots_under_warn", None)
                 if merged is not None:
+                    merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                     fields["кадры"] = merged
                     shots = merged
                 # soft underproduction: не incomplete, не invent шагов
@@ -903,6 +905,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 fields["_shots_incomplete"] = err
                 # оставляем GPT как есть — вызывающий код обязан упасть/добрать
             elif merged is not None:
+                merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                 fields["кадры"] = merged
                 shots = merged
         elif action and (not isinstance(shots, list) or len(shots) < 1):
@@ -1062,6 +1065,7 @@ def align_shots_to_action_chain(
         shots = fields.get("кадры")
         if not isinstance(shots, list) or not shots:
             continue
+        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         uid = str(op.get("frame_uuid") or "").strip()
         chain = parse_scene_chain(_frame_action(op, by_uid.get(uid) or {}))
         places: dict[int, str] = {}
@@ -1098,9 +1102,18 @@ def align_shots_to_action_chain(
                 kept.append(shot)
                 continue
             kept.append(shot)
+        frame = by_uid.get(uid) or {}
+        number = frame.get("number") or frame.get("номер") or 0
+        kept = _keep_grammar_kadry(before_rows, kept, uid=uid, number=number)
         if len(kept) != len(shots):
             fields["кадры"] = kept
     return removed
+
+
+def _keep_grammar_kadry(before_rows, after_rows, *, uid: str, number: Any):
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    return keep_soft_kadry(before_rows, after_rows, scene_id=uid or "cell", number=number)
 
 
 def scene_script_text(place: str, action: str) -> str:
