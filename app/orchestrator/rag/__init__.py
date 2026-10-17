@@ -46,8 +46,13 @@ def _engine_for_profile(profile: str) -> RagEngine:
     from app.orchestrator.rag.embedder import build_embedder
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
+        CONTOUR_B_BM25_PROTECT,
         CONTOUR_B_BM25_SCOPE,
         CONTOUR_B_EMBEDDER,
+        CONTOUR_B_FAMILY_BOOST,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
         CONTOUR_B_RERANK_MAX_LENGTH,
         CONTOUR_B_RERANK_POOL,
         CONTOUR_B_RERANKER,
@@ -73,6 +78,10 @@ def _engine_for_profile(profile: str) -> RagEngine:
         "rerank_pool": CONTOUR_B_RERANK_POOL,
         "aggregate": CONTOUR_B_AGGREGATE,
         "rerank": False if _rerank_disabled() else None,
+        "rerank_fusion": CONTOUR_B_RERANK_FUSION,
+        "rerank_fusion_weights": (CONTOUR_B_FUSION_BM25, CONTOUR_B_FUSION_RERANK),
+        "bm25_protect": CONTOUR_B_BM25_PROTECT,
+        "family_boost": CONTOUR_B_FAMILY_BOOST,
     }
     return engine
 

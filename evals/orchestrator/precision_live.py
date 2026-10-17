@@ -1268,9 +1268,15 @@ def measure_chunk_rows(
     bm25_scope: str,
     rerank_pool: int,
     aggregate: str,
+    rerank_fusion: str = "replace",
+    rerank_fusion_weights: tuple[float, float] = (1.0, 1.0),
+    bm25_protect: float = 0.0,
+    family_boost: float = 1.0,
+    corpora: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Один проход. Прогрев не входит в задержку. Метки — chunk_id варианта C."""
-    indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
+    selected = list(corpora or ["rules", "nodes", "prompts"])
+    indexed = engine.store.fetch_chunks(selected)
     for chunk in indexed:
         chunk.metadata.pop("_embedding", None)
     counts = [sum(1 for chunk in indexed if _is_relevant_transferred(chunk, query)) for query in queries]
@@ -1283,12 +1289,16 @@ def measure_chunk_rows(
         "bm25_scope": bm25_scope,
         "rerank_pool": rerank_pool,
         "aggregate": aggregate,
+        "rerank_fusion": rerank_fusion,
+        "rerank_fusion_weights": rerank_fusion_weights,
+        "bm25_protect": bm25_protect,
+        "family_boost": family_boost,
     }
-    engine.retrieve(queries[0]["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+    engine.retrieve(queries[0]["text"], selected, top_k=8, **kwargs)
     rows: list[dict[str, Any]] = []
     for query, count in zip(queries, counts, strict=True):
         started = time.perf_counter()
-        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
+        found = engine.retrieve(query["text"], selected, top_k=8, **kwargs)
         elapsed = time.perf_counter() - started
         flags = [_is_relevant_transferred(chunk, query) for chunk in found]
         if query.get("family") == "rules":
@@ -1315,10 +1325,11 @@ def render_locked_report(payload: dict[str, Any]) -> str:
     lines = [
         "# Контур B: детерминированный перемер",
         "",
-        "На dev проверены смесь реранкера с гибридом, смесь с BM25, "
-        "заголовок `##` первым и окно 384. Ни один вариант не поднял nDCG, "
-        "сохранив hit@5. Зафиксированный конфиг прежний: bge-m3 топ-12, "
-        "`prompt_pool`, веса 0.5/1.5, RRF k=20, BM25 full, e5-large, 256 токенов.",
+        "Зафиксированный конфиг: bge-m3 топ-12, `prompt_pool`, "
+        "веса лексика/вектор 0.5/1.5, RRF k=20, BM25 full, e5-large, 256 токенов. "
+        "Реранкер не заменяет порядок: RRF с BM25, веса 0.5/1.5, "
+        "защита топ-1 выключена, family_boost 1. "
+        "На dev hit@5 этой смеси 0.88, порог 0.9 не взят.",
         "Сессии ONNX в режиме эвалов: `intra_op_num_threads=1`, `inter_op_num_threads=1`, "
         "фиксированный сид, `use_deterministic_compute`. "
         "Реранкер эвалов — fp32 `onnx/model.onnx` той же bge-m3: "
@@ -1401,6 +1412,13 @@ def render_locked_report(payload: dict[str, Any]) -> str:
             f"(commit {prod.get('commit') or '—'}, холодный _query_vectors): "
             f"{median_s:.3f} с. Лимит {P95_MAX_S:.1f} с {taken}."
         )
+    quality = payload.get("prod_quality")
+    if isinstance(quality, dict) and "test" in quality:
+        lines.append(
+            "Качество того же прод-пути, медиана трёх прогонов: "
+            f"test hit@5 {quality['test']['hit_at_5']:.4f}, "
+            f"nDCG@8 {quality['test']['ndcg_at_8']:.4f}."
+        )
     lines.extend(
         [
             "",
@@ -1446,7 +1464,12 @@ def render_locked_report(payload: dict[str, Any]) -> str:
 def _remeasure_config() -> dict[str, Any]:
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
+        CONTOUR_B_BM25_PROTECT,
         CONTOUR_B_BM25_SCOPE,
+        CONTOUR_B_FAMILY_BOOST,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
         CONTOUR_B_RERANK_MAX_LENGTH,
         CONTOUR_B_RERANK_POOL,
         CONTOUR_B_RRF_K,
@@ -1464,6 +1487,11 @@ def _remeasure_config() -> dict[str, Any]:
         "bm25_scope": CONTOUR_B_BM25_SCOPE,
         "rerank_pool": CONTOUR_B_RERANK_POOL,
         "aggregate": CONTOUR_B_AGGREGATE,
+        "rerank_fusion": CONTOUR_B_RERANK_FUSION,
+        "fusion_bm25": CONTOUR_B_FUSION_BM25,
+        "fusion_rerank": CONTOUR_B_FUSION_RERANK,
+        "bm25_protect": CONTOUR_B_BM25_PROTECT,
+        "family_boost": CONTOUR_B_FAMILY_BOOST,
         "eval_intra_op": 1,
         "eval_inter_op": 1,
         "eval_seed": 0,
@@ -1507,6 +1535,10 @@ def execute_one_pass(work_dir: Path, *, embedder_kind: str | None = None) -> dic
             bm25_scope=str(config["bm25_scope"]),
             rerank_pool=int(config["rerank_pool"]),
             aggregate=str(config["aggregate"]),
+            rerank_fusion=str(config["rerank_fusion"]),
+            rerank_fusion_weights=(float(config["fusion_bm25"]), float(config["fusion_rerank"])),
+            bm25_protect=float(config["bm25_protect"]),
+            family_boost=float(config["family_boost"]),
         )
         slices = group_slices(rows, list(split["dev"]), list(split["test"]))
     finally:
@@ -1575,6 +1607,79 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def measure_prod_path(artifact: Path | None = None, report: Path | None = None) -> dict[str, Any]:
+    """p95 и качество ``get_engine(profile='contour-b')``.
+
+    Три прогона, перед каждым сбрасывается ``_query_vectors``. Прогрев в p95 не входит.
+    Индекс — тот, что собирает прод: ноды из проектной базы и git, не пустой MemoryNodeStore.
+    """
+    import platform
+
+    from app.orchestrator.rag import get_engine, reset_engine
+    from evals.orchestrator.label_expand import EXPANDED_PATH
+    from evals.orchestrator.query_split import SPLIT_PATH
+
+    expanded = json.loads(EXPANDED_PATH.read_text(encoding="utf-8"))["queries"]
+    split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
+    import app.orchestrator.rag as rag_mod
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-prod-"))
+    rag_mod.default_db_path = lambda: temp_dir / "orch_rag.db"
+    reset_engine()
+    engine = get_engine(profile="contour-b")
+    prod_corpora = ["rules", "history", "nodes", "prompts"]
+    defaults = {key: value for key, value in engine.retrieve_defaults.items() if value is not None}
+    samples: list[float] = []
+    qualities: list[dict[str, dict[str, float]]] = []
+    try:
+        print("prod reindex", engine.db_path, flush=True)
+        engine.reindex(prod_corpora, timeout=900)
+        print("prod chunks", len(engine.store.fetch_chunks(prod_corpora)), flush=True)
+        for index in range(PASS_COUNT):
+            engine._clear_retrieval_cache()
+            rows = measure_chunk_rows(
+                engine,
+                expanded,
+                rerank=defaults.get("rerank", True) is not False,
+                rrf_k=int(defaults["rrf_k"]),
+                rrf_weights=tuple(defaults["rrf_weights"]),
+                bm25_scope=str(defaults["bm25_scope"]),
+                rerank_pool=int(defaults["rerank_pool"]),
+                aggregate=str(defaults["aggregate"]),
+                rerank_fusion=str(defaults["rerank_fusion"]),
+                rerank_fusion_weights=tuple(defaults["rerank_fusion_weights"]),
+                bm25_protect=float(defaults["bm25_protect"]),
+                family_boost=float(defaults["family_boost"]),
+                corpora=prod_corpora,
+            )
+            slices = group_slices(rows, list(split["dev"]), list(split["test"]))
+            samples.append(slices["all"]["p95_s"])
+            qualities.append(slices)
+            print("PROD_PASS", index, round(samples[-1], 4), flush=True)
+    finally:
+        reset_engine()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    recorded = record_prod_p95(
+        samples,
+        config=_remeasure_config(),
+        commit=commit,
+        hardware={"cpu_count": os.cpu_count(), "platform": platform.platform()},
+    )
+    packed = aggregate_pass_slices(qualities)
+    payload: dict[str, Any] = {}
+    if artifact is not None and artifact.is_file():
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["prod_p95"] = recorded
+    payload["prod_quality"] = packed["median"]
+    if artifact is not None:
+        write_pass_artifact(artifact, payload)
+    if report is not None and "median" in payload and "acceptance" in payload:
+        report.write_text(render_locked_report(payload), encoding="utf-8")
+    print(json.dumps({"prod_p95": recorded, "prod_quality": packed["median"]}, ensure_ascii=False), flush=True)
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
@@ -1591,6 +1696,8 @@ def main() -> None:
         action="store_true",
         help="три детерминированных прохода зафиксированного конфига C",
     )
+    parser.add_argument("--prod-p95", action="store_true", help="p95 и качество прод-пути get_engine")
+    parser.add_argument("--artifact", type=Path, default=PASSES_PATH)
     parser.add_argument("--remeasure-pass", action="store_true", help="один проход в отдельном процессе")
     parser.add_argument("--pass-dir", type=Path)
     parser.add_argument("--pass-out", type=Path)
@@ -1602,8 +1709,11 @@ def main() -> None:
         args.pass_out.parent.mkdir(parents=True, exist_ok=True)
         args.pass_out.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
         return
+    if args.prod_p95:
+        measure_prod_path(args.artifact, args.out)
+        return
     if args.remeasure:
-        run_remeasure(args.out)
+        run_remeasure(args.out, args.artifact)
         return
     if args.tune:
         run_tune()
