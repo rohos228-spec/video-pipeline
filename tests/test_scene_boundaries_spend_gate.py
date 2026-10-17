@@ -94,3 +94,51 @@ async def test_one_live_call_reserves_once(tmp_path, monkeypatch) -> None:
     assert spend_guard.reservations() == 1
     assert spend_guard.peak() == 1.0
     assert spend_guard.inflight() == 0.0
+
+
+class _BlockAfter500:
+    def __init__(self) -> None:
+        self.posts = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def post(self, _url, headers=None, json=None):  # noqa: A002
+        from app.services import spend_guard
+
+        self.posts += 1
+        spend_guard.set_cap(0)
+        return _Resp(status=500, text="upstream down")
+
+
+@pytest.mark.asyncio
+async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> None:
+    """500, затем cap=0: один HTTP, SpendBlocked наружу, второго sleep нет."""
+    from app.services import spend_guard
+    from app.services.scene_boundaries import call_opus
+    from app.services.spend_guard import SpendBlocked
+
+    spend_guard.reset()
+    spend_guard.set_cap(1.5)
+    client = _BlockAfter500()
+    _install_llm(monkeypatch, client)
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _fast(delay: float = 0, *args, **kwargs):
+        sleeps.append(float(delay))
+        if float(delay) >= 15:
+            return None
+        return await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _fast)
+
+    with pytest.raises(SpendBlocked):
+        await call_opus("привет", "система", "block", tmp_path)
+
+    assert client.posts == 1
+    assert len(sleeps) <= 1
+    assert all(delay < 15 for delay in sleeps)
