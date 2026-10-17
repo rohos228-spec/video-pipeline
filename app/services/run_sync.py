@@ -50,6 +50,11 @@ async def _get_default_workflow_id(
     Каталог шаблонов живёт в state.db. Изолированная project.db часто без
     ``workflows`` — тогда смотрим master, иначе ▶ падает с
     «workflow по умолчанию не найден».
+
+    Самовосстанавливающийся поиск:
+    1. Ищет Workflow с is_default == True.
+    2. Если не найден — берет любой существующий Workflow и делает его дефолтным.
+    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон через seed_default_workflow().
     """
 
     async def _lookup(s: AsyncSession) -> int | None:
@@ -62,15 +67,47 @@ async def _get_default_workflow_id(
                     .limit(1)
                 )
             ).scalar_one_or_none()
+            if wf is not None:
+                return wf.id
+
+            # Фолбэк 1: есть ли любой воркфлоу в БД
+            any_wf = (
+                await s.execute(
+                    select(Workflow).order_by(Workflow.id.asc()).limit(1)
+                )
+            ).scalar_one_or_none()
+            if any_wf is not None:
+                any_wf.is_default = True
+                await s.flush()
+                return any_wf.id
         except Exception:  # noqa: BLE001 — пустая/битая БД в тестах
             logger.debug("default workflow lookup failed", exc_info=True)
             return None
-        return wf.id if wf is not None else None
+        return None
 
     if session is not None:
-        found = await _lookup(session)
-        if found is not None:
-            return found
+        res = await _lookup(session)
+        if res is not None:
+            return res
+
+    async with session_scope() as s:
+        res = await _lookup(s)
+    if res is not None:
+        return res
+
+    # Фолбэк 2: база пуста, вызываем авто-засев
+    try:
+        from app.web.settings_default import seed_default_workflow
+
+        await seed_default_workflow(session)
+    except Exception:  # noqa: BLE001
+        logger.warning("auto seed_default_workflow failed", exc_info=True)
+
+    if session is not None:
+        res = await _lookup(session)
+        if res is not None:
+            return res
+
     async with session_scope() as s:
         return await _lookup(s)
 

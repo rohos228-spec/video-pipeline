@@ -41,7 +41,9 @@ export type NodeResultViewMode =
   | "frame_images"
   | "frame_videos"
   | "topic_edit"
-  | "html_report";
+  | "html_report"
+  | "sfx_plan"
+  | "sfx_gen";
 
 export interface NodeResultSnapshot {
   hasResult: boolean;
@@ -143,13 +145,23 @@ function dedupeResultItems(items: NodeResultItem[]): NodeResultItem[] {
 function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
   return arts.map((a) => {
     const path = a.path || "";
+    const meta = (a.meta || {}) as Record<string, unknown>;
+    const metaDesc = typeof meta.description === "string" && meta.description.trim()
+      ? meta.description.trim()
+      : undefined;
+    const metaIdx = typeof meta.item_index === "number"
+      ? meta.item_index
+      : (typeof meta.hero_index === "number" ? meta.hero_index : undefined);
+
     return {
       id: a.uuid,
-      label: a.kind,
+      label: metaIdx ? `№${metaIdx}` : a.kind,
       kind: mediaKind(path, a.kind || ""),
       previewUrl: api.artifactFileUrl(a.uuid),
       downloadUrl: api.artifactFileUrl(a.uuid),
       filePath: path || null,
+      content: metaDesc,
+      frameNumber: typeof metaIdx === "number" ? metaIdx : undefined,
     };
   });
 }
@@ -287,24 +299,22 @@ function computeNodeResult(
     case "plan":
     case "hitl_gate": {
       const planText = meaningfulGeneralPlan(project);
-      if (planText && projectHasXlsx(ctx.assets)) {
+      if (planText) {
+        const items: NodeResultItem[] = [
+          { id: "general_plan", label: "Сценарий (текст)", kind: "text", content: planText },
+        ];
+        if (projectHasXlsx(ctx.assets)) {
+          items.push({ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" });
+        }
         return {
           hasResult: true,
-          itemCount: 1,
-          summary: "Лист «Общий план» в Excel",
-          items: [{ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" }],
-          replaceMode: "xlsx",
+          itemCount: items.length,
+          summary: `Сценарий готов (${planText.length} симв.)`,
+          items,
+          replaceMode: "text",
           viewMode: "xlsx_general_plan",
+          textField: "general_plan",
         };
-      }
-      if (planText) {
-        return ready(
-          [{ id: "general_plan", label: "Сценарий", kind: "text", content: planText }],
-          "Текст плана готов",
-          "text",
-          "xlsx_general_plan",
-          "general_plan",
-        );
       }
       return empty("Сценарий ещё не сгенерирован", "text", "xlsx_general_plan");
     }
@@ -419,11 +429,38 @@ function computeNodeResult(
 
     case "items": {
       const itemAssets = ctx.assets.filter((a) => a.kind.includes("item") || a.path?.includes("item"));
-      const items = [
-        ...assetItems(itemAssets),
+      const rawItems = dedupeResultItems([
         ...artifactItems(arts.filter((a) => a.kind.includes("item"))),
-      ];
-      if (items.length) return ready(items, `${items.length} reference предметов`, "assets");
+        ...assetItems(itemAssets),
+      ]);
+      if (rawItems.length) {
+        // Сортируем строго по возрастанию индекса предмета (predmet1, predmet2, ...),
+        // чтобы порядок картинок не зависел от order_by id desc в БД.
+        const items = [...rawItems].sort((a, b) => {
+          const getIdx = (it: NodeResultItem) => {
+            if (typeof it.frameNumber === "number") return it.frameNumber;
+            const m = (it.filePath || it.downloadUrl || it.previewUrl || it.id || "").match(/predmet(\d+)/i);
+            return m ? parseInt(m[1], 10) : 999;
+          };
+          return getIdx(a) - getIdx(b);
+        });
+
+        const descriptions = project?.item_descriptions ?? [];
+        const enriched = items.map((item, i) => {
+          const m = (item.filePath || item.downloadUrl || item.previewUrl || item.id || "").match(/predmet(\d+)/i);
+          const itemIdx = typeof item.frameNumber === "number"
+            ? item.frameNumber
+            : (m ? parseInt(m[1], 10) : i + 1);
+          const descFromProject = descriptions[itemIdx - 1];
+          const text = item.content?.trim() || descFromProject || descriptions[i] || item.label;
+          return {
+            ...item,
+            content: text,
+            label: `Предмет ${itemIdx}: ${text}`,
+          };
+        });
+        return ready(enriched, `${items.length} reference предметов`, "assets", "frame_images");
+      }
       if ((project?.item_descriptions?.length ?? 0) > 0) {
         return ready(
           (project?.item_descriptions ?? []).map((d, i) => ({
@@ -597,19 +634,29 @@ function computeNodeResult(
 
     case "animation_prompts": {
       const withPrompt = ctx.frames.filter((f) => f.animation_prompt?.trim());
+      const imgByNumber = new Map<number, string>();
+      const imgByFrameId = new Map<number, string>();
+      for (const m of ctx.mediaImages) {
+        if (m.preview_url) {
+          if (m.frame_id != null) imgByFrameId.set(m.frame_id, m.preview_url);
+        }
+      }
       if (withPrompt.length) {
         return ready(
-          withPrompt.slice(0, 12).map((f) => ({
+          withPrompt.map((f) => ({
             id: `frame_${f.id}`,
             label: `Кадр ${f.number}`,
             kind: "text" as const,
+            previewUrl: imgByFrameId.get(f.id) ?? null,
             content: f.animation_prompt,
+            frameNumber: f.number,
           })),
           `Промты анимации: ${withPrompt.length} кадров`,
           "studio",
+          "frame_prompts",
         );
       }
-      return empty("Промты анимации ещё не готовы", "studio");
+      return empty("Промты анимации ещё не готовы", "studio", "frame_prompts");
     }
 
     case "videos":
@@ -652,15 +699,17 @@ function computeNodeResult(
     case "sfx_plan": {
       const meta = project?.meta as Record<string, unknown> | undefined;
       const aiJobs = meta?.ai_jobs as Record<string, unknown> | undefined;
-      const sfxPlan = meta?.sfx_plan || meta?.sound_plan || aiJobs?.sfx_plan;
+      const sfxPlanObj = (aiJobs?.sfx_plan || meta?.sfx_plan) as Record<string, unknown> | undefined;
       const sfxPlanAsset = ctx.assets.find(
         (a) => a.id === "sfx_plan.json" || a.kind === "sfx_plan" || a.path?.includes("sfx_plan.json"),
       );
-      if (sfxPlan || sfxPlanAsset) {
+      if (sfxPlanObj || sfxPlanAsset) {
+        const eventsList = Array.isArray(sfxPlanObj?.events) ? sfxPlanObj.events : [];
+        const count = eventsList.length;
         return {
           hasResult: true,
-          itemCount: 1,
-          summary: "План звуков готов",
+          itemCount: count || 1,
+          summary: count ? `План звуков: ${count} событий` : "План звуков готов",
           items: [
             {
               id: "sfx_plan",
@@ -670,7 +719,7 @@ function computeNodeResult(
             },
           ],
           replaceMode: "studio",
-          viewMode: "default",
+          viewMode: "sfx_plan",
         };
       }
       return empty("План звуков ещё не составлен", "studio");
@@ -685,10 +734,28 @@ function computeNodeResult(
         ...artifactItems(arts),
         ...assetItems(sfxAssets),
       ]);
+      const sfxGenerated = Boolean(
+        (ctx.project?.meta as Record<string, unknown> | undefined)?.sfx_generated ||
+          (ctx.project?.meta as Record<string, unknown> | undefined)?.sfx_ready,
+      );
       if (items.length) {
-        return ready(items, `Звуки: ${items.length} файл(ов)`, "assets");
+        return {
+          hasResult: true,
+          itemCount: items.length,
+          summary: `Звуки: ${items.length} файл(ов)`,
+          items,
+          replaceMode: "assets",
+          viewMode: "sfx_gen",
+        };
       }
-      return empty("Звуки ещё не сгенерированы", "assets");
+      return {
+        hasResult: sfxGenerated,
+        itemCount: 0,
+        summary: sfxGenerated ? "Звуки сгенерированы" : "Звуки ещё не сгенерированы",
+        items: [],
+        replaceMode: "assets",
+        viewMode: "sfx_gen",
+      };
     }
 
     case "assemble":

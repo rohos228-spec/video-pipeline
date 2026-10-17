@@ -174,8 +174,18 @@ export function NodeModelPicker({
   const isTextLlm = (selected?.kind ?? "text") === "text" && !MEDIA_NODE_TYPES.has(nodeType);
   const effort = normalizeEffort(reasoningEffort);
   const media = mediaOptionsForModel(selectedId);
+  const priceBit = selected?.pricing.usd_per_video
+    ? `${formatUsdPrice(selected.pricing.usd_per_video)}/клип`
+    : selected?.pricing.usd_per_image
+      ? `${formatUsdPrice(selected.pricing.usd_per_image)}/фото`
+      : null;
+  const isSelectedT2V =
+    selected?.kind === "video" &&
+    (selected.id.endsWith("-t2v") || Boolean(selected.api_model?.endsWith("-t2v")));
   const summaryBits = [
     selected?.label || selectedId,
+    isSelectedT2V ? "T2V" : null,
+    priceBit,
     media?.resolutions.length
       ? clampMediaOption(imageResolution, media.resolutions, media.defaultResolution)
       : null,
