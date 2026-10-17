@@ -315,6 +315,14 @@ r3.4 помечает один ответ тремя вещами: старт, �
 - Событие без `message_id` (снимок r3.3) тест клиента собирает в одну строку, как раньше.
 - Повторный reconnect не порождает второй `message_id` для уже закрытой реплики.
 
+## Экспорт `ApprovalDecision` не входит в r3.3
+
+`grant_approval(session, decision=None, *, retry_grant=False)` принимает необязательный
+`decision`. Пока версия `ws3-r3.3`, `export_contract_schemas()` не содержит
+`ApprovalDecisionBody`, enum `ApprovalDecision` и `rules.approval_decision_labels`.
+Старое тело без этих полей валидируется и идёт прежним путём. В экспорт они
+попадут только вместе с бампом версии.
+
 ## Что r3.4 сознательно не делает
 
 - Не меняет `CONTRACT_VERSION`, пока этот RFC не принят отдельным коммитом кода.

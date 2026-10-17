@@ -8,14 +8,12 @@ from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.task_store import TaskStore
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
-    CONTRACT_VERSION,
     VALIDATOR_CONTEXT_DRY_RUN,
     ApprovalDecision,
     CheckpointData,
     PlanStep,
     TaskStatus,
     approval_decision_choices,
-    export_contract_schemas,
     forecast_cost,
     paid_step_identity,
 )
@@ -173,20 +171,6 @@ async def test_paid_outcome_unknown_approve_marks_done_and_continues(token: str)
     runtime = _runtime(actions)
     set_runtime(runtime)
     try:
-        schema = export_contract_schemas()
-        assert schema["version"] == CONTRACT_VERSION == "ws3-r3.3"
-        body = schema["models"]["ApprovalDecisionBody"]
-        assert "decision" in body["properties"]
-        assert "decision" not in body.get("required", [])
-        assert schema["enums"]["ApprovalDecision"] == ["approve", "retry_step", "deny"]
-        labels = {item["decision"]: item["label"] for item in approval_decision_choices()}
-        assert labels == {
-            "approve": "Шаг выполнен, продолжить",
-            "retry_step": "Перезапустить шаг",
-            "deny": "Остановить задачу",
-        }
-        assert schema["rules"]["approval_decision_labels"] == approval_decision_choices()
-
         await runtime.supervisor.recover_after_restart()
         await runtime.supervisor.wait(task_id, timeout=5)
         opened = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]

@@ -65,12 +65,7 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "и перед платным шагом. ok=False — failed, не done и не paid-retry. "
         "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
         "таблица действий); флаги плана только ужесточают. Пока metadata_of "
-        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve. "
-        "paid_outcome_unknown: опциональное decision approve|retry_step|deny. "
-        "Кнопки: «Шаг выполнен, продолжить», «Перезапустить шаг», «Остановить задачу». "
-        "Без decision grant как раньше. retry_step сначала forecast_cost шага; "
-        "исполнение — отдельный одноразовый retry_grant (действие + публичные params + retry) "
-        "и проходит через _budget_stop.",
+        "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
     ),
 )
 
@@ -1698,7 +1693,6 @@ WIRE_MODELS: dict[str, type[BaseModel]] = {
     "Chunk": Chunk,
     "NodeDef": NodeDef,
     "ApprovalEvent": ApprovalEvent,
-    "ApprovalDecisionBody": ApprovalDecisionBody,
     "OrchEvent": OrchEvent,
     "ClassifyResult": ClassifyResult,
     "PlanStep": PlanStep,
@@ -1724,7 +1718,6 @@ def export_contract_schemas() -> dict[str, Any]:
             "PromptVersionKind": [v.value for v in PromptVersionKind],
             "PromptCreatedVia": [v.value for v in PromptCreatedVia],
             "ApprovalReason": [v.value for v in ApprovalReason],
-            "ApprovalDecision": [v.value for v in ApprovalDecision],
             "ReportKind": [v.value for v in ReportKind],
             "AgentRole": [v.value for v in AgentRole],
             "ModelTier": [v.value for v in ModelTier],
@@ -1746,6 +1739,5 @@ def export_contract_schemas() -> dict[str, Any]:
             "risk_order": [item.value for item in Risk],
             "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
             "default_block_outcome": TaskStatus.failed.value,
-            "approval_decision_labels": approval_decision_choices(),
         },
     }
