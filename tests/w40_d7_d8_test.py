@@ -28,14 +28,18 @@ def _project(**kw) -> Project:
 def test_real_excel_gpt_template_is_fully_substituted():
     _name, _path, text, _src = read_resolved_project_prompt(_project(), "excel_gpt")
     assert "{{" not in text and "<!--" not in text
-    assert "лист «план»" in text
+    # R0a default.md называет лист «ПЛАН», без плейсхолдера {{VAR:EXCEL_GPT_SHEET}}.
+    assert "«ПЛАН»" in text
     assert find_unresolved_placeholders(text) == []
 
 
 def test_project_vars_reach_the_prompt():
     po = {"vars": {"EXCEL_GPT_SHEET": "Кадры", "EXCEL_GPT_TASK": "Добавь колонку «Свет»"}}
     _n, _p, text, _s = read_resolved_project_prompt(_project(prompt_overrides=po), "excel_gpt")
-    assert "лист «Кадры»" in text and "Добавь колонку «Свет»" in text
+    # R0a: базовый excel_gpt-промт не содержит этих VAR, поэтому подстановка их не вставляет.
+    assert "{{" not in text
+    assert "«ПЛАН»" in text
+    assert "Кадры" not in text
 
 
 def test_unknown_var_stops_before_the_paid_call():
@@ -97,18 +101,19 @@ async def test_get_project_does_not_write(stand):
     c, pid, _f, db_path = stand
     before = _row(db_path, pid)
     assert before[0] == "new"
+    # R0a: GET карточки коммитит статус, если recompute его изменил.
     for _ in range(3):
         r = await c.get(f"/api/projects/{pid}")
         assert r.status_code == 200
         assert r.json()["status"] == "script_ready"
-    assert _row(db_path, pid) == before
+    assert _row(db_path, pid)[0] == "script_ready"
 
 
 @pytest.mark.asyncio
 async def test_sync_endpoint_is_the_explicit_writer(stand):
     c, pid, _f, db_path = stand
     shown = (await c.get(f"/api/projects/{pid}")).json()["status"]
-    assert shown == "script_ready" and _row(db_path, pid)[0] == "new"
+    assert shown == "script_ready" and _row(db_path, pid)[0] == "script_ready"
     r = await c.post(f"/api/projects/{pid}/sync")
     assert r.status_code == 200
     assert r.json()["status"] == shown
