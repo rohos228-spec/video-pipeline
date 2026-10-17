@@ -389,10 +389,6 @@ def main() -> None:
         print(f"HTML-отчёт сохранён: {html_path}")
 
 
-if __name__ == "__main__":
-    main()
-
-
 def print_report(analysis: dict, *, as_json: bool = False) -> None:
     import contextlib, io, sys
     from app.brand import scrub
@@ -400,3 +396,7 @@ def print_report(analysis: dict, *, as_json: bool = False) -> None:
     with contextlib.redirect_stdout(buf):
         _print_report_raw(analysis, as_json=as_json)
     sys.stdout.write(scrub(buf.getvalue()))
+
+
+if __name__ == "__main__":
+    main()
