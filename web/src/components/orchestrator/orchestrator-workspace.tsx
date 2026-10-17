@@ -27,6 +27,7 @@ import {
   type KillNoticeView,
   type PlanStepView,
   type StepView,
+  type TaskView,
 } from "@/lib/orchestratorSession";
 import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
 import { orchTaskModeEnabled, readOrchProjectId } from "@/lib/orchestratorApi";
@@ -86,7 +87,17 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     body: "В чекпоинте нет шагов. Продолжать нечего, задача остановлена.",
     testId: "orch-empty-plan",
   },
+  paid_outcome_unknown: {
+    title: "Исход платного шага неизвестен",
+    body: "Задача в waiting_approval. Отката нет.",
+    testId: "orch-paid-reason",
+  },
 };
+
+function stepChangeIdsOf(tasks: TaskView[], taskId: string | null): string[] {
+  const task = tasks.find((item) => item.id === taskId);
+  return task?.checkpoints.at(-1)?.changeIds ?? [];
+}
 
 function killBannerText(notice: KillNoticeView): string {
   if (notice.phase === "stopping") return "Останавливаю…";
@@ -332,6 +343,15 @@ export function OrchestratorWorkspace() {
                   onConflictRetry={chat.sendConflictRetry}
                 />
               ))}
+              {openApprovals
+                .filter((approval) => approval.reason === "paid_outcome_unknown")
+                .map((approval) => (
+                  <PaidOutcomeCard
+                    key={`paid-${approval.id}`}
+                    approval={approval}
+                    stepChangeIds={stepChangeIdsOf(chat.state.tasks, approval.taskId)}
+                  />
+                ))}
               {openApprovals.map((approval) => (
                 <ApprovalCard
                   key={approval.id}
@@ -666,6 +686,42 @@ function NodeResultCard({ step }: { step: StepView }) {
         {step.node.node_key ? ` · ${step.node.node_key}` : ""}
       </div>
       <NodeDefMarks node={step.node} />
+    </div>
+  );
+}
+
+function PaidOutcomeCard({
+  approval,
+  stepChangeIds,
+}: {
+  approval: ApprovalView;
+  stepChangeIds: string[];
+}) {
+  return (
+    <div
+      data-testid="orch-paid-outcome"
+      data-reason="paid_outcome_unknown"
+      data-status="waiting_approval"
+      data-retry-armed={approval.retryArmed == null ? undefined : String(approval.retryArmed)}
+      className="mb-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-3"
+    >
+      <div className="text-xs font-semibold text-warning">waiting_approval · paid_outcome_unknown</div>
+      <p className="mt-1 text-[11px] leading-relaxed text-warning">
+        Исход платного шага неизвестен. Отката нет. change_id шага берётся из checkpoint.change_ids, не из orch-appr.
+      </p>
+      {approval.action ? <p className="mt-1 text-[11px] text-warning/80">{approval.action}</p> : null}
+      <ul data-testid="orch-paid-step-changes" className="mt-2 space-y-0.5 font-mono text-[11px] text-warning">
+        {stepChangeIds.map((id) => (
+          <li key={id} data-testid="orch-paid-step-change">
+            {id}
+          </li>
+        ))}
+      </ul>
+      {stepChangeIds.length === 0 ? (
+        <p data-testid="orch-paid-step-missing" className="mt-1 text-[11px] text-warning">
+          change_id шага в checkpoint.change_ids нет
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { EXAMPLE_PAID_APPROVAL } from "../../src/lib/orchestratorActionCards";
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
@@ -118,4 +119,51 @@ test("partial_write показывает WARN и список GET partial-change
   await expect(items.nth(0)).toHaveText("chg-partial-a");
   await expect(items.nth(1)).toHaveText("chg-partial-b");
   await expect(banner).not.toContainText("only-in-event");
+});
+
+test("карточка paid_outcome_unknown показывает change_id шага, кнопки только из approval_required", async ({ page }) => {
+  const session = "paid-kill";
+  await openWithToken(page, session);
+
+  await emit(page, session, "step_finished", EXAMPLE_PAID_APPROVAL);
+  await expect(page.getByTestId("orch-action-wait")).toContainText("Ждёт подтверждения");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
+
+  await emit(page, session, "approval_required", {
+    reason: "paid_outcome_unknown",
+    change_id: "orch-appr-7-1",
+    action: "charge",
+    retry_armed: false,
+    task_id: 1,
+  });
+
+  const card = page.getByTestId("orch-paid-outcome");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("waiting_approval");
+  await expect(card).toContainText("paid_outcome_unknown");
+  await expect(card).toContainText("Отката нет");
+  await expect(card).toHaveAttribute("data-retry-armed", "false");
+  await expect(page.getByTestId("orch-paid-step-missing")).toBeVisible();
+  await expect(card.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(card.getByTestId("orch-reject")).toHaveCount(0);
+
+  const approval = page.getByTestId("orch-approval");
+  await expect(approval).toHaveAttribute("data-change-id", "orch-appr-7-1");
+  await expect(approval.getByTestId("orch-approve")).toHaveCount(1);
+  await expect(approval.getByTestId("orch-reject")).toHaveCount(1);
+  await expect(page.getByTestId("orch-paid-reason")).toHaveText("Исход платного шага неизвестен");
+  await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-paid",
+    plan: [{ action: "charge", paid: true, risk: "none", estimated_cost: 1 }],
+    position: 0,
+    change_ids: ["chg-charge-9"],
+    spend: { actions: 1 },
+    context: "",
+  });
+  await expect(page.getByTestId("orch-paid-step-change")).toHaveText("chg-charge-9");
+  await expect(page.getByTestId("orch-paid-step-missing")).toHaveCount(0);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(1);
 });

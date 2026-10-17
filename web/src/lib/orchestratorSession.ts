@@ -151,6 +151,8 @@ export interface CheckpointView {
   stepId: string;
   summary: string;
   spend: number | null;
+  /** CheckpointData.change_ids — id шагов, не orch-appr. */
+  changeIds: string[];
 }
 
 export interface ValidatorView {
@@ -170,6 +172,8 @@ export interface ApprovalView {
   risk: string;
   action: string;
   costEstimate: number | null;
+  /** ApprovalEvent / payload `retry_armed`. Нет поля — null. Кнопки из этого флага не рисуются. */
+  retryArmed: boolean | null;
   resolved: "approved" | "rejected" | "closed" | null;
 }
 
@@ -331,6 +335,15 @@ export function isTerminalBlock(reason: string): boolean {
   return outcome != null && TERMINAL_TASK.has(outcome);
 }
 
+function readChangeIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) ids.push(item);
+  }
+  return ids;
+}
+
 function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
@@ -455,6 +468,7 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
       risk: str(body.risk),
       action: str(body.action),
       costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      retryArmed: typeof body.retry_armed === "boolean" ? body.retry_armed : null,
       resolved: null,
     });
   }
@@ -709,6 +723,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         stepId: str(body.step_id),
         summary: str(body.summary, plan.length ? "план" : "чекпоинт"),
         spend: typeof body.spend === "number" ? body.spend : null,
+        changeIds: readChangeIds(body.change_ids),
       });
     }
     return next;
@@ -740,6 +755,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         risk: str(body.risk, "medium"),
         action: str(body.action),
         costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+        retryArmed: typeof body.retry_armed === "boolean" ? body.retry_armed : null,
         resolved: null,
       });
     }
@@ -778,6 +794,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         risk: "",
         action: "",
         costEstimate: null,
+        retryArmed: null,
         resolved: null,
       });
     }

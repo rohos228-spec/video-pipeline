@@ -490,6 +490,7 @@ export const BLOCK_OUTCOMES = {
   "deletion_blocked": "failed",
   "missing_run_id": "failed",
   "empty_plan": "failed",
+  "paid_outcome_unknown": "waiting_approval",
 } as const;
 
 export type BlockReason = keyof typeof BLOCK_OUTCOMES;
