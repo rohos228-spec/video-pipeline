@@ -2280,6 +2280,28 @@ async def _apply_img_pr_ops_now(
     return applied
 
 
+async def apply_img_pr_checkpoint(project: Project) -> tuple[list[dict], list[str]]:
+    """Применить опы из чекпоинта. Неприменённые полные и короткие остаются в файле."""
+    from app.services import img_pr_batches as ipb
+
+    ckpt = ipb.load_checkpoint(project.data_dir)
+    raw_ops = list(ckpt.get("ops") or [])
+    writeable, rejected = ipb.partition_img_pr_checkpoint(raw_ops)
+    if rejected:
+        logger.warning(
+            "img_pr_db: keep {} short/placeholder ops in checkpoint",
+            len(rejected),
+        )
+    if not writeable:
+        return [], list(ckpt.get("done_uuids") or [])
+    applied = await _apply_img_pr_ops_now(
+        project, writeable, export_xlsx=False, label="checkpoint"
+    )
+    stored, done_uuids = ipb.merge_img_pr_checkpoint(raw_ops, applied)
+    ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=stored)
+    return stored, done_uuids
+
+
 async def run_img_pr_xlsx(
     project: Project,
     *,
@@ -2315,24 +2337,10 @@ async def run_img_pr_xlsx(
     all_ops: list[dict] = list(ckpt.get("ops") or [])
     done_set = set(done_uuids)
 
-    raw_ops = list(all_ops)
-    writeable, rejected = ipb.partition_img_pr_checkpoint(raw_ops)
-    if rejected:
-        logger.warning(
-            "img_pr_db: keep {} short/placeholder ops in checkpoint",
-            len(rejected),
-        )
-    if writeable:
-        applied = await _apply_img_pr_ops_now(
-            project, writeable, export_xlsx=False, label="checkpoint"
-        )
-        stored = list(applied) + rejected
-        if not stored:
-            stored = raw_ops
-        done_uuids = [ipb.uuid_of_op(op) for op in applied if ipb.uuid_of_op(op)]
+    if all_ops:
+        stored, done_uuids = await apply_img_pr_checkpoint(project)
         done_set = set(done_uuids)
-        ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=stored)
-        all_ops = list(applied)
+        all_ops = list(stored)
     else:
         all_ops = []
 
