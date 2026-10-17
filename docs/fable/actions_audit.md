@@ -600,7 +600,11 @@ Rebase #342, перенос кода в main, патчи `app/services/`, smoke 
 
 ## Прогон детектора по всем 102 действиям
 
-Снято с дерева #342 `3ec7c957` анализатором `tests/actions/test_whitelist_no_exec.py` (`reachable_write_hits`). Вердикт в этой таблице уже после ужесточения: HTTP DELETE переводит действие в modify и в `fs_breach`.
+Снято с дерева #342 `3ec7c957` анализатором `tests/actions/test_whitelist_no_exec.py` (`reachable_write_hits`) после трёх блокеров: ссылка на опасную функцию не в позиции вызова, недоказанные HTTP/SQL, пары `fs_breach`. Повторный прогон всех 102 исполнителей не добавил denied-пар. В `fs_breach` по-прежнему только пять `http.delete`.
+
+Сменился вердикт у одного действия: `montage.delete_child_frame` keep → modify. Детектор его не видит (`POST …/coverage` с `type=coverage_delete`, не HTTP DELETE). В modify оно из-за физического удаления шота.
+
+Ложные срабатывания, которые детектор считает denied, а живой реестр ими не задет: `http.unknown` (метод `call`/`request` не сворачивается в константу), `sql.unknown` (SQL из переменной, f-строки с подстановкой или конкатенации не из двух констант), `executemany` с таким SQL, ссылка на `os.remove`/`shutil.rmtree` и остальные опасные функции аргументом, присваиванием или return, `getattr` на `subprocess`/`os`/`shutil`/`pty`, `os.open` с `O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_APPEND` или с недоказанными флагами вне allowlist. Разрешены доказуемые GET, HEAD, OPTIONS, POST, PUT, PATCH и доказуемый читающий SQL (`SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`SHOW` без слов записи). Склейка двух строковых констант сворачивается и классифицируется. Ячейка «нет» значит, что этих попаданий у исполнителя нет.
 
 | Действие | Вердикт | Найденные вызовы и пути | Причина |
 |---|---|---|---|
