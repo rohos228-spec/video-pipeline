@@ -75,4 +75,5 @@ async def test_exhausted_undercount_reaches_caller_with_rule(tmp_path, monkeypat
     assert aob.pass_stop_rule(err.value) == "R-SHOT-COVERAGE"
     assert applied == [] and calls
     if n_frames > 1:
-        assert any(name.endswith("_L2.json") for name in calls)
+        # R0a: shots_short_packs не режет пачку шотов дальше L1.
+        assert not any(name.endswith("_L2.json") for name in calls)
