@@ -2587,3 +2587,380 @@ def test_merge_flattened_keeps_extra_shot_inactive(
     assert by_id["5-OLD"]["закадр"] == "старый кусок"
     assert "5-OLD" in caplog.text
     assert "активен: False" in caplog.text
+
+
+def test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch, tmp_path) -> None:
+    """Пропавший живой шот возвращается с закадром. Уже неактивный остаётся один раз."""
+    import json
+    from types import SimpleNamespace
+
+    from app.services import vo_shot_expand as vo
+    from app.services.frame_tombstones import merge_kadry_keep_missing as real_merge
+
+    def _by_id(rows):
+        return {row["id"]: row for row in rows}
+
+    def _flat(number: int, shot_id: str, extra: dict | None, vo_text: str):
+        frame = _kadry_frame(number, shot_id)
+        frame.voiceover_text = vo_text
+        frame.attrs["camera_subdivide"]["parent_uuid"] = frame.uuid
+        if extra:
+            frame.attrs["кадры"].append(dict(extra))
+        return frame
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        lambda old, new: new,
+    )
+    parent, _extra = vo.merge_flattened_coverage_members(
+        [
+            _flat(1, "5-K1", {"id": "DROP", "закадр": "фраза на месте"}, "двор."),
+            _flat(2, "5-K2", None, "жест."),
+        ]
+    )
+    dropped = _by_id(parent.attrs["кадры"])["DROP"]
+    assert dropped["активен"] is False
+    assert dropped["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in dropped
+
+    def _relink_frame(number: int, shots: list[dict], vo_text: str):
+        uid = f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid,
+            voiceover_text=vo_text,
+            attrs={
+                "кадры": shots,
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": uid,
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                    "scene_split": 1,
+                },
+            },
+        )
+
+    relink_parent = _relink_frame(
+        1,
+        [
+            {"id": "f001", "parent_id": None, "действие": "шаг", "закадр": "Первая."},
+            {"id": "DROP", "действие": "смотрит", "закадр": "фраза на месте"},
+        ],
+        "Первая.",
+    )
+    relink_child = _relink_frame(
+        2,
+        [
+            {"id": "f002", "parent_id": "f001", "действие": "шаг", "закадр": "Вторая."},
+            {"id": "CHILD-DROP", "действие": "ждёт", "закадр": "фраза на месте"},
+        ],
+        "Вторая.",
+    )
+    vo.relink_shot_roles_by_scene([relink_parent, relink_child])
+    parent_drop = _by_id(relink_parent.attrs["кадры"])["DROP"]
+    child_drop = _by_id(relink_child.attrs["кадры"])["CHILD-DROP"]
+    assert parent_drop["активен"] is False
+    assert parent_drop["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in parent_drop
+    assert child_drop["активен"] is False
+    assert child_drop["закадр"] == "фраза на месте"
+    assert [row["id"] for row in relink_child.attrs["кадры"]].count("CHILD-DROP") == 1
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        real_merge,
+    )
+    soft_parent, _extra = vo.merge_flattened_coverage_members(
+        [
+            _flat(
+                3,
+                "6-K1",
+                {"id": "QUIET", "закадр": "фраза на месте", "активен": False},
+                "двор.",
+            ),
+            _flat(4, "6-K2", None, "жест."),
+        ]
+    )
+    quiet = _by_id(soft_parent.attrs["кадры"])["QUIET"]
+    assert [row["id"] for row in soft_parent.attrs["кадры"]].count("QUIET") == 1
+    assert quiet["активен"] is False
+    assert quiet["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in quiet
+
+    soft_relink_parent = _relink_frame(
+        5,
+        [
+            {"id": "f011", "parent_id": None, "действие": "шаг", "закадр": "Первая."},
+            {"id": "QUIET", "закадр": "фраза на месте", "активен": False},
+        ],
+        "Первая.",
+    )
+    soft_relink_child = _relink_frame(
+        6,
+        [
+            {"id": "f012", "parent_id": "f011", "действие": "шаг", "закадр": "Вторая."},
+            {"id": "CHILD-QUIET", "закадр": "фраза на месте", "активен": False},
+        ],
+        "Вторая.",
+    )
+    vo.relink_shot_roles_by_scene([soft_relink_parent, soft_relink_child])
+    assert [row["id"] for row in soft_relink_parent.attrs["кадры"]].count("QUIET") == 1
+    assert _by_id(soft_relink_parent.attrs["кадры"])["QUIET"]["закадр"] == "фраза на месте"
+    assert _by_id(soft_relink_child.attrs["кадры"])["CHILD-QUIET"]["активен"] is False
+    assert _by_id(soft_relink_child.attrs["кадры"])["CHILD-QUIET"]["закадр"] == "фраза на месте"
+
+    real_planned = vo.planned_shots_from_attrs
+
+    def _hide_drop(frame):
+        return [row for row in real_planned(frame) if row.get("id") != "DROP"]
+
+    monkeypatch.setattr(vo, "planned_shots_from_attrs", _hide_drop)
+    pu = "aa" * 12
+    cu = "bb" * 12
+    full = "Первая фраза целиком. Вторая тоже на месте."
+    promote_parent = SimpleNamespace(
+        uuid=pu,
+        number=1,
+        voiceover_text=full,
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=4.0,
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "сцена": 1,
+                    "закадр": "Первая фраза целиком.",
+                    "действие": "шаг",
+                    "место": "двор",
+                },
+                {
+                    "id": "1-K2",
+                    "сцена": 1,
+                    "закадр": "Вторая тоже на месте.",
+                    "действие": "шаг",
+                    "место": "двор",
+                },
+                {"id": "DROP", "закадр": "фраза на месте", "действие": "лишний"},
+            ],
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    promote_child = SimpleNamespace(
+        uuid=cu,
+        number=2,
+        voiceover_text="",
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=2.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    vo.promote_shots_to_vo_cells([promote_parent, promote_child])
+    promoted = _by_id(promote_parent.attrs["кадры"])["DROP"]
+    assert [row["id"] for row in promote_parent.attrs["кадры"]].count("DROP") == 1
+    assert promoted["активен"] is False
+    assert promoted["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in promoted
+    assert [row["id"] for row in promote_child.attrs["кадры"]] == ["1-K2"]
+
+    cell = SimpleNamespace(
+        uuid="cc" * 12,
+        number=7,
+        voiceover_text="Первая фраза.",
+        attrs={
+            "кадры": [
+                {"id": "7-K1", "закадр": "Первая фраза."},
+                {"id": "DROP", "закадр": "фраза на месте"},
+            ],
+            "vo_cell_full": "Первая фраза.",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_index": 1,
+            },
+        },
+    )
+    vo.apply_shot_voiceover_to_cells([cell])
+    voiced = _by_id(cell.attrs["кадры"])["DROP"]
+    assert voiced["активен"] is False
+    assert voiced["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in voiced
+
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    (scenes / "frame_008_a.png").write_bytes(b"p")
+    (scenes / "frame_008_a.json").write_text(
+        json.dumps({"prompt": "Место: кухня"}),
+        encoding="utf-8",
+    )
+    still = SimpleNamespace(
+        uuid="dd" * 12,
+        number=8,
+        sort_key=8.0,
+        voiceover_text="старое",
+        attrs={
+            "кадры": [
+                {"id": "8-K1", "закадр": "старое"},
+                {"id": "DROP", "закадр": "фраза на месте"},
+            ],
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": "dd" * 12},
+        },
+    )
+    vo.apply_ordered_voiceover_to_stills([still], ["Новая фраза."], scenes)
+    ordered = _by_id(still.attrs["кадры"])["DROP"]
+    assert ordered["активен"] is False
+    assert ordered["закадр"] == "фраза на месте"
+    assert still.attrs["кадры"][0]["закадр"] == "Новая фраза."
+
+    placed = SimpleNamespace(
+        uuid="ee" * 12,
+        number=8,
+        attrs={
+            "кадры": [
+                {"id": "8-K1", "закадр": "фраза на месте", "место": "двор"},
+                {"id": "DROP", "закадр": "фраза на месте", "место": "двор"},
+            ],
+            "camera_subdivide": {"role": "vo_parent"},
+        },
+    )
+    vo.apply_generation_places_from_sidecars([placed], scenes)
+    place_drop = _by_id(placed.attrs["кадры"])["DROP"]
+    assert place_drop["активен"] is False
+    assert place_drop["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in place_drop
+
+    monkeypatch.setattr(vo, "planned_shots_from_attrs", real_planned)
+    quiet_cell = SimpleNamespace(
+        uuid="ff" * 12,
+        number=9,
+        voiceover_text="Первая фраза.",
+        attrs={
+            "кадры": [
+                {"id": "9-K1", "закадр": "Первая фраза."},
+                {"id": "QUIET", "закадр": "фраза на месте", "активен": False},
+            ],
+            "vo_cell_full": "Первая фраза.",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ff" * 12,
+                "shot_index": 1,
+            },
+        },
+    )
+    vo.apply_shot_voiceover_to_cells([quiet_cell])
+    quiet_rows = quiet_cell.attrs["кадры"]
+    assert [row["id"] for row in quiet_rows].count("QUIET") == 1
+    assert _by_id(quiet_rows)["QUIET"]["активен"] is False
+    assert _by_id(quiet_rows)["QUIET"]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in _by_id(quiet_rows)["QUIET"]
+
+    (scenes / "frame_010_a.png").write_bytes(b"p")
+    quiet_still = SimpleNamespace(
+        uuid="11" * 12,
+        number=10,
+        sort_key=10.0,
+        voiceover_text="старое",
+        attrs={
+            "кадры": [
+                {"id": "10-K1", "закадр": "старое"},
+                {"id": "QUIET", "закадр": "фраза на месте", "активен": False},
+            ],
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": "11" * 12},
+        },
+    )
+    vo.apply_ordered_voiceover_to_stills([quiet_still], ["Новая фраза."], scenes)
+    assert [row["id"] for row in quiet_still.attrs["кадры"]].count("QUIET") == 1
+    assert _by_id(quiet_still.attrs["кадры"])["QUIET"]["закадр"] == "фраза на месте"
+    assert _by_id(quiet_still.attrs["кадры"])["QUIET"]["активен"] is False
+
+    (scenes / "frame_011_a.json").write_text(
+        json.dumps({"prompt": "Место: кухня"}),
+        encoding="utf-8",
+    )
+    quiet_place = SimpleNamespace(
+        uuid="22" * 12,
+        number=11,
+        attrs={
+            "кадры": [
+                {"id": "11-K1", "закадр": "фраза на месте", "место": "двор"},
+                {"id": "QUIET", "закадр": "фраза на месте", "активен": False, "место": "двор"},
+            ],
+            "camera_subdivide": {"role": "vo_parent"},
+        },
+    )
+    vo.apply_generation_places_from_sidecars([quiet_place], scenes)
+    assert [row["id"] for row in quiet_place.attrs["кадры"]].count("QUIET") == 1
+    assert _by_id(quiet_place.attrs["кадры"])["QUIET"]["закадр"] == "фраза на месте"
+    assert _by_id(quiet_place.attrs["кадры"])["QUIET"]["активен"] is False
+
+    quiet_promote_parent = SimpleNamespace(
+        uuid="33" * 12,
+        number=12,
+        voiceover_text=full,
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=4.0,
+        attrs={
+            "кадры": [
+                {
+                    "id": "12-K1",
+                    "сцена": 1,
+                    "закадр": "Первая фраза целиком.",
+                    "действие": "шаг",
+                    "место": "двор",
+                },
+                {
+                    "id": "QUIET",
+                    "сцена": 1,
+                    "закадр": "фраза на месте",
+                    "активен": False,
+                    "действие": "пауза",
+                    "место": "двор",
+                },
+            ],
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "33" * 12,
+                "shot_index": 1,
+            },
+        },
+    )
+    quiet_promote_child = SimpleNamespace(
+        uuid="44" * 12,
+        number=13,
+        voiceover_text="",
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=2.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": "33" * 12,
+                "shot_index": 2,
+            }
+        },
+    )
+    vo.promote_shots_to_vo_cells([quiet_promote_parent, quiet_promote_child])
+    quiet_promoted = [
+        row
+        for row in quiet_promote_parent.attrs["кадры"]
+        if row.get("id") == "QUIET"
+    ]
+    assert len(quiet_promoted) == 1
+    assert quiet_promoted[0]["активен"] is False
+    assert "закадр_архив" not in quiet_promoted[0]
+    assert [row["id"] for row in quiet_promote_child.attrs["кадры"]].count("QUIET") == 1
