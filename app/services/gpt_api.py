@@ -266,10 +266,44 @@ def _stream_should_salvage_nostream(stream_err: BaseException | None) -> bool:
     )
 
 
-_HOST_IPV4: dict[str, str] = {}
+# ip, monotonic timestamp. Без TTL смена IP relay держит старый адрес до рестарта.
+_DNS_TTL_SEC = 60.0
+_HOST_IPV4: dict[str, tuple[str, float]] = {}
 _GETADDRINFO_ORIG = socket.getaddrinfo
 _GETADDRINFO_PATCHED = False
 _DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
+
+
+def _dns_host_key(host: str | None) -> str:
+    return str(host or "").strip().lower().rstrip(".")
+
+
+def _cached_ipv4(host: str | None) -> str | None:
+    key = _dns_host_key(host)
+    entry = _HOST_IPV4.get(key)
+    if not entry:
+        return None
+    ip, stored = entry
+    if time.monotonic() - stored > _DNS_TTL_SEC:
+        _HOST_IPV4.pop(key, None)
+        return None
+    return ip
+
+
+def forget_host_ipv4(host: str | None) -> None:
+    key = _dns_host_key(host)
+    if key:
+        _HOST_IPV4.pop(key, None)
+
+
+def note_gpt_connect_error(url: str | None, exc: BaseException | None) -> None:
+    """ConnectError сбрасывает кэш хоста, чтобы следующий заход резолвил IP заново."""
+    if not isinstance(exc, httpx.ConnectError) or not url:
+        return
+    host = urlparse(url).hostname
+    if host and _dns_host_key(host) in _HOST_IPV4:
+        forget_host_ipv4(host)
+        logger.warning("GPT DNS cache dropped after ConnectError host={}", host)
 
 
 def _install_gpt_getaddrinfo_cache() -> None:
@@ -286,12 +320,8 @@ def _install_gpt_getaddrinfo_cache() -> None:
         proto: int = 0,
         flags: int = 0,
     ):
-        key = str(host or "").lower().rstrip(".")
-        ip = _HOST_IPV4.get(key)
-        if ip:
-            # IPv6-сокет + IPv4-адрес на Windows → ConnectError errno=8.
-            if family == socket.AF_INET6:
-                return []
+        ip = _cached_ipv4(host)
+        if ip and family != socket.AF_INET6:
             return _GETADDRINFO_ORIG(
                 ip, port, socket.AF_INET, type, proto, flags
             )
@@ -384,7 +414,7 @@ def _dns_query_a_udp(host: str, server: str, timeout: float = 1.5) -> str | None
 
 
 def _remember_host_ipv4(host: str, ip: str) -> None:
-    _HOST_IPV4[host.strip(".").lower()] = ip
+    _HOST_IPV4[_dns_host_key(host)] = (ip, time.monotonic())
     _install_gpt_getaddrinfo_cache()
 
 
@@ -393,8 +423,7 @@ async def _ensure_url_host_resolves(url: str) -> None:
     host = urlparse(url).hostname
     if not host:
         return
-    key = host.lower().rstrip(".")
-    if key in _HOST_IPV4:
+    if _cached_ipv4(host):
         _install_gpt_getaddrinfo_cache()
         return
     loop = asyncio.get_running_loop()
@@ -3743,6 +3772,7 @@ async def chat(
             )
             logger.warning(str(last_exc))
         except httpx.HTTPError as e:
+            note_gpt_connect_error(url, e)
             last_exc = GptApiError(
                 f"GPT сетевая ошибка: {type(e).__name__}: {_httpx_error_detail(e)}",
                 context={"error_kind": "network", "retryable": True, "model": use_model},
@@ -4782,6 +4812,7 @@ async def download_content(
             content_type = r.headers.get("content-type")
             out_path.write_bytes(r.content)
     except httpx.HTTPError as e:
+        note_gpt_connect_error(url, e)
         raise GptApiError(
             f"download сетевая ошибка: {type(e).__name__}: {e}",
             context={"url": url},

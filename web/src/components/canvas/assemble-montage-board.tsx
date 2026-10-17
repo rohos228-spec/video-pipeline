@@ -43,10 +43,12 @@ import {
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
+  montageOpSelectKey,
   montageOpsToApply,
   pendingApplyFrameNumbers,
   queueAfterApply,
   queueAfterCoverageApply,
+  serverQueueReplacesLocal,
 } from "@/lib/montage-apply-queue";
 import {
   readMontageAiChangeText,
@@ -255,7 +257,7 @@ function toastQueued(text: string): void {
 }
 
 function opSelectKey(op: MontagePendingOp): string {
-  return `${op.type}:${op.frame_number}:${op.shot}`;
+  return montageOpSelectKey(op);
 }
 
 function describePendingOp(op: MontagePendingOp): string {
@@ -2083,6 +2085,11 @@ export function AssembleMontageBoard({
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
+  const applyRunningRef = useRef(false);
+  const setApplyRunningNow = (value: boolean) => {
+    applyRunningRef.current = value;
+    setApplyRunning(value);
+  };
   const [recoverRunning, setRecoverRunning] = useState(false);
   const [swapPick, setSwapPick] = useState<SwapSlotPick | null>(null);
   const [swapBusy, setSwapBusy] = useState(false);
@@ -2111,8 +2118,6 @@ export function AssembleMontageBoard({
   const lastApplyToastKeyRef = useRef("");
   /** Этот прогон apply наш: принимаем done/idle даже если running не успел прийти. */
   const applySeenRunningRef = useRef(false);
-  const applyRunningRef = useRef(false);
-  applyRunningRef.current = applyRunning;
   const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
@@ -2152,7 +2157,7 @@ export function AssembleMontageBoard({
     setHighlights([]);
     setFailedHighlights([]);
     setStaleVideos([]);
-    setApplyRunning(false);
+    setApplyRunningNow(false);
     setApplyProgress(null);
     setMontageRunning(false);
     setRecoverRunning(false);
@@ -2316,7 +2321,7 @@ export function AssembleMontageBoard({
     }
     if (
       pendingOpsRef.current.length > 0 &&
-      restored.length < pendingOpsRef.current.length
+      !serverQueueReplacesLocal(pendingOpsRef.current, restored, opSelectKey)
     ) {
       return;
     }
@@ -2350,7 +2355,7 @@ export function AssembleMontageBoard({
       if (projectId == null) return;
       // Во время apply очередь пишет сам apply (_finish_op) — клиентский
       // debounce с [] или устаревшим списком иначе затирает remaining.
-      if (applyRunning) return;
+      if (applyRunningRef.current) return;
       if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
       const save = () => {
         void api
@@ -2369,7 +2374,7 @@ export function AssembleMontageBoard({
       }
       queueSaveTimerRef.current = setTimeout(save, 400);
     },
-    [projectId, trims, applyRunning],
+    [projectId, trims],
   );
 
   useEffect(() => {
@@ -2661,7 +2666,7 @@ export function AssembleMontageBoard({
         setFailedHighlights([]);
         applySeenRunningRef.current = true;
         lastPatchedPathRef.current = "";
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
@@ -2670,7 +2675,7 @@ export function AssembleMontageBoard({
       if (res.already_running) {
         // Чужой/текущий job — НЕ чистим локальную очередь пользователя.
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
         toast.message("Генерация уже выполняется");
         return;
@@ -2712,7 +2717,7 @@ export function AssembleMontageBoard({
         // Фоновый job должен вернуть started/already_running. Иначе не врём «завершено».
         toast.message(res.message || "Генерация принята — ждём статус…");
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
       }
     },
@@ -2771,7 +2776,7 @@ export function AssembleMontageBoard({
     void api.getMontageApplyStatus(projectId).then((st) => {
       if (st.job?.status === "running") {
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
       }
     }).catch(() => {});
     void api.getMontageRecoverOutseeStatus(projectId).then((st) => {
@@ -2791,7 +2796,7 @@ export function AssembleMontageBoard({
         localQueueDirtyRef.current && pendingOpsRef.current.length > 0;
       const localKept = keepLocal ? [...pendingOpsRef.current] : [];
       applySeenRunningRef.current = false;
-      setApplyRunning(false);
+      setApplyRunningNow(false);
       setApplyProgress(null);
       restoreDocumentPointerEvents();
       if (submittedApplyRef.current && !keepLocal) {
@@ -2921,7 +2926,7 @@ export function AssembleMontageBoard({
       }
       if (evt.payload?.stopped) {
         setMontageRunning(false);
-        setApplyRunning(false);
+        setApplyRunningNow(false);
         setRecoverRunning(false);
         setApplyProgress(null);
         applySeenRunningRef.current = false;
@@ -2953,7 +2958,7 @@ export function AssembleMontageBoard({
         const totalOps = evt.payload.total_ops as number | undefined;
         if (status === "running") {
           applySeenRunningRef.current = true;
-          setApplyRunning(true);
+          setApplyRunningNow(true);
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             startTransition(() => {
               setApplyProgress({ done: doneOps, total: totalOps });

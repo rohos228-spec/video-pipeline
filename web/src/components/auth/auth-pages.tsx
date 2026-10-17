@@ -14,8 +14,9 @@ export function getToken(): string | null {
 }
 export function setToken(t: string | null) {
   try {
-    if (t) { localStorage.setItem(AUTH_TOKEN_KEY, t); document.cookie = `vp_session=${t}; path=/; max-age=${86400 * 7}; samesite=lax`; }
-    else { localStorage.removeItem(AUTH_TOKEN_KEY); document.cookie = "vp_session=; path=/; max-age=0"; }
+    const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; secure" : "";
+    if (t) { localStorage.setItem(AUTH_TOKEN_KEY, t); document.cookie = `vp_session=${t}; path=/; max-age=${86400 * 7}; samesite=lax${secure}`; }
+    else { localStorage.removeItem(AUTH_TOKEN_KEY); document.cookie = `vp_session=; path=/; max-age=0${secure}`; }
   } catch {}
 }
 export async function authApi<T = any>(path: string, body?: unknown, method?: string): Promise<T> {
@@ -205,9 +206,8 @@ export function RegisterPage() {
     if (Object.values(e).some(Boolean)) return;
     setLoading(true);
     try {
-      const r = await authApi<{ token: string; dev_code?: string | null; dev_note?: string | null }>("/register", { email: f.email, username: f.username, name: f.name, password: f.password, plan: plan || null });
+      const r = await authApi<{ token: string }>("/register", { email: f.email, username: f.username, name: f.name, password: f.password, plan: plan || null });
       setToken(r.token);
-      try { if (r.dev_code) sessionStorage.setItem("vp-dev-code", r.dev_code); } catch {}
       location.href = "/verify-email";
     } catch (x: any) { setErr(x.message); } finally { setLoading(false); }
   }
@@ -244,19 +244,18 @@ export function RegisterPage() {
 
 export function VerifyEmailPage() {
   const [code, setCode] = useState(""); const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false); const [done, setDone] = useState(false); const [dev, setDev] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false); const [done, setDone] = useState(false);
   const { user, loading: ul } = useAuthUser();
-  useEffect(() => { try { setDev(sessionStorage.getItem("vp-dev-code")); } catch {} }, []);
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setErr(null);
     if (!/^\d{6}$/.test(code)) { setErr("Код — 6 цифр"); return; }
     setLoading(true);
-    try { await authApi("/verify", { code }); setDone(true); try { sessionStorage.removeItem("vp-dev-code"); } catch {} setTimeout(() => (location.href = "/profile"), 1200); }
+    try { await authApi("/verify", { code }); setDone(true); setTimeout(() => (location.href = "/profile"), 1200); }
     catch (x: any) { setErr(x.message); } finally { setLoading(false); }
   }
   async function resend() {
     setErr(null); setMsg(null);
-    try { const r = await authApi<{ dev_code?: string; mail_sent: boolean }>("/verify/resend", {}); setDev(r.dev_code ?? null); setMsg(r.mail_sent ? "Новый код отправлен" : "Новый код записан в лог сервера"); }
+    try { const r = await authApi<{ mail_sent?: boolean }>("/verify/resend", {}); setMsg(r.mail_sent ? "Новый код отправлен" : "Код в интерфейс не выводится"); }
     catch (x: any) { setErr(x.message); }
   }
   return (
@@ -265,7 +264,6 @@ export function VerifyEmailPage() {
         {done ? <Alert kind="ok"><span className="flex items-center gap-2"><MailCheck className="h-5 w-5" />Email подтверждён</span></Alert> : null}
         {err ? <Alert kind="error">{err}</Alert> : null}
         {msg ? <Alert kind="ok">{msg}</Alert> : null}
-        {dev ? <Alert kind="dev">Режим разработки: почта не настроена, код в логе сервера. Код: <b className="tracking-[0.3em]">{dev}</b></Alert> : null}
         <input name="code" inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="••••••"
           className="mb-6 h-[72px] w-full rounded-[14px] border border-white/10 bg-white/[0.03] text-center text-[34px] tracking-[0.5em] text-white outline-none transition-colors focus:border-teal-400/50" />
         <Submit loading={loading} disabled={!user}>Подтвердить</Submit>

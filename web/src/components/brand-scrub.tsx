@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 /** Глобальный фильтр: бренд стороннего провайдера никогда не показывается в UI. */
 import { useEffect } from "react";
 

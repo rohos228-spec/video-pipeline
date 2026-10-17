@@ -113,6 +113,7 @@ export function ShotsReportPanel({
             <iframe
               title="Отчёт кадров"
               src={url}
+              sandbox=""
               className="block h-[calc(92vh-72px)] min-h-[70vh] w-full border-0 bg-black"
             />
           </div>

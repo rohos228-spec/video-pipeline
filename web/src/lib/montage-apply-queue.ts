@@ -32,6 +32,36 @@ export function queueAfterCoverageApply<
   );
 }
 
+/** Ключ операции: слот и инструкция различают два image_ai_change на одном кадре. */
+export function montageOpSelectKey(op: {
+  type: string;
+  frame_number: number;
+  shot?: number | string;
+  slot?: string;
+  instruction?: string;
+}): string {
+  const slot = op.slot || "";
+  const instruction = String(op.instruction || "").trim();
+  return `${op.type}:${op.frame_number}:${op.shot ?? ""}:${slot}:${instruction}`;
+}
+
+/**
+ * Короткий серверный список принимаем, только если это хвост локальной очереди
+ * (сделанные ops сняты). Чужой короткий снимок локальную очередь не затирает.
+ * Пустой серверный список — все локальные ops уже сняты.
+ */
+export function serverQueueReplacesLocal<T>(
+  local: readonly T[],
+  restored: readonly T[],
+  keyOf: (op: T) => string,
+): boolean {
+  if (restored.length >= local.length) return true;
+  const localKeys = local.map(keyOf);
+  const restoredKeys = restored.map(keyOf);
+  const suffix = localKeys.slice(localKeys.length - restoredKeys.length);
+  return restoredKeys.every((key, index) => key === suffix[index]);
+}
+
 export function queueAfterApply<T>(
   all: readonly T[],
   sentKeys: ReadonlySet<string>,

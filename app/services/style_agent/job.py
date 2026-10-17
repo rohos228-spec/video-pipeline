@@ -595,10 +595,47 @@ def _pipeline_text_override(model: dict[str, Any] | None) -> Any:
     return None
 
 
+def _resolve_style_text_override(
+    model: dict[str, Any] | None,
+    *,
+    project_id: int,
+    node_key: str | None,
+) -> tuple[Any, str | None]:
+    """52pay, если маршрут есть. Иначе vibecode — с явной пометкой, без остановки."""
+    from app.services.llm_override import NodeLlmOverride
+    from app.services.model_substitution import note_model_substitution
+
+    ov = _pipeline_text_override(model)
+    if ov is not None:
+        return ov, None
+    if not (model and model.get("kind") == "text"):
+        return None, None
+    provider = str(model.get("provider") or "vibecode")
+    built = NodeLlmOverride(
+        model_id=str(model["id"]),
+        channel=str(model.get("channel") or "stable"),
+        kind="text",
+        provider=provider,
+        label=str(model.get("label") or model["id"]),
+    )
+    if provider != "vibecode":
+        return built, None
+    requested = str(model.get("id") or "text")
+    line = note_model_substitution(
+        original_model=f"52pay:{requested}",
+        substituted_model=f"vibecode:{built.model_id}",
+        reason="нет маршрута 52pay, текстовый разбор style_agent идёт через vibecode",
+        node=node_key or "style_extract",
+        run=project_id,
+        project_id=project_id,
+    )
+    return built, line
+
+
 async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any]) -> None:
     from app.models import Project
     from app.project_db import project_db_session_scope
-    from app.services.llm_override import NodeLlmOverride, use_override
+    from app.services.llm_override import use_override
     from app.services.step_cancel import clear_stop, is_stop_requested
 
     async with project_db_session_scope(project_id) as session:
@@ -651,15 +688,13 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
         except Exception as exc:  # noqa: BLE001
             logger.debug("style_agent: progress not saved: {}", exc)
 
-    ov = _pipeline_text_override(model)
-    if ov is None and model and model.get("kind") == "text":
-        ov = NodeLlmOverride(
-            model_id=str(model["id"]),
-            channel=str(model.get("channel") or "stable"),
-            kind="text",
-            provider=str(model.get("provider") or "vibecode"),
-            label=str(model.get("label") or model["id"]),
-        )
+    ov, sub_line = _resolve_style_text_override(
+        model, project_id=project_id, node_key=node_key
+    )
+    if sub_line:
+        from app.services.model_substitution import style_job_substitution_patch
+
+        await _set_meta_retry(project_id, style_job_substitution_patch(sub_line))
     try:
         if not videos:
             raise RuntimeError("нет роликов: загрузите mp4 в ноду или подключите «Файлы»")
@@ -675,16 +710,19 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
                 should_stop=lambda: is_stop_requested(project_id),
             )
         stopped = bool(result["passport"].get("errors", {}).get("stopped"))
+        done_job: dict[str, Any] = {
+            "status": "stopped" if stopped else "done",
+            "finishedAt": _utc_now(),
+            "stage": "done",
+            "llm": budget.snapshot(),
+            "error": None,
+        }
+        if sub_line:
+            done_job["model_substitution"] = sub_line
         await _set_meta_retry(
             project_id,
             {
-                "job": {
-                    "status": "stopped" if stopped else "done",
-                    "finishedAt": _utc_now(),
-                    "stage": "done",
-                    "llm": budget.snapshot(),
-                    "error": None,
-                },
+                "job": done_job,
                 "passport": {"draftAt": _utc_now(), "style_id": result["passport"].get("style_id"), "approvedAt": None},
             },
         )
