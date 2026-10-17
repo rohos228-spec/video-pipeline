@@ -327,6 +327,87 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("реестр: paid=true даёт оговорку, список один раз", async ({ page }) => {
+    let listGets = 0;
+    page.on("request", (req) => {
+      if (req.method() === "GET" && new URL(req.url()).pathname === "/api/orchestrator/actions/metadata") listGets += 1;
+    });
+    const listed = page.waitForResponse((res) => {
+      return res.request().method() === "GET" && new URL(res.url()).pathname === "/api/orchestrator/actions/metadata";
+    });
+    await openWithToken(page, "metapaid", "meta-paid");
+    const body = (await (await listed).json()) as { registry_sha?: string; actions?: { paid?: boolean; name?: string }[] };
+    expect(body.registry_sha).toBe("provisional-r2");
+    expect(body.actions?.[0]).toMatchObject({ name: "run_node", paid: true, destructive: false });
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("платный по реестру");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-paid-boundary", "true");
+    await expect(banner).toHaveAttribute("data-destructive", "false");
+    await expect(banner).toContainText("Платный шаг остановится на границе.");
+    expect(listGets).toBe(1);
+  });
+
+  test("реестр: paid=false без оговорки", async ({ page }) => {
+    await openWithToken(page, "metaunpaid", "meta-unpaid");
+    await page.getByTestId("orch-composer").fill("чтение");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("чтение по реестру");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-paid-boundary", "false");
+    await expect(banner).toHaveAttribute("data-destructive", "false");
+    await expect(banner).toContainText("остановлены только неплатные шаги");
+    await expect(banner).not.toContainText("Платный шаг остановится на границе.");
+  });
+
+  test("реестр: неизвестное действие — платное и разрушающее", async ({ page }) => {
+    await openWithToken(page, "metaunknown", "meta-unknown");
+    await page.getByTestId("orch-composer").fill("чужое");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("неизвестное действие");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-paid-boundary", "true");
+    await expect(banner).toHaveAttribute("data-destructive", "true");
+    await expect(banner).toContainText("Платный шаг остановится на границе.");
+    await expect(page.getByTestId("orch-kill-destructive")).toBeVisible();
+  });
+
+  test("списка реестра нет: fallback на step_started.paid", async ({ page }) => {
+    const missed = page.waitForResponse((res) => {
+      return res.request().method() === "GET" && new URL(res.url()).pathname === "/api/orchestrator/actions/metadata";
+    });
+    await openWithToken(page, "fallbackpaid", "fallback-paid");
+    expect((await missed).status()).toBe(404);
+    await page.getByTestId("orch-composer").fill("платный без реестра");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("шаг из step_started");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const paid = page.getByTestId("orch-kill-status");
+    await expect(paid).toHaveAttribute("data-paid-boundary", "true");
+    await expect(paid).toHaveAttribute("data-destructive", "false");
+    await expect(paid).toContainText("Платный шаг остановится на границе.");
+
+    await openWithToken(page, "fallbackfree", "fallback-free");
+    await page.getByTestId("orch-composer").fill("бесплатный без реестра");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-task-panel")).toContainText("бесплатный шаг");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const free = page.getByTestId("orch-kill-status");
+    await expect(free).toHaveAttribute("data-paid-boundary", "false");
+    await expect(free).toHaveAttribute("data-destructive", "false");
+    await expect(free).toContainText("остановлены только неплатные шаги");
+    await expect(free).not.toContainText("Платный шаг остановится на границе.");
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");

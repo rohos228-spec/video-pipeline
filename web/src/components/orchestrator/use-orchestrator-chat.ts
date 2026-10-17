@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { loadActionRegistry, resolveKillHonesty } from "@/lib/orchestratorActionMetadata";
 import {
   consumeOrchStream,
   isAbortError,
@@ -109,7 +110,29 @@ export function useOrchestratorChat() {
       }
     };
 
-    void loop();
+    const boot = async () => {
+      let actions: Awaited<ReturnType<typeof loadActionRegistry>> = null;
+      try {
+        actions = await loadActionRegistry(cfg);
+      } catch (error) {
+        if (stopped || ac.signal.aborted) return;
+        if (error instanceof OrchApiError && error.status === 401) {
+          setAuthError(error.message);
+          setBlocked(true);
+          setConn("idle");
+          return;
+        }
+        actions = null;
+      }
+      if (stopped) return;
+      dispatch({
+        type: "registry",
+        registry: actions ? { status: "ready", actions } : { status: "missing" },
+      });
+      await loop();
+    };
+
+    void boot();
     return () => {
       stopped = true;
       ac.abort();
@@ -223,14 +246,26 @@ export function useOrchestratorChat() {
 
   const kill = useCallback(async () => {
     try {
-      const result = await postOrchKill(cfg, {
-        session_id: boot.session,
-        reason: "kill switch из чата",
-      });
+      const [result, actions] = await Promise.all([
+        postOrchKill(cfg, {
+          session_id: boot.session,
+          reason: "kill switch из чата",
+        }),
+        loadActionRegistry(cfg).catch((error: unknown) => {
+          if (error instanceof OrchApiError && error.status === 401) throw error;
+          return null;
+        }),
+      ]);
+      const steps = state.tasks.flatMap((task) => task.steps);
+      const honesty = resolveKillHonesty(
+        steps,
+        actions ? { status: "ready", actions } : { status: "missing" },
+      );
       dispatch({
         type: "kill-notice",
         detail: result.detail || "Платный шаг остановится на границе.",
-        paidBoundary: true,
+        paidBoundary: honesty.paidBoundary,
+        destructive: honesty.destructive,
       });
       setSendError("");
     } catch (error) {
@@ -238,7 +273,7 @@ export function useOrchestratorChat() {
         setSendError(error instanceof Error ? error.message : "kill switch не прошёл");
       }
     }
-  }, [boot.session, cfg, noteAuth]);
+  }, [boot.session, cfg, noteAuth, state.tasks]);
 
   return {
     boot,

@@ -19,6 +19,7 @@ import {
   type TaskStatus,
   type ValidatorResultPayload,
 } from "./orchestratorTypes";
+import { resolveKillHonesty, type ActionRegistryState } from "./orchestratorActionMetadata";
 
 const NODE_RESULT_ACTIONS = new Set([
   "get_node",
@@ -200,6 +201,8 @@ export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
   paidBoundary: boolean;
+  /** Имени нет в реестре: шаг считаем и платным, и разрушающим. */
+  destructive: boolean;
 }
 
 export interface OrchScreenState {
@@ -210,12 +213,15 @@ export interface OrchScreenState {
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
+  /** Реестр действий. loading — ещё не спрашивали. missing — список недоступен. */
+  actionRegistry: ActionRegistryState;
 }
 
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
-  | { type: "kill-notice"; detail: string; paidBoundary: boolean }
+  | { type: "kill-notice"; detail: string; paidBoundary: boolean; destructive: boolean }
+  | { type: "registry"; registry: ActionRegistryState }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
 
@@ -234,6 +240,7 @@ export function initialOrchScreen(): OrchScreenState {
     ack: null,
     classification: null,
     killNotice: null,
+    actionRegistry: { status: "loading" },
   };
 }
 
@@ -364,8 +371,13 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
   });
 }
 
+function killHonestyOf(state: OrchScreenState) {
+  const steps = state.tasks.flatMap((task) => task.steps);
+  return resolveKillHonesty(steps, state.actionRegistry);
+}
+
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
-  if (action.type === "reset") return initialOrchScreen();
+  if (action.type === "reset") return { ...initialOrchScreen(), actionRegistry: state.actionRegistry };
   if (action.type === "user-message") {
     return {
       ...state,
@@ -376,7 +388,13 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     };
   }
   if (action.type === "kill-notice") {
-    return { ...state, killNotice: { text: action.detail, paidBoundary: action.paidBoundary } };
+    return {
+      ...state,
+      killNotice: { text: action.detail, paidBoundary: action.paidBoundary, destructive: action.destructive },
+    };
+  }
+  if (action.type === "registry") {
+    return { ...state, actionRegistry: action.registry };
   }
   if (action.type === "approval-resolved") {
     return {
@@ -430,9 +448,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         killSwitch,
       };
       if (killSwitch) {
+        const honesty = killHonestyOf(next);
         next.killNotice = {
           text: "Сработал из сообщения.",
-          paidBoundary: true,
+          paidBoundary: honesty.paidBoundary,
+          destructive: honesty.destructive,
         };
       }
     }
