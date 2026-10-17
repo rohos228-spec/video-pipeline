@@ -7,6 +7,9 @@ import {
   ACTION_CONTRACT_REF,
   ACTION_CONTRACT_VERSION,
   ACTION_SCHEMA_SHA256,
+  EXAMPLE_CORE_APPROVAL,
+  EXAMPLE_PAID_APPROVAL,
+  EXAMPLE_UNKNOWN_APPROVAL,
   EXAMPLE_DELETE_OK,
   EXAMPLE_FAILED,
   EXAMPLE_NODE_CREATE,
@@ -174,4 +177,26 @@ test("сбой и мягкое удаление рисуются карточк�
     text: "Восстановить",
     action: { name: "history.rollback", change_id: "orch-appr-13-6" },
   });
+});
+
+test("ApprovalRequired без события ядра не даёт кнопки", async ({ page }) => {
+  await openWithToken(page, "act-wait");
+  await emit(page, "act-wait", "step_finished", EXAMPLE_PAID_APPROVAL);
+  const waiting = page.getByTestId("orch-action-wait");
+  await expect(waiting).toContainText("Ждёт подтверждения");
+  await expect(waiting).toContainText("платно");
+  await expect(waiting).not.toContainText("orch-appr-13-7");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-wait", "step_finished", EXAMPLE_UNKNOWN_APPROVAL);
+  const unknown = page.getByTestId("orch-action-wait").filter({ hasText: "widget.spin" });
+  await expect(unknown).toContainText("платно");
+  await expect(unknown).toContainText("деструктивно");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-wait", "approval_required", EXAMPLE_CORE_APPROVAL);
+  const core = page.getByTestId("orch-approval");
+  await expect(core).toBeVisible();
+  await expect(core).toHaveAttribute("data-change-id", "orch-appr-99-3");
+  await expect(core.getByTestId("orch-approve")).toBeVisible();
 });
