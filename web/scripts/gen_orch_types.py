@@ -6,8 +6,10 @@
 которому не доверяете.
 
 Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
-не копируется. ``--ref`` — только ``origin/*``, SHA (7–40 hex) или
-существующий тег. Голое имя ветки отклоняется. По умолчанию, если
+не копируется. ``--ref`` — только ``origin/*``, полный SHA (40 hex)
+существующего коммита или существующий тег. Короткий hex и голое имя
+ветки отклоняются: имя вроде ``deadbeef`` не считается SHA.
+По умолчанию, если
 локального файла нет, берётся SHA ``288d23111058f753fc4d70a711ee9c3d2fe27dcc``
 (#350, контракт ws3-r3.2), не имя ветки.
 Локальный ``contracts.py`` используется, только когда ``--ref`` не передан.
@@ -36,11 +38,28 @@ LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
 DEFAULT_CONTRACT_REF = "288d23111058f753fc4d70a711ee9c3d2fe27dcc"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
-_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _resolved_commit(ref: str) -> str:
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        return ""
+    return probe.stdout.strip().lower()
 
 
 def assert_safe_ref(ref: str) -> str:
-    """Разрешить только origin/*, SHA или тег. Иначе скрипт исполнил бы чужой код."""
+    """Разрешить только origin/*, полный SHA существующего коммита или тег.
+
+    Иначе скрипт исполнил бы чужой код. Короткий hex не принимается:
+    ветка с именем ``deadbeef`` не должна пройти как SHA.
+    """
     if not ref or ref.startswith("-") or ".." in ref or any(ch in ref for ch in " \t\r\n\\"):
         raise ValueError(f"ref отклонён: {ref!r}")
     if ref.startswith("origin/"):
@@ -49,7 +68,13 @@ def assert_safe_ref(ref: str) -> str:
             return ref
         raise ValueError(f"ref отклонён: {ref!r}")
     if _SHA_RE.fullmatch(ref):
-        return ref
+        if _resolved_commit(ref) == ref.lower():
+            return ref.lower()
+        raise ValueError(
+            f"SHA не найден в этом клоне: {ref}. "
+            "Нужен полный SHA (40 hex) существующего коммита. "
+            "Сначала git fetch origin <ветка>."
+        )
     probe = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{ref}"],
         cwd=ROOT,
@@ -60,8 +85,8 @@ def assert_safe_ref(ref: str) -> str:
     if probe.returncode == 0 and probe.stdout.strip():
         return ref
     raise ValueError(
-        "ref должен быть origin/*, SHA (7–40 hex) или существующим тегом. "
-        "Скрипт исполняет contracts.py из этого ref."
+        "ref должен быть origin/*, полным SHA (40 hex) существующего коммита "
+        "или существующим тегом. Скрипт исполняет contracts.py из этого ref."
     )
 
 # Имена констант, которые уже импортирует UI.
@@ -367,11 +392,19 @@ def _load_module(path: Path) -> Any:
 
 def _schema_from_git(ref: str) -> tuple[dict[str, Any], str]:
     ref = assert_safe_ref(ref)
-    raw = subprocess.check_output(
-        ["git", "show", f"{ref}:{CONTRACT_GIT_PATH}"],
-        cwd=ROOT,
-        text=True,
-    )
+    try:
+        raw = subprocess.check_output(
+            ["git", "show", f"{ref}:{CONTRACT_GIT_PATH}"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"git show {ref}:{CONTRACT_GIT_PATH} не удался. "
+            "Коммита нет в клоне или в нём нет contracts.py. "
+            "Сначала git fetch origin <ветка с этим SHA>."
+        ) from exc
     with tempfile.NamedTemporaryFile("w", suffix="_contracts.py", delete=False, encoding="utf-8") as tmp:
         tmp.write(raw)
         tmp_path = Path(tmp.name)
@@ -458,7 +491,11 @@ def _self_test() -> int:
         print("self-test failed: unstable render", file=sys.stderr)
         return 1
 
-    schema, label = load_schema()
+    try:
+        schema, label = load_schema()
+    except (ValueError, RuntimeError) as exc:
+        print("self-test failed:", exc, file=sys.stderr)
+        return 1
     live = render_schema(schema, label)
     live_need = [
         '"message"',
@@ -507,12 +544,24 @@ def _self_test() -> int:
     if forbidden:
         print("self-test failed, unexpected manual NodeDef overlay:", ", ".join(forbidden), file=sys.stderr)
         return 1
+    for bad_ref, label in (
+        ("main", "bare branch name"),
+        ("deadbeef", "short hex name"),
+        ("0123456789abcdef0123456789abcdef01234567", "unknown full SHA"),
+    ):
+        try:
+            assert_safe_ref(bad_ref)
+        except ValueError:
+            pass
+        else:
+            print(f"self-test failed: {label} was accepted", file=sys.stderr)
+            return 1
     try:
-        assert_safe_ref("main")
-    except ValueError:
+        _schema_from_git("0123456789abcdef0123456789abcdef01234567")
+    except (ValueError, RuntimeError):
         pass
     else:
-        print("self-test failed: bare branch name was accepted", file=sys.stderr)
+        print("self-test failed: missing commit did not raise", file=sys.stderr)
         return 1
     if LOCAL_CONTRACTS.is_file():
         print("self-test note: local contracts.py exists, git show path was not required")
@@ -527,12 +576,16 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         default=None,
-        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или SHA 288d23111058f753fc4d70a711ee9c3d2fe27dcc",
+        help="git ref: origin/*, полный SHA (40 hex) или тег. Без флага — локальный файл или SHA 288d23111058f753fc4d70a711ee9c3d2fe27dcc",
     )
     args = parser.parse_args()
     if args.self_test:
         return _self_test()
-    schema, label = load_schema(args.ref)
+    try:
+        schema, label = load_schema(args.ref)
+    except (ValueError, RuntimeError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
     rendered = render_schema(schema, label)
     if args.stdout:
         sys.stdout.write(rendered)

@@ -46,6 +46,7 @@ async function expectClean(page: Page, hits: string[]) {
   await expect(preview).not.toHaveAttribute("srcdoc", /onload/i);
   await expect(preview).not.toHaveAttribute("srcdoc", /javascript:/i);
   await expect(preview).not.toHaveAttribute("srcdoc", /srcdoc=/i);
+  await page.waitForLoadState("networkidle", { timeout: 2000 }).catch(() => undefined);
   expect(hits).toEqual([]);
   const id = await page.getByTestId("orch-report-title").getAttribute("data-report-id");
   const res = await page.request.get(`${MOCK}/api/orchestrator/reports/${id}/html`, {

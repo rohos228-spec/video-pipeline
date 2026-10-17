@@ -826,8 +826,13 @@ function handleKill(session) {
       task_status: "cancelled",
       detail: "новые действия запрещены",
     });
-    const paidStarted = session.events.some((event) => event.payload && event.payload.step_id === "s-paid");
-    if (paidStarted) {
+    const paidOpen = session.events.some((event) => {
+      if (event.type !== "step_started" || !event.payload || event.payload.step_id !== "s-paid") return false;
+      return !session.events.some(
+        (done) => done.type === "step_finished" && done.payload && done.payload.step_id === "s-paid",
+      );
+    });
+    if (paidOpen) {
       emit(session, "step_finished", taskId, {
         step_id: "s-paid",
         title: "run_node images",
