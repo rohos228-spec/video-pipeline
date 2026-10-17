@@ -20,8 +20,18 @@ class _PreferWorld:
 
 def test_camera_name_is_one_family_and_a_shared_word_is_not() -> None:
     assert explicit_families("где стоит камера") == {"camera"}
+    assert explicit_families("план кадра") == set()
     assert "shots" not in explicit_families("план кадра")
     assert "frames" not in explicit_families("план кадра")
+
+
+def test_assemble_and_world_descriptions_name_one_family() -> None:
+    """Описание из реестра нод, не из текста запроса. Общее слово по-прежнему ничьё."""
+    assert explicit_families("где правила про локации") == {"world"}
+    assert explicit_families("финальный сборщик") == {"assemble"}
+    assert "world" not in explicit_families("обычный вариант хроно")
+    assert explicit_families("план кадра") == set()
+    assert explicit_families("ячейка сцены") == set()
 
 
 def test_named_family_rises_only_when_the_boost_is_on(tmp_path: Path) -> None:

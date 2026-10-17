@@ -27,24 +27,52 @@ def _family_by_local_key() -> dict[str, str]:
     return family
 
 
+# Слова описания только у семейств, где hit@5 проседает. Остальные семьи
+# по-прежнему узнаются по local_key и подписи, чтобы «план» не стал камерой.
+_DESCRIPTION_FAMILIES = frozenset({"assemble", "world"})
+
+
 @lru_cache(maxsize=1)
 def _token_family() -> dict[str, str]:
-    """Лемма имени ноды → семейство, только если семейство одно."""
+    """Лемма имени ноды → семейство, только если семейство одно.
+
+    У assemble и world к имени добавлено описание из реестра (не текст запроса):
+    «локация» и «сборщик» есть в описании и больше ни у кого.
+    """
     from app.services.node_groups import NODE_GROUPS
 
-    owners: dict[str, set[str]] = {}
+    label_owners: dict[str, set[str]] = {}
+    desc_owners: dict[str, set[str]] = {}
     families = _family_by_local_key()
     for group in NODE_GROUPS.values():
         for spec in group.nodes:
             family = families.get(spec.local_key, spec.local_key)
-            text = " ".join((spec.local_key or "", spec.label or ""))
-            for token in lexical_tokens(text):
-                if token.isascii() and len(token) < 5:
-                    continue
-                if not token.isascii() and len(token) < 3:
-                    continue
-                owners.setdefault(_lemma(token) if not token.isascii() else token, set()).add(family)
+            _collect_tokens(label_owners, f"{spec.local_key or ''} {spec.label or ''}", family, min_len=0)
+            # Длинные слова описания. Владелец считается по всем семьям, чтобы
+            # «вариант» из чужого описания не стал меткой world.
+            _collect_tokens(desc_owners, spec.description or "", family, min_len=7)
+    owners = {token: set(keys) for token, keys in label_owners.items()}
+    for token, keys in desc_owners.items():
+        if len(keys) != 1 or not keys <= _DESCRIPTION_FAMILIES:
+            continue
+        owners.setdefault(token, set()).update(keys)
     return {token: next(iter(keys)) for token, keys in owners.items() if len(keys) == 1}
+
+
+def _collect_tokens(owners: dict[str, set[str]], text: str, family: str, *, min_len: int) -> None:
+    for token in lexical_tokens(text):
+        key = _norm_token(token)
+        if not key or len(key) < min_len:
+            continue
+        owners.setdefault(key, set()).add(family)
+
+
+def _norm_token(token: str) -> str:
+    if token.isascii() and len(token) < 5:
+        return ""
+    if not token.isascii() and len(token) < 3:
+        return ""
+    return token if token.isascii() else _lemma(token)
 
 
 def explicit_families(query: str) -> set[str]:
