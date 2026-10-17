@@ -794,10 +794,14 @@ def _shot_vo_len_reason(
     cell_vo: str,
     uid: str,
 ) -> str | None:
+    from app.services.frame_tombstones import shot_is_active
+
     cell_n = _vo_visible_len(cell_vo)
     if cell_n <= SHOT_VO_MIN_CHARS and len(shots) <= 1:
         return None
     for shot in shots:
+        if not shot_is_active(shot):
+            continue
         chunk = _shot_vo_chunk(shot)
         if not chunk:
             continue  # пустая перебивка — норма
@@ -1023,7 +1027,12 @@ def repair_action_ops(ops: list[Any]) -> int:
 
 
 def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Пустой закадр перебивки — норма. Хвост ячейки кладём на покрывающий кадр."""
+    """Пустой закадр перебивки — норма. Хвост ячейки кладём на живые кадры.
+
+    Неактивный шот текст не получает: его поля остаются как были.
+    Живых шотов нет — закадр остаётся на ячейке, список не трогаем.
+    """
+    from app.services.frame_tombstones import shot_is_active
     from app.services.scene_shot_grammar import _assign_vo_by_steps
 
     by_uid = _frames_by_uuid(frames)
@@ -1039,17 +1048,24 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         cell_vo = _frame_vo(by_uid.get(uid))
-        dict_shots = [s for s in shots if isinstance(s, dict)]
-        glued = " ".join(_shot_vo_chunk(s) for s in dict_shots if _shot_vo_chunk(s))
         cell = " ".join((cell_vo or "").split())
         if not cell:
             continue
+        active = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+        if not active:
+            logger.warning(
+                "WARN repair_shot_vo_ops: нет живых шотов (uuid {}) — "
+                "закадр ячейки остаётся на ячейке, шоты не меняются",
+                uid[:8] or "?",
+            )
+            continue
+        glued = " ".join(_shot_vo_chunk(s) for s in active if _shot_vo_chunk(s))
         if glued and " ".join(glued.split()) == cell:
             continue
         pieces = _assign_vo_by_steps(
-            cell_vo, [str(s.get("действие") or "") for s in dict_shots]
+            cell_vo, [str(s.get("действие") or "") for s in active]
         )
-        for shot, piece in zip(dict_shots, pieces, strict=False):
+        for shot, piece in zip(active, pieces, strict=False):
             if _shot_vo_chunk(shot) != (piece or "").strip():
                 shot["закадр"] = piece
                 fixed += 1
