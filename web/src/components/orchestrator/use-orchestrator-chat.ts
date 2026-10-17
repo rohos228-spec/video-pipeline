@@ -10,6 +10,7 @@ import {
   postOrchKill,
   postOrchActionMessage,
   postOrchMessage,
+  getOrchPartialChanges,
   postOrchResume,
   readOrchProjectId,
   postOrchReject,
@@ -353,6 +354,35 @@ export function useOrchestratorChat() {
     setResumeError("");
   }, [resumeWatch]);
 
+  const [partialIds, setPartialIds] = useState<string[] | null>(null);
+  const [partialError, setPartialError] = useState("");
+  const partialWrite = state.partialWrite;
+  useEffect(() => {
+    if (!partialWrite) return;
+    const taskNum = partialWrite.taskId == null ? NaN : Number(partialWrite.taskId);
+    if (!Number.isInteger(taskNum)) {
+      setPartialIds(null);
+      setPartialError("В partial_write нет числового task_id");
+      return;
+    }
+    const ac = new AbortController();
+    setPartialError("");
+    setPartialIds(null);
+    void getOrchPartialChanges(cfg, taskNum, ac.signal)
+      .then((body) => {
+        const ids = Array.isArray(body.change_ids) ? body.change_ids.filter((id) => typeof id === "string") : [];
+        setPartialIds(ids);
+      })
+      .catch((error: unknown) => {
+        if (isAbortError(error)) return;
+        setPartialIds(null);
+        if (!noteAuth(error)) {
+          setPartialError(error instanceof Error ? error.message : "partial-changes не прочитан");
+        }
+      });
+    return () => ac.abort();
+  }, [cfg, noteAuth, partialWrite]);
+
   const resume = useCallback(async () => {
     if (resumeLock.current) return;
     resumeLock.current = true;
@@ -448,5 +478,8 @@ export function useOrchestratorChat() {
     resumePending,
     resumeLocked,
     resumeError,
+    partialWrite,
+    partialIds,
+    partialError,
   };
 }

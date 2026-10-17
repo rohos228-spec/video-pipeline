@@ -90,3 +90,32 @@ test("Продолжить шлёт POST resume и после kill в planning �
   expect(continued).toBe(1);
   expect(body ?? "").toBe("");
 });
+
+test("partial_write показывает WARN и список GET partial-changes без отката", async ({ page }) => {
+  const session = "partial-1";
+  await openWithToken(page, session);
+  const seeded = await page.request.post(`${MOCK}/api/orchestrator/test/partial-changes`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: session, task_id: 1, change_ids: ["chg-partial-a", "chg-partial-b"] },
+  });
+  expect(seeded.ok()).toBeTruthy();
+
+  await emit(page, session, "partial_write", {
+    level: "WARN",
+    change_ids: ["only-in-event"],
+    position: 2,
+    task_id: 1,
+  });
+
+  const banner = page.getByTestId("orch-partial");
+  await expect(banner).toBeVisible();
+  await expect(page.getByTestId("orch-partial-icon")).toBeVisible();
+  await expect(page.getByTestId("orch-partial-level")).toHaveText("WARN partial_write");
+  await expect(page.getByTestId("orch-partial-honest")).toContainText("Откат не выполняется");
+  await expect(banner.getByRole("button")).toHaveCount(0);
+  const items = page.getByTestId("orch-partial-change");
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toHaveText("chg-partial-a");
+  await expect(items.nth(1)).toHaveText("chg-partial-b");
+  await expect(banner).not.toContainText("only-in-event");
+});

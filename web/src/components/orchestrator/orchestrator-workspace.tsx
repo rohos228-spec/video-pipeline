@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Bot, KeyRound, OctagonX, Send } from "lucide-react";
+import { Bot, KeyRound, OctagonX, Send, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -229,6 +229,35 @@ export function OrchestratorWorkspace() {
             >
               Повторить
             </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!chat.needsToken && chat.partialWrite ? (
+        <div
+          data-testid="orch-partial"
+          className="shrink-0 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs text-warning"
+        >
+          <div className="flex items-center gap-2">
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" data-testid="orch-partial-icon" />
+            <span data-testid="orch-partial-level">
+              {chat.partialWrite.level} partial_write
+            </span>
+          </div>
+          <p data-testid="orch-partial-honest" className="mt-1 text-[11px] leading-relaxed">
+            Откат не выполняется. Ядро только отдаёт список change_id — это вход для будущего отката, не сам откат.
+          </p>
+          <ul data-testid="orch-partial-changes" className="mt-1 space-y-0.5 font-mono text-[11px]">
+            {(chat.partialIds ?? []).map((id) => (
+              <li key={id} data-testid="orch-partial-change">
+                {id}
+              </li>
+            ))}
+          </ul>
+          {chat.partialError ? (
+            <p data-testid="orch-partial-error" className="mt-1 text-destructive">
+              {chat.partialError}
+            </p>
           ) : null}
         </div>
       ) : null}

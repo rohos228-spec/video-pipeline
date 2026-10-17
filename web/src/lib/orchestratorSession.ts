@@ -201,6 +201,14 @@ export interface ClassificationView {
 
 export type KillPhase = "stopping" | "stopped" | "error" | "unconfirmed";
 
+/** Событие `partial_write`. Список на экране берётся из GET, не из этого payload. */
+export interface PartialWriteView {
+  seq: number;
+  taskId: string | null;
+  level: string;
+  position: number | null;
+}
+
 export interface KillNoticeView {
   text: string;
   /** Платный шаг останавливается на границе. UI не ищет эту фразу в тексте. */
@@ -221,6 +229,7 @@ export interface OrchScreenState {
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
+  partialWrite: PartialWriteView | null;
 }
 
 export type OrchScreenAction =
@@ -254,6 +263,7 @@ export function initialOrchScreen(): OrchScreenState {
     ack: null,
     classification: null,
     killNotice: null,
+    partialWrite: null,
   };
 }
 
@@ -624,6 +634,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "kill_switch") {
     noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
+    return next;
+  }
+
+  if (event.type === "partial_write") {
+    const position = payload.position;
+    next.partialWrite = {
+      seq: event.seq,
+      taskId: taskId ?? taskKey(payload.task_id),
+      level: str(payload.level) || "WARN",
+      position: typeof position === "number" && Number.isFinite(position) ? position : null,
+    };
     return next;
   }
 

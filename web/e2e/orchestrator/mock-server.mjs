@@ -44,6 +44,7 @@ function sessionOf(id) {
       killed: false,
       approvalWait: null,
       reconnectDropped: false,
+      partialByTask: new Map(),
     });
   }
   return sessions.get(id);
@@ -1125,6 +1126,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/partial-changes") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    const taskId = Number(body.task_id);
+    const ids = Array.isArray(body.change_ids) ? body.change_ids.map((id) => String(id)) : [];
+    if (!session.partialByTask) session.partialByTask = new Map();
+    if (Number.isInteger(taskId)) session.partialByTask.set(taskId, ids);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/orchestrator/test/emit") {
     const body = await readBody(req);
     const session = sessionOf(String(body.session_id || "studio"));
@@ -1144,6 +1156,23 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "stream") {
     handleStream(req, res, decodeURIComponent(parts[3]));
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "partial-changes") {
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const taskId = Number(url.searchParams.get("task_id"));
+    const known = session.partialByTask instanceof Map ? session.partialByTask.get(taskId) : undefined;
+    if (!Number.isInteger(taskId) || known == null) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      session: session.id,
+      task_id: taskId,
+      change_ids: known,
+    });
     return;
   }
 

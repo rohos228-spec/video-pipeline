@@ -265,6 +265,27 @@ export interface OrchResumeResult {
  * 404 `not found` — нет задачи или чекпоинта. 409 `invalid transition` — живой прогон
  * или переход, которого нет в FSM (в том числе `cancelled` → `executing`).
  */
+/** Ответ GET /api/orchestrator/chat/{session}/partial-changes?task_id=. Откат не делается. */
+export interface OrchPartialChanges {
+  ok: boolean;
+  session: string;
+  task_id: number;
+  change_ids: string[];
+}
+
+export function getOrchPartialChanges(
+  cfg: OrchClientConfig,
+  taskId: number,
+  signal?: AbortSignal,
+): Promise<OrchPartialChanges> {
+  const query = new URLSearchParams({ task_id: String(taskId) });
+  return getJson(
+    cfg,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/partial-changes?${query.toString()}`,
+    signal,
+  );
+}
+
 export async function postOrchResume(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchResumeResult> {
   assertBearerTarget(cfg.apiBase);
   const res = await fetch(
