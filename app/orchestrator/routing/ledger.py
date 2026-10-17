@@ -1,8 +1,10 @@
 """In-memory spend ledger внутренних ходов (D4).
 
-Суб-бюджет $10 на ``run_id`` (scope=internal). Исчерпание не бросает исключение:
-роутер ставит ``task_status=waiting_approval`` и ``ApprovalEvent.reason=budget_exhausted``.
-Scope ``pipeline`` в лимит $10 не входит.
+Суб-бюджет $10 на ``run_id`` (scope=internal) и $40 на scope=pipeline.
+Исчерпание не бросает исключение: роутер ставит
+``task_status=waiting_approval`` и ``ApprovalEvent.reason=budget_exhausted``.
+Pipeline не съедает лимит $10, но свой лимит у него есть. Неизвестный
+scope — ``ValueError``.
 
 Память процесса, под ``RLock``. Таблицы ``orch_llm_calls`` на этой ветке нет:
 её пишет WS3. После рестарта WS3 гидрирует сумму через ``hydrate``.
@@ -34,8 +36,13 @@ class ChargeResult:
 
 
 class SpendLedger:
-    def __init__(self, internal_budget_usd: float = 10.0) -> None:
+    def __init__(
+        self,
+        internal_budget_usd: float = 10.0,
+        pipeline_budget_usd: float = 40.0,
+    ) -> None:
         self.internal_budget_usd = float(internal_budget_usd)
+        self.pipeline_budget_usd = float(pipeline_budget_usd)
         self._internal: dict[str, float] = {}
         self._pipeline: dict[str, float] = {}
         self._lock = threading.RLock()
@@ -97,6 +104,14 @@ class SpendLedger:
             spent = self._internal.get(key, 0.0)
             return spent >= self.internal_budget_usd
 
+    def pipeline_exhausted(self, run_id: str | None) -> bool:
+        key = self._named_run(run_id)
+        if key is None:
+            return False
+        with self._lock:
+            spent = self._pipeline.get(key, 0.0)
+            return spent >= self.pipeline_budget_usd
+
     def hydrate(
         self,
         run_id: str | None,
@@ -145,6 +160,8 @@ class SpendLedger:
         *,
         scope: str = "internal",
     ) -> ChargeResult:
+        if scope not in {"internal", "pipeline"}:
+            raise ValueError("budget_scope must be internal|pipeline")
         key = self._named_run(run_id)
         if key is None:
             if scope == "internal":
@@ -154,14 +171,12 @@ class SpendLedger:
         with self._lock:
             if scope == "pipeline":
                 self._pipeline[key] = self._pipeline.get(key, 0.0) + amount
-                return ChargeResult(
-                    spent_usd=self._pipeline[key],
-                    budget_usd=None,
-                    over_budget=False,
-                )
-            self._internal[key] = self._internal.get(key, 0.0) + amount
-            spent = self._internal[key]
-            limit = self.internal_budget_usd
+                spent = self._pipeline[key]
+                limit = self.pipeline_budget_usd
+            else:
+                self._internal[key] = self._internal.get(key, 0.0) + amount
+                spent = self._internal[key]
+                limit = self.internal_budget_usd
         return ChargeResult(
             spent_usd=spent,
             budget_usd=limit,

@@ -93,7 +93,10 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    `"_anonymous"` нет — иначе все ходы без id делили бы один лимит $10
    и после исчерпания блокировались бы навсегда. `spent(None)` для #351
    возвращает `0.0` и ничего не блокирует. `budget_scope=pipeline` в
-   счётчик $10 не входит и тоже требует `run_id`.
+   счётчик $10 не входит, тоже требует `run_id` и ограничен своим
+   потолком `pipeline_sub_budget_usd` (по умолчанию $40). Другое
+   значение `budget_scope` — `ValueError("budget_scope must be
+   internal|pipeline")` до вызова и до записи в леджер.
 2. Ход, после которого `spent >= 10`, всё равно возвращает текст модели.
    На том же объекте `LLMResponse`:
    - `task_status == "waiting_approval"` (`TaskStatus.waiting_approval`);
@@ -123,8 +126,16 @@ interrupt с `kill_switch=false`. Классификатор для аварий
 | `change_id` | None |
 | `payload` | `spent_usd`, `budget_usd`, `run_id` |
 
-`budget_scope=pipeline` в суб-бюджет $10 не входит. Enum статуса вызова
-остаётся `ok|timeout|error|fixture_miss`.
+`budget_scope=pipeline` в суб-бюджет $10 не входит. У него свой потолок
+$40 (`pipeline_budget_usd` / `pipeline_sub_budget_usd`). Сигнал тот же:
+ход, после которого pipeline-расход достигает потолка, возвращает текст
+модели, `task_status=waiting_approval` и `approval.reason=budget_exhausted`.
+В `payload.budget_usd` лежит потолок pipeline, не $10. Следующий
+pipeline-вызов того же `run_id` транспорт не трогает, в том числе
+`stream=True`. Internal на том же прогоне от pipeline-расхода не
+блокируется. `totals()["budget_exhausted"]` по-прежнему только про
+internal (`internal_spent >= $10`). Enum статуса вызова остаётся
+`ok|timeout|error|fixture_miss`.
 
 ## Чтение расхода для WS1
 

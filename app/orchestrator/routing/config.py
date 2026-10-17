@@ -57,6 +57,7 @@ class RouteConfig:
     stagger_min_s: float
     stagger_max_s: float
     internal_budget_usd: float
+    pipeline_budget_usd: float
     classifier_threshold: float
     classifier_temperature: float
     classifier_max_tokens: int
@@ -160,6 +161,7 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
         stagger_min_s=float(stagger.get("min", 0)),
         stagger_max_s=float(stagger.get("max", 0)),
         internal_budget_usd=float(spend.get("internal_sub_budget_usd", 10)),
+        pipeline_budget_usd=float(spend.get("pipeline_sub_budget_usd", 40)),
         classifier_threshold=float(classifier.get("confidence_threshold", 0.8)),
         classifier_temperature=float(classifier.get("temperature", 0)),
         classifier_max_tokens=int(classifier.get("max_tokens", 120)),
