@@ -18,11 +18,13 @@ from typing import Any
 from . import no_deletions, plan_sanity, shot_merge, spend_guard, wide_before_dialogue
 from .result import (
     VALIDATOR_CONTEXT_DRY_RUN,
+    budget_exhausted_fallback,
     dry_run_key,
     is_dry_run,
     make_result,
     reset_contract_cache,
     using_contracts,
+    validator_budget_exhausted,
 )
 
 Checker = Callable[[int, dict[str, Any]], Any]
@@ -56,7 +58,7 @@ def vo_length_available() -> bool:
 
 
 def run(name: str, project_id: int, context: dict[str, Any] | None = None) -> Any:
-    """Точка входа для WS3 и действия ``run_validators``."""
+    """Синхронный ``ValidatorRunner.run`` (#350 ``406a0cfb``)."""
 
     payload = dict(context or {})
     payload.setdefault("project_id", project_id)
@@ -169,6 +171,7 @@ def _dump(result: Any) -> dict[str, Any]:
 __all__ = [
     "VALIDATOR_CONTEXT_DRY_RUN",
     "VO_LENGTH",
+    "budget_exhausted_fallback",
     "dry_run_key",
     "is_dry_run",
     "make_result",
@@ -176,5 +179,6 @@ __all__ = [
     "reset_contract_cache",
     "run",
     "using_contracts",
+    "validator_budget_exhausted",
     "vo_length_available",
 ]

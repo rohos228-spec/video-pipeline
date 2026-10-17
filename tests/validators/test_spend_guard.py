@@ -8,6 +8,10 @@ import types
 import pytest
 
 from app.orchestrator.validators import VALIDATOR_CONTEXT_DRY_RUN, run
+from app.orchestrator.validators.result import (
+    budget_exhausted_fallback,
+    validator_budget_exhausted,
+)
 from app.orchestrator.validators.spend_guard import get_spend_reader, set_spend_reader
 
 
@@ -38,12 +42,25 @@ class _Reader:
         self.totals["internal_spent_usd"] += amount
 
 
-def test_internal_budget_exhausted_is_not_a_hard_block() -> None:
-    result = run("spend_guard", 3, {"spend": _totals(internal_spent_usd=10.0), "run_id": "run-1"})
-    assert result.passed is False
-    assert result.blocking is False
-    assert result.details["reason"] == "budget_exhausted"
-    assert result.details["violations"][0]["cap_usd"] == 10.0
+def test_budget_exhausted_blocks_with_reason() -> None:
+    numeric = run("spend_guard", 3, {"spend": _totals(internal_spent_usd=10.0), "run_id": "run-1"})
+    assert numeric.passed is False
+    assert numeric.blocking is True
+    assert numeric.details["reason"] == "budget_exhausted"
+    assert numeric.details["violations"][0]["cap_usd"] == 10.0
+    signaled = run(
+        "spend_guard",
+        3,
+        {
+            "response": {
+                "task_status": "waiting_approval",
+                "approval": {"reason": "budget_exhausted"},
+            }
+        },
+    )
+    assert signaled.passed is False
+    assert signaled.blocking is True
+    assert signaled.details["reason"] == "budget_exhausted"
 
 
 def test_forecast_exhausts_internal_sub_budget() -> None:
@@ -52,8 +69,9 @@ def test_forecast_exhausts_internal_sub_budget() -> None:
         3,
         {"spend": _totals(internal_spent_usd=9.0), "forecast_usd": {"internal": 1.0}},
     )
+    assert result.passed is False
     assert result.details["reason"] == "budget_exhausted"
-    assert result.blocking is False
+    assert result.blocking is True
 
 
 def test_hard_caps_block() -> None:
@@ -76,6 +94,8 @@ def test_exact_hard_cap_still_passes_and_internal_does_not() -> None:
     )
     assert ok.passed is True
     exhausted = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10)})
+    assert exhausted.passed is False
+    assert exhausted.blocking is True
     assert exhausted.details["reason"] == "budget_exhausted"
 
 
@@ -193,14 +213,15 @@ def test_ledger_reports_spent_and_remaining_without_charging() -> None:
     assert internal["remaining_usd"] == 6.0
     assert internal["budget_usd"] == 10.0
     assert internal["source"] == "spend_ledger"
+    assert result.details["pipeline_scope_spent_usd"] is None
     assert "daily_spent_usd" not in result.details["totals"]
 
 
-def test_ledger_internal_exhaustion_stays_non_blocking() -> None:
+def test_ledger_internal_exhaustion_blocks() -> None:
     ledger = _Ledger(10.0)
     result = run("spend_guard", 3, {"ledger": ledger, "run_id": "run-9"})
     assert result.passed is False
-    assert result.blocking is False
+    assert result.blocking is True
     assert result.details["reason"] == "budget_exhausted"
     assert result.details["internal"]["remaining_usd"] == 0.0
     assert ledger.charge_calls == 0
@@ -309,10 +330,140 @@ def test_unreadable_sources_are_ignored() -> None:
 
     numeric = run("spend_guard", 1, {"ledger": NoArg()})
     assert numeric.details["reason"] == "budget_exhausted"
-    assert numeric.blocking is False
+    assert numeric.blocking is True
 
     class BadReader:
         def read_totals(self, *, project_id: int, run_id: str | None = None) -> str:
             return "нет"
 
     assert run("spend_guard", 1, {"spend_reader": BadReader()}).details["reason"] == "no_spend_snapshot"
+
+
+def test_private_pipeline_field_is_not_read() -> None:
+    class Hidden:
+        internal_budget_usd = 10.0
+
+        @property
+        def _pipeline(self) -> dict[str, float]:
+            raise AssertionError("приватное поле SpendLedger._pipeline")
+
+        def spent(self, run_id: str | None) -> float:
+            return 1.0
+
+    result = run("spend_guard", 1, {"spend_ledger": Hidden(), "run_id": "r"})
+    assert result.passed is True
+    assert result.details["pipeline_scope_spent_usd"] is None
+
+
+def test_optional_pipeline_spent_uses_actions_cap() -> None:
+    class Ledger:
+        internal_budget_usd = 10.0
+
+        def spent(self, run_id: str | None) -> float:
+            return 0.0
+
+        def pipeline_spent(self, run_id: str | None) -> float:
+            assert run_id == "r"
+            return 40.01
+
+    result = run("spend_guard", 1, {"ledger": Ledger(), "run_id": "r"})
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details["reason"] == "actions_sub_budget"
+    assert result.details["pipeline_scope_spent_usd"] == 40.01
+    assert result.details["totals"]["actions_spent_usd"] == 40.01
+
+
+def test_ws2_actions_stay_when_pipeline_scope_is_also_present() -> None:
+    class Reader:
+        def read_totals(self, *, project_id: int, run_id: str | None = None) -> dict[str, float]:
+            return _totals(actions_spent_usd=1.0)
+
+        def read_pipeline_spent(self, *, project_id: int, run_id: str | None = None) -> float:
+            return 50.0
+
+    result = run("spend_guard", 1, {"spend_reader": Reader(), "run_id": "r"})
+    assert result.details["totals"]["actions_spent_usd"] == 1.0
+    assert result.details["pipeline_scope_spent_usd"] == 50.0
+    assert result.blocking is True
+    assert result.details["reason"] == "actions_sub_budget"
+    assert any(item["source"] == "pipeline_scope" for item in result.details["violations"])
+
+
+def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Форма #350@406a0cfb: blocking и details.reason. Contracts в main ещё нет."""
+
+    numeric = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10.0), "run_id": "r"})
+    assert numeric.blocking is True
+    assert numeric.details["reason"] == "budget_exhausted"
+    assert budget_exhausted_fallback(numeric) is True
+    assert validator_budget_exhausted(numeric) is True
+
+    signaled = run(
+        "spend_guard",
+        1,
+        {
+            "response": {
+                "task_status": "waiting_approval",
+                "approval": {"reason": "budget_exhausted", "payload": {"spent_usd": 10}},
+            }
+        },
+    )
+    assert validator_budget_exhausted(signaled) is True
+
+    hard = run("spend_guard", 1, {"spend": _totals(daily_spent_usd=200.01)})
+    assert hard.blocking is True
+    assert hard.details["reason"] != "budget_exhausted"
+    assert validator_budget_exhausted(hard) is False
+
+    class ObjectDetails:
+        reason = "budget_exhausted"
+
+    class ObjectResult:
+        blocking = True
+        details = ObjectDetails()
+
+    assert budget_exhausted_fallback(ObjectResult()) is True
+    quiet = ObjectResult()
+    quiet.blocking = False
+    assert budget_exhausted_fallback(quiet) is False
+
+    module = types.ModuleType("app.orchestrator.contracts")
+    seen: list[str] = []
+
+    def remote(result: object) -> bool:
+        seen.append(getattr(result, "name", ""))
+        return False
+
+    module.validator_budget_exhausted = remote
+    monkeypatch.setitem(sys.modules, "app.orchestrator.contracts", module)
+    assert validator_budget_exhausted(numeric) is False
+    assert seen == ["spend_guard"]
+    assert budget_exhausted_fallback(numeric) is True
+
+
+def test_pipeline_reader_without_arguments() -> None:
+    class Ledger:
+        internal_budget_usd = 10.0
+
+        def spent(self, run_id: str | None) -> float:
+            return 0.0
+
+        def pipeline_spent(self) -> float:
+            return 3.0
+
+    result = run("spend_guard", 1, {"ledger": Ledger(), "run_id": "r"})
+    assert result.passed is True
+    assert result.details["pipeline_scope_spent_usd"] == 3.0
+
+
+def test_context_pipeline_reader_without_snapshot() -> None:
+    def read_pipeline_spent(*, project_id: int, run_id: str | None = None) -> float:
+        assert project_id == 2
+        assert run_id == "z"
+        return 10.0
+
+    result = run("spend_guard", 2, {"read_pipeline_spent": read_pipeline_spent, "run_id": "z"})
+    assert result.passed is True
+    assert result.details["totals"]["actions_spent_usd"] == 10.0
+    assert result.details["pipeline_scope_spent_usd"] == 10.0

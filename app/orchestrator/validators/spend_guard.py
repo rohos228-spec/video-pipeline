@@ -5,26 +5,31 @@
 - ``SpendLedger`` роутера (#345, ``a8450918``): ``spent(run_id)`` и
   ``internal_budget_usd``. Остаток = бюджет − потраченное. Списание
   (``charge``) не вызывается. В счётчик $10 попадают только ходы с
-  ``budget_scope=internal``; scope ``pipeline`` у ledger без публичного
-  чтения и здесь не учитывается. Контракт ответа — ``routing/CONTRACTS.md``.
+  ``budget_scope=internal``. Pipeline-scope лежит в ``SpendLedger._pipeline``;
+  публичный геттер сделает WS5. До этого приватное поле не читается.
+  Необязательное чтение — ``read_pipeline_spent`` (метод читателя, публичный
+  метод ledger или ``context["read_pipeline_spent"]``). Нет функции — суммы
+  pipeline-scope нет.
 - spend action layer (#342) через ``SpendReader.read_totals`` или снимок
-  ``context["spend"]``. Доллары, не кредиты: ``budget.spent`` в #342 —
-  кредиты сессии, конверсию ``CREDIT_USD`` делает WS2.
+  ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
+  ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
 
 Потолки плана, если источник их не передал: $200 сутки / $100 проект /
 $50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` выключен
 (как ``caps()`` в #342). Прогноз ``context["forecast_usd"]`` прибавляется
 к прочитанному и никуда не записывается.
 
-Исчерпание internal по числам (потраченное + прогноз >= $10) даёт
-``reason=budget_exhausted`` и ``blocking=False``: в ``waiting_approval``
-задачу переводит WS3. Жёсткие потолки — ``blocking=True``.
-
-Если в ответе роутера (``context["response"]`` или ``context["llm_response"]``)
-``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``,
-результат ``passed=False`` и ``blocking=True``. Предикат совпадает с
-``contracts.budget_exhausted_response`` (#350, ``04a5506a``); пока
-contracts нет в main, то же условие считается локально.
+``reason=budget_exhausted`` (числа internal: потраченное + прогноз >= $10,
+или ответ роутера) всегда даёт ``passed=False``, ``blocking=True`` и
+``details["reason"] == "budget_exhausted"``. Это форма, которую
+``contracts.validator_budget_exhausted`` (#350 ``406a0cfb``) считает
+поводом для ``waiting_approval``, а не ``failed``. Ответ роутера:
+``context["response"]`` / ``context["llm_response"]`` с
+``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``.
+Предикат ответа совпадает с ``contracts.budget_exhausted_response``;
+пока contracts нет в main, то же условие считается локально.
+Жёсткие потолки тоже ``blocking=True``, но с другим ``reason``.
+``validators.run`` остаётся sync.
 """
 
 from __future__ import annotations
@@ -70,7 +75,11 @@ _reader: SpendReader | None = None
 
 
 class SpendReader(Protocol):
-    """Чтение spend action layer (#342). Реализацию подставит WS2."""
+    """Чтение spend action layer (#342). ``read_totals`` WS2 принимает как есть.
+
+    ``read_pipeline_spent`` необязателен: pipeline-scope роутера, когда появится
+    публичный геттер. Пока метода нет, адаптер его не требует.
+    """
 
     def read_totals(
         self,
@@ -78,7 +87,7 @@ class SpendReader(Protocol):
         project_id: int,
         run_id: str | None = None,
     ) -> Mapping[str, Any]:
-        """USD: daily/project/run/internal/actions. Потолки — если известны."""
+        """USD: daily/project/run/internal/actions. ``actions_spent_usd`` — $40 на run."""
 
 
 class RouterLedgerReader(Protocol):
@@ -104,6 +113,7 @@ def get_spend_reader() -> SpendReader | None:
 def check(project_id: int, context: dict[str, Any]) -> Any:
     signal = _budget_signal(context)
     view = _load_view(project_id, context)
+    view = _apply_pipeline_scope(project_id, context, view)
     if view is None and signal is None:
         return make_result(
             name=_NAME,
@@ -148,6 +158,21 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
                         source=view["action_source"],
                     )
                 )
+        separate = view.get("pipeline_scope_spent_usd")
+        if view.get("pipeline_separate") is not None and separate is not None:
+            cap = view["caps"]["actions_cap_usd"]
+            extra = forecast["actions"]
+            if cap > 0 and separate + extra > cap + 1e-9:
+                violations.append(
+                    _violation(
+                        "actions_sub_budget",
+                        spent=separate,
+                        cap=cap,
+                        forecast=extra,
+                        scope="actions",
+                        source="pipeline_scope",
+                    )
+                )
     public = _public(view)
     if not violations:
         return make_result(
@@ -158,6 +183,7 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
                 "reason": "ok",
                 "totals": public["totals"],
                 "internal": public["internal"],
+                "pipeline_scope_spent_usd": None if view is None else view.get("pipeline_scope_spent_usd"),
                 "forecast_usd": forecast,
                 "sources": public["sources"],
             },
@@ -165,13 +191,15 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
     reasons = list(dict.fromkeys(item["reason"] for item in violations))
     hard = [item for item in violations if item["reason"] != _BUDGET_EXHAUSTED]
     reason = _BUDGET_EXHAUSTED if _BUDGET_EXHAUSTED in reasons else hard[0]["reason"]
-    blocking = bool(hard) or signal is not None
+    # budget_exhausted тоже блокирует: WS3 (#351) ждёт blocking=True и этот reason.
+    blocking = True
     details: dict[str, Any] = {
         "reason": reason,
         "reasons": reasons,
         "violations": violations,
         "totals": public["totals"],
         "internal": public["internal"],
+        "pipeline_scope_spent_usd": None if view is None else view.get("pipeline_scope_spent_usd"),
         "forecast_usd": forecast,
         "sources": public["sources"],
     }
@@ -311,6 +339,90 @@ def _call_reader(project_id: int, context: dict[str, Any]) -> Mapping[str, Any] 
     else:
         return None
     return found if isinstance(found, Mapping) else None
+
+
+def read_pipeline_spent(
+    source: Any,
+    *,
+    project_id: int,
+    run_id: str | None,
+) -> float | None:
+    """Необязательное чтение pipeline-scope.
+
+    Берёт публичный метод ``read_pipeline_spent`` или ``pipeline_spent``.
+    ``SpendLedger._pipeline`` не читается: пока WS5 не дал геттер, функции
+    просто нет и результат ``None``.
+    """
+
+    if source is None:
+        return None
+    for name in ("read_pipeline_spent", "pipeline_spent"):
+        fn = getattr(source, name, None)
+        if callable(fn):
+            return _call_pipeline(fn, project_id=project_id, run_id=run_id)
+    return None
+
+
+def _call_pipeline(fn: Any, *, project_id: int, run_id: str | None) -> float:
+    try:
+        value = fn(project_id=project_id, run_id=run_id)
+    except TypeError:
+        try:
+            value = fn(run_id)
+        except TypeError:
+            value = fn()
+    return _num(value)
+
+
+def _apply_pipeline_scope(
+    project_id: int,
+    context: dict[str, Any],
+    view: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    amount = _pipeline_amount(project_id, context)
+    if amount is None:
+        if view is not None:
+            view["pipeline_scope_spent_usd"] = None
+        return view
+    if view is None:
+        view = {
+            "spent": {},
+            "caps": dict(_CAP_DEFAULTS),
+            "known": set(),
+            "sources": [],
+            "action_source": "",
+            "internal_source": "",
+            "run_id": _run_id(context),
+        }
+    view["pipeline_scope_spent_usd"] = amount
+    if "actions_spent_usd" not in view["known"]:
+        view["spent"]["actions_spent_usd"] = amount
+        view["known"].add("actions_spent_usd")
+        view["action_source"] = "pipeline_scope"
+        view["sources"].append("pipeline_scope")
+        return view
+    # Уже есть actions_spent_usd от WS2 ($40 на run). Число роутера не подменяет
+    # его и не суммируется: тот же потолок проверяется отдельно.
+    cap = view["caps"]["actions_cap_usd"]
+    view["pipeline_separate"] = cap
+    return view
+
+
+def _pipeline_amount(project_id: int, context: dict[str, Any]) -> float | None:
+    run_id = _run_id(context)
+    explicit = context.get("read_pipeline_spent")
+    if callable(explicit):
+        return _call_pipeline(explicit, project_id=project_id, run_id=run_id)
+    reader = context.get("spend_reader")
+    if reader is None:
+        reader = _reader
+    found = read_pipeline_spent(reader, project_id=project_id, run_id=run_id)
+    if found is not None:
+        return found
+    ledger = context.get("spend_ledger")
+    if ledger is None and "ledger" in context:
+        ledger = context.get("ledger")
+    return read_pipeline_spent(ledger, project_id=project_id, run_id=run_id)
 
 
 def _ledger_totals(context: dict[str, Any]) -> dict[str, float] | None:

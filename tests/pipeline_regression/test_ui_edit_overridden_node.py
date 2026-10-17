@@ -1,12 +1,16 @@
 """Правка промта из студии для ноды с активной версией в node_store.
 
-Контракт после R2: каждый из четырёх эндпоинтов пишет новую строку
+Контракт после R2: эндпоинты берут соединение через FastAPI-зависимость
+``get_node_store_conn`` (по умолчанию ``connect()`` из WS3) и пишут строку
 ``node_prompt_versions`` (``created_via=studio_ui``) через
-``node_store.writer.edit_prompt``, git-файл не меняется, и этот текст
-уходит в вызов LLM. Сейчас эндпоинты пишут файл. Тест поэтому
-``xfail(strict=True)``: когда проводка появится, xpass уронит прогон и
-метку надо снять. Если ``node_store`` не импортируется (ещё не влит #349),
-тест пропускается.
+``node_store.writer.edit_prompt``. writer сам БД не открывает. Git-файл не
+меняется. Текст для LLM собирается через ``prompt_library.read_prompt``
+(``read_resolved_project_prompt`` вызывает его, а не обходит).
+
+Пока ``get_node_store_conn`` нет, тест делает ``xfail(strict)`` с этой
+причиной. Пока эндпоинты пишут файл, модульный ``xfail(strict=True)``
+тоже остаётся: xpass после проводки значит, что метку пора снять.
+Если ``node_store`` не импортируется, тест пропускается.
 
 Сеть не вызывается: LLM перехватывается моком ``gpt_api.chat``.
 """
@@ -140,6 +144,20 @@ async def _init_app_db(db_path: Path):
     return engine, maker, project_id
 
 
+def _node_store_dependency():
+    """Функция, которую R2 повесит на Depends. Пока её нет — None."""
+
+    for module_name in ("app.web.deps", "app.orchestrator.node_store"):
+        try:
+            module = __import__(module_name, fromlist=["get_node_store_conn"])
+        except ImportError:
+            continue
+        dep = getattr(module, "get_node_store_conn", None)
+        if callable(dep):
+            return dep
+    return None
+
+
 def _call(client, endpoint: str, node_key: str, project_id: int, version_id: str | None) -> None:
     new_text = _new_text(endpoint)
     if endpoint == "put":
@@ -180,6 +198,14 @@ def test_ui_edit_overridden_node_writes_version_not_git(
     from app.web.api import create_app
     from app.web.deps import get_session
 
+    store_dep = _node_store_dependency()
+    if store_dep is None:
+        pytest.xfail(
+            "R2 ещё не завёл FastAPI-зависимость get_node_store_conn "
+            "(по умолчанию connect() из WS3). writer сам БД не открывает, "
+            "подменить временный nodes.sqlite через app.dependency_overrides не на что."
+        )
+
     node_key = f"n_ws1_{endpoint}"
     prompts = tmp_path / "prompts"
     prompt_file = prompts / "05_image_prompts" / f"{node_key}.md"
@@ -219,6 +245,11 @@ def test_ui_edit_overridden_node_writes_version_not_git(
         app = create_app()
         app.router.lifespan_context = _quiet
         app.dependency_overrides[get_session] = override_session
+
+        def override_node_store_conn():
+            yield conn
+
+        app.dependency_overrides[store_dep] = override_node_store_conn
         git_before = prompt_file.read_bytes()
         template_before = template.read_bytes()
         try:
@@ -247,30 +278,39 @@ def test_ui_edit_overridden_node_writes_version_not_git(
         assert rows, "нет новой строки node_prompt_versions с created_via=studio_ui"
         assert _new_text(endpoint) in rows[-1]["prompt_template"]
 
-        from app.orchestrator.node_store import resolve_node
-
         from app.services import gpt_api
         from app.services.prompt_library import read_resolved_project_prompt
 
         captured: dict[str, str] = {}
+        via_read_prompt: list[str] = []
+        real_read_prompt = pl.read_prompt
+
+        def _tracking_read_prompt(step_code: str, name: str) -> str:
+            text = real_read_prompt(step_code, name)
+            via_read_prompt.append(text)
+            return text
 
         async def fake_chat(**kwargs):
             captured["prompt"] = str(kwargs.get("prompt") or "")
             return SimpleNamespace(text="ok")
 
+        monkeypatch.setattr(pl, "read_prompt", _tracking_read_prompt)
         monkeypatch.setattr(gpt_api, "chat", fake_chat)
 
         def _no_network(*_args, **_kwargs):
             raise AssertionError("тест не должен ходить в сеть")
 
         monkeypatch.setattr(gpt_api, "_async_client", _no_network)
-        resolved = resolve_node(node_key, conn, templates_root=templates.parent)
         project = SimpleNamespace(prompt_overrides={_STEP: node_key}, meta={}, topic="")
         _name, _path, loaded, _source = read_resolved_project_prompt(
             project, _STEP, node_key=node_key
         )
+        assert via_read_prompt, (
+            "read_resolved_project_prompt обошёл prompt_library.read_prompt"
+        )
+        assert loaded == via_read_prompt[-1]
         asyncio.run(gpt_api.chat(prompt=loaded, accompanying="", auto_pack=False))
+        assert captured["prompt"] == loaded
         assert _new_text(endpoint) in captured["prompt"]
-        assert captured["prompt"] == resolved.prompt_template
     finally:
         conn.close()

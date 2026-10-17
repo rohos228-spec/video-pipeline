@@ -1,11 +1,14 @@
 """Тонкий shim ``ValidatorResult``, пока ``contracts.py`` нет в main.
 
-Поля совпадают с WS3: база #346 ``fab1b126``, PR #350 HEAD ``04a5506a``
+Поля совпадают с WS3: база #346 ``fab1b126``, PR #350 HEAD ``406a0cfb``
 (``cursor/ws3-agents-r3-3c7d``). ``name``, ``passed`` (JSON-алиас ``pass``),
-``details``, ``blocking``. Ключ dry-run — ``VALIDATOR_CONTEXT_DRY_RUN``
-(``"dry_run"``): супервизор кладёт ``context["dry_run"]=True``. Когда
-``app.orchestrator.contracts`` импортируется, берём класс и константу оттуда.
-Пока #350 не в main, остаётся этот fallback с теми же полями и тем же ключом.
+``details``, ``blocking``. ``ValidatorRunner.run`` в этом SHA синхронный:
+``run(name, project_id, context) -> ValidatorResult``. Ключ dry-run —
+``VALIDATOR_CONTEXT_DRY_RUN`` (``"dry_run"``): супервизор кладёт
+``context["dry_run"]=True``. Когда ``app.orchestrator.contracts``
+импортируется, берём класс, константу и ``validator_budget_exhausted``
+оттуда. Пока #350 не в main, остаётся fallback с теми же полями и той же
+проверкой: ``blocking`` и ``details.reason == "budget_exhausted"``.
 """
 
 from __future__ import annotations
@@ -86,6 +89,45 @@ def make_result(
 ) -> Any:
     cls = validator_result_type()
     return cls(name=name, passed=passed, details=details, blocking=blocking)
+
+
+_BUDGET_REASON = "budget_exhausted"
+
+
+def validator_budget_exhausted(result: Any) -> bool:
+    """Та же проверка, что ``contracts.validator_budget_exhausted`` (#350 ``406a0cfb``).
+
+    Супервизор по ней переводит задачу в ``waiting_approval``, а не в ``failed``.
+    Пока contracts нет в main, работает локальная копия. Когда функция
+    появляется в модуле, зовём её.
+    """
+
+    remote = _contracts_budget_helper()
+    if remote is not None:
+        return bool(remote(result))
+    return budget_exhausted_fallback(result)
+
+
+def budget_exhausted_fallback(result: Any) -> bool:
+    """Копия хелпера #350: blocking и ``details.reason == budget_exhausted``.
+
+    ``details`` — dict или объект с полем ``reason``.
+    """
+
+    if not bool(getattr(result, "blocking", False)):
+        return False
+    details = getattr(result, "details", None)
+    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
+    return reason == _BUDGET_REASON
+
+
+def _contracts_budget_helper() -> Any:
+    try:
+        from app.orchestrator import contracts as contracts
+    except Exception:  # noqa: BLE001 — #350 ещё не в main
+        return None
+    helper = getattr(contracts, "validator_budget_exhausted", None)
+    return helper if callable(helper) else None
 
 
 # Публичные имена. Класс перечитывается через resolve_contract, это значение
