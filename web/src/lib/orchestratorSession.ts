@@ -161,6 +161,8 @@ export interface ValidatorView {
 
 export interface ApprovalView {
   id: string;
+  /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
+  serverId: boolean;
   taskId: string | null;
   title: string;
   reason: string;
@@ -293,6 +295,23 @@ function taskKey(value: unknown): string | null {
   return null;
 }
 
+/** approval_id только из payload. Пустая строка и нестрока — не id. */
+export function serverApprovalId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function approvalDecision(value: unknown): "approved" | "rejected" | null {
+  if (value === "approved" || value === "approve") return "approved";
+  if (value === "rejected" || value === "reject") return "rejected";
+  return null;
+}
+
+function closeServerApproval(state: OrchScreenState, id: string, decision: "approved" | "rejected"): void {
+  const item = state.approvals.find((entry) => entry.id === id && entry.serverId);
+  if (!item || item.resolved) return;
+  item.resolved = decision;
+}
+
 function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
   const status = asTaskStatus(str(payload.task_status));
   if (taskId && status) {
@@ -303,10 +322,12 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
   const body = approval as Record<string, unknown>;
   const reason = str(body.reason);
   if (!reason) return;
-  const id = str(body.approval_id, `appr-llm-${seq}`);
+  const fromServer = serverApprovalId(body.approval_id);
+  const id = fromServer ?? `local-llm-${seq}`;
   if (!state.approvals.some((item) => item.id === id)) {
     state.approvals.push({
       id,
+      serverId: fromServer != null,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
@@ -381,9 +402,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   if (action.type === "approval-resolved") {
     return {
       ...state,
-      approvals: state.approvals.map((item) =>
-        item.id === action.id ? { ...item, resolved: action.decision } : item,
-      ),
+      approvals: state.approvals.map((item) => {
+        if (item.id !== action.id) return item;
+        if (action.decision !== "closed" && !item.serverId) return item;
+        return { ...item, resolved: action.decision };
+      }),
     };
   }
 
@@ -406,6 +429,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   };
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
+  if (event.type !== "approval_required") {
+    const decided = approvalDecision(payload.decision ?? payload.approval_decision);
+    const decidedId = serverApprovalId(payload.approval_id);
+    if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+  }
 
   if (event.type === "ack") {
     const accepted = payload.accepted === true;
@@ -527,10 +555,12 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "approval_required") {
     const body = payload as ApprovalPayload & Record<string, unknown>;
-    const id = str(body.approval_id, `appr-${event.seq}`);
+    const fromServer = serverApprovalId(body.approval_id);
+    const id = fromServer ?? `local-${event.seq}`;
     if (!next.approvals.some((item) => item.id === id)) {
       next.approvals.push({
         id,
+        serverId: fromServer != null,
         taskId,
         title: str(body.title, "Нужно подтверждение"),
         reason: str(body.reason),
@@ -568,6 +598,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
       next.approvals.push({
         id: `block-${event.seq}`,
+        serverId: false,
         taskId,
         title: "",
         reason: error,

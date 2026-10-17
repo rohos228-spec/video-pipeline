@@ -26,6 +26,15 @@ import {
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
+function approvalPostAccepted(
+  result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
+  approvalId: string,
+): boolean {
+  if (!result || result.ok === false || result.matched === false) return false;
+  if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
+  return true;
+}
+
 export function useOrchestratorChat() {
   const boot = useMemo(() => readOrchBoot(), []);
   const [token, setToken] = useState("");
@@ -193,13 +202,24 @@ export function useOrchestratorChat() {
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
+      const card = state.approvals.find((item) => item.id === approvalId);
+      if (!card?.serverId) {
+        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+        return;
+      }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
         const body = { approval_id: approvalId, task_id: taskId };
-        if (decision === "approved") await postOrchApprove(cfg, body);
-        else await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        const result =
+          decision === "approved"
+            ? await postOrchApprove(cfg, body)
+            : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        if (!approvalPostAccepted(result, approvalId)) {
+          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+          return;
+        }
         dispatch({ type: "approval-resolved", id: approvalId, decision });
         setSendError("");
       } catch (error) {
@@ -214,7 +234,7 @@ export function useOrchestratorChat() {
         setDecisionPendingId(null);
       }
     },
-    [cfg, noteAuth],
+    [cfg, noteAuth, state.approvals],
   );
 
   const dismissBlock = useCallback((approvalId: string) => {

@@ -148,6 +148,24 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
   });
 
+  test("approve 404 и 409 оставляют карточку", async ({ page }) => {
+    const cases = [
+      ["approve404", "approval not found"],
+      ["approve409", "approval conflict"],
+    ] as const;
+    for (const [scenario, detail] of cases) {
+      await openWithToken(page, scenario, scenario);
+      await page.getByTestId("orch-composer").fill("запусти ноду");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByTestId("orch-approval-error")).toContainText(detail);
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await expect(page.getByTestId("orch-approve")).toBeEnabled();
+      await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    }
+  });
+
   test("approve 500: карточка остаётся и ошибку можно повторить", async ({ page }) => {
     await openWithToken(page, "approvefail", "approvefail-1");
     await page.getByTestId("orch-composer").fill("запусти ноду");
