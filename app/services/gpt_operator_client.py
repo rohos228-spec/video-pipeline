@@ -572,7 +572,28 @@ async def _run_operator_api_real(
                 )
         else:
             apply_ops = extract_apply_ops_json(reply_text or "")
-        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+            if allow_empty_ops and not _qc_json_valid(reply_text):
+                apply_ops = None
+        truncated = bool((apply_ops or {}).get("_stream_truncated"))
+        empty_accepted = (
+            False
+            if truncated
+            else _accepted_empty_ops(
+                result, apply_ops, allowed=allow_empty_ops and not is_check
+            )
+        )
+        if not truncated:
+            await _record_parse_for_task_request(
+                reply_text or "",
+                apply_ops,
+                empty_ops_allowed=allow_empty_ops,
+                empty_ops_accepted=empty_accepted,
+            )
+        if (
+            apply_ops is not None
+            and not _apply_ops_has_payload(apply_ops)
+            and not empty_accepted
+        ):
             if not (check_mode and not check_fix):
                 logger.warning(
                     "gpt_operator/api: node={} — пустой apply-ops "
