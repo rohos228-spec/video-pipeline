@@ -101,6 +101,52 @@ def test_schema_requires_path_and_section_anchor() -> None:
     assert any(item["field"] == "section_anchor" for item in section.details["errors"])
 
 
+def test_context_cannot_expand_registry() -> None:
+    """context['whitelist'] / context['registry'] сужают реестр и не добавляют имён."""
+
+    attack = run(
+        "plan_sanity",
+        1,
+        {"plan": [{"action": "edit_files", "params": {"path": "a"}}], "whitelist": ["edit_files"]},
+    )
+    assert attack.passed is False
+    assert attack.blocking is True
+    assert attack.details["errors"][0]["reason"] == "not_in_whitelist"
+
+    mixed = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [
+                {"action": "get_node", "params": {"node_key": "n_a"}},
+                {"action": "edit_files", "params": {"path": "a"}},
+                {"action": "list_nodes"},
+            ],
+            "whitelist": ["get_node", "edit_files"],
+        },
+    )
+    assert mixed.passed is False
+    by_action = {item["action"]: item["reason"] for item in mixed.details["errors"]}
+    assert "get_node" not in by_action
+    assert by_action["edit_files"] == "not_in_whitelist"
+    assert by_action["list_nodes"] == "not_in_whitelist"
+
+    class OnlyNode:
+        def names(self) -> list[str]:
+            return ["get_node", "edit_files"]
+
+    kept = run(
+        "plan_sanity",
+        1,
+        {"registry": OnlyNode(), "plan": [{"action": "get_node", "params": {"node_key": "n_a"}}]},
+    )
+    assert kept.passed is True
+    expanded = run("plan_sanity", 1, {"registry": OnlyNode(), "plan": [{"action": "edit_files"}]})
+    assert expanded.details["errors"][0]["reason"] == "not_in_whitelist"
+    narrowed = run("plan_sanity", 1, {"registry": OnlyNode(), "plan": [{"action": "list_nodes"}]})
+    assert narrowed.details["errors"][0]["reason"] == "not_in_whitelist"
+
+
 def test_context_whitelist_and_object_step() -> None:
     class Step:
         action = "get_node"

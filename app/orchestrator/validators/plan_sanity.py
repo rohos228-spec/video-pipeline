@@ -1,11 +1,11 @@
 """План: только whitelist, схемы аргументов, verify перед run_node, без удалений.
 
-Список действий берётся из ``context["whitelist"]``. Если его нет — из реестра
-``app.orchestrator.actions.registry`` или ``app.services.action_layer.spec.registry``,
-если модуль импортируется. Иначе временный список: 11 новых действий §6 плюс
-read-only имена из того же параграфа, ``run_node`` и ``verify_code_state``.
-Реестр #342 (102 действия) в main ещё нет; после R0b контекст или registry
-перекрывает этот список.
+Источник истины — реестр ``app.orchestrator.actions.registry`` или
+``app.services.action_layer.spec.registry``, если модуль импортируется.
+Иначе временный ``FALLBACK_WHITELIST``: 11 новых действий §6 плюс read-only
+имена из того же параграфа, ``run_node`` и ``verify_code_state``.
+``context["whitelist"]`` и ``context["registry"]`` могут только сузить это
+множество. Имя вне реестра из context не становится разрешённым.
 
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
@@ -156,17 +156,21 @@ def _step(item: Any) -> dict[str, Any]:
 
 
 def _whitelist(context: dict[str, Any]) -> tuple[set[str], Any]:
+    """Реестр задаёт потолок имён. Context пересекается с ним и не расширяет."""
+
+    names, registry = _import_registry()
+    if not names:
+        names, registry = set(FALLBACK_WHITELIST), None
+    allowed = set(names)
+    context_registry = context.get("registry")
+    if context_registry is not None:
+        narrowed = _registry_names(context_registry)
+        if narrowed:
+            allowed &= narrowed
     if "whitelist" in context:
         raw = context.get("whitelist") or []
-        return {str(item) for item in raw}, context.get("registry")
-    if context.get("registry") is not None:
-        names = _registry_names(context["registry"])
-        if names:
-            return names, context["registry"]
-    names, registry = _import_registry()
-    if names:
-        return names, registry
-    return set(FALLBACK_WHITELIST), None
+        allowed &= {str(item) for item in raw}
+    return allowed, registry
 
 
 def _import_registry() -> tuple[set[str], Any]:
