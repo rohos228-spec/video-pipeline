@@ -351,11 +351,9 @@ def test_short_clean_pool_shrinks_quotas_from_the_tail() -> None:
     }
 
 
-def test_stub_pool_still_raises_and_the_frozen_file_stays() -> None:
-    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, HoldoutPoolError, draw, filter_pool, load_holdout3_queries, project65_records
+def test_stub_pool_still_raises() -> None:
+    from evals.orchestrator.holdout3 import HoldoutPoolError, draw, filter_pool, project65_records
 
-    before = file_sha256(HOLDOUT3_PATH)
-    assert before == FROZEN_SHA256["precision_live_holdout3.json"]["sha256"]
     _kept, report = filter_pool(project65_records())
     assert report["kept"] == 0
     with pytest.raises(HoldoutPoolError) as raised:
@@ -364,16 +362,25 @@ def test_stub_pool_still_raises_and_the_frozen_file_stays() -> None:
     assert raised.value.report["rejected"]["dataset_frame_id"] == 8
     assert raised.value.report["rejected"]["single_letter"] == 24
     assert raised.value.report["rejected"]["few_content_words"] == 32
-    with pytest.raises(HoldoutPoolError):
-        load_holdout3_queries()
-    assert file_sha256(HOLDOUT3_PATH) == before
 
 
 def test_holdout3_file_is_frozen_normalized_and_tuning_does_not_load_it() -> None:
-    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, write_holdout3_file
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, QUOTA, SEED, build_holdout3_document, load_holdout3_queries, write_holdout3_file
 
     assert FROZEN_SHA256["precision_live_holdout3.json"]["sha256"] == file_sha256(HOLDOUT3_PATH)
     assert_frozen(HOLDOUT3_PATH)
+    document = json.loads(HOLDOUT3_PATH.read_text(encoding="utf-8"))
+    assert document["seed"] == SEED
+    assert document["filter"]["pool"] == 105
+    assert document["filter"]["kept"] == 100
+    assert document["filter"]["rejected"]["few_content_words"] == 5
+    assert document["quota_shortfall"] == {}
+    assert build_holdout3_document()["queries"] == document["queries"]
+    queries = load_holdout3_queries()
+    assert len(queries) == 24
+    families = [query["family"] for query in queries]
+    for family, count in QUOTA:
+        assert families.count(family) == count
     before = HOLDOUT3_PATH.read_bytes()
     write_holdout3_file()
     assert HOLDOUT3_PATH.read_bytes() == before
