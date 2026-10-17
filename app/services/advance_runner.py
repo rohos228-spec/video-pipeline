@@ -95,13 +95,20 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     prev_status=prev_status,
                     new_status=project.status,
                 )
-            try:
-                from app.project_db import push_runtime_to_master
+            from app.db import commit_with_retry
 
-                await push_runtime_to_master(session, project)
+            await commit_with_retry(session)
+            try:
+                from app.project_db import push_runtime_to_master_recorded
+
+                await push_runtime_to_master_recorded(session, project)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
             if new != prev:
+                try:
+                    await _mirror_content_to_master(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("advance_project_job: sync content to master failed: {}", exc)
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )
