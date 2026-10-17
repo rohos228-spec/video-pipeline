@@ -90,10 +90,24 @@ _DELETE_KINDS = frozenset(
         "os.unlink",
         "os.rmdir",
         "os.removedirs",
+        "os.rename",
+        "os.replace",
+        "os.truncate",
         "Path.unlink",
         "Path.rmdir",
+        "Path.rename",
+        "Path.replace",
+        "Path.truncate",
+        "truncate",
+        "getattr",
+        "importlib.import_module",
+        "__import__",
+        "sql",
+        "http.delete",
     }
 )
+_SQL_WORD = re.compile(r"\b(DELETE|DROP|TRUNCATE)\b", re.IGNORECASE)
+_FS_ROOTS = frozenset({"os", "shutil", "pathlib"})
 _DYN = "<dyn>"
 
 _ALLOW_MARKERS = (
@@ -915,12 +929,13 @@ def _live_calls(
 def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     modules: set[str] = set()
     funcs: dict[str, str] = {}
-    watched = _OS_RENAME | _OS_DELETE
+    watched = _OS_RENAME | _OS_DELETE | frozenset({"truncate"})
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "os":
-                    modules.add(alias.asname or "os")
+                root = alias.name.split(".", 1)[0]
+                if root == "os":
+                    modules.add(alias.asname or root)
         elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] == "os":
             for alias in node.names:
                 if alias.name == "*":
@@ -929,6 +944,131 @@ def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
                 elif alias.name in watched:
                     funcs[alias.asname or alias.name] = alias.name
     return modules, funcs
+
+
+def _fs_surface(tree: ast.AST) -> tuple[set[str], set[str], dict[str, str]]:
+    """Имена модулей os/shutil/pathlib и алиасы их функций. Алиас сам по себе опасен."""
+    modules: set[str] = set()
+    path_names = {"Path"}
+    tainted: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in _FS_ROOTS:
+                    modules.add(alias.asname or root)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] in _FS_ROOTS:
+            root = node.module.split(".", 1)[0]
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name == "Path":
+                    path_names.add(local)
+                elif alias.name != "*":
+                    tainted[local] = f"{root}.{alias.name}"
+    return modules, path_names, tainted
+
+
+def _local_aliases(
+    fn_node: ast.AST,
+    modules: set[str],
+    path_names: set[str],
+    tainted: dict[str, str],
+) -> dict[str, str]:
+    found = dict(tainted)
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        value = node.value
+        if not isinstance(target, ast.Name) or not isinstance(value, ast.Attribute):
+            continue
+        if not isinstance(value.value, ast.Name):
+            continue
+        if value.value.id in modules or value.value.id in path_names:
+            found[target.id] = f"{value.value.id}.{value.attr}"
+    return found
+
+
+def _const_text(node: ast.AST | None, env: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    return None
+
+
+def _sql_texts(node: ast.AST, env: dict[str, str]) -> list[str]:
+    found: list[str] = []
+    direct = _const_text(node, env)
+    if direct is not None:
+        found.append(direct)
+    if isinstance(node, ast.Call):
+        for arg in node.args:
+            found.extend(_sql_texts(arg, env))
+        for kw in node.keywords:
+            if kw.arg in {None, "sql", "statement", "sqltext"}:
+                found.extend(_sql_texts(kw.value, env))
+    if isinstance(node, ast.JoinedStr):
+        chunks: list[str] = []
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                chunks.append(str(part.value))
+            elif isinstance(part, ast.FormattedValue):
+                inner = _const_text(part.value, env)
+                chunks.append(inner if inner is not None else "")
+        found.append("".join(chunks))
+    return found
+
+
+def _call_name(func: ast.AST) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _is_sql_delete(call: ast.Call, env: dict[str, str]) -> bool:
+    name = _call_name(call.func)
+    if name not in {"execute", "executescript", "text"}:
+        return False
+    blobs: list[str] = []
+    for arg in call.args:
+        blobs.extend(_sql_texts(arg, env))
+    for kw in call.keywords:
+        if kw.arg in {None, "sql", "statement", "sqltext"}:
+            blobs.extend(_sql_texts(kw.value, env))
+    return any(_SQL_WORD.search(blob) for blob in blobs)
+
+
+def _http_method(call: ast.Call, env: dict[str, str]) -> str | None:
+    node = None
+    for kw in call.keywords:
+        if kw.arg in {"method", "http_method"}:
+            node = kw.value
+    if node is None and call.args:
+        node = call.args[0]
+    text = _const_text(node, env)
+    if text is None:
+        return None
+    return text.upper()
+
+
+def _is_http_delete(call: ast.Call, env: dict[str, str]) -> bool:
+    name = _call_name(call.func)
+    if name not in {"call", "request"}:
+        return False
+    return _http_method(call, env) == "DELETE"
+
+
+def _is_path_replace(call: ast.Call, func: ast.Attribute, path_names: set[str]) -> bool:
+    if func.attr != "replace":
+        return False
+    if isinstance(func.value, ast.Name) and func.value.id in path_names:
+        return True
+    if any(kw.arg in {"old", "new"} for kw in call.keywords):
+        return False
+    return len(call.args) == 1 or any(kw.arg == "target" for kw in call.keywords)
 
 
 def _receiver_is_path(node: ast.AST, env: dict[str, str]) -> bool:
@@ -960,12 +1100,26 @@ def _write_hit(
     shutil_funcs: dict[str, str],
     os_modules: set[str],
     os_funcs: dict[str, str],
+    tainted: dict[str, str] | None = None,
+    path_names: set[str] | None = None,
 ) -> WriteHit | None:
     func = call.func
+    tainted = tainted or {}
+    path_names = path_names or {"Path"}
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
-    if isinstance(func, ast.Name) and func.id == "open":
+    if _call_name(func) == "getattr":
+        kind = "getattr"
+    elif _call_name(func) == "__import__":
+        kind = "__import__"
+    elif _call_name(func) == "import_module":
+        kind = "importlib.import_module"
+    elif _is_sql_delete(call, env):
+        kind = "sql"
+    elif _is_http_delete(call, env):
+        kind = "http.delete"
+    elif isinstance(func, ast.Name) and func.id == "open":
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
             dest = _call_arg(call, 0, "file")
@@ -987,6 +1141,9 @@ def _write_hit(
         else:
             src = _call_arg(call, 0, "src")
             dest = _call_arg(call, 1, "dst")
+    elif isinstance(func, ast.Name) and func.id in tainted:
+        kind = "alias:" + tainted[func.id]
+        dest = _call_arg(call, 0, "path")
     elif isinstance(func, ast.Attribute):
         attr = func.attr
         if attr == "open":
@@ -1007,13 +1164,16 @@ def _write_hit(
                     src = _call_arg(call, src_i, "src")
                 dest = _call_arg(call, dst_i, "dst")
         elif (
-            attr in _OS_RENAME
+            attr in (_OS_RENAME | frozenset({"truncate"}))
             and isinstance(func.value, ast.Name)
             and func.value.id in os_modules
         ):
             kind = f"os.{attr}"
-            src = _call_arg(call, 0, "src")
-            dest = _call_arg(call, 1, "dst")
+            if attr == "truncate":
+                dest = _call_arg(call, 0, "path")
+            else:
+                src = _call_arg(call, 0, "src")
+                dest = _call_arg(call, 1, "dst")
         elif (
             attr in _OS_DELETE
             and isinstance(func.value, ast.Name)
@@ -1021,13 +1181,13 @@ def _write_hit(
         ):
             kind = f"os.{attr}"
             dest = _call_arg(call, 0, "path")
-        elif attr in _PATH_DELETE:
-            kind = f"Path.{attr}"
+        elif attr in _PATH_DELETE or attr == "truncate":
+            kind = f"Path.{attr}" if attr != "truncate" else "Path.truncate"
             dest = func.value
         elif attr in _PATH_CREATE:
             kind = f"Path.{attr}"
             dest = func.value
-        elif attr in _PATH_MOVE and _receiver_is_path(func.value, env):
+        elif attr == "rename" or _is_path_replace(call, func, path_names):
             kind = f"Path.{attr}"
             src = func.value
             dest = _call_arg(call, 0, "target")
@@ -1035,16 +1195,20 @@ def _write_hit(
         return None
     sketch = _sketch(dest, env)
     source = _sketch(src, env) if src is not None else None
-    if kind in _DELETE_KINDS:
+    denied = kind in _DELETE_KINDS or kind.startswith("alias:")
+    if denied:
+        under = sketch is None or _under_snapshot(sketch)
+        if source and _under_snapshot(source):
+            under = True
         return WriteHit(
             kind,
             sketch,
             function,
-            source=None,
+            source=source,
             allowed=False,
-            snapshot_delete=sketch is None or _under_snapshot(sketch),
+            snapshot_delete=under,
         )
-    if kind in {"shutil.move", "os.rename", "os.replace", "Path.rename", "Path.replace"}:
+    if kind in {"shutil.move"}:
         dest_ok = bool(sketch) and _path_permitted(sketch, action_id)
         src_ok = bool(source) and _path_permitted(source, action_id)
         return WriteHit(
@@ -1071,11 +1235,13 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
     consts = _module_string_constants(tree)
     shutil_modules, shutil_funcs = _shutil_bindings(tree)
     os_modules, os_funcs = _os_move_bindings(tree)
+    fs_modules, path_names, imported = _fs_surface(tree)
     hits: list[WriteHit] = []
     for fn_node in tree.body:
         if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         env = _bind_env(fn_node, consts)
+        tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
         for call in _live_calls(fn_node, file_kind=None, file_kinds=frozenset()):
             hit = _write_hit(
                 call,
@@ -1086,6 +1252,8 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
                 shutil_funcs,
                 os_modules,
                 os_funcs,
+                tainted,
+                path_names,
             )
             if hit is not None:
                 hits.append(hit)
@@ -1163,6 +1331,8 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
         env = _bind_env(fn_node, consts)
         shutil_modules, shutil_funcs = _shutil_bindings(module)
         os_modules, os_funcs = _os_move_bindings(module)
+        fs_modules, path_names, imported = _fs_surface(module)
+        tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
         for call in _live_calls(fn_node, file_kind=file_kind, file_kinds=file_kinds):
             hit = _write_hit(
                 call,
@@ -1173,6 +1343,8 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
                 shutil_funcs,
                 os_modules,
                 os_funcs,
+                tainted,
+                path_names,
             )
             if hit is not None:
                 hits.append(hit)
@@ -1556,7 +1728,7 @@ def test_path_rename_and_replace_check_both_sides() -> None:
     )
     hits = analyze_module_source(source, "history.rollback")
     assert [hit.kind for hit in hits] == ["Path.replace", "Path.rename", "Path.replace"]
-    assert [hit.allowed for hit in hits] == [True, False, True]
+    assert [hit.allowed for hit in hits] == [False, False, False]
     assert [hit.snapshot_delete for hit in hits] == [False, False, True]
     foreign = analyze_module_source(source, "group.delete")
     assert foreign[2].allowed is False
@@ -1593,7 +1765,7 @@ def test_move_and_rename_check_source_and_dest() -> None:
         "    rp('data/action_layer_snapshots/a', 'data/reports/a')\n"
     )
     hits = analyze_module_source(source, "history.rollback")
-    assert [hit.allowed for hit in hits] == [True, False, False, True, False, False, True]
+    assert [hit.allowed for hit in hits] == [True, False, False, False, False, False, False]
     assert [hit.snapshot_delete for hit in hits] == [False, False, False, False, False, False, True]
     foreign = analyze_module_source(source, "group.delete")
     assert foreign[-1].allowed is False
@@ -1851,6 +2023,100 @@ def test_missing_file_kinds_does_not_prune() -> None:
     assert _open_targets(source, file_kind="master_prompt", file_kinds=None) == [
         "templates/secret.txt"
     ]
+
+
+def test_getattr_and_importlib_are_denied() -> None:
+    source = (
+        "import importlib\n"
+        "def save(os, p):\n"
+        "    getattr(os, 'remove')(p)\n"
+        "    importlib.import_module('os').remove(p)\n"
+        "    __import__('os').remove(p)\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.kind for hit in hits] == ["getattr", "importlib.import_module", "__import__"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_os_shutil_pathlib_aliases_are_denied() -> None:
+    source = (
+        "import os.path\n"
+        "from shutil import rmtree as r\n"
+        "def save(p):\n"
+        "    os.remove(p)\n"
+        "    f = os.remove\n"
+        "    f(p)\n"
+        "    r('data/reports/old')\n"
+        "    m = Path.unlink\n"
+        "    m(p)\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.kind for hit in hits] == [
+        "os.remove",
+        "alias:os.remove",
+        "shutil.rmtree",
+        "alias:Path.unlink",
+    ]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_replace_rename_truncate_are_denied() -> None:
+    source = (
+        "import os\n"
+        "from pathlib import Path as P\n"
+        "def save(f, text):\n"
+        "    os.replace('data/reports/a', 'data/reports/b')\n"
+        "    os.rename('data/reports/a', 'data/reports/b')\n"
+        "    os.truncate('data/reports/a', 0)\n"
+        "    P('x').replace('data/reports/y')\n"
+        "    Path.replace('data/reports/a', 'data/reports/b')\n"
+        "    Path('data/reports/a').rename('data/reports/b')\n"
+        "    f.truncate()\n"
+        "    open('templates/secret.txt', 'w')\n"
+        "    open('data/reports/ok.txt', 'w')\n"
+        "    text.replace('a', 'b')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == [
+        "os.replace",
+        "os.rename",
+        "os.truncate",
+        "Path.replace",
+        "Path.replace",
+        "Path.rename",
+        "Path.truncate",
+        "open",
+        "open",
+    ]
+    assert [hit.allowed for hit in hits] == [
+        False, False, False, False, False, False, False, False, True,
+    ]
+
+
+def test_sql_delete_drop_truncate_are_denied() -> None:
+    source = (
+        "def save(conn, session):\n"
+        "    conn.execute('DELETE FROM scenes')\n"
+        "    conn.executescript('DROP TABLE frames')\n"
+        "    session.execute(text('TRUNCATE snapshots'))\n"
+        "    conn.execute('SELECT 1')\n"
+    )
+    hits = analyze_module_source(source, "prompt.save_master")
+    assert [hit.kind for hit in hits] == ["sql", "sql", "sql", "sql"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_http_delete_is_denied() -> None:
+    source = (
+        "def save(ctx, requests):\n"
+        "    ctx.call('DELETE', '/projects/1/scenes/1')\n"
+        "    ctx.call(method='DELETE', url='/x')\n"
+        "    requests.request('DELETE', '/y')\n"
+        "    ctx.call('GET', '/projects/1')\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == ["http.delete", "http.delete", "http.delete"]
+    assert all(hit.allowed is False for hit in hits)
 
 
 def test_whitelist_has_no_code_exec_tools() -> None:
