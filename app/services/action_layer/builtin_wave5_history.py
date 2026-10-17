@@ -483,6 +483,9 @@ async def _rollback(ctx: ActionContext, params: dict) -> dict:
     current_full = await h.read(ctx, target)
     current = _public_file_state(current_full) if isinstance(current_full, dict) else current_full
     if not params.get("force") and _compare_value(h.kind, current) != _compare_value(h.kind, row.after):
+        if h.kind == "master_prompt":
+            raise ActionCallError(
+                409, "текст мастер-промта изменился после снимка: откат отклонён")
         raise RuntimeError("значение изменилось после правки (его поправили ещё раз): откат "
                            "перезатёр бы чужую правку; повторите с force=true, если это нужно")
     saved = current
@@ -513,8 +516,9 @@ def history_specs() -> list[ActionSpec]:
           tags=("history", "rollback")),
         S(id="history.rollback", title_ru="Откатить правку по журналу",
           description_ru="Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла "
-                         "правка. Если значение уже поменяли после правки, откат отклоняется (force=true "
-                         "перезапишет). Сам откат тоже оставляет снимок, поэтому обратим. "
+                         "правка. Если значение уже поменяли после правки, откат отклоняется "
+                         "(мастер-промт сверяет текущий текст с after снимка и отвечает 409; "
+                         "force=true перезапишет). Сам откат тоже оставляет снимок, поэтому обратим. "
                          "Якоря, цепочка сцены и поле «набор» автоматически не откатываются.",
           params_schema={"type": "object", "properties": {
               "snapshot_id": {"type": "integer", "minimum": 1},
