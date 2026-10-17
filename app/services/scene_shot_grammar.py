@@ -1648,3 +1648,207 @@ def shots_continuity_problems(shots):
         elif _ENTER.search(act):
             exited = False
     return out
+
+
+# ---- R-MERGE-TRIVIAL / R-VO-SPREAD (2026-10-15) ----
+_POV_OBJ = {"взгляд"}
+_NOTICE_RE = _re.compile(r"замеча|замети|видит|увидел|смотрит на|разгляд|обнаруж|наход|нашёл|нашел|читает", _re.I)
+MERGE_MAX_ACTION_CHARS = 240
+_CONT_RE = _re.compile(r"оставаясь|продолжа|не вставая|не отпуская|всё ещё|все еще|затем|сидя |стоя |держа ", _re.I)
+
+
+def _shot_s(s, k):
+    return " ".join(str((s or {}).get(k) or "").split())
+
+
+def _who_key(s):
+    t = _shot_s(s, "кто").lower().replace("ё", "е")
+    ids = sorted(set(_re.findall(r"c\d{2}", t)))
+    if ids:
+        return ",".join(ids)
+    return ",".join(sorted(x.strip() for x in _re.split(r"[,;]| и ", t) if x.strip()))
+
+
+def _subject_key(s):
+    a = _shot_s(s, "действие").lower().replace("ё", "е")
+    ids = _re.findall(r"c\d{2}", a[:80])
+    if ids:
+        return ids[0]
+    w = _re.findall(r"[а-яa-z]+", a)
+    return w[0] if w else ""
+
+
+def _is_reply(s):
+    return bool(_shot_s(s, "реплика")) or bool(_shot_s(s, "говорит"))
+
+
+def _can_merge_trivial(a, b, nxt):
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return False
+    if _is_reply(a) or _is_reply(b):
+        return False  # один говорящий на кадр, реплика — свой кадр
+    if nxt is not None and _is_reply(nxt):
+        return False  # b — общий/установочный перед диалогом
+    if _shot_s(b, "объект") in _POV_OBJ or not _shot_s(b, "кто"):
+        return False  # POV-вставка «что заметил» — отдельный кадр
+    if _NOTICE_RE.search(_shot_s(a, "действие")):
+        return False  # за «заметил» идёт POV — не склеивать
+    if _shot_s(a, "закадр") and _shot_s(b, "закадр"):
+        return False  # два куска закадра — два кадра (не меняем раскладку VO)
+    pa = (_shot_s(a, "место") or _shot_s(a, "зона")).lower()
+    pb = (_shot_s(b, "место") or _shot_s(b, "зона")).lower()
+    if pa != pb:
+        return False
+    if _who_key(a) != _who_key(b) or not _who_key(a):
+        return False
+    if _subject_key(a) != _subject_key(b) or not _subject_key(a):
+        return False
+    same_cam = _shot_s(a, "план") == _shot_s(b, "план") and _shot_s(a, "ракурс") == _shot_s(b, "ракурс")
+    cont = bool(_CONT_RE.search(_shot_s(b, "действие")[:80]))
+    trivial = same_cam or cont or _shot_s(b, "объект") == _shot_s(a, "объект")
+    if not trivial:
+        return False
+    if len(_shot_s(a, "действие")) + len(_shot_s(b, "действие")) > MERGE_MAX_ACTION_CHARS:
+        return False
+    return True
+
+
+def merge_trivial_shots(shots):
+    """Склеить соседние кадры: то же место, те же люди, тот же субъект, та же
+    камера (или тот же объект) и простое продолжение действия. Не трогает
+    реплики, POV после «заметил», установочный перед диалогом. Закадр не теряется."""
+    if not isinstance(shots, list) or len(shots) < 2:
+        return []
+    notes = []
+    out = [shots[0]]
+    merged_into = {}
+    chain = 1
+    for i in range(1, len(shots)):
+        a, b = out[-1], shots[i]
+        nxt = shots[i + 1] if i + 1 < len(shots) else None
+        if chain < 2 and _can_merge_trivial(a, b, nxt):
+            act = _shot_s(a, "действие").rstrip(".")
+            a["действие"] = (act + "; " + _shot_s(b, "действие")).strip()
+            if _shot_s(b, "конец"):
+                a["конец"] = b.get("конец")
+            if _shot_s(b, "закадр") and not _shot_s(a, "закадр"):
+                a["закадр"] = b.get("закадр")
+            if _shot_s(b, "точность") == "старт/конец":
+                a["точность"] = "старт/конец"
+            merged_into[str(b.get("id") or "")] = str(a.get("id") or "")
+            notes.append(f"{b.get('id')} склеен в {a.get('id')}")
+            chain += 1
+            continue
+        out.append(b)
+        chain = 1
+    if not notes:
+        return []
+    for k, s in enumerate(out, start=1):
+        if isinstance(s, dict):
+            if "порядок" in s:
+                s["порядок"] = k
+            pid = str(s.get("parent_id") or "")
+            if pid in merged_into:
+                s["parent_id"] = merged_into[pid]
+    shots[:] = out
+    return notes
+
+
+def spread_vo_sentences(shots):
+    """Если в одном кадре сидят несколько предложений закадра, а кадров без
+    реплики хватает — разнести целые предложения по кадрам ячейки равномерно
+    (порядок сохраняется, предложение не режется, на кадр с репликой не кладём).
+    Склейка непустых кусков = исходный закадр."""
+    rows = [s for s in shots if isinstance(s, dict)] if isinstance(shots, list) else []
+    if len(rows) < 2:
+        return []
+    pieces = [_shot_s(s, "закадр") for s in rows]
+    full = " ".join(p for p in pieces if p)
+    sents = split_vo_sentences(full)
+    nonempty = [i for i, p in enumerate(pieces) if p]
+    if len(sents) <= len(nonempty):
+        return []
+    free = [i for i, s in enumerate(rows) if not _is_reply(s)]
+    if len(free) < 2:
+        return []
+    start = nonempty[0] if nonempty else free[0]
+    free = [i for i in free if i >= start] or free
+    n, m = len(sents), len(free)
+    owner = []
+    for k in range(n):
+        owner.append(free[min(m - 1, (k * m) // n)])
+    new = {i: "" for i in range(len(rows))}
+    for k, sent in enumerate(sents):
+        new[owner[k]] = (new[owner[k]] + " " + sent).strip()
+    if " ".join(new[i] for i in range(len(rows)) if new[i]) != full:
+        return []
+    notes = []
+    for i, s in enumerate(rows):
+        if pieces[i] != new[i]:
+            s["закадр"] = new[i]
+            notes.append(f"{s.get('id')}: закадр разнесён по предложениям")
+    return notes
+
+
+# ---- R-WIDE-BEFORE-DIALOG (2026-10-15): общий установочный план перед диалогом ----
+_KID_RE = _re.compile(r"^(.*-K)(\d+)$")
+
+
+def ensure_wide_before_dialogue(shots):
+    """Перед блоком реплик двух+ говорящих должен стоять ОБЩИЙ кадр без реплики.
+    Если его нет (перед диалогом деталь/POV/крупный) — вставляем установочный
+    ОБЩИЙ · фронт на обоих, без закадра и реплики; id K перенумеровываются."""
+    import copy
+
+    if not isinstance(shots, list) or not shots:
+        return []
+    notes = []
+    i = 0
+    while i < len(shots):
+        s = shots[i]
+        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])):
+            i += 1
+            continue
+        j = i
+        speakers = set()
+        while j < len(shots) and isinstance(shots[j], dict) and _is_reply(shots[j]):
+            speakers.add(_shot_s(shots[j], "говорит").casefold())
+            j += 1
+        prev = shots[i - 1] if i > 0 and isinstance(shots[i - 1], dict) else None
+        if len(speakers) >= 2 and not (prev is not None and _shot_s(prev, "план").upper() == "ОБЩИЙ"):
+            w = copy.deepcopy(s)
+            who = _shot_s(s, "кто") or "участники разговора"
+            w["действие"] = f"{who} друг напротив друга перед разговором, видно, кто где."
+            for k in ("говорит", "реплика", "закадр", "эмоции"):
+                if k in w or k in ("говорит", "реплика", "закадр"):
+                    w[k] = ""
+            w["план"], w["ракурс"], w["высота"], w["объект"] = "ОБЩИЙ", "фронт", "уровень глаз", "двое"
+            w["точность"] = "одна картинка"
+            if "точка" in w:
+                w["точка"] = "фронт"
+            _set_cam_text(w, "ОБЩИЙ", "Ракурс фронт — камера спереди, видны оба собеседника.")
+            shots.insert(i, w)
+            notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
+            i = j + 1
+            continue
+        i = j
+    if notes:
+        idmap = {}
+        k = 0
+        for s in shots:
+            if not isinstance(s, dict):
+                continue
+            k += 1
+            old = str(s.get("id") or "")
+            m = _KID_RE.match(old)
+            if m:
+                new = f"{m.group(1)}{k}"
+                if old and old not in idmap:
+                    idmap[old] = new
+                s["id"] = new
+            if "порядок" in s:
+                s["порядок"] = k
+        for s in shots:
+            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
+                s["parent_id"] = idmap[str(s.get("parent_id"))]
+    return notes

@@ -62,6 +62,8 @@ class PromptFileInfo(BaseModel):
     size: int
     modified: float | None
     is_default: bool
+    title: str | None = None
+    description: str | None = None
 
 
 class PromptFileContent(BaseModel):
@@ -192,6 +194,21 @@ async def list_prompt_files(
         else None
     )
     names = group_names if group_names is not None else list_prompts(step_code)
+    _fm_cache: dict[str, dict] = {}
+
+    def _fm(path):
+        import json as _json
+
+        key = str(path.parent)
+        if key not in _fm_cache:
+            try:
+                d = _json.loads((path.parent / ".file_meta.json").read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                d = {}
+            _fm_cache[key] = d if isinstance(d, dict) else {}
+        fm = _fm_cache[key]; base = name[:-3] if name.lower().endswith(".md") else name; e = next((fm[k] for k in (path.stem, path.name, base, base + ".md", name) if isinstance(fm.get(k), dict)), {})
+        return e if isinstance(e, dict) else {}
+
     for name in names:
         if is_excel_gpt_prompt_step(step_code):
             p = resolve_excel_gpt_prompt_path(name, group_id=group_id)
@@ -207,6 +224,8 @@ async def list_prompt_files(
                 size=stat.st_size,
                 modified=_prompt_modified(step_code, name, p),
                 is_default=(name == DEFAULT_NAME),
+                title=(str(_fm(p).get("title") or "").strip() or None),
+                description=(str(_fm(p).get("description") or "").strip() or None),
             )
         )
     return out

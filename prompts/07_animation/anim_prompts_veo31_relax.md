@@ -3,7 +3,7 @@
 
 Нода: **excel_gpt** · `outputMode=project_file` · после image_prompts / images  
 Пишет в **DB** через apply-ops (не TSV). Поле: `промт_видео` (= `animation_prompt` / R48).  
-Целевой генератор: **Veo 3.1 Fast · Relax · outsee** · клип ≈8 с · кадр 9:16 · потом обрежется FFmpeg до 2–4 с по озвучке.
+Целевой генератор: **{{STYLE:generator}} · Relax · outsee** · клип ≈8 с · кадр {{STYLE:aspect}} · потом обрежется FFmpeg до 2–4 с по озвучке.
 
 ---
 
@@ -138,7 +138,7 @@
 
 ## Технические рамки
 
-- Aspect **9:16**, duration **8s** (Veo 3.1 Fast).
+- Aspect **{{STYLE:aspect}}**, duration **8s** ({{STYLE:generator}}).
 - Сохранить стиль и композицию референсного PNG.
 - Физика правдоподобная; одно действие на клип; один continuous take.
 - Без внезапной смены палитры/эпохи рендера.

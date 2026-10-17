@@ -171,8 +171,9 @@ def test_parse_chat_completions_message_when_delta_has_only_role() -> None:
     lines = [
         'data: {"choices":[{"delta":{"role":"assistant"},"message":{"content":"сцена"}}]}',
     ]
-    text, _, _ = parse_chat_completions_sse_lines(lines)
+    text, finish, _ = parse_chat_completions_sse_lines(lines)
     assert text == "сцена"
+    assert finish == "stream_partial"
 
 
 def test_check_provider_envelope_openai_error() -> None:

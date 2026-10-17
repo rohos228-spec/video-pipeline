@@ -71,7 +71,11 @@ from app.web.routers import (
     nii67 as nii67_router,
 )
 from app.web.routers import (
+    style_agent as style_agent_router,
+)
+from app.web.routers import (
     node_groups as node_groups_router,
+    storage as storage_router,
 )
 from app.web.routers import (
     outsee_create as outsee_create_router,
@@ -81,6 +85,8 @@ from app.web.routers import (
 )
 from app.web.routers import (
     project_ops as project_ops_router,
+    ratings as ratings_router,
+    profile as profile_router,
 )
 from app.web.routers import (
     projects as projects_router,
@@ -262,6 +268,8 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router.router, prefix=API_PREFIX)
     app.include_router(projects_router.router, prefix=API_PREFIX)
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
+    app.include_router(ratings_router.router, prefix=API_PREFIX)
+    app.include_router(profile_router.router, prefix=API_PREFIX)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
     app.include_router(outsee_create_router.router, prefix=API_PREFIX)
@@ -288,8 +296,10 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(db_browser_router.router, prefix=API_PREFIX)
     app.include_router(node_groups_router.router, prefix=API_PREFIX)
+    app.include_router(storage_router.router, prefix=API_PREFIX)
     app.include_router(meta_agent_router.router, prefix=API_PREFIX)
     app.include_router(nii67_router.router, prefix=API_PREFIX)
+    app.include_router(style_agent_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

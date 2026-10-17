@@ -2587,6 +2587,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         src = overlay.get(str(row.get("uuid") or "").strip())
                         if src and src.get("voiceover_text"):
                             row["voiceover_text"] = src["voiceover_text"]
+                if str(node_key or "").endswith("_fw_shots"):
+                    from app.services.db_frames_context import (
+                        attach_scene_action_to_pieces,
+                    )
+
+                    stamped = attach_scene_action_to_pieces(
+                        list(db_ctx.get("frames") or [])
+                    )
+                    if stamped:
+                        logger.info(
+                            "[#{}] enrich_xlsx node={!r}: главное_действие "
+                            "сцены дописано на {} кусков закадра",
+                            project.id,
+                            node_key,
+                            stamped,
+                        )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
             ctx_path = ctx_dir / "db_frames.json"
@@ -2850,8 +2866,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 FW_FRAMES_PER_BATCH,
                 ACTION_STAGGER_SEC,
                 ACTION_TARGET_BATCHES,
+                SHOTS_PARALLEL,
+                SHOTS_STAGGER_SEC,
+                SHOTS_UNITS_PER_BATCH,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
-                SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -2863,6 +2881,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             nk = str(node_key or "")
             action_node = nk.endswith("_fw_action")
+            shots_node = nk.endswith("_fw_shots")
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
@@ -2979,6 +2998,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 script_frames_qc = (not fw_camera_menu_only) and (
                     _is_script_frames_qc_group_node(variant, master, node_key)
                 )
+                shots_node = shots_node and script_frames_qc
                 fw_frames = frame_prompts and nk.endswith("_fw_frames")
                 dense_shot_fill = not (
                     fw_camera_menu_only
@@ -3003,6 +3023,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     batch_label = (
                         f"площадка {ACTION_TARGET_BATCHES} пачки, "
                         f"сдвиг {ACTION_STAGGER_SEC:g}с"
+                    )
+                elif shots_node:
+                    batch_label = (
+                        f"шоты по {SHOTS_UNITS_PER_BATCH} ячеек, "
+                        f"параллельно {SHOTS_PARALLEL}, "
+                        f"сдвиг {SHOTS_STAGGER_SEC:g}с"
                     )
                 elif script_frames_qc:
                     batch_label = (
@@ -3062,39 +3088,41 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     chunk_size=(
-                        None
-                        if action_node
+                        SHOTS_UNITS_PER_BATCH
+                        if shots_node
                         else (
-                            CAMERA_MENU_UNITS_PER_BATCH
-                            if fw_camera_menu_only
+                            None
+                            if action_node
                             else (
-                                FW_FRAMES_PER_BATCH
-                                if fw_frames
+                                CAMERA_MENU_UNITS_PER_BATCH
+                                if fw_camera_menu_only
                                 else (
-                                    SCRIPT_FRAMES_QC_UNITS_PER_BATCH
-                                    if script_frames_qc
-                                    else None
+                                    FW_FRAMES_PER_BATCH
+                                    if fw_frames
+                                    else (
+                                        SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                                        if script_frames_qc
+                                        else None
+                                    )
                                 )
                             )
                         )
                     ),
                     target_batches=(
-                        ACTION_TARGET_BATCHES
-                        if action_node
+                        None
+                        if shots_node
                         else (
-                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
-                            if script_frames_qc
-                            and str(node_key or "").endswith("_fw_shots")
+                            ACTION_TARGET_BATCHES
+                            if action_node
                             else (DENSE_TARGET_BATCHES if dense_shot_fill else None)
                         )
                     ),
                     parallel_max=(
-                        ACTION_TARGET_BATCHES
-                        if action_node
+                        SHOTS_PARALLEL
+                        if shots_node
                         else (
-                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
-                            if script_frames_qc
-                            and str(node_key or "").endswith("_fw_shots")
+                            ACTION_TARGET_BATCHES
+                            if action_node
                             else (
                                 VO_PARALLEL_MAX
                                 if fw_camera_menu_only or script_frames_qc
@@ -3103,12 +3131,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     stagger_sec=(
-                        ACTION_STAGGER_SEC
-                        if action_node
+                        SHOTS_STAGGER_SEC
+                        if shots_node
                         else (
-                            VO_STAGGER_SEC
-                            if fw_camera_menu_only or script_frames_qc or dense_shot_fill
-                            else None
+                            ACTION_STAGGER_SEC
+                            if action_node
+                            else (
+                                VO_STAGGER_SEC
+                                if fw_camera_menu_only
+                                or script_frames_qc
+                                or dense_shot_fill
+                                else None
+                            )
                         )
                     ),
                     chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),

@@ -1,0 +1,37 @@
+[
+    {
+        "key":  "style_name",
+        "label":  "Базовый стиль",
+        "value":  "serious premium cinematic micro pixel art.",
+        "type":  "text"
+    },
+    {
+        "key":  "lighting",
+        "label":  "Свет",
+        "value":  "strong chiaroscuro, low-key cinematic lighting, deep black levels, complex shadow gradients, contact shadows, soft ambient occlusion, rim light, volumetric smoke, volumetric light, atmospheric depth, stylized light bounce.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "color_grading",
+        "label":  "Цветокоррекция и палитра",
+        "value":  "stylized filmic color grading, pixel-art tone mapping, rich but restrained palette, controlled saturation, rich color variation, controlled microcontrast.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "composition",
+        "label":  "Композиция",
+        "value":  "rule of thirds, golden ratio, strong readable composition, strong focal point, clear visual hierarchy.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "text_language",
+        "label":  "Правило текста на картинке",
+        "value":  "Любой читаемый текст — только на русском языке.",
+        "type":  "select",
+        "options":  [
+                        "Любой читаемый текст — только на русском языке.",
+                        "Любой читаемый текст — только на английском языке.",
+                        "Никакого читаемого текста на изображении."
+                    ]
+    }
+]

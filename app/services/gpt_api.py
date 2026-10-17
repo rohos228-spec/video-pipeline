@@ -429,11 +429,45 @@ async def _ensure_url_host_resolves(url: str) -> None:
     logger.warning("GPT DNS getaddrinfo failed host={} err={}", host, last)
 
 
+# TCP keepalive на сокете к relay: путь ПК→VPS теряет SYN и рвёт потоки
+# (WinError 121/64). Без keepalive мёртвый сокет молчит до стены вызова
+# (минуты); с пробами 15с + 3×5с обрыв виден за ~30с → salvage и повтор.
+_TCP_KEEPALIVE_IDLE_S = 15
+_TCP_KEEPALIVE_INTERVAL_S = 5
+_TCP_KEEPALIVE_COUNT = 3
+
+
+def _tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
+    opts: list[tuple[int, int, int]] = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    ]
+    tcp = getattr(socket, "IPPROTO_TCP", None)
+    if tcp is None:
+        return opts
+    idle = getattr(socket, "TCP_KEEPIDLE", None)
+    if idle is None:
+        # macOS: TCP_KEEPALIVE = idle
+        idle = getattr(socket, "TCP_KEEPALIVE", None)
+    if idle is not None:
+        opts.append((tcp, idle, _TCP_KEEPALIVE_IDLE_S))
+    intvl = getattr(socket, "TCP_KEEPINTVL", None)
+    if intvl is not None:
+        opts.append((tcp, intvl, _TCP_KEEPALIVE_INTERVAL_S))
+    cnt = getattr(socket, "TCP_KEEPCNT", None)
+    if cnt is not None:
+        opts.append((tcp, cnt, _TCP_KEEPALIVE_COUNT))
+    return opts
+
+
 def _async_client(**kwargs: Any) -> httpx.AsyncClient:
-    """httpx-клиент. Без системных HTTP(S)_PROXY, если не задан GPT_PROXY_URL."""
+    """httpx-клиент. Без системных HTTP(S)_PROXY, если не задан GPT_PROXY_URL.
+
+    Сокеты с TCP keepalive (см. ``_tcp_keepalive_socket_options``): обрыв
+    пути к relay виден за секунды, а не по стене вызова.
+    """
     global _PROXY_LOGGED
     kwargs.setdefault("trust_env", False)
-    kwargs.setdefault(
+    limits = kwargs.pop(
         "limits",
         httpx.Limits(max_keepalive_connections=0, max_connections=32),
     )
@@ -447,11 +481,22 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
                     "GPT_PROXY_URL=socks… нужен пакет: pip install 'httpx[socks]'",
                     context={"error_kind": "proxy_socks_missing", "retryable": False},
                 ) from e
+        # Прокси (без relay) идёт своим transport'ом httpx; keepalive ниже —
+        # для прямого пути ПК→relay.
         kwargs.setdefault("proxy", proxy)
         kwargs["trust_env"] = False
         if not _PROXY_LOGGED:
             logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
             _PROXY_LOGGED = True
+    if "transport" not in kwargs:
+        try:
+            kwargs["transport"] = httpx.AsyncHTTPTransport(
+                limits=limits,
+                socket_options=_tcp_keepalive_socket_options(),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("GPT API: keepalive transport unavailable ({}), default", e)
+            kwargs["limits"] = limits
     return httpx.AsyncClient(**kwargs)
 
 
@@ -1797,6 +1842,19 @@ def _log_chat_finished(
             task_id or "-",
         )
         return
+    if (result.finish_reason or "") in {"stream_partial", "stream_salvaged"}:
+        logger.warning(
+            "gpt_api.chat PARTIAL provider={} model={} attempt={} "
+            "finish={} chars={} task_id={} — обрыв потока, целые ops будут "
+            "записаны, остальное добирается",
+            provider_label,
+            use_model,
+            attempt,
+            result.finish_reason,
+            len(result.text or ""),
+            task_id or "-",
+        )
+        return
     if include_task_id:
         logger.info(
             "gpt_api.chat OK provider={} model={} attempt={} "
@@ -1849,11 +1907,37 @@ def looks_truncated_llm_text(text: str) -> bool:
     return t.endswith((",", ":", "\\"))
 
 
+# apply-ops: оборванный JSON НЕ дописывать «с хвоста». Допись идёт без
+# исходного задания (только 4k хвоста) — модель не знает ячеек и либо
+# молчит (vibecode-continue empty), либо выдумывает содержимое незакрытой
+# операции. Правильно: целые операции из обрубка записать, недостающие
+# ячейки запросить заново (apply_ops_batches: retry missing).
+APPLY_OPS_TAIL_CONTINUE = False
+
+
 def skip_cf_continue_for_salvaged_ops(
     text: str, xlsx_write_contract: str | None
 ) -> bool:
-    """После timeout уже есть целые apply-ops — не жечь ещё 300с на continue."""
+    """Нужно ли пропустить CF-continue для этого ответа.
+
+    apply-ops: всегда пропускаем (см. ``APPLY_OPS_TAIL_CONTINUE``) — целые
+    ops достаются из обрубка, остальное добирает пачка. Прочие контракты
+    (tsv/text): дописываем хвост как раньше.
+    """
     if xlsx_write_contract != "apply_ops":
+        return False
+    if not APPLY_OPS_TAIL_CONTINUE:
+        if looks_truncated_llm_text(text or ""):
+            from app.services.db_apply import salvage_ops_from_partial_json
+
+            logger.info(
+                "gpt_api.chat truncated apply-ops chars={} closed_ops={} — "
+                "no tail-continue, caller re-requests missing cells",
+                len(text or ""),
+                len(salvage_ops_from_partial_json(text or "")),
+            )
+        return True
+    if looks_truncated_llm_text(text or ""):
         return False
     from app.services.db_apply import (
         extract_apply_ops_json,
@@ -2316,7 +2400,12 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     finish = ""
     last: dict[str, Any] = {}
     envelope_err: GptApiError | None = None
+    saw_done = False
     for raw in lines:
+        line = (raw or "").strip()
+        if line in {"data: [DONE]", "data:[DONE]"}:
+            saw_done = True
+            continue
         obj = _chat_sse_obj(raw)
         if not obj:
             continue
@@ -2339,7 +2428,13 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     text = "".join(chunks)
     if envelope_err and not text.strip():
         raise envelope_err
-    return text, finish or "stop", last
+    if not finish and saw_done:
+        finish = "stop"
+    elif not finish:
+        finish = "stream_partial"
+    out = dict(last) if last else {}
+    out["_sse_done"] = saw_done
+    return text, finish, out
 
 
 async def _chat_completions_nostream(
@@ -2877,24 +2972,37 @@ async def chat(
             on_delta=on_delta,
         )
 
-    headers = _headers()
     from app.services.llm_override import current_text_model_id
+    from app.services.pay52_routes import resolve_text
 
     use_model = (
         model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
     ).strip()
-    url = _chat_url(use_model)
+    routed = resolve_text(use_model)
+    if routed is not None:
+        use_model = routed.api_model
+        headers = routed.headers()
+        url = routed.url
+    else:
+        headers = _headers()
+        url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     ov_model = current_text_model_id()
-    if _node_vibecode_override():
+    if routed is not None:
+        provider_label = f"52pay ({use_model})"
+    elif _node_vibecode_override():
         provider_label = f"vibecode ({ov_model})"
     elif _node_kie_override():
         provider_label = f"kie ({ov_model})"
     else:
         provider_label = settings.text_llm_label
     proxy = _gpt_proxy_url()
-    via = "vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct")
+    via = (
+        "direct"
+        if routed is not None
+        else ("vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct"))
+    )
     effort_log = ""
     if _node_vibecode_override():
         effort_log = _node_reasoning_effort() or ""
@@ -2907,7 +3015,7 @@ async def chat(
         f" reasoning_effort={effort_log}" if effort_log else "",
     )
 
-    responses_mode = is_responses_mode()
+    responses_mode = False if routed is not None else is_responses_mode()
     if responses_mode:
         # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie
         # задача уже success (см. kie.ai/logs Task ID = resp_…).
@@ -2941,14 +3049,14 @@ async def chat(
             ),
         }
         # vibecode chat: степень мышления — поле reasoning_effort, не суффикс модели.
-        if _node_vibecode_override():
+        if routed is None and _node_vibecode_override():
             effort = _node_reasoning_effort()
             if effort:
                 body["reasoning_effort"] = effort
     if temperature is not None:
         body["temperature"] = temperature
     anth_body: dict[str, Any] | None = None
-    if _is_anthropic_messages_model(use_model):
+    if routed is None and _is_anthropic_messages_model(use_model):
         anth_body = _anthropic_body_from_messages(
             build_messages(
                 prompt=prompt,
@@ -2991,7 +3099,7 @@ async def chat(
                 # Cloudflare/kie рвёт длинный SSE: дельты уже есть, но JSON
                 # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
                 cont_round = 0
-                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                while cont_round < 1 and looks_truncated_llm_text(result.text):
                     if skip_cf_continue_for_salvaged_ops(
                         result.text, xlsx_write_contract
                     ):
@@ -3099,7 +3207,7 @@ async def chat(
                     on_delta=on_delta,
                 )
                 cont_round = 0
-                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                while cont_round < 1 and looks_truncated_llm_text(result.text):
                     if skip_cf_continue_for_salvaged_ops(
                         result.text, xlsx_write_contract
                     ):

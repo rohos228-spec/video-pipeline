@@ -85,7 +85,7 @@ export function StudioWorkspace({
   const setVMenuNodeKeySynced = useCallback(
     (key: string | null) => {
       if (key) onSelectNode(key);
-      setVMenuNodeKey(key);
+      setVMenuNodeKey(null); // old V-menu detached
     },
     [onSelectNode],
   );
@@ -119,11 +119,13 @@ export function StudioWorkspace({
     onSelectNode(null);
     setPromptFocus(null);
     setStudioTarget(null);
+    setInlineStudioKey(null);
     setStudioTab("settings");
     setVMenuNodeKey(null);
   }, [onStudioOpenChange, onSelectNode]);
 
-  const openStudioForNode = useCallback(
+  const [inlineStudioKey, setInlineStudioKey] = useState<string | null>(null);
+  const openStudioInline = useCallback(
     (
       nodeKey: string,
       nodeType: string,
@@ -131,6 +133,7 @@ export function StudioWorkspace({
       tab: "settings" | "prompts" | "results" | "excel" = "prompts",
     ) => {
       suppressStudioOpenUntil.current = 0;
+      setInlineStudioKey(null);
       const resolvedTab =
         slot?.kind === "excel" && isExcelGptNode(nodeType)
           ? "settings"
@@ -166,6 +169,14 @@ export function StudioWorkspace({
       onStudioOpenChange(true);
     },
     [onSelectNode, onStudioOpenChange],
+  );
+  // Every legacy "open node studio" path now just expands the node inline.
+  const openStudioForNode = useCallback(
+    (nodeKey: string, _nodeType?: string, _slot?: NodePromptSlot | null, _tab?: string) => {
+      onSelectNode(nodeKey);
+      window.dispatchEvent(new CustomEvent("vp-node-inline-open", { detail: { nodeKey } }));
+    },
+    [onSelectNode],
   );
 
   useEffect(() => {
@@ -211,22 +222,27 @@ export function StudioWorkspace({
         toast.error("Сначала выберите проект");
         return;
       }
-      const d = (ev as CustomEvent<{ nodeKey?: string | null }>).detail ?? {};
+      const d = (ev as CustomEvent<{ nodeKey?: string | null; initialTab?: "settings" | "prompts"; inline?: boolean }>).detail ?? {};
       const nodeKey = d.nodeKey ?? selectedNodeKey;
       if (!nodeKey) {
         toast.error("Выберите ноду на канвасе");
         return;
       }
       const nodeType = nodeTypeFromKey(nodeKey);
-      if (nodeType === "topic") {
+      if (nodeType === "topic" && d.initialTab !== "settings") {
         toast.message("У ноды «Тема» нет файловых промтов");
         return;
       }
-      openStudioForNode(nodeKey, nodeType, null, "prompts");
+      if (!d.inline) {
+        openStudioForNode(nodeKey);
+        return;
+      }
+      openStudioInline(nodeKey, nodeType, null, d.initialTab ?? "prompts");
+      setInlineStudioKey(nodeKey);
     };
     window.addEventListener("studio-open-node-prompts", onOpenPrompts);
     return () => window.removeEventListener("studio-open-node-prompts", onOpenPrompts);
-  }, [projectId, selectedNodeKey, openStudioForNode]);
+  }, [projectId, selectedNodeKey, openStudioForNode, openStudioInline]);
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -650,16 +666,8 @@ export function StudioWorkspace({
                 return;
               }
             }
+            // Old side-sheet auto-open on select removed; single click expands inline.
             onSelectNode(nodeKey);
-            setStudioTarget({
-              nodeKey,
-              nodeType,
-              promptFocus: null,
-              tab: "settings",
-            });
-            setPromptFocus(null);
-            setStudioTab("settings");
-            onStudioOpenChange(true);
           }}
           disabledNodes={disabledNodes}
           runStepNodeKey={effectiveNodeKey}
@@ -695,6 +703,7 @@ export function StudioWorkspace({
         }}
         projectId={projectId}
         nodeKey={effectiveNodeKey}
+        inlineTargetId={inlineStudioKey && inlineStudioKey === effectiveNodeKey ? `vp-inline-studio-${inlineStudioKey}` : null}
         initialTab={studioTarget?.tab ?? studioTab}
         promptFocus={
           effectiveNodeKey && studioTarget?.nodeKey === effectiveNodeKey

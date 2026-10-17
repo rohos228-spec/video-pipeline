@@ -65,12 +65,7 @@ async def outsee_http_status() -> dict[str, Any]:
         "waiting_count": active_snap["waiting_count"],
         "max_parallel": active_snap["max_parallel"],
         "active_jobs": active_snap["jobs"],
-        "hint": (
-            "OUTSEE_API_KEY из https://outsee.io/profile — Bearer /api/v1 "
-            "(отдельный ключ, не Grsai)"
-            if oh.outsee_api_configured()
-            else "Задай OUTSEE_API_KEY в .env (профиль outsee.io)"
-        ),
+        "hint": "Ключ генератора VIA Render задаётся в настройках (.env).",
     }
 
 

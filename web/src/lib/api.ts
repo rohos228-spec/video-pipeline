@@ -139,6 +139,210 @@ export interface BlockActivityEntry {
   created_at: string;
 }
 
+// ── Style agent DTO ─────────────────────────────────────────────────
+export interface StyleAgentSettings {
+  max_llm_calls: number;
+  min_support: number;
+  iqr_threshold: number;
+  max_sheets_per_video: number;
+  hook_seconds?: number;
+  language: string;
+  style_id: string;
+  label: string;
+  skip_llm: boolean;
+  skip_asr: boolean;
+  skip_ocr: boolean;
+  frames_per_min: number;
+  agents: string[];
+}
+
+export interface StyleAgentJob {
+  status: "idle" | "running" | "done" | "failed" | "stopped";
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  stage?: string;
+  progress?: Record<string, unknown>;
+  error?: string | null;
+  llm?: { used: number; limit: number; remaining?: number };
+  videos?: string[];
+}
+
+export interface StyleAgentVideo {
+  name: string;
+  size: number;
+  uploaded: boolean;
+  analyzed: boolean;
+  sheets: string[];
+}
+
+export interface StyleAgentSnapshot {
+  settings: StyleAgentSettings;
+  job: StyleAgentJob;
+  videos: StyleAgentVideo[];
+  passport: {
+    hasDraft: boolean;
+    hasApproved: boolean;
+    draftAt?: string | null;
+    approvedAt?: string | null;
+    style_id: string;
+    label: string;
+    problems: string[];
+  };
+  report: string;
+  apply: Record<string, unknown>;
+}
+
+export interface StyleAgentEstimate {
+  settings: StyleAgentSettings;
+  videos: string[];
+  plan: {
+    n_videos: number;
+    sheets_per_video: number;
+    sheets_by_agent?: Record<string, number>;
+    images_per_call?: number;
+    frames?: { video: string; duration_s: number; frames: number; motion_frames: number; grid: string; sheets_overview: number; sheets_motion: number }[];
+    max_calls: number;
+    agents: string[];
+    global_agents?: string[];
+    with_synth: boolean;
+    with_blueprint?: boolean;
+    per_video: Record<string, number>;
+    videos_covered: number;
+    minimal_total: number;
+    ideal_total: number;
+    planned_total: number;
+    fits: boolean;
+    hint: string;
+    skip_plan: string[];
+  };
+  cost: {
+    model_id: string;
+    usd_per_m_in: number;
+    usd_per_m_out: number;
+    tokens_in: number;
+    tokens_out: number;
+    usd: number;
+    usd_hi: number;
+    calls: number;
+  };
+  model: { id?: string | null; label?: string | null };
+}
+
+export interface StylePassportField {
+  value: unknown;
+  confidence: "high" | "medium" | "low";
+  support: string;
+  note?: string;
+  p10?: number;
+  p90?: number;
+}
+
+export interface StylePassportShot {
+  i: number;
+  start: number;
+  end: number;
+  len: number;
+  transition_in?: string;
+  uncertain?: boolean;
+  what?: string | null;
+  framing?: string | null;
+  camera?: string | null;
+  subject_anim?: string | null;
+  start_state?: string | null;
+  change?: string | null;
+  end_state?: string | null;
+  transition_out?: string | null;
+  transition_note?: string | null;
+  illustrates?: string | null;
+  vfx?: string | null;
+  vo_text?: string;
+}
+
+export interface StylePassportVideo {
+  video: string;
+  duration_s?: number | null;
+  transcript_source?: string | null;
+  shots: StylePassportShot[];
+  subtitles?: { start: number; end: number; text: string }[];
+  sentences?: { i: number; start: number; end: number; text: string; words: number }[];
+  linkage?: Record<string, unknown>;
+  script?: Record<string, unknown>;
+  problems?: Record<string, unknown>;
+}
+
+export interface StylePassportPattern {
+  name: string;
+  kind?: string;
+  description?: string;
+  how_to_reproduce?: string;
+  signature?: boolean;
+  support?: string;
+  confidence?: string;
+  frequency?: Record<string, string>;
+  examples?: { video: string; tc: string }[];
+}
+
+export interface StyleBlueprintNode {
+  node_type: string;
+  label?: string;
+  new?: boolean;
+  inputs?: string[];
+  outputs?: string[];
+  params?: Record<string, unknown>;
+  prompt_template?: string;
+  prompt_hint?: string;
+  fallback_existing?: string;
+}
+
+export interface StyleBlueprint {
+  chain: StyleBlueprintNode[];
+  prompt_templates: Record<string, string>;
+  new_nodes_needed: string[];
+  notes: string[];
+  source?: string;
+}
+
+export interface StylePassport {
+  $schema: string;
+  style_id: string;
+  label: string;
+  created_at?: string;
+  approved_at?: string;
+  sources?: { count: number; videos: string[] };
+  format?: Record<string, StylePassportField>;
+  visual?: Record<string, StylePassportField>;
+  voice?: Record<string, StylePassportField>;
+  music?: Record<string, StylePassportField>;
+  sfx?: Record<string, StylePassportField>;
+  motion?: Record<string, StylePassportField>;
+  narrative?: Record<string, StylePassportField>;
+  linkage?: Record<string, StylePassportField>;
+  script?: Record<string, StylePassportField>;
+  mapping?: Record<string, unknown>;
+  videos?: StylePassportVideo[];
+  patterns?: StylePassportPattern[];
+  peculiarities?: string[];
+  blueprint?: StyleBlueprint;
+  variance_notes?: string[];
+  llm?: { calls_used: number; calls_limit: number; model: string };
+  errors?: Record<string, unknown>;
+}
+
+export interface StyleApplyReport {
+  style_id: string;
+  materialized?: boolean;
+  blocks?: string[];
+  preset?: string;
+  frame_style?: string;
+  written?: string[];
+  backed_up?: string[];
+  skipped?: string[];
+  prompt_overrides_patch?: Record<string, unknown>;
+  node_step_params_patch?: Record<string, unknown>;
+  next_steps?: string[];
+  at?: string;
+}
+
 export interface LibraryConfigDTO {
   id: number;
   name: string;
@@ -889,11 +1093,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ card }),
     }),
-  generateNii67: (id: number, card: Nii67Card) =>
-    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(`/api/projects/${id}/nii67/generate`, {
-      method: "POST",
-      body: JSON.stringify({ card }),
-    }),
+  planNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card }>(
+      `/api/projects/${id}/nii67/plan`,
+      { method: "POST", body: JSON.stringify({ card }) },
+      300_000,
+    ),
+  storyboardNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(
+      `/api/projects/${id}/nii67/storyboard`,
+      {
+        method: "POST",
+        body: JSON.stringify({ card }),
+      },
+      420_000,
+    ),
   putNii67Frames: (id: number, frames: Nii67Frame[]) =>
     http<{ frames: Nii67Frame[] }>(`/api/projects/${id}/nii67/frames`, {
       method: "PUT",
@@ -1224,6 +1438,65 @@ export const api = {
       `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/files`,
       { method: "DELETE" },
     ),
+
+  // ── Style agent (ноды «Разбор стиля» / «Проверка стиля») ─────────
+  getStyleAgent: (projectId: number, nodeKey?: string | null) =>
+    http<StyleAgentSnapshot>(
+      `/api/projects/${projectId}/style-agent${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+    ),
+  patchStyleAgentSettings: (projectId: number, patch: Partial<StyleAgentSettings>) =>
+    http<{ settings: StyleAgentSettings }>(`/api/projects/${projectId}/style-agent`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  estimateStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<StyleAgentEstimate>(
+      `/api/projects/${projectId}/style-agent/estimate${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  runStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<{ started: boolean; estimate: StyleAgentEstimate }>(
+      `/api/projects/${projectId}/style-agent/run${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  stopStyleAgent: (projectId: number) =>
+    http<{ stopped: boolean }>(`/api/projects/${projectId}/style-agent/stop`, { method: "POST" }),
+  uploadStyleRef: (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{ name: string; size: number; videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/upload`,
+      { method: "POST", body: fd },
+      600_000,
+    );
+  },
+  deleteStyleRef: (projectId: number, name: string) =>
+    http<{ videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/refs/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getStylePassport: (projectId: number, approved = false) =>
+    http<{ passport: StylePassport; problems: string[] }>(
+      `/api/projects/${projectId}/style-agent/passport${approved ? "?approved=true" : ""}`,
+    ),
+  putStylePassport: (projectId: number, passport: StylePassport) =>
+    http<{ ok: boolean; problems: string[] }>(`/api/projects/${projectId}/style-agent/passport`, {
+      method: "PUT",
+      body: JSON.stringify({ passport }),
+    }),
+  approveStylePassport: (projectId: number, passport?: StylePassport | null, materialize = true) =>
+    http<{ report: StyleApplyReport; snapshot: StyleAgentSnapshot }>(
+      `/api/projects/${projectId}/style-agent/approve`,
+      { method: "POST", body: JSON.stringify({ passport: passport ?? undefined, materialize }) },
+      120_000,
+    ),
+  getStyleAgentReport: (projectId: number) =>
+    http<{ report: string; variance_report: string; apply_report: StyleApplyReport | null }>(
+      `/api/projects/${projectId}/style-agent/report`,
+    ),
+  styleReportMdUrl: (projectId: number) => `/api/projects/${projectId}/style-agent/report?fmt=md`,
+  styleSheetUrl: (projectId: number, video: string, name: string) =>
+    `/api/projects/${projectId}/style-agent/sheet?video=${encodeURIComponent(video)}&name=${encodeURIComponent(name)}`,
 
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>
@@ -2857,6 +3130,8 @@ export interface PromptFileInfo {
   size: number;
   modified: number | null;
   is_default: boolean;
+  title?: string | null;
+  description?: string | null;
 }
 
 export interface PromptFileContent {

@@ -45,6 +45,9 @@ from app.services.scene_shot_grammar import (
     ensure_character_ids,
     normalize_reply_cameras,
     reflow_vo_by_sentences,
+    merge_trivial_shots,
+    ensure_wide_before_dialogue,
+    spread_vo_sentences,
     repair_shot_vo_lengths,
     shots_continuity_problems,
     shots_grammar_reason,
@@ -71,9 +74,29 @@ VO_UNITS_PER_BATCH = 6
 # Из main: соло-пачка жирного K1, автопочинка UUID, не резать пачку на salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 8
+# Шоты (13.10.2026, прогон 18:37–19:25 на vibecode.moe напрямую, без relay):
+# пачка из 3 ячеек на reasoning high = 40–73k символов, 5–7 мин потока;
+# 34 пачки, 0 обрывов, 0 502, но 3 пачки упёрлись в стену 540 с и были
+# переделаны с нуля (по 9 мин слота впустую). Итог 47 мин на 97 ячеек.
+# * 3 ячейки в запросе — обрыв теряет не больше одной незакрытой операции,
+#   закрытые пишутся сразу;
+# * конвейер: 10 запросов в полёте без барьера «волны» (vibecode держит
+#   8 параллельных потоков без 502 — проверено), старт через 3 с;
+# * стена 15 мин — живой длинный ответ не выбрасываем; мёртвый сокет
+#   ловит keepalive в gpt_api за ~30 с, а не стена.
+# Повторы: сеть — до 3 раз та же пачка с растущей паузой (502 апстрима
+# пережидаем, а не долбим); недостающие ячейки — 2 добора.
+SHOTS_UNITS_PER_BATCH = 3
+SHOTS_PARALLEL = 16  # 2026-10-15: все пачки сразу (38 ячеек / 3 = 13)
+SHOTS_STAGGER_SEC = 3.0
+SHOTS_PACK_TIMEOUT_S = 900.0
+SHOTS_NET_RETRIES = 3
+SHOTS_MISSING_ROUNDS = 2
+# Пауза перед повтором пачки после сетевой/LLM ошибки, по номеру попытки.
+SHOTS_NET_RETRY_BACKOFF_S = (20.0, 60.0, 120.0)
 # Площадка: весь набор тремя пачками, старт через 30 с.
 ACTION_TARGET_BATCHES = 3
-ACTION_STAGGER_SEC = 30.0
+ACTION_STAGGER_SEC = 4.0  # 2026-10-15: было 30 с, пользователь: стаггер 2–5 с
 FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 8
 FW_FRAMES_PARALLEL_BATCHES = 8
@@ -110,16 +133,29 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну пачку: 20 минут. Все виды пачек ждут одно и то же."""
-    del footer_kind
+    """Стена на одну пачку.
+
+    Шоты — 15 минут: длинный живой ответ (5–7 мин на high) не выбрасываем;
+    мёртвый сокет ловит keepalive, а не стена. Остальные ноды ждут 20 минут.
+    """
+    if shots_short_packs(footer_kind):
+        return SHOTS_PACK_TIMEOUT_S
     return 1200.0
 
 
-class _PackSendGate:
-    """Не больше 8 запросов этого прогона, старт с разницей в gap_s."""
+def shots_short_packs(footer_kind: str | None) -> bool:
+    """Шоты: не резать пачку дальше и не слать её целиком по три раза."""
+    return (footer_kind or "").strip().lower() in {"shots_coverage", "shots"}
 
-    def __init__(self, gap_s: float) -> None:
-        self.sem = asyncio.Semaphore(PACK_IN_FLIGHT_MAX)
+
+class _PackSendGate:
+    """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
+
+    def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
+        cap = PACK_IN_FLIGHT_MAX
+        if in_flight is not None and int(in_flight) > 0:
+            cap = max(1, min(PACK_IN_FLIGHT_MAX, int(in_flight)))
+        self.sem = asyncio.Semaphore(cap)
         self.lock = asyncio.Lock()
         self.next_at = 0.0
         self.gap_s = max(0.0, float(gap_s))
@@ -350,6 +386,26 @@ def split_vo_units(
         if pack:
             packs.append(pack)
     return packs or [list(frames)]
+
+
+def split_into_fixed_units(
+    frames: list[dict[str, Any]], unit_size: int
+) -> list[list[dict[str, Any]]]:
+    """Пачки по N ячеек закадра. Жирную ячейку не выносим в соло."""
+    if not frames:
+        return []
+    unit_size = max(1, int(unit_size))
+    units = group_vo_units(frames)
+    if len(units) <= 1:
+        return [frames[i : i + unit_size] for i in range(0, len(frames), unit_size)]
+    packs: list[list[dict[str, Any]]] = []
+    for i in range(0, len(units), unit_size):
+        pack: list[dict[str, Any]] = []
+        for unit in units[i : i + unit_size]:
+            pack.extend(unit)
+        if pack:
+            packs.append(pack)
+    return packs
 
 
 def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
@@ -2524,7 +2580,13 @@ def run_code_passes(
             )
     if kind == "shots_coverage":
         # закадр: снять с кадров реплик, разрезать >80 в соседний кадр (склейка дословная)
+        # R-MERGE-TRIVIAL (2026-10-15): склеить тривиально продолжающиеся кадры
+        _traced("shot_vo_fill", lambda: [merge_trivial_shots((o.get("fields") or {}).get("кадры") or []) for o in ops if isinstance(o, dict)])
         _traced("shot_vo_fill", lambda: rebalance_shot_vo_ops(ops))
+        # R-WIDE-BEFORE-DIALOG (2026-10-15): общий план перед диалогом
+        _traced("shot_vo_fill", lambda: [ensure_wide_before_dialogue((o.get("fields") or {}).get("кадры") or []) for o in ops if isinstance(o, dict)])
+        # R-VO-SPREAD (2026-10-15): несколько предложений в одном кадре — разнести по кадрам
+        _traced("shot_vo_fill", lambda: [spread_vo_sentences((o.get("fields") or {}).get("кадры") or []) for o in ops if isinstance(o, dict)])
         if _GATE_CHARACTERS.get():
             _ids_by_uid = {str(r.get("uuid") or "").strip(): r.get("персонажи") for r in chunk}
             pass
@@ -2707,7 +2769,13 @@ async def run_apply_ops_batched(
 
     size = int(chunk_size) if chunk_size and int(chunk_size) > 0 else 0
     n_target = int(target_batches) if target_batches and int(target_batches) > 1 else 0
-    if n_target:
+    if shots_short_packs(footer_kind):
+        packs = split_into_fixed_units(pending, size or SHOTS_UNITS_PER_BATCH)
+        if not (parallel_max and int(parallel_max) > 0):
+            parallel_max = SHOTS_PARALLEL
+        if stagger_sec is None:
+            stagger_sec = SHOTS_STAGGER_SEC
+    elif n_target:
         packs = split_into_n_packs(pending, n_target)
     elif size and chunk_by_vo_unit:
         packs = split_vo_units(pending, size)
@@ -3049,7 +3117,8 @@ async def run_apply_ops_batched(
                 )
                 return
             nxt = next_split_level(level)
-            if nxt is None or len(chunk) <= 1:
+            keep_pack = shots_short_packs(footer_kind)
+            if nxt is None or len(chunk) <= 1 or keep_pack:
                 # Retry up to under_retries on severe undercount/PassStop.
                 msg = str(exc)
                 under = (
@@ -3090,12 +3159,21 @@ async def run_apply_ops_batched(
                     _run_adaptive._net_tries = _tries
                     _k = tuple(str(fr.get("uuid") or "") for fr in chunk)
                     _tries[_k] = _tries.get(_k, 0) + 1
-                    if _tries[_k] <= 3:
-                        logger.warning("[#{}] apply_ops node={!r}: L{} net/LLM fail ({}) → retry {}/3 in 20s", project_id, node_key, level, msg[:120], _tries[_k])
-                        await asyncio.sleep(20.0)
+                    # Шоты: путь рвётся часто, но каждый повтор дешевле
+                    # (целые ops уже записаны) — даём 3 попытки, как всем.
+                    _cap = SHOTS_NET_RETRIES if keep_pack else 3
+                    if _tries[_k] <= _cap:
+                        if keep_pack:
+                            _bo = SHOTS_NET_RETRY_BACKOFF_S[
+                                min(_tries[_k], len(SHOTS_NET_RETRY_BACKOFF_S)) - 1
+                            ]
+                        else:
+                            _bo = 20.0
+                        logger.warning("[#{}] apply_ops node={!r}: L{} net/LLM fail ({}) → retry {}/{} in {:.0f}s", project_id, node_key, level, msg[:120], _tries[_k], _cap, _bo)
+                        await asyncio.sleep(_bo)
                         await _run_adaptive(chunk, level, under_retries=under_retries)
                         return
-                    _skip_pack(chunk, level, f"LLM/сеть после 3 повторов: {msg[:200]}")
+                    _skip_pack(chunk, level, f"LLM/сеть после {_cap} повторов: {msg[:200]}")
                     return
                 logger.error(
                     "[#{}] apply_ops node={!r}: L{} пачка упала, "
@@ -3151,28 +3229,40 @@ async def run_apply_ops_batched(
             return
 
         # Если не хватает нескольких кадров (обрыв сокета / неполный стрим) —
-        # сначала пробуем 1 раз дозапросить недостающие кадры без дробления!
+        # сначала дозапрашиваем только недостающие кадры без дробления.
+        # Шоты: до SHOTS_MISSING_ROUNDS доборов (обрыв на пути — норма,
+        # каждый добор короче предыдущего); прочие — один добор.
         if under_retries > 0 and len(missing) > 1:
+            keep_pack = shots_short_packs(footer_kind)
+            next_under = min(under_retries - 1, SHOTS_MISSING_ROUNDS - 1) if keep_pack else 0
             logger.warning(
                 "[#{}] apply_ops node={!r}: L{} incomplete {}/{} (сокет обрыв/salvage) "
-                "→ retry missing ({} кадров) без дробления",
+                "→ retry missing ({} кадров) без дробления, доборов после этого: {}",
                 project_id,
                 node_key,
                 level,
                 len(chunk) - len(missing),
                 len(chunk),
                 len(missing),
+                max(0, next_under),
             )
             await asyncio.sleep(1.0)
-            await _run_adaptive(missing, level, under_retries=0, junk_left=0)
+            await _run_adaptive(
+                missing, level, under_retries=max(0, next_under), junk_left=0
+            )
             return
 
         nxt = next_split_level(level)
-        if nxt is None:
+        if nxt is None or shots_short_packs(footer_kind):
+            why = (
+                "пачку шотов не режем"
+                if shots_short_packs(footer_kind)
+                else "резать дальше некуда"
+            )
             _skip_pack(
                 missing,
                 level,
-                "неполный apply-ops, резать дальше некуда, ноду не перезапускаем: "
+                f"неполный apply-ops, {why}, ноду не перезапускаем: "
                 + ", ".join(str(fr.get("uuid") or "")[:8] for fr in missing[:8]),
             )
             return
@@ -3198,10 +3288,49 @@ async def run_apply_ops_batched(
             await asyncio.sleep(delay)
         await _run_adaptive(pack, 1)
 
+    def _log_pack_errors(results: list[Any]) -> None:
+        for err in results:
+            if isinstance(err, asyncio.CancelledError):
+                raise err
+            if isinstance(err, BaseException):
+                logger.error(
+                    "[#{}] apply_ops node={!r}: пачка упала, "
+                    "ноду не перезапускаем: {}",
+                    project_id,
+                    node_key,
+                    err,
+                )
+
     async def _run_waves() -> None:
         if len(packs) <= 1:
             for pack in packs:
                 await _run_adaptive(pack, 1)
+        elif shots_short_packs(footer_kind):
+            # Конвейер: все пачки стоят в очереди к гейту (в полёте не больше
+            # wave_n, между отправками delay_s). Без барьера «волны» —
+            # медленная или повторяемая пачка не держит остальные.
+            logger.info(
+                "[#{}] apply_ops node={!r}: конвейер {} пачек, "
+                "в полёте {}, старт через {}s",
+                project_id,
+                node_key,
+                len(packs),
+                wave_n,
+                delay_s,
+            )
+            if on_progress is not None:
+                try:
+                    await on_progress(
+                        f"конвейер: {len(packs)} пачек по {len(packs[0])}, "
+                        f"в полёте {wave_n}"
+                    )
+                except Exception:
+                    logger.debug("apply_ops progress callback failed", exc_info=True)
+            results = await asyncio.gather(
+                *[_run_pack(0.0, pack) for pack in packs],
+                return_exceptions=True,
+            )
+            _log_pack_errors(list(results))
         else:
             for wave_start in range(0, len(packs), wave_n):
                 wave = packs[wave_start : wave_start + wave_n]
@@ -3230,19 +3359,15 @@ async def run_apply_ops_batched(
                     ],
                     return_exceptions=True,
                 )
-                for err in results:
-                    if isinstance(err, asyncio.CancelledError):
-                        raise err
-                    if isinstance(err, BaseException):
-                        logger.error(
-                            "[#{}] apply_ops node={!r}: пачка упала, "
-                            "ноду не перезапускаем: {}",
-                            project_id,
-                            node_key,
-                            err,
-                        )
+                _log_pack_errors(list(results))
 
-    gate_token = _pack_gate.set(_PackSendGate(delay_s))
+    # Шоты: гейт и есть ограничитель параллельности конвейера.
+    gate_token = _pack_gate.set(
+        _PackSendGate(
+            delay_s,
+            in_flight=wave_n if shots_short_packs(footer_kind) else None,
+        )
+    )
     try:
         try:
             await _run_waves()

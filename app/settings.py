@@ -101,6 +101,15 @@ class Settings(BaseSettings):
         "https://vibecode.moe/v1", alias="VIBECODE_BASE_URL"
     )
 
+    # 52pay: отдельный ключ на группу моделей. Пустой ключ — модель остаётся на vibecode/kie.
+    pay52_base_url: str = Field("https://api.52pay.com/v1", alias="PAY52_BASE_URL")
+    pay52_glm_api_key: str = Field("", alias="PAY52_GLM_API_KEY")
+    pay52_claude_low_api_key: str = Field("", alias="PAY52_CLAUDE_LOW_API_KEY")
+    pay52_claude_high_api_key: str = Field("", alias="PAY52_CLAUDE_HIGH_API_KEY")
+    pay52_gpt_api_key: str = Field("", alias="PAY52_GPT_API_KEY")
+    pay52_seedance_mini_api_key: str = Field("", alias="PAY52_SEEDANCE_MINI_API_KEY")
+    pay52_seedance_faces_api_key: str = Field("", alias="PAY52_SEEDANCE_FACES_API_KEY")
+
     # GPT / kie.ai — основной текстовый стек (не удалять при добавлении Kimi)
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")

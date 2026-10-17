@@ -1,4 +1,4 @@
-"""Модель с канвас-ноды, не дефолт каталога."""
+﻿"""Модель с канвас-ноды, не дефолт каталога."""
 
 from __future__ import annotations
 
@@ -235,18 +235,16 @@ def test_bind_plain_excel_gpt_stays_vibecode() -> None:
         assert ov.model_id == "gpt-5.6-sol"
 
 
-def test_script_frames_qc_routes_chat_to_vibecode_vps_while_header_is_kie(
-    monkeypatch, tmp_path
-) -> None:
+def _direct_settings(monkeypatch, tmp_path):
+    """kie в шапке, relay выключен: группа всё равно идёт на vibecode.moe напрямую."""
     import app.services.gpt_api as gpt_api
     import app.settings as settings_mod
-    from app.services.llm_override import bind_project_llm, current_override
     from app.settings import Settings
 
     monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
     monkeypatch.setenv("GPT_API_KEY", "kie-key")
-    monkeypatch.setenv("GPT_BASE_URL", "https://gpt.example.com")
-    monkeypatch.setenv("GPT_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
+    monkeypatch.setenv("GPT_RELAY_TOKEN", "")
     monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
     monkeypatch.setenv("GPT_MODEL", "gpt-5-6-sol")
     monkeypatch.setenv("GPT_REASONING_EFFORT", "low")
@@ -256,7 +254,16 @@ def test_script_frames_qc_routes_chat_to_vibecode_vps_while_header_is_kie(
     s = Settings()
     monkeypatch.setattr(settings_mod, "settings", s)
     monkeypatch.setattr(gpt_api, "settings", s)
+    return gpt_api
 
+
+def test_script_frames_qc_routes_chat_to_vibecode_direct_while_header_is_kie(
+    monkeypatch, tmp_path
+) -> None:
+    """Каркас: vibecode chat напрямую (без relay), ключ vibecode, reasoning high."""
+    from app.services.llm_override import bind_project_llm, current_override
+
+    gpt_api = _direct_settings(monkeypatch, tmp_path)
     meta = {
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
@@ -270,42 +277,26 @@ def test_script_frames_qc_routes_chat_to_vibecode_vps_while_header_is_kie(
         assert ov.reasoning_effort == "high"
         assert gpt_api.is_responses_mode() is False
         assert gpt_api._chat_url("gpt-5.6-sol") == (
-            "https://gpt.example.com/v1/chat/completions"
+            "https://vibecode.moe/v1/chat/completions"
         )
         headers = gpt_api._headers()
         assert headers["Authorization"] == "Bearer vk-test"
-        assert headers["X-VP-Relay-Token"] == "relay-secret"
+        assert "X-VP-Relay-Token" not in headers
         assert gpt_api._node_reasoning_effort() == "high"
     assert gpt_api.is_responses_mode() is True
     assert gpt_api._node_reasoning_effort() is None
 
 
-def test_shots_routes_chat_to_vibecode_vps_while_header_is_kie(
+def test_shots_routes_chat_to_vibecode_direct_while_header_is_kie(
     monkeypatch, tmp_path
 ) -> None:
-    import app.services.gpt_api as gpt_api
-    import app.settings as settings_mod
     from app.services.llm_override import (
         bind_project_llm,
         current_override,
         current_text_model_id,
     )
-    from app.settings import Settings
 
-    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
-    monkeypatch.setenv("GPT_API_KEY", "kie-key")
-    monkeypatch.setenv("GPT_BASE_URL", "https://gpt.example.com")
-    monkeypatch.setenv("GPT_RELAY_TOKEN", "relay-secret")
-    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
-    monkeypatch.setenv("GPT_MODEL", "gpt-5-6-sol")
-    monkeypatch.setenv("GPT_REASONING_EFFORT", "low")
-    monkeypatch.setenv("VIBECODE_API_KEY", "vk-test")
-    monkeypatch.setenv("VIBECODE_BASE_URL", "https://vibecode.moe/v1")
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    s = Settings()
-    monkeypatch.setattr(settings_mod, "settings", s)
-    monkeypatch.setattr(gpt_api, "settings", s)
-
+    gpt_api = _direct_settings(monkeypatch, tmp_path)
     meta = {
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
@@ -317,11 +308,13 @@ def test_shots_routes_chat_to_vibecode_vps_while_header_is_kie(
         assert ov.model_id == "gpt-5.6-sol"
         assert gpt_api.is_responses_mode() is False
         assert gpt_api._chat_url("gpt-5.6-sol") == (
-            "https://gpt.example.com/v1/chat/completions"
+            "https://vibecode.moe/v1/chat/completions"
         )
         headers = gpt_api._headers()
         assert headers["Authorization"] == "Bearer vk-test"
-        assert headers["X-VP-Relay-Token"] == "relay-secret"
+        assert "X-VP-Relay-Token" not in headers
         assert current_text_model_id() == "gpt-5.6-sol"
         assert gpt_api._node_reasoning_effort() == "high"
     assert gpt_api._node_reasoning_effort() is None
+
+

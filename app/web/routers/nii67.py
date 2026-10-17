@@ -13,6 +13,12 @@ from app.db import commit_with_retry
 from app.models import Project
 from app.services.content_locks import lock_ui_field
 from app.services.event_bus import publish_project_event
+from app.services.gpt_client import GptApiUnavailable
+from app.services.nii67_agent import (
+    fix_camera_sequence,
+    render_plan,
+    validate_frame,
+)
 from app.services.nii67_card import (
     GENERATED_LIMIT,
     META_KEY,
@@ -20,13 +26,9 @@ from app.services.nii67_card import (
     card_from_payload,
     compile_scenario,
     default_card,
+    plan_ready,
 )
-from app.services.nii67_agent import (
-    fix_camera_sequence,
-    generate as agent_generate,
-    render_plan,
-    validate_frame,
-)
+from app.services.nii67_scenario import ScenarioGenerationError, generate_plan, generate_scenarios
 from app.services.project_meta import apply_project_meta_patch
 from app.web.deps import get_project_session
 
@@ -122,21 +124,53 @@ async def preview_nii67(
     return {"text": compile_scenario(card)}
 
 
-@router.post("/{project_id}/nii67/generate")
-async def generate_nii67(
+_UNAVAILABLE = "Текстовая модель не настроена. Проверьте ключ vibecode у ноды «Сценарий»."
+
+
+@router.post("/{project_id}/nii67/plan")
+async def plan_nii67(
     project_id: int,
     session: ProjectSession,
     payload: CardBody,
 ) -> dict[str, Any]:
-    """Собрать сценарий из карточки и записать его в general_plan."""
+    """Этап 1: короткий редактируемый план двух дверей и финала."""
     project = _project_or_404(await session.get(Project, project_id))
-    card = _stamp(_read_card(payload), "save")
-    agent = agent_generate(card)
+    card = _read_card(payload)
+    try:
+        card["plan"] = await generate_plan(card, project=project)
+    except ScenarioGenerationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GptApiUnavailable as exc:
+        raise HTTPException(status_code=422, detail=_UNAVAILABLE) from exc
+    card = _stamp(card, "save")
+    await _store(session, project, card)
+    return {"card": card}
+
+
+@router.post("/{project_id}/nii67/storyboard")
+async def storyboard_nii67(
+    project_id: int,
+    session: ProjectSession,
+    payload: CardBody,
+) -> dict[str, Any]:
+    """Этап 2: полная раскадровка строго по текущему тексту плана."""
+    project = _project_or_404(await session.get(Project, project_id))
+    card = _read_card(payload)
+    plan = card.get("plan") or {}
+    if not plan_ready(plan):
+        raise HTTPException(status_code=400, detail="Сначала заполните план: мир и что происходит для обеих дверей.")
+    try:
+        card, agent = await generate_scenarios(card, project=project, plan=plan)
+    except ScenarioGenerationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GptApiUnavailable as exc:
+        raise HTTPException(status_code=422, detail=_UNAVAILABLE) from exc
+    card = _stamp(card, "save")
     text = (compile_scenario(card).strip() + "\n\n" + render_plan(agent))[:GENERATED_LIMIT]
     card["generated_text"] = text
     project.general_plan = text
     apply_project_meta_patch(
-        project, {META_KEY: card, "nii67_frames": agent}, source="nii67_generate"
+        project, {META_KEY: card, "nii67_frames": agent}, source="nii67_storyboard"
     )
     lock_ui_field(project, "general_plan")
     flag_modified(project, "meta")

@@ -165,19 +165,6 @@ export function ExcelGptSettingsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-        <h3 className="text-sm font-semibold text-foreground">Название ноды</h3>
-        <Input
-          className="mt-2"
-          value={config.label ?? ""}
-          placeholder="Работа с GPT"
-          onChange={(e) => onConfigChange({ label: e.target.value })}
-          onBlur={() => {
-            const label = (config.label ?? "").trim();
-            if (label) void patch.mutateAsync({ label });
-          }}
-        />
-      </section>
 
       <section className="rounded-xl border border-rose-400/25 bg-rose-500/[0.07] p-4">
         <h3 className="text-sm font-semibold text-foreground">Проверка</h3>
@@ -466,9 +453,6 @@ export function ExcelGptSettingsPanel({
 
       <section className="rounded-xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
         <h3 className="text-sm font-semibold text-foreground">Роль</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Полный пульт также во всплывающем меню V. Транспорт — API (без браузера).
-        </p>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           {ROLE_OPTIONS.map((opt) => (
             <button

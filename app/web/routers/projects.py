@@ -684,6 +684,17 @@ async def run_project_step(
         )
         return p
     resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
+    # FIX 2026-10-15: стоп-ключ only_node пишем ДО start_step и коммитим —
+    # иначе воркер успевает взять проект без ключа и цепочка идёт дальше.
+    if only_node and node_key:
+        from sqlalchemy.orm.attributes import flag_modified as _fm
+
+        _meta = dict(p.meta or {})
+        _meta["excel_gpt_stop_after_key"] = node_key
+        p.meta = _meta
+        _fm(p, "meta")
+        await session.commit()
+        await session.refresh(p)
     try:
         await start_step(
             session,

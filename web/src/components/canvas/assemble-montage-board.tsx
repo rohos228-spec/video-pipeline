@@ -2632,7 +2632,7 @@ export function AssembleMontageBoard({
         toast.message(
           wanted
             ? `Картинка #${[...wanted].join(", #")}…`
-            : `Картинки: ${frameNs.length} ${framesWord(frameNs.length)}… (Outsee API)`,
+            : `Картинки: ${frameNs.length} ${framesWord(frameNs.length)}… (VIA Render)`,
         );
       }
       return api.applyMontageBoard(projectId!, {
@@ -2747,20 +2747,20 @@ export function AssembleMontageBoard({
       if (res.started || res.already_running || res.job?.status === "running") {
         lastRecoverToastKeyRef.current = "";
         setRecoverRunning(true);
-        toast.message(res.message || "Забираем правки из Outsee…");
+        toast.message(res.message || "Забираем правки из генератора…");
         return;
       }
       // Совместимость со старым синхронным ответом (если бэкенд ещё не обновлён).
       const n = res.saved_count ?? res.saved?.length ?? 0;
       if (n > 0) {
-        toast.success(`Забрано и заменено из Outsee: ${n} кадр(ов)`);
+        toast.success(`Забрано и заменено из генератора: ${n} кадр(ов)`);
         localQueueDirtyRef.current = false;
         setPendingOps([]);
       } else if (res.errors?.length) {
         toast.error(res.errors.join("; "));
       } else {
         toast.message(
-          `В истории Outsee нет карточек для выделенных правок (просмотрено ${res.hits_scanned ?? 0})`,
+          `В истории генератора нет карточек для выделенных правок (просмотрено ${res.hits_scanned ?? 0})`,
         );
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -2858,15 +2858,15 @@ export function AssembleMontageBoard({
       setRecoverRunning(false);
       const n = savedCount ?? 0;
       if (status === "done" && n > 0) {
-        toast.success(`Забрано и заменено из Outsee: ${n} кадр(ов)`);
+        toast.success(`Забрано и заменено из генератора: ${n} кадр(ов)`);
         localQueueDirtyRef.current = false;
         setPendingOps([]);
       } else if (status === "done") {
-        toast.message(errText || "В истории Outsee нет подходящих карточек");
+        toast.message(errText || "В истории генератора нет подходящих карточек");
       } else if (status === "error") {
-        toast.error(errText || "Не удалось забрать из Outsee");
+        toast.error(errText || "Не удалось забрать из генератора");
       } else if (status === "cancelled") {
-        toast.message("Забор из Outsee остановлен");
+        toast.message("Забор из генератора остановлен");
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
     },
@@ -4357,7 +4357,7 @@ export function AssembleMontageBoard({
                 recoverRunning ||
                 applyRunning
               }
-              title="Опционально: CDP-подбор готовых карточек из галереи Outsee (перегенерация через API этого не требует)"
+              title="Опционально: CDP-подбор готовых карточек из галереи генератора (перегенерация через API этого не требует)"
               onClick={() => recoverOutseeMutation.mutate()}
             >
               {recoverOutseeMutation.isPending || recoverRunning ? (
@@ -4365,7 +4365,7 @@ export function AssembleMontageBoard({
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {recoverRunning ? "Забираем из галереи…" : "Галерея Outsee (CDP)"}
+              {recoverRunning ? "Забираем из галереи…" : "Галерея генератора (CDP)"}
             </Button>
             <AudioAlignPopover
               projectId={projectId}

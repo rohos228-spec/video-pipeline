@@ -587,15 +587,25 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
 def test_skip_cf_continue_when_salvage_has_complete_ops() -> None:
     from app.services.gpt_api import skip_cf_continue_for_salvaged_ops
 
-    complete = (
+    closed = (
+        '{"ops":['
+        '{"frame_uuid":"aaa","fields":{"место":"лес"}},'
+        '{"frame_uuid":"bbb","fields":{"место":"город"}}'
+        "]}"
+    )
+    truncated = (
         '{"ops":['
         '{"frame_uuid":"aaa","fields":{"место":"лес"}},'
         '{"frame_uuid":"bbb","fields":{"место":"город"}},'
         '{"frame_uuid":"ccc","fields":{"место":"обрез'
     )
-    assert skip_cf_continue_for_salvaged_ops(complete, "apply_ops") is True
-    assert skip_cf_continue_for_salvaged_ops(complete, "tsv") is False
-    assert skip_cf_continue_for_salvaged_ops('{"ops":[{"a":1', "apply_ops") is False
+    assert skip_cf_continue_for_salvaged_ops(closed, "apply_ops") is True
+    # apply-ops: обрубок не дописываем «с хвоста» (модель без задания
+    # выдумывает незакрытую операцию) — целые ops пишутся, недостающие
+    # ячейки добирает пачка.
+    assert skip_cf_continue_for_salvaged_ops(truncated, "apply_ops") is True
+    assert skip_cf_continue_for_salvaged_ops(closed, "tsv") is False
+    assert skip_cf_continue_for_salvaged_ops('{"ops":[{"a":1', "apply_ops") is True
 
 
 @pytest.mark.asyncio

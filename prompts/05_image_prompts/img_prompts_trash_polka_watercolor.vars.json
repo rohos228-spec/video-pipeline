@@ -1,0 +1,74 @@
+[
+    {
+        "key":  "style_label",
+        "label":  "Название стиля",
+        "value":  "`Archival Noir Watercolor Grunge Dossier Poster Illustration`",
+        "type":  "text"
+    },
+    {
+        "key":  "style_core",
+        "label":  "Ядро стиля",
+        "value":  "archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "style_ru",
+        "label":  "Описание стиля (RU)",
+        "value":  "Архивный нуарный grunge-досье постер: washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray; paper-absorbed watercolor pigment; ink-and-water stains; torn archive paper; worn newspaper fragments; distressed print; rough comic inking; realistic historical material surfaces softened by watercolor absorption. Коллажная энергия архива → **одна** постерная композиция, один фокус.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "style_lock_rule",
+        "label":  "Запреты стиля",
+        "value":  "not clean minimalist, not photorealism, not glossy 3D, not cute, not pastel, not bright cheerful colors, not dry flat digital color, not smooth vector gradient, not plastic digital paint, not neon cyberpunk, not separate collage panels, not multiple visual frames inside one image, not oil painting impasto, not airbrushed fantasy, not pure B\u0026W without watercolor wash, not automatic detective board, not copper/brass basin, not washstand, not copied voiceover/закадр, not overlay/caption text, not cloning the same character id onto two bodies, not copying one reference face onto two bodies, not a mirrored double of the same id.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "rendering",
+        "label":  "Техника отрисовки",
+        "value":  "transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed paper, ripped archive fragments, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal-like shadow masses, subtle graphic overlays, minimal distressed red stress marks only when needed.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "texture",
+        "label":  "Фактура",
+        "value":  "watercolor wash on damaged archive paper, paper-absorbed pigment, torn paper, rough ink, wet ink bleeding, dried watercolor edges, halftone grain, dirty cream paper, grunge scratches, smeared charcoal shadows, analog print noise, stained newspaper fiber, imperfect screenprint texture, faded document surfaces.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "light",
+        "label":  "Свет",
+        "value":  "exaggerated noir lighting filtered through watercolor wash; harsh backlight or cold side light; pale foggy sky glow; controlled amber-gray interior light; deep charcoal shadows; strong silhouette separation; soft pigment bloom around light without losing noir contrast.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "palette",
+        "label":  "Палитра",
+        "value":  "washed gray-blue, cold oceanic gray, off-white, dirty beige, dirty cream, charcoal, dark gray, muted amber-gray, faded paper yellow, diluted ink black; vivid blood-red ONLY as rare distressed grunge stress marks — never main palette; no red evidence circles/arrows/outlines.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "composition",
+        "label":  "Композиция",
+        "value":  "one unified scene (not literal collage); archival dossier montage energy → integrated noir watercolor poster; single readable focal point; controlled cinematic framing; medium-distance by default; minimal unobtrusive foreground; no oversized front-edge props; no synonym scene filler.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "style_line",
+        "label":  "Строка STYLE в промте",
+        "value":  "Archival Noir Watercolor Grunge Dossier Poster Illustration. archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media. Transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed/torn archive paper, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal shadow masses. Palette: washed gray-blue, cold oceanic gray, off-white, dirty cream, charcoal, muted amber-gray, faded paper yellow, diluted ink black; rare distressed blood-red stress marks only. One unified poster frame. Improve only inside this style (stronger wash/silhouette/grain), never change medium.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "final_lock",
+        "label":  "Финальная фиксация стиля",
+        "value":  "unified cinematic frame, Archival Noir Watercolor Grunge Dossier Poster Illustration, dark comic graphic novel inking, distressed printmaking, realistic historical texture via watercolor absorption, high-contrast mixed media, transparent washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive-paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles/arrows, no photorealism, no glossy 3D, no clean vector, no pastel, no neon, no multi-panel collage, no automatic detective board, no large foreground props, no copper basin/washstand, do not clone the same character id onto two bodies, character id when present, no copied voiceover.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "negative",
+        "label":  "Негатив (запреты)",
+        "value":  "photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful colors, neon cyberpunk, flat digital color, smooth vector gradients, plastic digital paint, oil painting impasto, airbrushed fantasy, pure black-and-white without watercolor wash, multi-panel collage, separate collage panels, automatic detective board, evidence circles, red arrows, red outlines around clues, overlay text, captions, subtitles, watermark, floating text, copied voiceover, narration context, copper basin, brass basin, washstand, large foreground props, synonym duplicate scene, modern objects in historical scene, gore, copying one reference face onto two bodies, cloning the same id, mirrored double of the same id, style drift away from archival noir watercolor grunge dossier poster.",
+        "type":  "textarea"
+    }
+]

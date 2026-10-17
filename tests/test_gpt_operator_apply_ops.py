@@ -166,6 +166,78 @@ async def test_project_file_without_apply_ops_fails(tmp_path, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_project_file_truncated_stream_no_ops_is_retryable_network(
+    tmp_path, monkeypatch
+) -> None:
+    """Обрубок SSE без единой целой операции → retryable GptApiError, не «верни JSON».
+
+    16:31 13.10: 7955 символов, первая операция не закрыта; полный повтор
+    внутри той же стены пачки погиб вместе с ней. Теперь пачка повторяет сама.
+    """
+    from app.services.gpt_api import GptApiError
+
+    calls: list[str] = []
+    stub = '{"ops":[{"frame_uuid":"c38d08d2","fields":{"кадры":[{"id":"1-S1-K1","действие":"обрыв на сет'
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
+
+    async def fake_chat(**kw):
+        calls.append(kw.get("prompt") or "")
+        return SimpleNamespace(text=stub, finish_reason="stream_partial")
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    monkeypatch.setattr("app.services.gpt_api.collect_result_urls", lambda text: [])
+
+    with pytest.raises(GptApiError) as ei:
+        await goc.run_operator_api(
+            project_dir=tmp_path,
+            node_key="n_excel_gpt_fw_shots",
+            role="assist",
+            output_mode="project_file",
+            prompt="шоты",
+            accompanying="",
+            input_paths=[],
+        )
+    assert ei.value.retryable
+    assert ei.value.context.get("error_kind") == "network"
+    # Один вызов: без второго «верни JSON» внутри той же стены.
+    assert len(calls) == 1
+    pre = tmp_path / "excel_gpt_uploads" / "n_excel_gpt_fw_shots" / "gpt_reply_pre_retry.txt"
+    assert pre.read_text(encoding="utf-8") == stub
+
+
+@pytest.mark.asyncio
+async def test_project_file_truncated_stream_with_closed_ops_is_salvaged(
+    tmp_path, monkeypatch
+) -> None:
+    """Обрубок с целыми операциями: они записываются, без повтора."""
+    calls: list[str] = []
+    stub = (
+        '{"ops":[{"frame_uuid":"aaa","fields":{"кадры":[{"id":"1-S1-K1","действие":"x"}]}},'
+        '{"frame_uuid":"bbb","fields":{"кадры":[{"id":"2-S1-K1","действие":"обр'
+    )
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
+
+    async def fake_chat(**kw):
+        calls.append(kw.get("prompt") or "")
+        return SimpleNamespace(text=stub, finish_reason="stream_partial")
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    monkeypatch.setattr("app.services.gpt_api.collect_result_urls", lambda text: [])
+
+    res = await goc.run_operator_api(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="assist",
+        output_mode="project_file",
+        prompt="шоты",
+        accompanying="",
+        input_paths=[],
+    )
+    assert len(calls) == 1
+    assert [op["frame_uuid"] for op in res.apply_ops["ops"]] == ["aaa"]
+
+
+@pytest.mark.asyncio
 async def test_report_only_db_sot_does_not_ask_apply_ops(tmp_path, monkeypatch) -> None:
     contracts: list[str] = []
     monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)

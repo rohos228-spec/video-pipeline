@@ -167,6 +167,43 @@ def _clip(text: str, n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
+def attach_scene_action_to_pieces(rows: list[dict[str, Any]]) -> int:
+    """Кусок закадра не хранит действие сцены. Кладём его в отправку с кадра-сцены.
+
+    Кадр сцены (1–39) держит ``главное_действие``. Кадры-куски (84–98 и остальные)
+    несут только свой фрагмент закадра. Модель шотов требует поле на каждой ячейке.
+    """
+    parents: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        act = str(row.get("главное_действие") or row.get("main_action") or "").strip()
+        vo = " ".join(str(row.get("voiceover_text") or "").split())
+        if act and len(vo) >= 20:
+            parents.append((vo, row))
+    parents.sort(key=lambda item: len(item[0]))
+    stamped = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("главное_действие") or row.get("main_action") or "").strip():
+            continue
+        vo = " ".join(str(row.get("voiceover_text") or "").split())
+        if len(vo) < 20:
+            continue
+        for parent_vo, src in parents:
+            if src is row or vo not in parent_vo:
+                continue
+            act = str(src.get("главное_действие") or src.get("main_action") or "").strip()
+            if not act:
+                continue
+            row["главное_действие"] = act
+            row["main_action"] = str(src.get("main_action") or act).strip()
+            stamped += 1
+            break
+    return stamped
+
+
 def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, Any]:
     picked = _pick_attrs(attrs)
     out: dict[str, Any] = {}

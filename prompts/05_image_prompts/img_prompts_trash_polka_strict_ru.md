@@ -20,9 +20,9 @@ STYLE / Final style lock / Negative.
 2. **ФОН** (`shot01_bg` + continuity `place`) — подробный, узнаваемый, не выдуманный.
 3. **ПЛАН / РАКУРС** (`scene_feature` + `shot01_description`) — не подменять «для красоты».
 4. Смысл кадра / accent / действие / эмоция / персонажи — вплетены в мир и этот кадр.
-5. Лимит **≤ 4000** символов на тело `промт_картинки` (до wrap стиля).
+5. Лимит **≤ {{STYLE:prompt_limit}}** символов на тело `промт_картинки` (до wrap стиля).
 
-Если не влезает в 4000: режь воду → лишние детали → эмоцию короче.  
+Если не влезает в {{STYLE:prompt_limit}}: режь воду → лишние детали → эмоцию короче.  
 **Не выкидывай фон и план/ракурс.**
 
 ---
@@ -170,8 +170,8 @@ Props только из `shot01_props` (+ явно в accent/action).
 6. Не ставить крупные foreground-props (тазы, washstand) без входа.
 7. Один кадр = одна сцена (не мультипанель).
 8. Не ломай continuity фона/света одного `place`.
-9. **Лимит:** `промт_картинки` ≤ **4000** символов (тело сцены).  
-   `промт_картинки_2` — коротко, тоже ≤ 4000.  
+9. **Лимит:** `промт_картинки` ≤ **{{STYLE:prompt_limit}}** символов (тело сцены).  
+   `промт_картинки_2` — коротко, тоже ≤ {{STYLE:prompt_limit}}.  
    `промт_картинки_3` — не пишем.
 
 ---
@@ -187,15 +187,13 @@ Props только из `shot01_props` (+ явно в accent/action).
 
 ## 5. STYLE LOCK (справочно — пайплайн вшивает сам)
 
-**STYLE_LABEL:** `Archival Noir Watercolor Grunge Dossier Poster Illustration`
+**STYLE_LABEL:** {{STYLE:style_label}}
 
-Тон сцены должен совпадать: watercolor wash, washed gray-blue / dirty cream / charcoal,
-archive paper, ink-and-water stains, noir contrast — не фотореализм, не 3D, не pastel, не neon.
+{{STYLE:style_tone}}
 
 **Negative (обязателен через пайплайн, не дублируй длинный хвост в JSON):**  
-photorealism, glossy 3D, clean minimalist, cute, pastel, neon, multi-panel collage,
-overlay/caption text, twins, clones, duplicate identical faces, copied voiceover,
-automatic detective board, copper/brass basin, washstand, style drift.
+
+{{STYLE:negative}}
 
 ---
 
@@ -214,7 +212,7 @@ automatic detective board, copper/brass basin, washstand, style drift.
 Место/время: [place]; [эпоха кратко]
 ```
 
-Длина всего блока ≤ 4000.
+Длина всего блока ≤ {{STYLE:prompt_limit}}.
 
 ---
 
@@ -240,7 +238,7 @@ automatic detective board, copper/brass basin, washstand, style drift.
 
 - [ ] Порядок меток: Референс? → Фон → Действие → Свет → Акцент → Смысл → План/ракурс → Эмоция → Детали → Место/время  
 - [ ] Фон из `shot01_bg` подробный; план/ракурс из Базы  
-- [ ] Текст на русском; ≤ **4000** символов  
+- [ ] Текст на русском; ≤ **{{STYLE:prompt_limit}}** символов  
 - [ ] 1 cXX = 1 тело; no clones  
 - [ ] Без читаемого текста, если надпись не во входе  
 - [ ] В JSON нет STYLE / Final style lock / длинного Negative  

@@ -5,6 +5,8 @@ import { Nii67FrameList, type Nii67Frame } from "./nii67-frame-menu";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
+  Clapperboard,
+  ListChecks,
   ChevronUp,
   Copy,
   DoorOpen,
@@ -28,6 +30,14 @@ import {
   BLOCK_KINDS,
   CREATURE_TYPES,
   FINALE_LIMIT,
+  PLAN_LIMIT,
+  PLAN_OUTCOMES,
+  type PlanOutcome,
+  planReady,
+  updatePlanDoor,
+  updatePlanFinale,
+  GENERATE_HINT,
+  GENERATE_PENDING,
   KIND_LABEL,
   KIND_MARK,
   TEMPERAMENTS,
@@ -43,6 +53,7 @@ import {
   moveBlock,
   reorderBlock,
   updateBlock,
+  updateDoor,
   updateFinale,
   updateIntroVideo,
   updatePortal,
@@ -574,15 +585,30 @@ function DoorColumn({
             <DoorOpen className="h-4 w-4 text-teal-300" />
             {door.title}
           </div>
-          <div className="text-[11px] text-zinc-400">
-            {door.branch}
-            {door.theme.trim() ? ` · ${door.theme.trim()}` : ""}
-          </div>
+          <div className="text-[11px] text-zinc-400">{door.branch}</div>
         </div>
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
           {door.id === "door1" ? "Путь 1" : "Путь 2"}
         </span>
       </header>
+      <div className="mb-2 flex flex-col gap-2">
+        <ShortField
+          label="Мир"
+          value={door.theme}
+          maxLength={240}
+          testId={`nii67-theme-${door.id}`}
+          placeholder="Появится после генерации"
+          onChange={(theme) => onChange((card) => updateDoor(card, door.id, { theme }))}
+        />
+        <Field
+          label="Закон мира"
+          value={door.theme_note}
+          rows={2}
+          testId={`nii67-law-${door.id}`}
+          placeholder="Один закон мира — появится после генерации"
+          onChange={(theme_note) => onChange((card) => updateDoor(card, door.id, { theme_note }))}
+        />
+      </div>
       <InsertMenu
         testId={`nii67-insert-${door.id}-0`}
         onInsert={(kind) => onChange((card) => insertBlock(card, door.id, 0, kind))}
@@ -649,7 +675,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const cardQ = useQuery({
     queryKey: ["nii67", projectId],
     queryFn: () => api.getNii67(projectId),
-    enabled: open,
+    enabled: projectId > 0,
   });
 
   useEffect(() => {
@@ -740,10 +766,31 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Не удалось сохранить кадры"),
   });
 
+  const makePlan = useMutation({
+    mutationFn: async () => {
+      const gen = editGen.current;
+      const res = await api.planNii67(projectId, cardRef.current);
+      return { res, gen };
+    },
+    onSuccess: ({ res, gen }) => {
+      if (editGen.current === gen) {
+        dirtyRef.current = false;
+        setDirty(false);
+        setCard(cardFromUnknown(res.card));
+      } else {
+        const plan = cardFromUnknown(res.card).plan;
+        setCard((prev) => ({ ...prev, plan }));
+      }
+      toast.success("План ролика готов — проверьте и поправьте текст");
+      void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
+    },
+    onError: (error) => toast.error(errorMessageFromUnknown(error)),
+  });
+
   const generate = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
-      const res = await api.generateNii67(projectId, cardRef.current);
+      const res = await api.storyboardNii67(projectId, cardRef.current);
       return { res, gen };
     },
     onSuccess: ({ res, gen }) => {
@@ -754,7 +801,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
       }
       setPreviewText(res.general_plan);
       if (Array.isArray(res.frames)) setFrames(res.frames);
-      toast.success("Сценарий записан в общий план");
+      toast.success("Раскадровка готова и записана в общий план");
       void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
@@ -779,8 +826,105 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     onError: (error) => toast.error(errorMessageFromUnknown(error)),
   });
 
-  const busy = save.isPending || preview.isPending || generate.isPending || reset.isPending;
+  const busy = save.isPending || preview.isPending || generate.isPending || makePlan.isPending || reset.isPending;
+  const canStoryboard = planReady(card.plan);
   const ggLabel = card.gg.name.trim() || "1 ГГ";
+
+  const renderPlan = (compact: boolean) => (
+            <section data-testid={compact ? "nii67-plan-inline" : "nii67-plan-block"} className={cn("rounded-2xl border border-teal-400/30 bg-[#0c161e] p-3", compact ? "m-2" : "mb-3")}>
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-zinc-50">
+                  <ListChecks className="h-4 w-4 text-teal-300" />
+                  План ролика
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid={compact ? "nii67-plan-inline-btn" : "nii67-plan"}
+                  disabled={busy}
+                  onClick={() => makePlan.mutate()}
+                >
+                  {makePlan.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  План ролика
+                </Button>
+              </div>
+              <p className="mb-2 text-[12px] text-zinc-400">
+                Шаг 1. Кнопка «План ролика» предложит мир, события и исход для каждой двери. Текст можно править или
+                написать целиком вручную. Шаг 2 — «Раскадровка» внизу строит кадры строго по этому тексту.
+              </p>
+              <div className={cn("grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2")}>
+                {(["door1", "door2"] as const).map((id) => (
+                  <div key={id} data-testid={`nii67-plan-${id}${compact ? "-inline" : ""}`} className="rounded-xl border border-white/10 bg-black/20 p-2">
+                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-teal-200/90">
+                      {id === "door1" ? "Левая дверь" : "Правая дверь"}
+                    </div>
+                    <Field
+                      label="Мир"
+                      value={card.plan[id].world}
+                      maxLength={PLAN_LIMIT}
+                      rows={2}
+                      testId={`nii67-plan-${id}-world`}
+                      placeholder="Куда попадает герой: узнаваемая реальность"
+                      onChange={(world) => change((current) => updatePlanDoor(current, id, { world }))}
+                    />
+                    <Field
+                      label="Что происходит / пик"
+                      value={card.plan[id].happens}
+                      maxLength={PLAN_LIMIT}
+                      rows={4}
+                      testId={`nii67-plan-${id}-happens`}
+                      placeholder="Что видит, как мир действует на тело, поворот, пик, что делает герой"
+                      onChange={(happens) => change((current) => updatePlanDoor(current, id, { happens }))}
+                    />
+                    <label className="mt-1 block text-[11px] text-zinc-400">
+                      Исход
+                      <select
+                        data-testid={`nii67-plan-${id}-outcome`}
+                        className={cn(fieldClass, "mt-1 resize-none")}
+                        value={card.plan[id].outcome}
+                        onChange={(event) =>
+                          change((current) => updatePlanDoor(current, id, { outcome: event.target.value as PlanOutcome }))
+                        }
+                      >
+                        {PLAN_OUTCOMES.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2">
+                <Field
+                  label="Финал"
+                  value={card.plan.finale}
+                  maxLength={PLAN_LIMIT}
+                  rows={2}
+                  testId="nii67-plan-finale"
+                  placeholder="Что стало с героем в каждой ветке — по этому тексту строится финальная иллюстрация"
+                  onChange={(finale) => change((current) => updatePlanFinale(current, finale))}
+                />
+              </div>
+              {compact ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="nii67-storyboard-inline"
+                  disabled={busy || !canStoryboard}
+                  className="mt-2 w-full border-teal-300/50 bg-teal-400 text-zinc-950 hover:bg-teal-300"
+                  title={canStoryboard ? "Построить раскадровку строго по плану" : "Сначала заполните план обеих дверей"}
+                  onClick={() => generate.mutate()}
+                >
+                  {generate.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Clapperboard className="h-3.5 w-3.5" />}
+                  Раскадровка
+                </Button>
+              ) : null}
+            </section>
+  );
+
 
   return (
     <div
@@ -799,6 +943,8 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
         <span className="font-semibold">Карточка NII 67</span>
         <span className="ml-auto text-zinc-400">{dirty ? "не сохранено" : "две двери"}</span>
       </button>
+
+      {!open ? renderPlan(true) : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
@@ -850,6 +996,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
             {dirty ? (
               <p className="mb-2 text-[12px] text-amber-200/90">Есть несохранённые правки</p>
             ) : null}
+            {generate.isPending ? (
+              <p data-testid="nii67-generating" className="mb-2 text-[12px] text-teal-100">
+                {GENERATE_PENDING}
+              </p>
+            ) : null}
             {previewText !== null ? (
               <section className="mb-3 rounded-xl border border-teal-400/30 bg-black/40 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -871,6 +1022,8 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
               </section>
             ) : null}
 
+            {renderPlan(false)}
+
             <section data-testid="nii67-intro-block" className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-teal-200/90">
                 Интро
@@ -885,6 +1038,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
                   upload("intro_video", file, (name) => change((current) => updateIntroVideo(current, name)))
                 }
               />
+              <p className="mt-2 text-[11px] leading-snug text-zinc-500">{GENERATE_HINT}</p>
             </section>
 
             <section data-testid="nii67-portal-block" className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
@@ -1060,17 +1214,18 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
               <Button
                 type="button"
                 size="sm"
-                data-testid="nii67-generate"
-                disabled={busy}
+                data-testid="nii67-storyboard"
+                disabled={busy || !canStoryboard}
+                title={canStoryboard ? "Построить раскадровку строго по плану" : "Сначала заполните план обеих дверей"}
                 className="border-teal-300/50 bg-teal-400 text-zinc-950 hover:bg-teal-300"
                 onClick={() => generate.mutate()}
               >
                 {generate.isPending ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Sparkles className="h-3.5 w-3.5" />
+                  <Clapperboard className="h-3.5 w-3.5" />
                 )}
-                Сгенерировать сценарий
+                Раскадровка
               </Button>
             </div>
           </footer>

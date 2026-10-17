@@ -473,7 +473,8 @@ def touch_prompt_meta(step_code: str, name: str, size: int) -> float:
 
 def touch_prompt_meta_at(step_code: str, name: str, saved_at: float, size: int) -> None:
     meta = load_file_meta(step_code)
-    meta[name] = {"saved_at": saved_at, "size": size}
+    prev = meta.get(name) if isinstance(meta.get(name), dict) else {}
+    meta[name] = {**prev, "saved_at": saved_at, "size": size}  # keep title/description
     _save_file_meta(step_code, meta)
 
 
@@ -969,6 +970,9 @@ def read_resolved_project_prompt(
         text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
+    from app.services.prompt_style_vars import apply_style_vars
+
+    text = apply_style_vars(text, path, meta, step_code, name)
     topic = str(getattr(project, "topic", None) or "")
     return name, path, inject_topic_placeholders(text, topic), source
 

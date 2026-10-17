@@ -14,9 +14,9 @@ from app.services.apply_ops_batches import (
 
 
 def test_pack_call_timeout_is_twenty_minutes() -> None:
-    """Пачка любой ноды ждёт 20 минут."""
+    """Обычная пачка ждёт 20 минут. Шоты — 15 минут: длинный живой ответ не выбрасываем."""
     assert pack_call_timeout_s("bits") == 1200.0
-    assert pack_call_timeout_s("shots_coverage") == 1200.0
+    assert pack_call_timeout_s("shots_coverage") == 900.0
     assert pack_call_timeout_s("prompts") == 1200.0
     assert pack_call_timeout_s(None) == 1200.0
 
@@ -2075,4 +2075,194 @@ def test_heavy_first_frame_isolated_in_split() -> None:
     assert vo_packs[0][0]["uuid"] == "heavy_1"
     assert len(vo_packs[1]) == 6
     assert len(vo_packs[2]) == 2
+
+
+def _shots_op(uuid: str) -> dict:
+    return {
+        "frame_uuid": uuid,
+        "fields": {"кадры": [{"id": "1-S1-K1", "действие": "идёт", "закадр": "vo"}]},
+    }
+
+
+def _passthrough_code_passes(monkeypatch) -> None:
+    from app.services import apply_ops_batches as mod
+
+    def _passes(ops, chunk, *, kind, all_frames=None, ctx=None):
+        return mod.CodePassesResult(ops=list(ops), entries=[])
+
+    monkeypatch.setattr(mod, "run_code_passes", _passes)
+
+
+@pytest.mark.asyncio
+async def test_shots_conveyor_no_wave_barrier(tmp_path, monkeypatch) -> None:
+    """Шоты: конвейер — медленная пачка не держит следующие, в полёте ≤ parallel."""
+    import asyncio
+    import json
+    import time
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    _passthrough_code_passes(monkeypatch)
+    starts: list[tuple[float, str]] = []
+    inflight = 0
+    max_inflight = 0
+    lock = asyncio.Lock()
+
+    async def fake_run(**kwargs):
+        nonlocal inflight, max_inflight
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        first = frames[0]["uuid"]
+        async with lock:
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+            starts.append((time.monotonic(), first))
+        # Первая пачка (кадр 0) — очень медленная, остальные быстрые.
+        await asyncio.sleep(0.6 if first == _frame(0)["uuid"] else 0.05)
+        async with lock:
+            inflight -= 1
+        return OperatorApiResult(
+            reply_text="{}",
+            output_paths=[path],
+            apply_ops={"ops": [_shots_op(fr["uuid"]) for fr in frames]},
+        )
+
+    monkeypatch.setattr("app.services.apply_ops_batches.run_operator_api", fake_run)
+    frames = [_frame(i) for i in range(15)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    t0 = time.monotonic()
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=3,
+        parallel_max=2,
+        stagger_sec=0.02,
+        footer_kind="shots_coverage",
+        shots_gate=False,
+    )
+    total = time.monotonic() - t0
+    assert len(res.apply_ops["ops"]) == 15
+    assert max_inflight == 2
+    # Волна ждала бы медленную пачку (0.6с) до старта третьей; конвейер — нет.
+    third_start = sorted(t for t, _ in starts)[2]
+    assert third_start - t0 < 0.45
+    assert total < 1.5
+
+
+@pytest.mark.asyncio
+async def test_shots_partial_stream_salvages_and_rerequests_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """Обрубок: целые ops пишутся, недостающие ячейки добираются отдельно (до 2 раз)."""
+    import json
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    _passthrough_code_passes(monkeypatch)
+    sent: list[list[str]] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        uids = [fr["uuid"] for fr in frames]
+        sent.append(uids)
+        # Каждый вызов «обрывается»: отдаёт только первую ячейку пачки.
+        return OperatorApiResult(
+            reply_text="{}",
+            output_paths=[path],
+            apply_ops={"ops": [_shots_op(uids[0])]},
+        )
+
+    monkeypatch.setattr("app.services.apply_ops_batches.run_operator_api", fake_run)
+    applied: list[str] = []
+
+    async def apply_fn(payload):
+        applied.extend(op["frame_uuid"] for op in payload["ops"])
+
+    frames = [_frame(i) for i in range(3)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        apply_fn=apply_fn,
+        chunk_size=3,
+        parallel_max=1,
+        stagger_sec=0.0,
+        footer_kind="shots_coverage",
+        shots_gate=False,
+    )
+    # 3 ячейки → [0,1,2] дало 0; добор [1,2] дал 1; добор [2] дал 2.
+    assert sent == [
+        [_frame(0)["uuid"], _frame(1)["uuid"], _frame(2)["uuid"]],
+        [_frame(1)["uuid"], _frame(2)["uuid"]],
+        [_frame(2)["uuid"]],
+    ]
+    assert applied == [_frame(0)["uuid"], _frame(1)["uuid"], _frame(2)["uuid"]]
+    assert not res.apply_ops.get("skipped_packs")
+
+
+@pytest.mark.asyncio
+async def test_shots_network_error_retried_three_times(tmp_path, monkeypatch) -> None:
+    """Сетевая ошибка пачки шотов: до 3 повторов той же пачки, потом пропуск."""
+    import json
+
+    from app.services import apply_ops_batches as mod
+    from app.services.gpt_api import GptApiError
+
+    _passthrough_code_passes(monkeypatch)
+    n = {"calls": 0}
+
+    async def fake_run(**kwargs):
+        n["calls"] += 1
+        raise GptApiError(
+            "GPT поток оборван (stream_partial, 7955 символов, ни одной целой операции)",
+            context={"error_kind": "network", "retryable": True},
+        )
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "run_operator_api", fake_run)
+    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
+    frames = [_frame(i) for i in range(3)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text(json.dumps({}), encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=3,
+        parallel_max=1,
+        stagger_sec=0.0,
+        footer_kind="shots_coverage",
+        shots_gate=False,
+    )
+    assert n["calls"] == 1 + mod.SHOTS_NET_RETRIES
+    skipped = res.apply_ops.get("skipped_packs") or []
+    assert len(skipped) == 1 and len(skipped[0]["uuids"]) == 3
 

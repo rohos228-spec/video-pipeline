@@ -100,7 +100,6 @@ function PlanScriptFields({
       </div>
       <NumField
         label="Длина, секунд"
-        description="Пустое поле в GPT-сообщении отображается как ____"
         value={durDraft}
         onChange={setDurDraft}
       />
@@ -112,7 +111,7 @@ function PlanScriptFields({
       </div>
       <Button
         size="sm"
-        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
+        className="w-fit self-start h-9 px-5 text-[13px] font-medium text-white border border-white/25 rounded-md shadow-none transition-colors hover:border-white/60 disabled:opacity-50"
         disabled={saving}
         onClick={() => {
           const trimmed = durDraft.trim();
@@ -150,15 +149,11 @@ function AudioFields({
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
       <div>
         <h3 className="text-sm font-semibold text-foreground">11Labs — голос</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Бот откроет Text to Speech, выберет модель Eleven v3, вставит ID голоса в поиск
-          голоса, выберет карточку и сгенерирует полный закадровый текст.
-        </p>
       </div>
       <label className="flex flex-col gap-1.5">
         <span className="text-sm font-medium text-foreground">Голос</span>
         <select
-          className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm"
+          className="h-9 w-full max-w-md rounded-md border border-white/10 bg-[#0a0a0a] px-2 text-[14px] text-white"
           value={voiceDraft}
           onChange={(e) => setVoiceDraft(e.target.value)}
         >
@@ -168,13 +163,10 @@ function AudioFields({
             </option>
           ))}
         </select>
-        {selected ? (
-          <span className="font-mono text-[11px] text-muted-foreground">ID: {selected.id}</span>
-        ) : null}
       </label>
       <Button
         size="sm"
-        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
+        className="w-fit self-start h-9 px-5 text-[13px] font-medium text-white border border-white/25 rounded-md shadow-none transition-colors hover:border-white/60 disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -322,18 +314,11 @@ function AssembleFields({
           </span>
         </span>
         <span
-          className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
-            sendToMain ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
-          )}
-        >
-          <span
-            className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
-              sendToMain && "translate-x-4",
-            )}
-          />
-        </span>
+          data-keep-bg
+          className={cn("mt-0.5 h-5 w-9 shrink-0 rounded-[3px] border p-0.5 transition-colors", sendToMain ? "border-white bg-white" : "border-white/30 bg-transparent")}
+          >
+            <span data-keep-bg className={cn("block h-4 w-4 rounded-[2px] transition-transform", sendToMain ? "translate-x-4 bg-[#0a0a0a]" : "bg-white/70")} />
+          </span>
       </button>
       <button
         type="button"
@@ -351,18 +336,11 @@ function AssembleFields({
           </span>
         </span>
         <span
-          className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
-            subsOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
-          )}
-        >
-          <span
-            className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
-              subsOn && "translate-x-4",
-            )}
-          />
-        </span>
+          data-keep-bg
+          className={cn("mt-0.5 h-5 w-9 shrink-0 rounded-[3px] border p-0.5 transition-colors", subsOn ? "border-white bg-white" : "border-white/30 bg-transparent")}
+          >
+            <span data-keep-bg className={cn("block h-4 w-4 rounded-[2px] transition-transform", subsOn ? "translate-x-4 bg-[#0a0a0a]" : "bg-white/70")} />
+          </span>
       </button>
       <button
         type="button"
@@ -387,18 +365,11 @@ function AssembleFields({
           </span>
         </span>
         <span
-          className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
-            skipIntroOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
-          )}
-        >
-          <span
-            className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
-              skipIntroOn && "translate-x-4",
-            )}
-          />
-        </span>
+          data-keep-bg
+          className={cn("mt-0.5 h-5 w-9 shrink-0 rounded-[3px] border p-0.5 transition-colors", skipIntroOn ? "border-white bg-white" : "border-white/30 bg-transparent")}
+          >
+            <span data-keep-bg className={cn("block h-4 w-4 rounded-[2px] transition-transform", skipIntroOn ? "translate-x-4 bg-[#0a0a0a]" : "bg-white/70")} />
+          </span>
       </button>
       {skipIntroOn ? (
         <StepperControl
@@ -492,7 +463,7 @@ function SplitFields({
       </div>
       <Button
         size="sm"
-        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
+        className="w-fit self-start h-9 px-5 text-[13px] font-medium text-white border border-white/25 rounded-md shadow-none transition-colors hover:border-white/60 disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -548,7 +519,7 @@ function MediaStreamsFields({
           Параллельные потоки генерации
         </h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Количество одновременных задач в Outsee API для генерации {nodeType === "images" ? "картинок" : "видео"}.
+          Количество одновременных задач в VIA Render для генерации {nodeType === "images" ? "картинок" : "видео"}.
         </p>
       </div>
 
@@ -563,7 +534,7 @@ function MediaStreamsFields({
             className={cn(
               "h-8 px-3.5 text-xs",
               streams === num
-                ? "bg-primary text-black font-semibold shadow-sm"
+                ? "bg-white text-black font-medium"
                 : "text-muted-foreground hover:text-foreground",
             )}
             onClick={() => handleSelect(num)}
@@ -575,9 +546,6 @@ function MediaStreamsFields({
         ))}
       </div>
 
-      <p className="text-[11px] text-muted-foreground">
-        💡 При выборе 3 или 4 потоков генерация кадров завершается быстрее, если ваш API-токен поддерживает параллельные запросы.
-      </p>
     </section>
   );
 }
@@ -639,12 +607,6 @@ export function NodeStepParamsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      {step !== "audio" && step !== "assemble" && step !== "images" && step !== "videos" ? (
-        <p className="text-xs text-muted-foreground">
-          Эти параметры автоматически добавляются в конец сопроводительного текста для генератора
-          (вкладка «Промпты»).
-        </p>
-      ) : null}
       {step === "plan" ? (
         <PlanScriptFields
           header="Сценарий"
@@ -682,14 +644,45 @@ export function NodeStepParamsPanel({
           saving={save.isPending}
         />
       ) : null}
-      {step === "images" || step === "videos" ? (
+      {false && (step === "images" || step === "videos") ? (
         <MediaStreamsFields
           metaRecord={metaRecord}
           onSave={persistMeta}
           saving={save.isPending}
-          nodeType={step}
+          nodeType={step as "images" | "videos"}
         />
       ) : null}
+    </div>
+  );
+}
+
+/** Compact streams selector (project meta outsee_streams/img_streams, read by generate_images/videos/hero). */
+export function StreamsPicker({ projectId }: { projectId: number }) {
+  const qc = useQueryClient();
+  const project = useQuery({ queryKey: ["project", projectId], queryFn: () => api.getProject(projectId), enabled: projectId > 0 });
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const cur = Number(meta.outsee_streams ?? meta.img_streams ?? 2);
+  const save = useMutation({
+    mutationFn: (n: number) => api.patchProject(projectId, { meta: { ...meta, img_streams: n, outsee_streams: n } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project", projectId] }),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+  return (
+    <div data-vp-streams className="flex items-center gap-2">
+      <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">Потоки</span>
+      <div className="flex">
+        {[1, 2, 3, 4].map((n) => (
+          <button
+            key={n}
+            type="button"
+            disabled={save.isPending}
+            onClick={() => save.mutate(n)}
+            className={cn("h-8 w-8 border text-[13px] first:rounded-l-md last:rounded-r-md", n === cur ? "border-white bg-white text-black" : "border-white/15 text-white/70 hover:text-white")}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,0 +1,24 @@
+[
+  {
+    "key": "core_style",
+    "label": "Основной стиль",
+    "value": "mature cinematic pixel art",
+    "type": "text"
+  },
+  {
+    "key": "species",
+    "label": "Тип персонажа",
+    "value": "anthropomorphic cat",
+    "type": "text"
+  },
+  {
+    "key": "aspect",
+    "label": "Формат кадра",
+    "value": "vertical 9:16 composition",
+    "type": "select",
+    "options": [
+      "vertical 9:16 composition",
+      "horizontal 16:9 composition"
+    ]
+  }
+]

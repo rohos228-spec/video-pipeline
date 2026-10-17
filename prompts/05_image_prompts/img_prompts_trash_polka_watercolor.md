@@ -301,38 +301,38 @@ eye-level · slight low angle · slight high angle · over-the-shoulder · profi
 Улучшения = усиление этих же векторов, не замена.
 
 **STYLE_LABEL** (обязательная фраза):  
-`Archival Noir Watercolor Grunge Dossier Poster Illustration`
+{{STYLE:style_label}}
 
 **STYLE_CORE:**  
-archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media.
+{{STYLE:style_core}}
 
 **STYLE_RU (смысл, можно кратко рядом):**  
-Архивный нуарный grunge-досье постер: washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray; paper-absorbed watercolor pigment; ink-and-water stains; torn archive paper; worn newspaper fragments; distressed print; rough comic inking; realistic historical material surfaces softened by watercolor absorption. Коллажная энергия архива → **одна** постерная композиция, один фокус.
+{{STYLE:style_ru}}
 
 **STYLE_LOCK_RULE (NOT — обязательно в prompt):**  
-not clean minimalist, not photorealism, not glossy 3D, not cute, not pastel, not bright cheerful colors, not dry flat digital color, not smooth vector gradient, not plastic digital paint, not neon cyberpunk, not separate collage panels, not multiple visual frames inside one image, not oil painting impasto, not airbrushed fantasy, not pure B&W without watercolor wash, not automatic detective board, not copper/brass basin, not washstand, not copied voiceover/закадр, not overlay/caption text, not cloning the same character id onto two bodies, not copying one reference face onto two bodies, not a mirrored double of the same id.
+{{STYLE:style_lock_rule}}
 
 **QUALITY_VECTOR:**  
 intense gritty archival cinematic impact, strong readable silhouette, unified historical dossier-poster composition, high visual tension, controlled chaotic archive energy, watercolor noir atmosphere, realistic historical-material grounding.
 
 **RENDERING_VECTOR:**  
-transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed paper, ripped archive fragments, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal-like shadow masses, subtle graphic overlays, minimal distressed red stress marks only when needed.
+{{STYLE:rendering}}
 
 **TEXTURE_VECTOR:**  
-watercolor wash on damaged archive paper, paper-absorbed pigment, torn paper, rough ink, wet ink bleeding, dried watercolor edges, halftone grain, dirty cream paper, grunge scratches, smeared charcoal shadows, analog print noise, stained newspaper fiber, imperfect screenprint texture, faded document surfaces.
+{{STYLE:texture}}
 
 **REALISM_TEXTURE_VECTOR:**  
 aged cracked plaster, chipped paint, worn dark wood, damp stone, prison concrete, iron bars, dust, mud traces, faded fabric, stained paper fibers, old varnish, worn floorboards — all softened by watercolor absorption, never glossy digital. Scratched metal / iron patina / moisture only if source supports. Never invent basins/bowls/washstands.
 
 **LIGHT_VECTOR:**  
-exaggerated noir lighting filtered through watercolor wash; harsh backlight or cold side light; pale foggy sky glow; controlled amber-gray interior light; deep charcoal shadows; strong silhouette separation; soft pigment bloom around light without losing noir contrast.  
+{{STYLE:light}}
 **Важно:** базовые источники бери из `lighting`/`scene_lighting` кадра, затем фильтруй через этот vector.
 
 **COLOR_VECTOR:**  
-washed gray-blue, cold oceanic gray, off-white, dirty beige, dirty cream, charcoal, dark gray, muted amber-gray, faded paper yellow, diluted ink black; vivid blood-red ONLY as rare distressed grunge stress marks — never main palette; no red evidence circles/arrows/outlines.
+{{STYLE:palette}}
 
 **COMPOSITION_VECTOR:**  
-one unified scene (not literal collage); archival dossier montage energy → integrated noir watercolor poster; single readable focal point; controlled cinematic framing; medium-distance by default; minimal unobtrusive foreground; no oversized front-edge props; no synonym scene filler.
+{{STYLE:composition}}
 
 **Улучшать можно так:** сильнее wash layers, чётче silhouette, богаче paper grain/halftone, жёстче charcoal masses, точнее pigment bloom — оставаясь внутри COLOR/RENDERING/TEXTURE выше.
 
@@ -367,13 +367,13 @@ Reference: character sheet for [cXX / Name] — identity lock for this person fr
 [I] Place and time: [place]; [TIME_PERIOD / epoch from general_plan, short].
 
 [J — STYLE part]
-STYLE: Archival Noir Watercolor Grunge Dossier Poster Illustration. archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media. Transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed/torn archive paper, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal shadow masses. Palette: washed gray-blue, cold oceanic gray, off-white, dirty cream, charcoal, muted amber-gray, faded paper yellow, diluted ink black; rare distressed blood-red stress marks only. One unified poster frame. Improve only inside this style (stronger wash/silhouette/grain), never change medium.
+STYLE: {{STYLE:style_line}}
 
-Final style lock: unified cinematic frame, Archival Noir Watercolor Grunge Dossier Poster Illustration, dark comic graphic novel inking, distressed printmaking, realistic historical texture via watercolor absorption, high-contrast mixed media, transparent washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive-paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles/arrows, no photorealism, no glossy 3D, no clean vector, no pastel, no neon, no multi-panel collage, no automatic detective board, no large foreground props, no copper basin/washstand, do not clone the same character id onto two bodies, character id when present, no copied voiceover.
+Final style lock: {{STYLE:final_lock}}
 ```
 
 **Negative:** (обязательный хвост)  
-photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful colors, neon cyberpunk, flat digital color, smooth vector gradients, plastic digital paint, oil painting impasto, airbrushed fantasy, pure black-and-white without watercolor wash, multi-panel collage, separate collage panels, automatic detective board, evidence circles, red arrows, red outlines around clues, overlay text, captions, subtitles, watermark, floating text, copied voiceover, narration context, copper basin, brass basin, washstand, large foreground props, synonym duplicate scene, modern objects in historical scene, gore, copying one reference face onto two bodies, cloning the same id, mirrored double of the same id, style drift away from archival noir watercolor grunge dossier poster.
+{{STYLE:negative}}
 
 ---
 

@@ -1,0 +1,26 @@
+[
+    {
+        "key":  "style_label",
+        "label":  "Название стиля",
+        "value":  "`Archival Noir Watercolor Grunge Dossier Poster Illustration`",
+        "type":  "text"
+    },
+    {
+        "key":  "style_tone",
+        "label":  "Тон и палитра стиля",
+        "value":  "Тон сцены должен совпадать: watercolor wash, washed gray-blue / dirty cream / charcoal,\narchive paper, ink-and-water stains, noir contrast — не фотореализм, не 3D, не pastel, не neon.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "negative",
+        "label":  "Негатив (запреты)",
+        "value":  "photorealism, glossy 3D, clean minimalist, cute, pastel, neon, multi-panel collage,\noverlay/caption text, twins, clones, duplicate identical faces, copied voiceover,\nautomatic detective board, copper/brass basin, washstand, style drift.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "prompt_limit",
+        "label":  "Лимит символов промта",
+        "value":  "4000",
+        "type":  "text"
+    }
+]

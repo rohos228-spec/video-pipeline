@@ -1679,6 +1679,48 @@ async def montage_board_delete_ref(
     }
 
 
+@router.post("/{project_id}/node-bg")
+async def upload_node_background(
+    project_id: int,
+    node_key: str = Query(..., min_length=1, max_length=120),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Custom tile background for one canvas node, stored under the project folder."""
+    import re
+    import uuid
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="файл больше 25 МБ")
+    suffix = (Path(file.filename or "bg.png").suffix or ".png").lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}:
+        raise HTTPException(status_code=400, detail="нужна картинка")
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]", "_", node_key)[:80]
+    folder = p.data_dir / "node_bg"
+    folder.mkdir(parents=True, exist_ok=True)
+    # Center-crop to the tile aspect (16:9; the menu header uses the same picture with cover),
+    # downscale to 768px wide and store as webp q80.
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        img = Image.open(io.BytesIO(content))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img = ImageOps.fit(img, (768, 432), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"не удалось прочитать картинку: {exc}") from exc
+    path = folder / f"{safe_key}_{uuid.uuid4().hex[:8]}.webp"
+    img.save(path, "WEBP", quality=80, method=4)
+    from urllib.parse import quote
+
+    return {"ok": True, "path": str(path), "preview_url": f"/api/files?path={quote(str(path), safe='')}"}
+
+
 @router.post("/{project_id}/montage-board/upload-image")
 async def montage_board_upload_image(
     project_id: int,
@@ -2017,6 +2059,14 @@ async def patch_excel_gpt_config(
         resolved = patch_operator_config(p, node_key, {k: payload[k] for k in op_keys if k in payload})
         flag_modified(p, "meta")
         await session.commit()
+        # excel_gpt_nodes is a runtime meta key: GET pulls it from master (state.db),
+        # so mirror the change there or the next GET reverts it.
+        try:
+            from app.project_db import push_runtime_to_master
+
+            await push_runtime_to_master(session, p)
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": True, "config": resolved.get("config") or {}, "resolve": resolved}
 
     meta = dict(p.meta or {})
@@ -2038,6 +2088,14 @@ async def patch_excel_gpt_config(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    # excel_gpt_nodes is a runtime meta key: GET pulls it from master (state.db),
+    # so mirror the change there or the next GET reverts it.
+    try:
+        from app.project_db import push_runtime_to_master
+
+        await push_runtime_to_master(session, p)
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "config": cur}
 
 
@@ -2099,6 +2157,14 @@ async def gpt_operator_patch(
                 "Подождите 10–30 с и нажмите роль ещё раз — бэкенд жив."
             ),
         ) from last_err
+    # excel_gpt_nodes is a runtime meta key: GET pulls it from master (state.db),
+    # so mirror the change there or the next GET reverts it.
+    try:
+        from app.project_db import push_runtime_to_master
+
+        await push_runtime_to_master(session, p)
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "resolve": resolved}
 
 
@@ -2835,3 +2901,67 @@ async def harness_verify(
     return out
 
 
+
+
+def _active_prompt_for(p: Project, step_code: str, node_key: str | None, slot_id: str | None):
+    from app.services.prompt_library import (
+        is_excel_gpt_prompt_step,
+        prompt_path,
+        resolve_excel_gpt_prompt_path,
+        resolve_project_prompt_with_source,
+    )
+
+    name, _src = resolve_project_prompt_with_source(
+        p.prompt_overrides or {}, step_code, meta=p.meta or {}, node_key=node_key, slot_id=slot_id
+    )
+    try:
+        path = (
+            resolve_excel_gpt_prompt_path(name, project=p, node_key=node_key)
+            if is_excel_gpt_prompt_step(step_code)
+            else prompt_path(step_code, name)
+        )
+    except Exception:  # noqa: BLE001
+        path = None
+    return name, path
+
+
+@router.get("/{project_id}/style-vars")
+async def get_style_vars(
+    project_id: int,
+    step_code: str = Query(..., min_length=1),
+    node_key: str | None = Query(None),
+    slot_id: str | None = Query(None),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Style vars ({{STYLE:key}}) of the active prompt for a node: defaults + project overrides."""
+    from app.services.prompt_style_vars import describe
+
+    p = _project_or_404(await session.get(Project, project_id))
+    name, path = _active_prompt_for(p, step_code, node_key, slot_id)
+    return {"prompt_name": name, "vars": describe(path, p.meta or {}, step_code, name)}
+
+
+@router.put("/{project_id}/style-vars")
+async def put_style_vars(
+    project_id: int,
+    payload: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Body: {step_code, node_key?, slot_id?, prompt_name?, values: {key: str | null}} (null = reset to default)."""
+    from app.services.prompt_style_vars import describe, load_vars, with_overrides
+
+    p = _project_or_404(await session.get(Project, project_id))
+    step_code = str(payload.get("step_code") or "").strip()
+    if not step_code:
+        raise HTTPException(status_code=400, detail="step_code required")
+    node_key = payload.get("node_key") or None
+    name, path = _active_prompt_for(p, step_code, node_key, payload.get("slot_id") or None)
+    if payload.get("prompt_name") and payload["prompt_name"] != name:
+        raise HTTPException(status_code=409, detail="активный промт сменился, обновите")
+    known = {v["key"] for v in load_vars(path)}
+    values = {k: v for k, v in (payload.get("values") or {}).items() if k in known}
+    p.meta = with_overrides(p.meta or {}, step_code, name, values)
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(project_id, event_type="project_updated", payload={"style_vars": step_code})
+    return {"prompt_name": name, "vars": describe(path, p.meta or {}, step_code, name)}

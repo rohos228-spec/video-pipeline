@@ -1,8 +1,14 @@
+# Стиль персонажей: коты в cinematic pixel art
+
+Стиль-лок для листа персонажа: антропоморфные коты в серьёзном кинематографичном пиксель-арте. Описывает рендер, одежду по роли и эпохе, запреты и негатив-промт, без фона и окружения. Вставляется в шаблон ноды «Персонажи» вместо {{HERO_STYLE}}. На выходе не текст, а стилевые правила для итогового image-промта. Используйте для проектов с котами-персонажами.
+
+---
+
 {
 
   "master_visual_prompt_core": {
 
-    "purpose": "Создавать изображения только антропоморфных котов-персонажей в едином стиле mature cinematic pixel art, без фона и без описания окружения.",
+    "purpose": "Создавать изображения только антропоморфных котов-персонажей в едином стиле {{STYLE:core_style}}, без фона и без описания окружения.",
 
     "main_rule": "В кадре могут быть только антропоморфные коты. Никаких людей, человеческих персонажей или других антропоморфных животных.",
 
@@ -46,7 +52,7 @@
 
     "visual_style": {
 
-      "core_style": "mature cinematic pixel art",
+      "core_style": "{{STYLE:core_style}}",
 
       "required_style_terms": [
 
@@ -128,9 +134,9 @@
 
     "character_world_rules": {
 
-      "only_intelligent_characters": "anthropomorphic cats",
+      "only_intelligent_characters": "{{STYLE:species}}s",
 
-      "mandatory_phrase": "anthropomorphic cat as the only intelligent character type, no humans present, no human characters, only anthropomorphic cats can appear as intelligent characters",
+      "mandatory_phrase": "{{STYLE:species}} as the only intelligent character type, no humans present, no human characters, only {{STYLE:species}}s can appear as intelligent characters",
 
       "forbidden_character_types": [
 
@@ -172,7 +178,7 @@
 
       "mandatory_features": [
 
-        "clearly readable anthropomorphic cat anatomy",
+        "clearly readable {{STYLE:species}} anatomy",
 
         "cat muzzle",
 
@@ -460,7 +466,7 @@
 
       "required": [
 
-        "vertical 9:16 composition",
+        "{{STYLE:aspect}}",
 
         "strong readable character silhouette",
 
@@ -504,7 +510,7 @@
 
     },
 
-    "positive_prompt_template": "Изолированный персонаж без фона: серьёзный anthropomorphic cat в стиле mature cinematic pixel art, no background, transparent background, isolated character, ultra detailed cinematic pixel art, pixel-painted cinematic character design, premium pixel-art animation still, near-invisible pixel grid, subpixel shading, soft dithering, polished pixel rendering, crisp pixel-painted texture. Персонаж полностью одет, все видимые части тела покрыты шерстью, кошачья морда, кошачьи уши, усы, выразительный зрелый взгляд, human-shaped fingers с шерстью на пальцах и ладонях, human-like teeth of even size, no animal fangs. Шерсть объёмная и живая: отдельные пряди читаются как pixel-painted фактура, мягкий subpixel shading, тёмные прослойки между прядями, rim light по краю силуэта, контактные тени под одеждой и руками. Одежда с clear stylized material separation, pixel-painted fabric texture, складки, потёртые края, микроконтраст материалов. Кинематографичный свет по персонажу: strong chiaroscuro, low-key cinematic lighting, complex shadow gradients, soft ambient occlusion, stylized light bounce, dramatic light and shadow. Vertical 9:16 composition, strong readable character silhouette, focal point on face and gesture, premium animated poster quality, one consistent cinematic pixel art style only.",
+    "positive_prompt_template": "Изолированный персонаж без фона: серьёзный {{STYLE:species}} в стиле {{STYLE:core_style}}, no background, transparent background, isolated character, ultra detailed cinematic pixel art, pixel-painted cinematic character design, premium pixel-art animation still, near-invisible pixel grid, subpixel shading, soft dithering, polished pixel rendering, crisp pixel-painted texture. Персонаж полностью одет, все видимые части тела покрыты шерстью, кошачья морда, кошачьи уши, усы, выразительный зрелый взгляд, human-shaped fingers с шерстью на пальцах и ладонях, human-like teeth of even size, no animal fangs. Шерсть объёмная и живая: отдельные пряди читаются как pixel-painted фактура, мягкий subpixel shading, тёмные прослойки между прядями, rim light по краю силуэта, контактные тени под одеждой и руками. Одежда с clear stylized material separation, pixel-painted fabric texture, складки, потёртые края, микроконтраст материалов. Кинематографичный свет по персонажу: strong chiaroscuro, low-key cinematic lighting, complex shadow gradients, soft ambient occlusion, stylized light bounce, dramatic light and shadow. Vertical 9:16 composition, strong readable character silhouette, focal point on face and gesture, premium animated poster quality, one consistent cinematic pixel art style only.",
 
     "negative_prompt_core": "humans, people, human characters, human faces, human bodies, human hands, human silhouettes, background humans, non-cat anthropomorphic animals, anthropomorphic dogs, anthropomorphic foxes, anthropomorphic wolves, anthropomorphic birds, anthropomorphic reptiles, anthropomorphic mice, anthropomorphic rabbits, mixed species crowd, exposed body, unclothed character, bare skin, exposed skin, hairless body parts, skin arms, skin hands, skin fingers, animal paws, shapeless paws, paw mittens, non-human fingers, beast hands, animal teeth, cat teeth, feline teeth, fangs, long canines, sharp animal teeth, saber teeth, protruding fangs, enlarged canines, oversized canines, visible fangs, uneven teeth, mixed tooth sizes, background, scenery, environment, landscape, room, city, crowd, props in background, cartoon look, cute mascot, kawaii, chibi, childish design, goofy face, exaggerated cartoon eyes, simple face, sticker look, vector look, mobile game look, cheap frame, hyperrealism, photorealism, raw photorealistic photo, photographic realism, documentary photo, live-action look, 3D render look, videogame art, game cinematic look, large-pixel retro pixel art look, flat pixel art, visible large pixels, sprite art, game sprite, primitive pixel art, retro 8-bit look, anime style, cel shading, inconsistent art style, mixed rendering styles, flat lighting, simple shading, flat shadows, poor focal point, bad anatomy, deformed hands, extra fingers, extra limbs, broken limbs, distorted face, blurry, muddy details, noisy image, text, watermark, logo, frame, border"
 

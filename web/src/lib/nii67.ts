@@ -2,7 +2,13 @@
  * Карточка NII 67 на клиенте.
  * Форма совпадает с app/services/nii67_card.py: две двери, блоки A–F и свой,
  * один ГГ, общий финал. Сервер ещё раз нормализует карточку при сохранении.
+ * «Сгенерировать сценарий» заполняет миры и тексты; оператор загружает видео
+ * и может править любые сгенерированные поля.
  */
+
+export const GENERATE_PENDING = "Строю раскадровку по плану двух дверей…";
+export const GENERATE_HINT =
+  "Достаточно загрузить исходное видео. Сначала «План ролика» (его можно править), затем «Раскадровка» — кадры строятся строго по плану.";
 
 import type { ProjectDetail } from "@/lib/types";
 
@@ -107,8 +113,64 @@ export function defaultPortal(): Nii67Portal {
   return { image_name: "", video_name: "", left_design: "", right_design: "", left_anim: "", right_anim: "" };
 }
 
+export type PlanOutcome = "" | "death" | "escape" | "transformation";
+export interface Nii67PlanDoor {
+  world: string;
+  happens: string;
+  outcome: PlanOutcome;
+  category: string;
+}
+export interface Nii67Plan {
+  door1: Nii67PlanDoor;
+  door2: Nii67PlanDoor;
+  finale: string;
+}
+export const PLAN_LIMIT = 1200;
+export const PLAN_OUTCOMES: { id: PlanOutcome; label: string }[] = [
+  { id: "", label: "Исход: решит раскадровка" },
+  { id: "death", label: "Смерть" },
+  { id: "escape", label: "Спасение" },
+  { id: "transformation", label: "Превращение" },
+];
+
+export function defaultPlan(): Nii67Plan {
+  const door = (): Nii67PlanDoor => ({ world: "", happens: "", outcome: "", category: "" });
+  return { door1: door(), door2: door(), finale: "" };
+}
+
+function asPlan(raw: unknown): Nii67Plan {
+  const out = defaultPlan();
+  if (!raw || typeof raw !== "object") return out;
+  const src = raw as Record<string, unknown>;
+  for (const id of ["door1", "door2"] as const) {
+    const d = src[id] && typeof src[id] === "object" ? (src[id] as Record<string, unknown>) : {};
+    const outcome = typeof d.outcome === "string" ? d.outcome : "";
+    out[id] = {
+      world: clip(typeof d.world === "string" ? d.world : "", PLAN_LIMIT),
+      happens: clip(typeof d.happens === "string" ? d.happens : "", PLAN_LIMIT),
+      outcome: (["death", "escape", "transformation"].includes(outcome) ? outcome : "") as PlanOutcome,
+      category: clip(typeof d.category === "string" ? d.category : "", 60),
+    };
+  }
+  out.finale = clip(typeof src.finale === "string" ? src.finale : "", PLAN_LIMIT);
+  return out;
+}
+
+export function planReady(plan: Nii67Plan): boolean {
+  return [plan.door1, plan.door2].every((d) => d.world.trim() && d.happens.trim());
+}
+
+export function updatePlanDoor(card: Nii67Card, id: "door1" | "door2", patch: Partial<Nii67PlanDoor>): Nii67Card {
+  return { ...card, plan: { ...card.plan, [id]: { ...card.plan[id], ...patch } } };
+}
+
+export function updatePlanFinale(card: Nii67Card, finale: string): Nii67Card {
+  return { ...card, plan: { ...card.plan, finale: clip(finale, PLAN_LIMIT) } };
+}
+
 export interface Nii67Card {
   version: 1;
+  plan: Nii67Plan;
   intro: { text: string; video_name: string };
   portal: Nii67Portal;
   gg: { name: string; note: string };
@@ -195,6 +257,7 @@ export function defaultCard(): Nii67Card {
     gg: { name: "", note: "" },
     doors: [defaultDoor("door1"), defaultDoor("door2")],
     finale: { standard: "", notes: "" },
+    plan: defaultPlan(),
     generated_text: "",
     saved_at: "",
     last_save: "",
@@ -303,6 +366,7 @@ export function cardFromUnknown(raw: unknown): Nii67Card {
       standard: clip(typeof finale.standard === "string" ? finale.standard : "", FINALE_LIMIT),
       notes: clip(typeof finale.notes === "string" ? finale.notes : "", FINALE_LIMIT),
     },
+    plan: asPlan(src.plan),
     generated_text: clip(typeof src.generated_text === "string" ? src.generated_text : "", 20_000),
     saved_at: clip(typeof src.saved_at === "string" ? src.saved_at : "", 40),
     last_save: last,

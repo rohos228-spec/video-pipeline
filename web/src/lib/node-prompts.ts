@@ -19,11 +19,21 @@ export interface NodePromptSlot {
   preferredFile?: string;
 }
 
-const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt", "storage", "shot_menu"]);
+const NO_EXCEL_NODE_TYPES = new Set([
+  "topic",
+  "excel_feed",
+  "excel_gpt",
+  "storage",
+  "shot_menu",
+  "style_extract",
+  "hitl_style",
+]);
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
   shot_menu: [],
+  style_extract: [],
+  hitl_style: [],
   plan: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
     { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "plan" },
@@ -80,7 +90,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
       id: "frame_prompts",
       title: "Промты кадров",
       kind: "frame_prompts",
-      description: "image_prompt по кадрам — уходит в outsee",
+      description: "image_prompt по кадрам — уходит в генератор",
     },
     {
       id: "master",

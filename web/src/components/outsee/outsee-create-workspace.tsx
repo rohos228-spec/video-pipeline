@@ -1268,7 +1268,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <div className="leading-tight">
               <div className="text-sm font-bold tracking-tight text-white/95">Генерация</div>
               <div className="text-[10px] uppercase tracking-[0.16em] text-white/40">
-                outsee create · глобально
+                VIA Create · глобально
               </div>
             </div>
           </div>
@@ -1304,7 +1304,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/60 transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
           >
-            outsee.io
+            Открыть
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
