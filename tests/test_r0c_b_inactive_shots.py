@@ -274,3 +274,27 @@ def test_coverage_template_reason_ignores_inactive_duplicate() -> None:
     assert coverage_template_reason(shots) is None
     assert len(shots) == 2
     assert shots[1]["карантин"] is True
+
+
+def test_non_list_kadry_keeps_old_shots(warn_log) -> None:
+    """{} и строка вместо списка не гасят старые шоты."""
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    old = [
+        {"id": "a", "закадр": "живой", "активен": True},
+        {"id": "b", "закадр": "без флага"},
+        {"id": "c", "закадр": "скрыт", "активен": False},
+    ]
+    flags = [shot.get("активен", "missing") for shot in old]
+    for bad in ({}, "не список"):
+        got = merge_kadry_keep_missing(old, bad)
+        assert got == old
+        assert [shot.get("активен", "missing") for shot in got] == flags
+        assert [shot.get("активен", "missing") for shot in old] == flags
+    assert any("не список" in line for line in warn_log)
+
+    assert merge_kadry_keep_missing({"id": "x"}, [{"id": "n", "закадр": "новый"}]) == [
+        {"id": "n", "закадр": "новый"}
+    ]
+    assert merge_kadry_keep_missing("старое", "новое") == "старое"
+    assert merge_kadry_keep_missing(None, None) is None

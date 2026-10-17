@@ -139,10 +139,10 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     if not isinstance(new, list):
         logger.warning(
             "WARN merge_kadry_keep_missing: новое значение не список ({}) — "
-            "старые шоты остаются",
+            "старые шоты остаются без изменений",
             type(new).__name__,
         )
-        new = []
+        return old
     incoming: list[Any] = []
     seen_ids: set[str] = set()
     incoming_by_id: dict[str, dict[str, Any]] = {}
