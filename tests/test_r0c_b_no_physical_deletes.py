@@ -542,3 +542,72 @@ async def test_db_browser_entity_and_edge_need_confirm_and_restore(
     assert any("Entity id=" in line for line in warn_log)
     assert any("FrameEdge id=" in line for line in warn_log)
 
+
+@pytest.mark.asyncio
+async def test_deleted_mark_does_not_trigger_orphan_cascade(session: AsyncSession) -> None:
+    """Пометка ``удалён`` не снимает кадр с коллекции и не включает delete-orphan.
+
+    Каскады Project.frames / artifacts / hitl_requests и Frame.artifacts
+    (models.py) не меняются: orphan срабатывает при удалении из коллекции,
+    не при смене attrs.
+    """
+    source = (await _models_text()).splitlines()
+    for line_no in (299, 301, 304, 354):
+        assert "delete-orphan" in source[line_no - 1]
+
+    project = await _project(session, "cascade-mark")
+    frame = _frame(project, 1, "cascade-frame", "текст", sort_key=1.0)
+    session.add(frame)
+    await session.flush()
+    art = Artifact(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind=ArtifactKind.scene_image,
+        uuid=str(uuid.uuid4()),
+        path="/tmp/cascade.png",
+    )
+    text = FrameText(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind="voiceover",
+        text="текст",
+    )
+    prompt = PromptVersion(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind="img",
+        version=1,
+        text="промт",
+    )
+    session.add_all([art, text, prompt])
+    await session.commit()
+    frame_id, art_id, text_id, prompt_id = (
+        int(frame.id),
+        int(art.id),
+        int(text.id),
+        int(prompt.id),
+    )
+    await session.refresh(project, attribute_names=["frames", "artifacts"])
+    await session.refresh(frame, attribute_names=["artifacts"])
+    assert frame in project.frames
+    assert art in frame.artifacts
+
+    mark_frame_deleted(frame, project, "cascade probe")
+    await session.commit()
+    session.expire_all()
+
+    assert await session.get(Frame, frame_id) is not None
+    assert await session.get(Artifact, art_id) is not None
+    assert await session.get(FrameText, text_id) is not None
+    assert await session.get(PromptVersion, prompt_id) is not None
+    reloaded = await session.get(Frame, frame_id)
+    assert reloaded is not None
+    assert reloaded.attrs.get("удалён") is True
+    assert reloaded.attrs.get("активен") is False
+
+
+async def _models_text() -> str:
+    from pathlib import Path
+
+    return Path("app/models.py").read_text(encoding="utf-8")
+
