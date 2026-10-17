@@ -219,6 +219,31 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     return [*incoming, *kept]
 
 
+def mark_shots_inactive(shots: Any, *, where: str) -> Any:
+    """Пометить шоты списка неактивными. Список и его элементы остаются."""
+    if not isinstance(shots, list):
+        return shots
+    out: list[Any] = []
+    labels: list[str] = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            out.append(shot)
+            continue
+        item = dict(shot)
+        if item.get(ACTIVE_MARK) is not False:
+            labels.append(_shot_id(item) or "?")
+        item[ACTIVE_MARK] = False
+        out.append(item)
+    if out:
+        logger.warning(
+            "WARN {}: {} шотов остаются в списке с активен: False ({})",
+            where,
+            len(out),
+            ", ".join(labels) if labels else "уже помечены",
+        )
+    return out
+
+
 class PaidFrameSkipped(RuntimeError):
     """Помеченный кадр не отправляется в платную генерацию."""
 

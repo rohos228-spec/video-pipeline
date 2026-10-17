@@ -499,8 +499,16 @@ def _clear_shot_action(frame: Frame) -> None:
     if role != "vo_parent":
         attrs["главное_действие"] = ""
         attrs["main_action"] = ""
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
+        from app.services.frame_tombstones import mark_shots_inactive
+
+        if "кадры" in attrs:
+            attrs["кадры"] = mark_shots_inactive(
+                attrs.get("кадры"), where="_clear_shot_action"
+            )
+        if "shots" in attrs:
+            attrs["shots"] = mark_shots_inactive(
+                attrs.get("shots"), where="_clear_shot_action"
+            )
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(
