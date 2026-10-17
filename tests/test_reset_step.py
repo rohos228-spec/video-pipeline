@@ -289,10 +289,25 @@ async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
     # файл. Кадр при этом не стирается. Копия картинки остаётся.
     backups = list((p.data_dir / "old").rglob("*im1.png"))
     assert backups
-    # Строка кадра на месте, картинка шага img снята в old/. Статус — frames_ready,
-    # не script_ready: fr_total считает и помеченный кадр.
-    assert p.status is ProjectStatus.frames_ready
+    # Строка кадра на месте, картинка шага img снята в old/.
+    # Помеченный кадр не считается: статус снова script_ready.
+    assert p.status is ProjectStatus.script_ready
     assert art.id is not None
+
+
+@pytest.mark.asyncio
+async def test_live_frame_still_counts_as_frames_ready(session):
+    """Живой кадр со split_completed остаётся frames_ready. Фильтр только пометки."""
+    from app.services.project_state import compute_actual_status
+
+    p = await _mkproject(session)
+    await _mkframe(session, p, 1, attrs={"удалён": True, "активен": False})
+    await _mkframe(session, p, 2)
+    p.meta = {"split_completed": True}
+    p.status = ProjectStatus.frames_ready
+    await session.flush()
+
+    assert await compute_actual_status(session, p) is ProjectStatus.frames_ready
 
 
 @pytest.mark.asyncio
