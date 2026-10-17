@@ -1371,6 +1371,26 @@ def export_project_xlsx(
     }
 
 
+def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]]) -> None:
+    """Отказ, если правка добавила error. То, что уже было на before, не блокирует."""
+
+    try:
+        run_preservation_validators(before, after, ops, mode="reject")
+    except PreservationRejected as exc:
+        already = {
+            (item.code, item.path, item.id)
+            for item in collect_violations(before, before, ops)
+            if item.severity == "error"
+        }
+        fresh = [
+            item
+            for item in exc.violations
+            if item.severity == "error" and (item.code, item.path, item.id) not in already
+        ]
+        if fresh:
+            raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
+
+
 def _preservation_view(frames: list[Any]) -> dict[str, Any]:
     """Снимок кадров для ``run_preservation_validators``. Только чтение полей."""
 
@@ -1450,10 +1470,22 @@ async def apply_ops(
         specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
         if not isinstance(specs, list):
             raise ApplyOpsError("replace_frames: нужен список frames")
+        frames_now = list(
+            (
+                await session.execute(select(Frame).where(Frame.project_id == project.id))
+            ).scalars()
+        )
+        preservation_before = copy.deepcopy(_preservation_view(frames_now))
         try:
             created = await db_v2.replace_all_frames(session, project, specs)
         except ValueError as e:
             raise ApplyOpsError(str(e)) from None
+        frames_after = list(
+            (
+                await session.execute(select(Frame).where(Frame.project_id == project.id))
+            ).scalars()
+        )
+        _raise_if_new_preservation(preservation_before, _preservation_view(frames_after), ops)
         exported = None
         if export_xlsx:
             exported = export_project_xlsx(project, created)
@@ -1640,27 +1672,11 @@ async def apply_ops(
         updated += 1
 
     if preservation_before is not None:
-        preservation_after = _preservation_view(list(by_uuid.values()))
-        try:
-            run_preservation_validators(
-                preservation_before,
-                preservation_after,
-                ops,
-                mode="reject",
-            )
-        except PreservationRejected as exc:
-            already = {
-                (item.code, item.path, item.id)
-                for item in collect_violations(preservation_before, preservation_before, ops)
-                if item.severity == "error"
-            }
-            fresh = [
-                item
-                for item in exc.violations
-                if item.severity == "error" and (item.code, item.path, item.id) not in already
-            ]
-            if fresh:
-                raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
+        _raise_if_new_preservation(
+            preservation_before,
+            _preservation_view(list(by_uuid.values())),
+            ops,
+        )
 
     await session.flush()
 
