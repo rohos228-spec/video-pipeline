@@ -325,3 +325,67 @@ async def test_r6_append_emits_token_chunks_over_sse(r6_api: httpx.AsyncClient) 
     tokens = [item["payload"].get("text", "") for item in events if item["event"] == "token"]
     assert len(tokens) >= 2
     assert "".join(tokens).strip()
+
+
+@pytest.mark.asyncio
+async def test_r6_kill_sets_stop_key(r6_api: httpx.AsyncClient) -> None:
+    session = "r6-kill"
+    posted = await r6_api.post(
+        f"/api/orchestrator/chat/{session}/message",
+        headers=_AUTH,
+        json={"text": "разложи шаги", "mode": "task", "project_id": 13},
+    )
+    assert posted.status_code == 200
+    armed = False
+
+    async def _kill_after_look(items: list[dict]) -> None:
+        nonlocal armed
+        if armed:
+            return
+        if any(item["event"] == "step_started" and item["payload"].get("action") == "test.look" for item in items):
+            armed = True
+            killed = await r6_api.post(
+                f"/api/orchestrator/chat/{session}/message",
+                headers=_AUTH,
+                json={"text": "kill switch"},
+            )
+            assert killed.status_code == 200
+
+    events = await _events_until(
+        r6_api,
+        session,
+        lambda items: any(item["event"] == "kill_switch" for item in items),
+        on_events=_kill_after_look,
+    )
+    assert armed
+    kill = next(item for item in events if item["event"] == "kill_switch")
+    assert kill["payload"]["stop_key_set"] is True
+    assert kill["payload"]["only_node"] is True
+    assert kill["payload"].get("mid_flight") is not True
+    store = get_runtime().supervisor.node_stops
+    assert store.same(session, kill["payload"].get("stop_key"))
+
+
+@pytest.mark.asyncio
+async def test_r6_scene_word_makes_task(r6_api: httpx.AsyncClient) -> None:
+    session = "r6-scene"
+    posted = await r6_api.post(
+        f"/api/orchestrator/chat/{session}/message",
+        headers=_AUTH,
+        json={"text": "разбери сцен"},
+    )
+    assert posted.status_code == 200
+    events = await _events_until(
+        r6_api,
+        session,
+        lambda items: any(
+            item["event"] == "step_started" and item["payload"].get("action") == "test.look" for item in items
+        ),
+    )
+    classified = next(item for item in events if item["event"] == "classification")
+    assert classified["payload"]["mode"] == "task"
+    started = next(
+        item for item in events if item["event"] == "step_started" and item["payload"].get("action") == "test.look"
+    )
+    assert started["payload"]["paid"] is False
+    assert not any(item["event"] == "token" for item in events)

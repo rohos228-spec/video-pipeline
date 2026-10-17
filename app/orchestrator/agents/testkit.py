@@ -27,6 +27,11 @@
 * Пока они идут, «измени план» или ``mode=steer``: checkpoint перепланирования
   и следующий шаг ``test.look_again``.
 * «отмена» / «стой» или ``mode=interrupt``: ``agent_status=cancelled``.
+* «kill switch» / «аварийный стоп»: тот же ``request_kill``, что и в проде.
+  Хук ``_publish_kill`` пишет стоп-ключ узла ``n_r6`` в память фикстуры.
+  Событие ``kill_switch`` несёт ``stop_key_set=true``, ``only_node=true``
+  и этот ключ. Если узла в хранилище нет, хук оставляет прод-ответ:
+  ``stop_key_set=false``, ``stop_key=pending``.
 * «среднее касание» в тексте задачи: один шаг ``test.medium_touch``
   (реестр ``risk=medium``, ничего не меняет и не удаляет).
   С ``project_id`` — ``approval_required`` / ``waiting_approval``, reason ``risk``.
@@ -41,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 from typing import Any
 
 from app.orchestrator.agents.critic import PlanCritic
@@ -64,6 +70,8 @@ PHRASE_MEDIUM = "среднее касание"
 LOOK_ACTION = "test.look"
 LOOK_AGAIN_ACTION = "test.look_again"
 MEDIUM_ACTION = "test.medium_touch"
+R6_NODE = "n_r6"
+_TASK_MARKERS = ("задач", "шаг", "план", "сцен")
 _LOOK_STEPS = 3
 
 
@@ -122,7 +130,7 @@ class R6Router:
         del task_id
         text = message or ""
         lowered = text.lower()
-        if PHRASE_MEDIUM in lowered or any(marker in lowered for marker in ("задач", "шаг", "план")):
+        if PHRASE_MEDIUM in lowered or any(marker in lowered for marker in _TASK_MARKERS):
             mode = MessageMode.task
         else:
             mode = MessageMode.append
@@ -225,17 +233,69 @@ def _step(action: str, risk: str, params: dict[str, Any] | None = None) -> dict[
     }
 
 
+class NodeStopStore:
+    """Память стоп-ключа узла. Прод её не видит: без узла ключ не ставится."""
+
+    def __init__(self) -> None:
+        self._nodes: set[str] = set()
+        self._armed: dict[str, str] = {}
+
+    def add_node(self, node_key: str) -> None:
+        self._nodes.add(node_key)
+
+    def arm(self, session_id: str) -> str | None:
+        if not self._nodes:
+            return None
+        key = secrets.token_hex(16)
+        self._armed[session_id] = key
+        return key
+
+    def same(self, session_id: str, key: object) -> bool:
+        stored = self._armed.get(session_id)
+        return isinstance(key, str) and bool(stored) and stored == key and key != "pending"
+
+
+def _install_node_stops(supervisor: Any) -> NodeStopStore:
+    """Тот же хук, что зовёт ``request_kill``: ``_publish_kill``.
+
+    Класс супервизора не меняется. У экземпляра фикстуры хук сначала
+    пишет ключ в память узла и публикует ``stop_key_set=true``.
+    Пустое хранилище оставляет исходный ответ ``pending``.
+    """
+    store = NodeStopStore()
+    store.add_node(R6_NODE)
+    original = supervisor._publish_kill
+
+    async def _publish_kill(session_id: str, task_id: int | None) -> None:
+        key = store.arm(session_id)
+        if not key:
+            await original(session_id, task_id)
+            return
+        await supervisor.bus.publish(
+            session_id,
+            "kill_switch",
+            {"stop_key_set": True, "stop_key": key, "only_node": True, "task_id": task_id},
+            task_id=task_id,
+        )
+
+    supervisor._publish_kill = _publish_kill
+    supervisor.node_stops = store
+    return store
+
+
 def build_r6_runtime() -> Runtime:
     """Сборка R6. Без ``ORCH_TEST=1`` бросает ``RuntimeError`` и ничего не поднимает."""
     enforce_r6_gate()
     router = R6Router()
-    return build_runtime(
+    runtime = build_runtime(
         actions=R6Actions(),
         validators=UnlinkedValidators(),
         router=router,
         planner=RouterPlanner(router),
         critic=PlanCritic(router),
     )
+    _install_node_stops(runtime.supervisor)
+    return runtime
 
 
 def build_r6_app() -> Any:
