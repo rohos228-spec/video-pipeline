@@ -1,4 +1,4 @@
--- Скопировано из PR #346, коммит fab1b126: 001_node_defs.sql и 002_node_prompt_versions.sql.
+-- Снимок PR #346, коммит e4c3745b: 001_node_defs.sql и 002_node_prompt_versions.sql.
 -- Миграции в рантайме пишет только WS3. Здесь SQL нужен тестам node_store, пока #346 не в main.
 
 -- Спецификация WS2 (node_store). Одна строка на ноду оркестратора.
@@ -21,7 +21,13 @@ CREATE TABLE IF NOT EXISTS node_defs (
     updated_at TEXT NOT NULL,
     created_by TEXT,
     CHECK (title IS NULL OR length(title) <= 120),
-    CHECK (node_key REGEXP '^n_[a-z0-9_]+$')
+    -- Без REGEXP: функция regexp есть только в connect() этого модуля,
+    -- голое sqlite3 её не знает. GLOB — встроенный оператор SQLite.
+    CHECK (
+        length(node_key) >= 3
+        AND node_key GLOB 'n_[a-z0-9_]*'
+        AND node_key NOT GLOB '*[^a-z0-9_]*'
+    )
 );
 
 -- Спецификация WS2. Неизменяемая история промптов и параметров.

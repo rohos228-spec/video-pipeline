@@ -163,7 +163,11 @@ def test_active_version_cannot_point_at_missing_or_revert(conn: sqlite3.Connecti
 
 @pytest.mark.skipif(
     not (_MIGRATION_001.is_file() and _MIGRATION_002.is_file()),
-    reason="TODO: после мёржа #346 сверить schema_346.sql с миграциями 001 и 002",
+    reason=(
+        "снимок schema_346.sql обновлён вручную с e4c3745b; "
+        "сверка с файлами 001/002 ждёт мёржа #346 в main: "
+        "в этой ветке миграции WS3 не лежат"
+    ),
 )
 def test_schema_346_matches_ws3_migrations() -> None:
     fixture = (Path(__file__).parent / "schema_346.sql").read_text(encoding="utf-8")

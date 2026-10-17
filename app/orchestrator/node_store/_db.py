@@ -45,9 +45,14 @@ def _regexp(pattern: str, value: object) -> int:
 
 
 def validate_node_key(node_key: str) -> str:
+    """Формат ``^n_[a-z0-9_]+$`` из CHECK коммита fab1b126.
+
+    С e4c3745b в SQL остался GLOB: regexp нет в голом sqlite3.
+    Писатель проверяет ключ сам и бросает NodeStoreError.
+    """
     key = (node_key or "").strip()
     if not NODE_KEY_RE.fullmatch(key):
-        raise ValueError("node_key должен соответствовать ^n_[a-z0-9_]+$")
+        raise NodeStoreError("node_key должен соответствовать ^n_[a-z0-9_]+$")
     return key
 
 

@@ -162,7 +162,7 @@ def test_unknown_node_and_ambiguous_template(conn: sqlite3.Connection, templates
 
 
 def test_bad_node_key_rejected(conn: sqlite3.Connection, templates: Path) -> None:
-    with pytest.raises(ValueError, match="node_key"):
+    with pytest.raises(NodeStoreError, match="node_key"):
         resolve_node("Foo", conn, templates_root=templates)
 
 

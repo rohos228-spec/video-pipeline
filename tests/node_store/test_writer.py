@@ -674,11 +674,6 @@ def test_two_writers(tmp_path: Path, templates: Path) -> None:
         connection = sqlite3.connect(db_path, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.create_function(
-            "regexp",
-            2,
-            lambda pattern, value: 0 if value is None else int(__import__("re").search(pattern, str(value)) is not None),
-        )
         return connection
 
     setup = open_conn()
@@ -739,7 +734,7 @@ def test_missing_node_and_bad_key(conn: sqlite3.Connection, templates: Path) -> 
             reason="нет",
             templates_root=templates,
         )
-    with pytest.raises(ValueError, match="node_key"):
+    with pytest.raises(NodeStoreError, match="node_key"):
         writer.create_node(
             conn,
             node_key="Bad",
@@ -747,6 +742,69 @@ def test_missing_node_and_bad_key(conn: sqlite3.Connection, templates: Path) -> 
             title="t",
             prompt_template="p",
             change_id="chg",
+            templates_root=templates,
+        )
+    assert _counts(conn) == (0, 0)
+
+
+def test_bad_node_key_rejected_on_every_write(conn: sqlite3.Connection, templates: Path) -> None:
+    """Та же регулярка, что CHECK в fab1b126: ^n_[a-z0-9_]+$."""
+    writes = (
+        lambda key: writer.create_node(
+            conn,
+            node_key=key,
+            group_key="excel_gpt",
+            title="t",
+            prompt_template="p",
+            change_id="chg",
+            templates_root=templates,
+        ),
+        lambda key: writer.edit_prompt(
+            conn,
+            node_key=key,
+            content="p",
+            patch_mode="replace",
+            change_id="chg",
+            reason="правка",
+            templates_root=templates,
+        ),
+        lambda key: writer.edit_params(
+            conn,
+            node_key=key,
+            params_patch={"model": "m"},
+            change_id="chg",
+            reason="правка",
+            templates_root=templates,
+        ),
+        lambda key: writer.rollback_to_version(
+            conn,
+            node_key=key,
+            version=1,
+            change_id="chg",
+            reason="откат",
+            templates_root=templates,
+        ),
+        lambda key: writer.revert_node_to_git(
+            conn,
+            node_key=key,
+            change_id="chg",
+            reason="revert",
+            templates_root=templates,
+        ),
+    )
+    for key in ("Bad", "n_", "n_QC", "node_key", ""):
+        for write in writes:
+            with pytest.raises(NodeStoreError, match=r"\^n_\[a-z0-9_\]\+\$"):
+                write(key)
+    with pytest.raises(NodeStoreError, match="node_key"):
+        writer.create_node(
+            conn,
+            node_key="n_qc_vo",
+            group_key="excel_gpt",
+            title="t",
+            prompt_template="p",
+            change_id="chg",
+            after_node_key="Bad",
             templates_root=templates,
         )
     assert _counts(conn) == (0, 0)
