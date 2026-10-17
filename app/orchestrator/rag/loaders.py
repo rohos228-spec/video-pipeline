@@ -331,7 +331,10 @@ def load_nodes_and_prompts(
     scan_git: bool,
 ) -> tuple[list[SourceDoc], list[SourceDoc], int]:
     """Возвращает (nodes, prompts, skipped_invalid_keys)."""
+    from app.orchestrator.rag.node_api import reset_skipped_nodes, skipped_node_keys
+
     invalidate_group_role_cache()
+    reset_skipped_nodes()
     merged: dict[str, ResolvedNode] = {}
     skipped = 0
     if scan_git:
@@ -357,6 +360,7 @@ def load_nodes_and_prompts(
             continue
         node_docs.append(_node_doc(node))
         prompt_docs.extend(_prompt_docs(node))
+    skipped += len(skipped_node_keys())
     return node_docs, prompt_docs, skipped
 
 

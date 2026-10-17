@@ -270,6 +270,12 @@ class RagEngine:
             vectors = self.embedder.embed_passages([doc.text for doc in to_embed])
             for doc, vector in zip(to_embed, vectors, strict=True):
                 embeddings[chunk_id_for(doc.corpus, doc.source_id, doc.part_key)] = vector
+        if corpus in {"nodes", "prompts"}:
+            from app.orchestrator.rag.node_api import skipped_node_keys
+
+            for source_id in skipped_node_keys():
+                if source_id not in grouped and source_id in existing:
+                    grouped[source_id] = (existing[source_id], [])
         written, unchanged, deleted = self.store.sync(
             corpus,
             grouped,

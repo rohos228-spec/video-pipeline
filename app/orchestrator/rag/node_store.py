@@ -450,17 +450,15 @@ def _git_def(node_key: str, baseline: _GitFile) -> NodeDef:
 
 def _overrides_via_resolve(conn: sqlite3.Connection, templates_root: Path | None) -> list[ResolvedNode]:
     """Ключи из ``node_defs``. Промпт и хеш — только через ``resolve_node``."""
-    from app.orchestrator.rag.node_api import bind_resolve
+    from app.orchestrator.rag.node_api import resolve_node as resolve_via_adapter
 
-    resolve, not_found, _store_error = bind_resolve()
     nodes: list[ResolvedNode] = []
     for record in _identity_rows(conn):
         key = str(record.get("node_key") or "")
         if not NODE_KEY_RE.fullmatch(key):
             continue
-        try:
-            defined = resolve(key, conn, templates_root=templates_root)
-        except not_found:
+        defined = resolve_via_adapter(key, conn, templates_root=templates_root)
+        if defined is None:
             continue
         node = _resolved_from_def(defined, record)
         if not node.follow_git:

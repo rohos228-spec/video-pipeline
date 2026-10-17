@@ -274,6 +274,104 @@ def test_vo_length_type_error_is_not_stubbed(monkeypatch: pytest.MonkeyPatch) ->
         check_vo_lengths([{"id": "a", "text": "x" * 10}])
 
 
+def test_fake_resolver_skips_missing_node_and_keeps_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import app.orchestrator.rag.node_api as node_api
+    from app.orchestrator.rag.node_store import NodeDef, NodeNotFoundError, NodeStoreError, SqliteNodeStore
+
+    db_path = tmp_path / "nodes.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE node_defs (
+            node_key TEXT, group_key TEXT, title TEXT, status TEXT,
+            active_version INTEGER, updated_change_id TEXT
+        )
+        """
+    )
+    keys = ["n_keep", "n_ghost_a", "n_ghost_b", "n_ghost_c"]
+    for key in keys:
+        conn.execute(
+            "INSERT INTO node_defs VALUES (?, 'custom', ?, 'active', NULL, NULL)",
+            (key, key),
+        )
+    conn.commit()
+    conn.close()
+    hide_ghosts = False
+
+    def bind():
+        def resolve(node_key, _conn, *, templates_root=None):
+            del templates_root
+            if hide_ghosts and node_key != "n_keep":
+                raise NodeNotFoundError(f"нода {node_key} не найдена в git")
+            return NodeDef(node_key=node_key, prompt_template=f"тело {node_key} markerkeep", source="git")
+
+        return resolve, NodeNotFoundError, NodeStoreError
+
+    monkeypatch.setattr(node_api, "bind_resolve", bind)
+    engine = RagEngine(
+        db_path=tmp_path / "orch_rag.db",
+        rules_path=tmp_path / "no-rules.md",
+        repo_root=tmp_path,
+        node_store=SqliteNodeStore(db_path),
+        scan_git=False,
+    )
+    try:
+        first = engine.reindex(["nodes", "prompts"])
+        assert first["nodes"].written == 4
+        assert first["prompts"].written == 4
+        hide_ghosts = True
+        with caplog.at_level(logging.WARNING):
+            second = engine.reindex(["nodes", "prompts"])
+        assert second["nodes"].deleted == 0
+        assert second["prompts"].deleted == 0
+        assert second["nodes"].skipped_invalid_keys == 3
+        assert set(node_api.skipped_node_keys()) == {"n_ghost_a", "n_ghost_b", "n_ghost_c"}
+        assert "n_ghost_a" in caplog.text and "пропущена" in caplog.text
+        present = {
+            row["source_id"]
+            for row in engine.store.snapshot()
+            if row.get("corpus") in {"nodes", "prompts"}
+        }
+        assert set(keys) <= present
+    finally:
+        engine.close()
+
+
+def test_lookalike_node_not_found_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.orchestrator.rag.node_api as node_api
+
+    class OtherMissing(Exception):
+        pass
+
+    class NodeNotFoundError(Exception):
+        pass
+
+    def bind():
+        def resolve(node_key, _conn, *, templates_root=None):
+            del node_key, templates_root
+            raise NodeNotFoundError("нода не найдена в git")
+
+        return resolve, OtherMissing, Exception
+
+    monkeypatch.setattr(node_api, "bind_resolve", bind)
+    node_api.reset_skipped_nodes()
+    assert node_api.resolve_node("n_orphan", None) is None
+    assert node_api.skipped_node_keys() == ("n_orphan",)
+
+    def bind_broken():
+        def resolve(node_key, _conn, *, templates_root=None):
+            del node_key, templates_root
+            raise RuntimeError("active_version не может указывать на revert_to_git")
+
+        return resolve, OtherMissing, RuntimeError
+
+    monkeypatch.setattr(node_api, "bind_resolve", bind_broken)
+    with pytest.raises(RuntimeError, match="revert_to_git"):
+        node_api.resolve_node("n_revert", None)
+
+
 def test_stub_ws1_override_is_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     ws1 = tmp_path / "ws1"
     ws1.mkdir()
