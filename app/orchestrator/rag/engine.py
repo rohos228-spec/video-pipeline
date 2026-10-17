@@ -24,7 +24,14 @@ from app.orchestrator.rag.store import RagStore, chunk_id_for
 from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
 _RRF_K = 60
-_AGGREGATES = ("none", "prompt_pool", "prompt_expand", "expand_tail")
+_AGGREGATES = (
+    "none",
+    "prompt_pool",
+    "prompt_expand",
+    "expand_tail",
+    "none_cand_expand_rerank",
+    "rrf_none_expand",
+)
 _RERANK_FUSIONS = frozenset({"replace", "rrf"})
 
 
@@ -186,7 +193,10 @@ class RagEngine:
         if bm25_scope not in {"full", "head"}:
             raise ValueError("bm25_scope должен быть full или head")
         if aggregate not in _AGGREGATES:
-            raise ValueError("aggregate должен быть none, prompt_pool, prompt_expand или expand_tail")
+            raise ValueError(
+                "aggregate должен быть none, prompt_pool, prompt_expand, "
+                "expand_tail, none_cand_expand_rerank или rrf_none_expand"
+            )
         if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
             raise ValueError("веса RRF должны быть > 0")
         if rerank_fusion not in _RERANK_FUSIONS:
@@ -284,7 +294,13 @@ class RagEngine:
                     key=lambda item: (-item[1], item[0]),
                 )
             ]
-        ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
+        if aggregate == "none_cand_expand_rerank" and use_rerank and self.reranker is not None:
+            ordered = _none_cand_expand_rerank(ordered, by_id, query, self.reranker, rerank_pool)
+        elif aggregate == "rrf_none_expand":
+            expand_order = _aggregate_parts(ordered, rank_scores, by_id, "prompt_expand")
+            ordered = _rrf_none_expand(ordered, expand_order, k=rrf_k)
+        else:
+            ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
         result: list[Chunk] = []
         for rank, chunk_id in enumerate(ordered[:top_k], start=1):
             chunk = by_id[chunk_id]
@@ -483,6 +499,71 @@ def _expand_tail(
     rest = [chunk_id for chunk_id in siblings[3:] if chunk_id not in set(tail)]
     rest.extend(chunk_id for chunk_id in ordered if chunk_id not in seen and chunk_id not in rest)
     return head + tail + rest
+
+
+def _expanded_prompt_passage(chunk: Chunk, by_id: dict[str, Chunk]) -> str:
+    """Текст реранкера: у промпта все части, не один кусок."""
+    if chunk.corpus != "prompts":
+        return _rerank_passage(chunk)
+    parts = [
+        other
+        for other in by_id.values()
+        if other.corpus == "prompts" and other.source_id == chunk.source_id
+    ]
+    parts.sort(key=lambda other: (str(other.metadata.get("part_key") or ""), other.chunk_id))
+    title = (chunk.title or "").strip()
+    node_key = str(chunk.metadata.get("node_key") or "").strip()
+    role = str(chunk.metadata.get("group_role") or "").strip()
+    body = "\n".join(part.text.strip() for part in parts if (part.text or "").strip())[:1200]
+    return "\n".join(part for part in (title, node_key, role, body) if part)
+
+
+def _none_cand_expand_rerank(
+    ordered: list[str],
+    by_id: dict[str, Chunk],
+    query: str,
+    reranker: Any,
+    pool: int,
+) -> list[str]:
+    """Пул — top-``pool`` списка none. Порядок внутри пула задаёт реранк развёрнутого промпта."""
+    candidates = [chunk_id for chunk_id in ordered if chunk_id in by_id][:pool]
+    if not candidates:
+        return ordered
+    passages = [_expanded_prompt_passage(by_id[chunk_id], by_id) for chunk_id in candidates]
+    raw_scores = reranker.score(query, passages)
+    if len(raw_scores) != len(candidates):
+        raise RuntimeError("реранкер вернул не столько оценок, сколько пассажей")
+    none_index = {chunk_id: index for index, chunk_id in enumerate(ordered)}
+    ranked = [
+        chunk_id
+        for chunk_id, _score in sorted(
+            zip(candidates, raw_scores, strict=True),
+            key=lambda item: (-float(item[1]), none_index[item[0]]),
+        )
+    ]
+    seen = set(ranked)
+    return ranked + [chunk_id for chunk_id in ordered if chunk_id not in seen]
+
+
+def _rrf_none_expand(none_order: list[str], expand_order: list[str], *, k: int) -> list[str]:
+    """RRF списков none и prompt_expand. Top-5 none остаётся на местах 1–5.
+
+    Так попадание none в top-5 не выпадает: множество первых пяти id не меняется.
+    Хвост идёт по RRF.
+    """
+    if k <= 0:
+        raise ValueError("k RRF должен быть > 0")
+    head = list(none_order[:5])
+    seen = set(head)
+    fused = rrf_merge([none_order, expand_order], k=k)
+    tail = [
+        chunk_id
+        for chunk_id, _score in sorted(fused.items(), key=lambda item: (-item[1], item[0]))
+        if chunk_id not in seen
+    ]
+    seen.update(tail)
+    tail.extend(chunk_id for chunk_id in none_order if chunk_id not in seen)
+    return head + tail
 
 
 def _aggregate_parts(
