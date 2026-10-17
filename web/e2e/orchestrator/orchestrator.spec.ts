@@ -14,6 +14,7 @@ import {
   orchContractIsR34,
   parseOrchProjectId,
   PROJECT_BIND_CONFLICT,
+  PROJECT_BIND_FOREIGN,
   PROJECT_BIND_INVALID,
   PROJECT_BIND_VALIDATION,
   orchTestModeEnabled,
@@ -1216,6 +1217,16 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-risk")).toBeVisible();
     await expect(page.getByTestId("orch-approval")).toContainText("Шаг с риском");
     await expect(page.getByTestId("orch-approve")).toBeEnabled();
+  });
+
+  test("409 чужой задачи пишет сообщение на карточке проекта", async ({ page }) => {
+    await openWithContract(page, "project409task", "project-409-task");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-project-submit").click();
+    await expect(page.getByTestId("orch-approval-error")).toHaveText(PROJECT_BIND_FOREIGN);
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
   });
 
   test("missing_project_id: 422 и 409 остаются на карточке, 401 — авторизация", async ({ page }) => {

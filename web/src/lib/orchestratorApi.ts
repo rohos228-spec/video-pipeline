@@ -137,6 +137,7 @@ export function parseOrchProjectId(raw: string): number | null {
 export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
 export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
 export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";
+export const PROJECT_BIND_FOREIGN = "Это не активная задача";
 
 function readProjectBind(value: unknown): OrchProjectBindResult {
   if (!value || typeof value !== "object") {

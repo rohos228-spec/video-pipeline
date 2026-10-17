@@ -11,6 +11,7 @@ import {
   parseOrchProjectId,
   postOrchProject,
   PROJECT_BIND_CONFLICT,
+  PROJECT_BIND_FOREIGN,
   PROJECT_BIND_INVALID,
   PROJECT_BIND_VALIDATION,
   OrchApiError,
@@ -405,7 +406,11 @@ export function useOrchestratorChat() {
         setSendError("");
       } catch (error) {
         if (error instanceof OrchApiError && error.status === 409) {
-          setDecisionError({ id: approvalId, message: PROJECT_BIND_CONFLICT });
+          const foreign = error.message === "not the active task";
+          setDecisionError({
+            id: approvalId,
+            message: foreign ? PROJECT_BIND_FOREIGN : PROJECT_BIND_CONFLICT,
+          });
           return;
         }
         if (error instanceof OrchApiError && error.status === 422) {
