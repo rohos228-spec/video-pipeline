@@ -62,6 +62,7 @@ class Supervisor:
         self._cancel: set[str] = set()
         self._pause: set[str] = set()
         self._steer: dict[str, str] = {}
+        self._approval: dict[str, str] = {}
         self._session_task: dict[str, int] = {}
         self._change_ids: dict[int, list[str]] = {}
         self._context: dict[int, str] = {}
@@ -70,6 +71,7 @@ class Supervisor:
         self._cancel.discard(session_id)
         self._pause.discard(session_id)
         self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
         task_id = await self._set_status(
             None,
             TaskStatus.queued,
@@ -99,6 +101,7 @@ class Supervisor:
         self._cancel.discard(session_id)
         self._pause.discard(session_id)
         self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = list(data.change_ids)
         self._context[task_id] = data.context
@@ -135,6 +138,14 @@ class Supervisor:
         task_id = self._session_task.get(session_id)
         if task_id is not None:
             self.tasks.set_flag(task_id, steer_text=text)
+
+    def request_approval(self, session_id: str, reason: str) -> None:
+        """Попросить человека. Статус сменится на границе шага, не mid-flight.
+
+        Для исчерпания суб-бюджета reason='budget_exhausted': FSM остаётся
+        waiting_approval, отдельный статус не заводится.
+        """
+        self._approval[session_id] = reason
 
     def active_task(self, session_id: str) -> int | None:
         return self._session_task.get(session_id)
@@ -206,6 +217,8 @@ class Supervisor:
     ) -> None:
         index = start
         while index < len(plan):
+            if await self._hold_for_approval(task_id, session_id, plan, index):
+                return
             if session_id in self._pause:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
@@ -302,6 +315,8 @@ class Supervisor:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._set_status(task_id, TaskStatus.paused, session_id=session_id)
                 return
+            if await self._hold_for_approval(task_id, session_id, plan, index):
+                return
 
         await self._set_status(task_id, TaskStatus.done, session_id=session_id)
         await self.bus.publish(session_id, "task_done", {"task_id": task_id}, task_id=task_id)
@@ -383,12 +398,26 @@ class Supervisor:
             task_id=task_id,
         )
 
+    async def _hold_for_approval(
+        self,
+        task_id: int,
+        session_id: str,
+        plan: list[PlanStep],
+        index: int,
+    ) -> bool:
+        reason = self._approval.pop(session_id, None)
+        if reason is None:
+            return False
+        await self._checkpoint(task_id, session_id, plan, index)
+        await self._escalate(task_id, session_id, reason)
+        return True
+
     async def _escalate(self, task_id: int, session_id: str, reason: str) -> None:
         await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
         await self.bus.publish(
             session_id,
             "approval_required",
-            {"reason": reason},
+            {"reason": reason, "task_id": task_id},
             task_id=task_id,
         )
 

@@ -11,6 +11,9 @@ from app.orchestrator.contracts import (
     Chunk,
     ChunkCorpus,
     LLMResponse,
+    NodeDef,
+    NodeSource,
+    TaskStatus,
     export_contract_schemas,
 )
 from app.orchestrator.db.migrations import apply_migrations, connect, utc_now
@@ -156,6 +159,106 @@ def test_llm_calls_follow_ws5_and_skip_prompt_text() -> None:
         indexes = {row[1] for row in conn.execute("PRAGMA index_list(orch_llm_calls)")}
         assert "ix_orch_llm_calls_task_created" in indexes
         assert "ix_orch_llm_calls_budget_scope" in indexes
+    finally:
+        conn.close()
+
+
+def test_node_def_is_the_resolved_shape() -> None:
+    assert set(NodeDef.model_fields) == {
+        "node_key",
+        "prompt_template",
+        "params",
+        "source",
+        "version",
+        "db_version",
+        "git_sha256",
+        "stale_base",
+    }
+    node = NodeDef(
+        node_key="n_qc_vo",
+        prompt_template="prompt",
+        params={"model": "scripted"},
+        source=NodeSource.db,
+        version=2,
+        db_version=2,
+        git_sha256="abc",
+        stale_base=True,
+    )
+    dumped = node.model_dump()
+    assert "overridden_in_db" not in dumped
+    assert "active_version" not in dumped
+    assert "group_key" not in dumped
+    statuses = {item.value for item in TaskStatus}
+    assert "escalated" not in statuses
+    assert "budget_exhausted" not in statuses
+    schema = export_contract_schemas()["models"]["NodeDef"]["properties"]
+    assert set(schema) == set(NodeDef.model_fields)
+
+
+def test_revert_to_git_and_studio_ui_columns() -> None:
+    conn = connect()
+    stamp = utc_now()
+    try:
+        conn.execute(
+            """
+            INSERT INTO node_defs (
+                node_key, group_key, title, origin, is_new_group, status,
+                active_version, created_at, updated_at, created_by
+            ) VALUES (
+                'n_qc_vo', 'excel_gpt', 'QC', 'git_override', 0, 'active',
+                NULL, ?, ?, 'task-1'
+            )
+            """,
+            (stamp, stamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO node_prompt_versions (
+                node_key, version, prompt_template, params_json, kind,
+                parent_version, base_git_sha256, is_active, change_id,
+                created_at, created_by, created_via
+            ) VALUES (
+                'n_qc_vo', 1, 'prompt', '{}', 'revert_to_git',
+                NULL, 'deadbeef', 0, 'chg-revert',
+                ?, 'studio-user', 'studio_ui'
+            )
+            """,
+            (stamp,),
+        )
+        row = conn.execute(
+            """
+            SELECT kind, base_git_sha256, created_via, is_active
+            FROM node_prompt_versions WHERE version = 1
+            """
+        ).fetchone()
+        assert tuple(row) == ("revert_to_git", "deadbeef", "studio_ui", 0)
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO node_prompt_versions (
+                    node_key, version, prompt_template, params_json, kind,
+                    is_active, change_id, created_at, created_via
+                ) VALUES (
+                    'n_qc_vo', 2, 'prompt', '{}', 'ui_edit',
+                    0, 'chg-ui', ?, 'studio_ui'
+                )
+                """,
+                (stamp,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO node_prompt_versions (
+                    node_key, version, prompt_template, params_json, kind,
+                    is_active, change_id, created_at, created_via
+                ) VALUES (
+                    'n_qc_vo', 3, 'prompt', '{}', 'edit_prompt',
+                    0, 'chg-via', ?, 'notepad'
+                )
+                """,
+                (stamp,),
+            )
+        conn.commit()
     finally:
         conn.close()
 

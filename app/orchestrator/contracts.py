@@ -98,6 +98,26 @@ class PromptVersionKind(StrEnum):
     edit_prompt = "edit_prompt"
     edit_params = "edit_params"
     rollback = "rollback"
+    revert_to_git = "revert_to_git"
+
+
+class PromptCreatedVia(StrEnum):
+    """Кто записал версию промпта. Правка из UI студии — не отдельный kind."""
+
+    orchestrator = "orchestrator"
+    studio_ui = "studio_ui"
+
+
+class ApprovalReason(StrEnum):
+    """Причина ``waiting_approval``. Нового статуса FSM для бюджета нет.
+
+    Исчерпание суб-бюджета — ``waiting_approval`` + ``budget_exhausted``.
+    Статуса ``escalated`` нет. Другие причины можно передать строкой.
+    """
+
+    budget_exhausted = "budget_exhausted"
+    risk = "risk"
+    critic_escalation = "critic_escalation"
 
 
 class ReportKind(StrEnum):
@@ -291,19 +311,37 @@ class Chunk(BaseModel):
 
 
 class NodeDef(BaseModel):
-    """Рантайм-определение ноды, которое вернёт ``node_store.resolve_node`` (WS2)."""
+    """Определение ноды, которое отдают ``resolve_node`` и ``get_node`` (WS2).
+
+    ``version`` — версия, которую резолвер считает текущей (git или db).
+    ``db_version`` — номер строки в ``node_prompt_versions``, если поверх git
+    есть DB-версия; иначе ``None``. ``git_sha256`` — sha256 базового git-файла
+    на момент резолва. ``stale_base`` — git-файл изменился после записи
+    DB-версии (``base_git_sha256`` версии не совпал с текущим ``git_sha256``).
+
+    Колонка ``node_defs.active_version`` в этот тип не копируется.
+    ``active_version IS NULL`` значит «сейчас как в git» (после
+    ``revert_node_to_git``): ``source=git``, ``db_version=None``,
+    ``stale_base=False``.
+    """
 
     node_key: str
     prompt_template: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
     source: NodeSource = NodeSource.git
     version: int = 0
-    group_key: str = ""
-    title: str = ""
+    db_version: int | None = None
+    git_sha256: str | None = None
+    stale_base: bool = False
 
 
 class ApprovalEvent(BaseModel):
-    """Событие approval, которое WS2 кладёт в SSE-шину."""
+    """Событие approval в SSE-шине.
+
+    Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся
+    ``waiting_approval``, а причина лежит здесь и в payload события
+    ``approval_required`` (``reason=budget_exhausted``).
+    """
 
     task_id: int | None = None
     action: str = ""
@@ -475,7 +513,11 @@ NODE_DEFS = TableSpec(
             "active_version",
             "INTEGER",
             nullable=True,
-            note="node_prompt_versions.version этой ноды",
+            note=(
+                "node_prompt_versions.version этой ноды. NULL — резолвер берёт git "
+                "(revert_node_to_git). Статус reverted не вводим: active|disabled "
+                "описывают включённость, а не источник промпта."
+            ),
         ),
         ColumnSpec("created_change_id", "TEXT", nullable=True),
         ColumnSpec("updated_change_id", "TEXT", nullable=True),
@@ -491,7 +533,12 @@ NODE_PROMPT_VERSIONS = TableSpec(
     immutable=True,
     notes=(
         "Спецификация WS2. Неизменяемая история: откат — новая строка "
-        "kind=rollback, старые строки не удаляются и не правятся."
+        "kind=rollback, возврат на git-шаблон — новая строка kind=revert_to_git "
+        "(действие revert_node_to_git) и node_defs.active_version=NULL. "
+        "Старые строки не удаляются и не правятся. "
+        "base_git_sha256 — sha256 git-файла на момент записи версии; "
+        "по нему resolve_node считает NodeDef.stale_base. "
+        "Правка из UI студии — created_via=studio_ui, не отдельный kind."
     ),
     columns=(
         ColumnSpec("id", "INTEGER", primary_key=True, nullable=False),
@@ -513,16 +560,30 @@ NODE_PROMPT_VERSIONS = TableSpec(
             "kind",
             "TEXT",
             nullable=False,
-            check="create|edit_prompt|edit_params|rollback",
+            check="create|edit_prompt|edit_params|rollback|revert_to_git",
         ),
         ColumnSpec("patch_mode", "TEXT", nullable=True),
         ColumnSpec("section_anchor", "TEXT", nullable=True),
         ColumnSpec("reason", "TEXT", nullable=True),
         ColumnSpec("parent_version", "INTEGER", nullable=True),
+        ColumnSpec(
+            "base_git_sha256",
+            "TEXT",
+            nullable=True,
+            note="sha256 базового git-файла на момент записи версии; NULL если базы не было",
+        ),
         ColumnSpec("is_active", "INTEGER", nullable=False, default="0", note="BOOL, ≤1 активной на ноду"),
         ColumnSpec("change_id", "TEXT", nullable=False),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
         ColumnSpec("created_by", "TEXT", nullable=True),
+        ColumnSpec(
+            "created_via",
+            "TEXT",
+            nullable=False,
+            default="orchestrator",
+            check="orchestrator|studio_ui",
+            note="orchestrator | studio_ui",
+        ),
     ),
     unique=(("node_key", "version"),),
     indexes=(
@@ -793,6 +854,8 @@ def export_contract_schemas() -> dict[str, Any]:
             "NodeStatus": [v.value for v in NodeStatus],
             "NodeSource": [v.value for v in NodeSource],
             "PromptVersionKind": [v.value for v in PromptVersionKind],
+            "PromptCreatedVia": [v.value for v in PromptCreatedVia],
+            "ApprovalReason": [v.value for v in ApprovalReason],
             "ReportKind": [v.value for v in ReportKind],
             "AgentRole": [v.value for v in AgentRole],
             "ModelTier": [v.value for v in ModelTier],
