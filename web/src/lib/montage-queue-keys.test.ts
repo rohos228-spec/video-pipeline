@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { montageOpSelectKey, serverQueueReplacesLocal } from "./montage-apply-queue.ts";
+
+test("two image edits on one frame do not share a key", () => {
+  const a = montageOpSelectKey({
+    type: "image_ai_change",
+    frame_number: 4,
+    shot: 1,
+    instruction: "светлее",
+  });
+  const b = montageOpSelectKey({
+    type: "image_ai_change",
+    frame_number: 4,
+    shot: 1,
+    slot: "parent",
+    instruction: "темнее",
+  });
+  assert.notEqual(a, b);
+  assert.match(a, /светлее$/);
+  assert.match(b, /parent/);
+});
+
+test("shorter server queue replaces local only when it is the remaining suffix", () => {
+  const key = (op: { id: string }) => op.id;
+  const local = [{ id: "done" }, { id: "left" }];
+  assert.equal(serverQueueReplacesLocal(local, [{ id: "left" }], key), true);
+  assert.equal(serverQueueReplacesLocal(local, [{ id: "stale" }], key), false);
+  assert.equal(serverQueueReplacesLocal(local, [], key), true);
+});
