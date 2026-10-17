@@ -278,6 +278,49 @@ def _prefer_curl_download(url: str) -> bool:
     return any(h in low for h in ("yandexcloud.net", "outseehistory"))
 
 
+def write_curl_header_file(headers: dict[str, str]) -> Path:
+    """Заголовки во временный файл 0600. В argv curl их нет."""
+    import os
+    import tempfile
+
+    fd, name = tempfile.mkstemp(prefix="outsee_hdr_", suffix=".txt")
+    os.close(fd)
+    path = Path(name)
+    path.write_text(
+        "".join(f"{key}: {value}\n" for key, value in headers.items()),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
+def curl_post_argv(
+    *,
+    curl: str,
+    url: str,
+    header_file: Path,
+    body_file: Path,
+    connect_timeout: int,
+    max_time: int,
+) -> list[str]:
+    return [
+        curl,
+        "-sS",
+        "-X",
+        "POST",
+        "--connect-timeout",
+        str(int(connect_timeout)),
+        "--max-time",
+        str(int(max_time)),
+        *_curl_tls_args(),
+        "-H",
+        f"@{header_file}",
+        "--data-binary",
+        f"@{body_file}",
+        url,
+    ]
+
+
 async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
     """Fallback, когда httpx не коннектится к outsee.io (Windows / долгий handshake)."""
     import os
@@ -288,31 +331,27 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
     if not curl:
         return None
     url = f"{_base_url()}{path}"
-    headers = _headers()
+    headers = {
+        **_headers(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     fd, tmp_name = tempfile.mkstemp(prefix="outsee_gen_", suffix=".json")
     os.close(fd)
     tmp = Path(tmp_name)
+    hdr: Path | None = None
     try:
         tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        hdr = write_curl_header_file(headers)
         proc = await asyncio.create_subprocess_exec(
-            curl,
-            "-sS",
-            "-X",
-            "POST",
-            "--connect-timeout",
-            str(int(_GENERATE_CONNECT_S)),
-            "--max-time",
-            str(int(_GENERATE_TOTAL_S)),
-            *_curl_tls_args(),
-            "-H",
-            f"Authorization: {headers['Authorization']}",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            "Accept: application/json",
-            "--data-binary",
-            f"@{tmp}",
-            url,
+            *curl_post_argv(
+                curl=curl,
+                url=url,
+                header_file=hdr,
+                body_file=tmp,
+                connect_timeout=int(_GENERATE_CONNECT_S),
+                max_time=int(_GENERATE_TOTAL_S),
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -353,6 +392,8 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
         return None
     finally:
         tmp.unlink(missing_ok=True)
+        if hdr is not None:
+            hdr.unlink(missing_ok=True)
 
 
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
