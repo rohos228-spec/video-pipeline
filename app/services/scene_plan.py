@@ -25,6 +25,8 @@ import re
 from contextvars import ContextVar
 from typing import Any
 
+from loguru import logger
+
 from app.services.scene_shot_grammar import (
     classify_object,
     visible_len,
@@ -1966,11 +1968,22 @@ def apply_scene_plan_cells(
     raws = [c.get("plan") for c in cells if c.get("plan")]
     plan = parse_plan(_merge_plans(raws)) if raws else ScenePlan()
     flat: list[dict[str, Any]] = []
+    held_by_key: dict[Any, list[Any]] = {}
     for c in cells:
-        rows = [s for s in c.get("shots") or [] if isinstance(s, dict)]
-        if c.get("owned"):
-            c["shots"][:] = rows
-        else:
+        raw_rows = list(c.get("shots") or [])
+        rows: list[dict[str, Any]] = []
+        held: list[Any] = []
+        for shot in raw_rows:
+            if isinstance(shot, dict):
+                rows.append(shot)
+            else:
+                held.append(shot)
+                logger.warning(
+                    "WARN apply_scene_plan_cells: элемент ячейки {} не словарь — сохранён",
+                    c.get("key"),
+                )
+        held_by_key[c.get("key")] = held
+        if not c.get("owned"):
             rows = copy.deepcopy(rows)
         for s in rows:
             s["_cell"] = c["key"]
@@ -1999,10 +2012,25 @@ def apply_scene_plan_cells(
             if not c.get("owned"):
                 continue
             mine = [s for s in flat if s.get("_cell") == c["key"]]
+            held = list(held_by_key.get(c.get("key")) or [])
             if len(mine) != len(c["shots"]) and any("порядок" in s for s in mine):
                 for n, s in enumerate(mine, start=1):
                     s["порядок"] = n
-            c["shots"][:] = mine
+            # Срез не выбрасывает шоты: не-словари и всё, что симуляция не вернула, остаются.
+            seen = {id(s) for s in mine}
+            for shot in list(c.get("shots") or []):
+                if isinstance(shot, dict) and id(shot) not in seen and shot.get("_cell") == c["key"]:
+                    if not shot.get("карантин"):
+                        shot["карантин"] = True
+                        shot["активен"] = False
+                        shot["пометка"] = "срез плана не забрал кадр — сохранён"
+                        logger.warning(
+                            "WARN apply_scene_plan_cells: кадр {} ячейки {} оставлен после среза",
+                            shot.get("id"),
+                            c.get("key"),
+                        )
+                    mine.append(shot)
+            c["shots"][:] = mine + held
         for it in sim.issues:
             shot = it.pop("_shot")
             key = str(shot.get("_cell"))
