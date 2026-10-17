@@ -835,29 +835,84 @@ def _action_segments(action: str) -> set[str]:
     return {part for part in re.split(r"[._]", (action or "").lower()) if part}
 
 
-def is_deletion_action(action: str) -> bool:
-    """Удаление кадра или сцены по имени.
+# Глагол удаления — отдельный сегмент имени, не подстрока (``dropdown`` не ``drop``).
+_DELETION_VERBS = frozenset(
+    {
+        "delete",
+        "remove",
+        "drop",
+        "purge",
+        "clear",
+        "wipe",
+        "truncate",
+        "prune",
+        "reset",
+        "destroy",
+        "erase",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rmtree",
+    }
+)
+_DELETION_OBJECTS = frozenset(
+    {
+        "frame",
+        "frames",
+        "scene",
+        "scenes",
+        "shot",
+        "shots",
+        "kadr",
+        "kadry",
+        "kadrs",
+    }
+)
+# Вызовы файловой системы. ``metadata_of`` их не оправдывает.
+_FS_DELETION_CALLS = frozenset(
+    {
+        "os.remove",
+        "os.unlink",
+        "os.rmdir",
+        "os.removedirs",
+        "shutil.rmtree",
+        "path.unlink",
+        "path.rmdir",
+    }
+)
 
-    Точные имена реестра, подстроки ``delete_frame`` / ``delete_scene``,
-    и сегменты имени (разрыв по ``.`` и ``_``): ``purge``, ``drop``,
-    а ``remove`` только рядом с ``frame`` или ``scene``.
-    ``montage.remove_frame``, ``shots.purge``, ``scene.drop`` попадают.
-    ``dropdown`` и ``remove_watermark`` — нет.
 
-    Это эвристика по имени, пока нет ``metadata_of``. ``drop`` / ``purge``
-    заденут и ``drop_cache``. ``erase`` / ``wipe`` / ``truncate`` сюда не входят:
-    их закроет реестр WS2.
+def _call_name(action: str) -> str:
+    return re.sub(r"[^a-z0-9.]+", ".", (action or "").strip().lower()).strip(".")
+
+
+def is_named_deletion(action: str) -> bool:
+    """Удаление кадра/сцены/шота или вызов ``os``/``shutil``/``Path``.
+
+    Такой запрет не снимается метаданными реестра.
     """
     name = (action or "").strip()
-    if name in DELETION_ACTIONS:
-        return True
-    lowered = name.lower()
-    if "delete_frame" in lowered or "delete_scene" in lowered:
+    if not name:
+        return False
+    if name in DELETION_ACTIONS or _call_name(name) in _FS_DELETION_CALLS:
         return True
     parts = _action_segments(name)
-    if parts & {"purge", "drop"}:
-        return True
-    return "remove" in parts and bool(parts & {"frame", "scene"})
+    return bool(parts & _DELETION_VERBS and parts & _DELETION_OBJECTS)
+
+
+def is_deletion_verb(action: str) -> bool:
+    """Сегмент-глагол удаления. ``dropdown`` сегмента ``drop`` не содержит."""
+    return bool(_action_segments(action) & _DELETION_VERBS)
+
+
+def is_deletion_action(action: str) -> bool:
+    """Fail-closed по имени, пока реестр не поручился через ``metadata_of``.
+
+    Попадают точные имена, вызовы ``os.remove`` / ``Path.unlink`` / ``shutil.rmtree``,
+    глагол рядом с frame/scene/shot/kadr и любой глагол удаления без объекта
+    (``remove_watermark``, ``clear``, ``reset``). ``dropdown`` не попадает.
+    """
+    return is_named_deletion(action) or is_deletion_verb(action)
 
 
 _MISSING = object()
@@ -898,8 +953,17 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     meta = metadata_of(action) if metadata_of is not None else None
     if meta is not None and bool(getattr(meta, "destructive", False)):
         return "hard"
-    if is_deletion_action(action):
+    if is_named_deletion(action):
         return "name"
+    if is_deletion_verb(action):
+        vouched = (
+            metadata_of is not None
+            and meta is not None
+            and not bool(getattr(meta, "destructive", False))
+            and getattr(meta, "read_only", None) is True
+        )
+        if not vouched:
+            return "name"
     if metadata_of is not None:
         if meta is None or getattr(meta, "read_only", None) is not True:
             return "hard"

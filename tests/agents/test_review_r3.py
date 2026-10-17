@@ -527,7 +527,7 @@ def test_deletion_markers_are_name_segments() -> None:
     assert is_deletion_action("shots.purge")
     assert is_deletion_action("scene.drop")
     assert not is_deletion_action("dropdown")
-    assert not is_deletion_action("remove_watermark")
+    assert is_deletion_action("remove_watermark")
 
 
 class _RecordingValidators:
