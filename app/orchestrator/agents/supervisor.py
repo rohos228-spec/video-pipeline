@@ -2111,11 +2111,16 @@ class Supervisor:
         reason: str,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
+        current = self._status(task_id)
         payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
         if extra:
             payload.update(extra)
-        await self.publish_approval_required(session_id, payload, task_id=task_id, reuse=False)
+        if current is not None and can_transition(current, TaskStatus.waiting_approval):
+            # Событие раньше статуса: опрос waiting_approval уже видит change_id.
+            await self.publish_approval_required(session_id, payload, task_id=task_id, reuse=False)
+            await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
+            return
+        await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
 
     async def _set_status(
         self,
