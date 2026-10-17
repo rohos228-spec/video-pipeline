@@ -92,6 +92,10 @@ DOM отчёта на месте не правится.
 | `change_id` | серверный id пометки |
 | `marked` | `true` — помечено, строка и файл на месте |
 | `restore_action` | id из реестра, которым чат снимает пометку |
+| `snapshot_id` | id снимка, из которого снимают пометку |
+| `archive_ref` | путь `old/…`, если снимка-id нет |
+
+Нужно хотя бы одно из `snapshot_id` и `archive_ref`. Без ссылки на снимок или архив результат невалиден.
 
 Отдельного id «восстановить» план не вводит. В моках поле равно
 `history.rollback`: это действие уже есть в реестре и возвращает прежнее
@@ -293,7 +297,8 @@ DOM отчёта на месте не правится.
   "result": {
     "change_id": "orch-appr-13-6",
     "marked": true,
-    "restore_action": "history.rollback"
+    "restore_action": "history.rollback",
+    "snapshot_id": "snap-13-6"
   },
   "error": null
 }

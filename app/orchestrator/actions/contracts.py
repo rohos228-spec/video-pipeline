@@ -184,6 +184,8 @@ class SoftDeleteResult(BaseModel):
     change_id: str
     marked: bool
     restore_action: str = Field(min_length=1)
+    snapshot_id: str | None = None
+    archive_ref: str | None = None
 
     @field_validator("change_id")
     @classmethod
@@ -196,6 +198,14 @@ class SoftDeleteResult(BaseModel):
         if value not in metadata_registry():
             raise ValueError("restore_action вне реестра")
         return value
+
+    @model_validator(mode="after")
+    def _snapshot_ref(self) -> SoftDeleteResult:
+        """Без снимка или old/ восстанавливать не из чего."""
+
+        if not (self.snapshot_id or self.archive_ref):
+            raise ValueError("нужен snapshot_id или archive_ref")
+        return self
 
 
 class ActionResult(BaseModel):

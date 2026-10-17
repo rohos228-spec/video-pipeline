@@ -14,6 +14,7 @@ from app.orchestrator.actions.contracts import (
     CONTRACT_VERSION,
     ActionResult,
     ReportResult,
+    SoftDeleteResult,
     metadata_of,
     schema_canonical_bytes,
 )
@@ -24,7 +25,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa",
+    "ws2-r2.0": "5a98be05662f275a338a81ac8d4dd5d06609e6d4b72e639f055136f0a7b9304c",
 }
 
 
@@ -81,6 +82,29 @@ def test_prompt_create_master_is_destructive() -> None:
     meta = metadata_of("prompt.create_master")
     assert meta.destructive is True
     assert meta.needs_approval is True
+
+
+def test_soft_delete_result_requires_snapshot_ref() -> None:
+    with pytest.raises(ValidationError):
+        SoftDeleteResult(
+            change_id="orch-appr-1-1",
+            marked=True,
+            restore_action="history.rollback",
+        )
+    by_id = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        marked=True,
+        restore_action="history.rollback",
+        snapshot_id="snap-1",
+    )
+    by_archive = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        marked=True,
+        restore_action="history.rollback",
+        archive_ref="old/scenes/1",
+    )
+    assert by_id.snapshot_id == "snap-1"
+    assert by_archive.archive_ref == "old/scenes/1"
 
 
 def test_suggest_scene_variants_tier_is_paid() -> None:
