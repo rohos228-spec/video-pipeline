@@ -69,5 +69,5 @@ def resolve_pay52(model: str) -> Any:
         return PAY52_MODULE_MISSING
     try:
         return resolve_text(model)
-    except (AttributeError, ImportError):
+    except ImportError:
         return None
