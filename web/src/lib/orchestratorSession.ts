@@ -3,7 +3,11 @@
  * Дедуп по seq делает вызывающий код до dispatch.
  */
 
-import { readPaidOutcomeForecast, readPaidOutcomeRestartOffered } from "./orchestratorPaidOutcome";
+import {
+  readPaidOutcomeForecast,
+  readPaidOutcomeRestartOffered,
+  readPaidOutcomeRetryArmed,
+} from "./orchestratorPaidOutcome";
 import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
@@ -178,6 +182,8 @@ export interface ApprovalView {
   forecast: number | null;
   /** В `decisions` есть `retry_step`. Иначе кнопка перезапуска неактивна. */
   restartOffered: boolean;
+  /** Первое `approval_required` несёт `retry_armed: false`. Подтверждение только при true. */
+  retryArmed: boolean;
   resolved: "approved" | "rejected" | "closed" | null;
 }
 
@@ -499,6 +505,7 @@ function absorbLlmSignal(
       costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
       forecast: readPaidOutcomeForecast(body),
       restartOffered: readPaidOutcomeRestartOffered(body),
+      retryArmed: readPaidOutcomeRetryArmed(body),
       resolved: null,
     });
   }
@@ -744,22 +751,31 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     }
     const fromServer = approvalServerKey(body);
     const id = fromServer ?? `local-${event.seq}`;
-    if (!next.approvals.some((item) => item.id === id)) {
-      next.approvals.push({
-        id,
-        serverId: fromServer != null,
-        changeId: approvalChangeId(body),
-        sessionId,
-        taskId,
-        title: str(body.title, "Нужно подтверждение"),
-        reason,
-        risk: str(body.risk, "medium"),
-        action: str(body.action),
-        costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
-        forecast: readPaidOutcomeForecast(body),
-        restartOffered: readPaidOutcomeRestartOffered(body),
-        resolved: null,
-      });
+    const incoming = {
+      id,
+      serverId: fromServer != null,
+      changeId: approvalChangeId(body),
+      sessionId,
+      taskId,
+      title: str(body.title, "Нужно подтверждение"),
+      reason,
+      risk: str(body.risk, "medium"),
+      action: str(body.action),
+      costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      forecast: readPaidOutcomeForecast(body),
+      restartOffered: readPaidOutcomeRestartOffered(body),
+      retryArmed: readPaidOutcomeRetryArmed(body),
+      resolved: null as ApprovalView["resolved"],
+    };
+    const existing = next.approvals.find((item) => item.id === id);
+    if (!existing) {
+      next.approvals.push(incoming);
+    } else {
+      existing.changeId = incoming.changeId ?? existing.changeId;
+      existing.forecast = incoming.forecast;
+      existing.restartOffered = incoming.restartOffered;
+      existing.retryArmed = incoming.retryArmed;
+      existing.serverId = existing.serverId || incoming.serverId;
     }
     return next;
   }
@@ -788,6 +804,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         costEstimate: null,
         forecast: null,
         restartOffered: false,
+        retryArmed: false,
         resolved: null,
       });
     }

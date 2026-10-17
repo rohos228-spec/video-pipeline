@@ -4,9 +4,9 @@
  *
  * `decision` закреплён: approve | retry_step | deny.
  *
- * Имена сверены с #358 @ c9221498373f98be930727ce6b9096e4802529d0
- * (`origin/cursor/ws3-nonblocking-350`). Источник: `ApprovalDecisionBody`,
- * `approval_required.forecast_usd` / `decisions` / `retry_armed`.
+ * Имена сверены с #358 @ fbd8b6ee47472ad24a8f0036815055d66f60520e
+ * (`origin/cursor/ws3-nonblocking-350`). Первое `approval_required` уже несёт
+ * `change_id`, `forecast_usd` и `retry_armed: false`.
  * Сервер сам ставит `change_id` вида `orch-appr-<task_id>-<n>`
  * (`tests/agents/test_change_id.py`, `_paid_id`). Клиентский id отбрасывается.
  *

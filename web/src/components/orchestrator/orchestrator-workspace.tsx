@@ -677,6 +677,8 @@ function ApprovalCard({
     <div
       data-testid="orch-approval"
       data-terminal={terminal ? "true" : "false"}
+      data-retry-armed={paidOutcome && approval.retryArmed ? "true" : "false"}
+      data-forecast={paidOutcome && approval.forecast != null ? String(approval.forecast) : ""}
       className={`mb-3 rounded-xl border px-3 py-3 ${
         terminal ? "border-destructive/40 bg-destructive/10" : "border-warning/40 bg-warning/10"
       }`}

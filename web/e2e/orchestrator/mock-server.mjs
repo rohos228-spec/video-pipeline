@@ -876,6 +876,7 @@ async function runPaidOutcome(session, taskId, restartOffered) {
     action: "run_node",
     risk: "high",
     decisions: restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+    retry_armed: false,
   };
   if (restartOffered) approval.forecast_usd = PAID_FORECAST_USD;
   emit(session, "approval_required", taskId, approval);

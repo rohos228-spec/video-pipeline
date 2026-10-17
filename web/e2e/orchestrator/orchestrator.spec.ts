@@ -11,6 +11,7 @@ import {
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
 import { paidOutcomeRetryReady } from "../../src/lib/orchestratorPaidOutcome";
+import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -20,6 +21,56 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("первое approval_required несёт change_id, forecast_usd и retry_armed false", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 4,
+      session_id: "paid-first",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        action: "run_node",
+        forecast_usd: 2.4,
+        retry_armed: false,
+        decisions: [
+          { decision: "approve", label: "Шаг выполнен, продолжить" },
+          { decision: "retry_step", label: "Перезапустить шаг" },
+          { decision: "deny", label: "Остановить задачу" },
+        ],
+      },
+    },
+  });
+  expect(opened.approvals).toHaveLength(1);
+  expect(opened.approvals[0]).toMatchObject({
+    changeId: "orch-appr-1-1",
+    forecast: 2.4,
+    retryArmed: false,
+    restartOffered: true,
+  });
+  const updated = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 5,
+      session_id: "paid-first",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        forecast_usd: 2.4,
+        retry_armed: true,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      },
+    },
+  });
+  expect(updated.approvals).toHaveLength(1);
+  expect(updated.approvals[0]?.retryArmed).toBe(true);
+  expect(updated.approvals[0]?.forecast).toBe(2.4);
+});
 
 test("подтверждение перезапуска требует retry_armed и конечный forecast_usd", () => {
   expect(paidOutcomeRetryReady({ retry_armed: true, forecast_usd: 2.4, executed: false })).toBe(true);
@@ -910,6 +961,20 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approval")).toContainText("plan_sanity");
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("paid_outcome_unknown: первое событие включает кнопки при change_id", async ({ page }) => {
+    await openWithToken(page, "paidoutcome", "paid-first-event");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toHaveAttribute("data-retry-armed", "false");
+    await expect(card).toHaveAttribute("data-forecast", "2.4");
+    await expect(page.getByTestId("orch-paid-done")).toBeEnabled();
+    await expect(page.getByTestId("orch-paid-retry")).toBeEnabled();
+    await expect(page.getByTestId("orch-paid-deny")).toBeEnabled();
+    await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
   });
 
   test("paid_outcome_unknown: карточка и три кнопки", async ({ page }) => {
