@@ -75,6 +75,7 @@ CONTOUR_B_FUSION_BM25 = 0.5
 CONTOUR_B_FUSION_RERANK = 1.5
 CONTOUR_B_BM25_PROTECT = 0.0
 CONTOUR_B_FAMILY_BOOST = 1.0
-# Перемер test nDCG@8 0.6768 >= 0.65. Порог не снижался. hit@5 test 0.8000 < 0.9.
-CONTOUR_B_EXPERIMENTAL = False
+# Смесь rrf 0.5/1.5 на dev имеет hit@5 0.88 и не прошла choose_default.
+# Веса не меняются. Флаг снимется, когда select_on_dev выберет вариант.
+CONTOUR_B_EXPERIMENTAL = True
 CONTOUR_B_R5_NOTE = ""

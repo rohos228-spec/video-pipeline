@@ -1,5 +1,9 @@
 """Pin sha256 замороженных файлов контура B.
 
+Хеш считается после замены ``\\r\\n`` на ``\\n``. У текущих LF-блобов
+нормализованный дайджест совпадает с прежним пином.
+
+
 Запросы и сплит — ``a79f70a9``. Перенос меток — ``1396ea43``.
 Уточнение s0–s7 — ``19d050c2``. Расхождение хеша — ошибка, файл не переписывается.
 """
@@ -43,7 +47,9 @@ class FrozenDatasetError(RuntimeError):
 
 
 def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """sha256 после ``\\r\\n`` → ``\\n``. Пин не зависит от autocrlf."""
+    payload = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def assert_frozen(path: Path) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -28,6 +29,24 @@ def test_pins_match_files_and_cite_the_freeze_commits() -> None:
     for name, pin in FROZEN_SHA256.items():
         assert file_sha256(DATA / name) == pin["sha256"]
         assert_frozen(DATA / name)
+
+
+def test_crlf_and_lf_share_the_normalized_pin(tmp_path: Path) -> None:
+    name = "precision_live_queries.json"
+    original = (DATA / name).read_bytes().replace(b"\r\n", b"\n")
+    lf_path = tmp_path / name
+    crlf_path = tmp_path / "crlf" / name
+    crlf_path.parent.mkdir()
+    lf_path.write_bytes(original)
+    crlf_path.write_bytes(original.replace(b"\n", b"\r\n"))
+    pin = FROZEN_SHA256[name]["sha256"]
+    assert file_sha256(lf_path) == pin
+    assert file_sha256(crlf_path) == pin
+    assert hashlib.sha256(crlf_path.read_bytes()).hexdigest() != pin
+    assert_frozen(lf_path)
+    assert_frozen(crlf_path)
+    attributes = Path(".gitattributes").read_text(encoding="utf-8")
+    assert "evals/orchestrator/datasets/*.json -text" in attributes
 
 
 def test_mismatched_hash_raises(tmp_path: Path) -> None:
