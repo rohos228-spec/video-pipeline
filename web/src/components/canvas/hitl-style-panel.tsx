@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, Download, FileText, Loader2, Save } from "lucide-react";
+import { CheckSquare, Download, FileText, Loader2, Maximize2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { api, type StylePassport, type StylePassportField } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "@/components/gpt/markdown-renderer";
 import { STYLE_AGENT_QUERY_KEY } from "./style-extract-panel";
@@ -80,6 +81,7 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
   const [edited, setEdited] = useState<StylePassport | null>(null);
   const [showReport, setShowReport] = useState(false);
   const [reportView, setReportView] = useState<"full" | "variance">("full");
+  const [reportOpen, setReportOpen] = useState(false);
 
   const snap = useQuery({
     queryKey: [STYLE_AGENT_QUERY_KEY, projectId, "hitl"],
@@ -97,7 +99,7 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
   const reportQ = useQuery({
     queryKey: [STYLE_AGENT_QUERY_KEY, projectId, "report", snap.data?.passport?.approvedAt ?? ""],
     queryFn: () => api.getStyleAgentReport(projectId),
-    enabled: showReport || tab === "report",
+    enabled: showReport || reportOpen || tab === "report",
     staleTime: 5000,
   });
 
@@ -331,8 +333,17 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
                     {v === "full" ? "Полный разбор" : "Разброс"}
                   </button>
                 ))}
-                <a
+                <button
+                  type="button"
                   className="ml-auto inline-flex items-center gap-1 text-[9px] text-fuchsia-200 underline-offset-2 hover:underline"
+                  onClick={() => setReportOpen(true)}
+                  title="Открыть отчёт во весь экран (таблицы планов читаются целиком)"
+                >
+                  <Maximize2 className="h-3 w-3" />
+                  развернуть
+                </button>
+                <a
+                  className="inline-flex items-center gap-1 text-[9px] text-fuchsia-200 underline-offset-2 hover:underline"
                   href={api.styleReportMdUrl(projectId)}
                   target="_blank"
                   rel="noreferrer"
@@ -363,6 +374,32 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
               ) : null}
             </div>
           ) : null}
+
+          <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+            <DialogContent className="max-h-[92vh] w-[96vw] max-w-[1400px] overflow-hidden p-0 sm:max-w-[1400px]">
+              <DialogHeader className="border-b border-white/10 px-5 py-3">
+                <DialogTitle className="flex items-center gap-2 text-sm">
+                  <FileText className="h-4 w-4 text-fuchsia-300" />
+                  Разбор стиля {p.label ? `· ${p.label}` : ""}
+                  <a
+                    className="ml-auto inline-flex items-center gap-1 text-[11px] font-normal text-fuchsia-200 underline-offset-2 hover:underline"
+                    href={api.styleReportMdUrl(projectId)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Download className="h-3 w-3" />
+                    style_report.md
+                  </a>
+                </DialogTitle>
+                <DialogDescription className="text-[11px]">
+                  Планы с таймкодами, связка закадра и картинки, сценарий, приёмы, особенности, blueprint цепочки нод и шаблоны промптов.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="nodrag nopan max-h-[80vh] overflow-auto px-5 py-3" onWheel={(e) => e.stopPropagation()}>
+                {reportQ.data?.report ? <MarkdownRenderer content={reportQ.data.report} /> : <Loader2 className="h-4 w-4 animate-spin" />}
+              </div>
+            </DialogContent>
+          </Dialog>
 
           {snap.data?.passport?.problems?.length ? (
             <div className="rounded-md border border-red-400/30 bg-red-500/10 p-1.5 text-[9px] text-red-200">
