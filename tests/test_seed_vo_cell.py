@@ -46,7 +46,8 @@ async def test_seed_from_empty_frames(session: AsyncSession) -> None:
     assert frames[0].number == 1
 
 
-async def test_seed_replaces_split_cells(session: AsyncSession) -> None:
+async def test_seed_keeps_split_cells(session: AsyncSession) -> None:
+    """№12: split-ячейки не сносятся, seed с полным текстом добавляется рядом."""
     full = "Целый закадр одним куском без разбивки на короткие блоки."
     p = await _mk_project(session, script=full)
     for i in range(1, 4):
@@ -64,11 +65,45 @@ async def test_seed_replaces_split_cells(session: AsyncSession) -> None:
     await session.commit()
 
     frames = list(
+        (
+            await session.execute(
+                select(Frame).where(Frame.project_id == p.id).order_by(Frame.number)
+            )
+        ).scalars()
+    )
+    assert len(frames) == 4
+    assert [f.voiceover_text for f in frames[:3]] == ["кусок 1", "кусок 2", "кусок 3"]
+    assert fr.voiceover_text == full
+    assert fr.id in {f.id for f in frames}
+    assert (fr.attrs or {}).get("seed_vo") is True
+
+
+async def test_seed_updates_single_cell_in_place(session: AsyncSession) -> None:
+    """№12: единственная ячейка меняет текст, id и uuid остаются."""
+    p = await _mk_project(session, script="новый целый закадр для той же ячейки")
+    old = Frame(
+        project_id=p.id,
+        number=1,
+        uuid="seed-uuid-keep",
+        voiceover_text="старый текст ячейки",
+        attrs={"keep": True},
+    )
+    session.add(old)
+    await session.commit()
+    old_id = old.id
+
+    fr = await db_v2.ensure_single_seed_vo_cell(
+        session, p, "новый целый закадр для той же ячейки"
+    )
+    await session.commit()
+    frames = list(
         (await session.execute(select(Frame).where(Frame.project_id == p.id))).scalars()
     )
     assert len(frames) == 1
-    assert frames[0].voiceover_text == full
-    assert frames[0].uuid == fr.uuid
+    assert fr.id == old_id
+    assert fr.uuid == "seed-uuid-keep"
+    assert fr.voiceover_text == "новый целый закадр для той же ячейки"
+    assert (fr.attrs or {}).get("keep") is True
 
 
 async def test_seed_idempotent_same_text(session: AsyncSession) -> None:

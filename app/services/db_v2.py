@@ -90,12 +90,10 @@ async def ensure_single_seed_vo_cell(
 ) -> Frame:
     """Одна seed-ячейка = весь закадр (для fw_script до разбивки хвостом группы).
 
-    Игнорирует текущие split-ячейки: при необходимости сносит все Frame и
-    создаёт ровно одну с ``voiceover_text = full_vo``. Идемпотентно, если
-    уже ровно одна ячейка с тем же текстом.
+    Кадры, промты и тексты не удаляются. Одна ячейка с другим текстом
+    обновляется на месте. Если ячеек несколько и полного текста ещё нет —
+    seed добавляется рядом. Идемпотентно, если такой текст уже есть.
     """
-    from sqlalchemy import delete, update
-
     vo = " ".join((full_vo or "").split())
     if not vo:
         raise ValueError("ensure_single_seed_vo_cell: пустой закадр")
@@ -111,32 +109,30 @@ async def ensure_single_seed_vo_cell(
         .scalars()
         .all()
     )
-    if len(existing) == 1:
-        cur = " ".join((existing[0].voiceover_text or "").split())
-        if cur == vo:
-            if not existing[0].uuid:
-                existing[0].uuid = new_frame_uuid()
-                await session.flush()
-            return existing[0]
 
-    await session.execute(
-        update(Artifact)
-        .where(Artifact.project_id == project.id)
-        .values(frame_id=None)
-    )
-    await session.execute(
-        delete(FrameEdge).where(FrameEdge.project_id == project.id)
-    )
-    old_ids = [f.id for f in existing if f.id is not None]
-    if old_ids:
-        await session.execute(
-            delete(PromptVersion).where(PromptVersion.frame_id.in_(old_ids))
+    def _norm(text: str | None) -> str:
+        return " ".join((text or "").split())
+
+    for fr in existing:
+        if _norm(fr.voiceover_text) != vo:
+            continue
+        if not fr.uuid:
+            fr.uuid = new_frame_uuid()
+            await session.flush()
+        return fr
+
+    if len(existing) == 1:
+        fr = existing[0]
+        fr.voiceover_text = vo
+        if not fr.uuid:
+            fr.uuid = new_frame_uuid()
+        await session.flush()
+        logger.info(
+            "[#{}] ensure_single_seed_vo_cell: текст обновлён на месте ({} симв)",
+            project.id,
+            len(vo),
         )
-        await session.execute(
-            delete(FrameText).where(FrameText.frame_id.in_(old_ids))
-        )
-        await session.execute(delete(Frame).where(Frame.project_id == project.id))
-    await session.flush()
+        return fr
 
     scene = (
         await session.execute(
@@ -149,23 +145,25 @@ async def ensure_single_seed_vo_cell(
         await session.flush()
 
     dur = max(2.0, round(len(vo) / 14.0, 2))
+    next_number = max((int(fr.number or 0) for fr in existing), default=0) + 1
+    next_sort = max((float(fr.sort_key or 0) for fr in existing), default=0.0) + _SORT_STEP
     fr = Frame(
         project_id=project.id,
-        number=1,
+        number=next_number or 1,
         voiceover_text=vo,
         meaning=None,
         duration_seconds=dur,
         uuid=new_frame_uuid(),
-        sort_key=_SORT_STEP,
+        sort_key=next_sort or _SORT_STEP,
         scene_id=scene.id,
         status=FrameStatus.planned,
-        attrs={},
+        attrs={"seed_vo": True},
     )
     session.add(fr)
     await session.flush()
     await backfill_project_v2(session, project)
     logger.info(
-        "[#{}] ensure_single_seed_vo_cell: 1 ячейка ({} симв, было {})",
+        "[#{}] ensure_single_seed_vo_cell: seed рядом, без сноса ({} симв, было {})",
         project.id,
         len(vo),
         len(existing),
