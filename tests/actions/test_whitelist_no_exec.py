@@ -2011,6 +2011,25 @@ def test_audit_header_counters() -> None:
     assert set(header["snapshot_allow"]) == _SNAPSHOT_ALLOW
 
 
+_VALID_TIERS = frozenset(
+    {"read", "local_safe", "paid", "destructive", "destructive+paid"}
+)
+
+
+def test_tier_values_valid() -> None:
+    """Ярус реестра в таблице — одно из пяти допустимых значений."""
+    rows = action_table_rows()
+    assert len(rows) == 102
+    bad = [
+        f"{row['id']}={row['tier']}"
+        for row in rows
+        if row["tier"] not in _VALID_TIERS
+    ]
+    assert not bad, "ярус вне шкалы: " + ", ".join(bad)
+    suggest = next(row for row in rows if row["id"] == "montage.suggest_scene_variants")
+    assert suggest["tier"] == "paid"
+
+
 def test_shared_prompt_writes_are_destructive() -> None:
     """Любая запись общего мастер-промта, кроме чтения, — ярус destructive."""
     rows = [
