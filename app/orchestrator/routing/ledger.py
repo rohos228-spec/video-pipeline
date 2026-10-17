@@ -195,17 +195,27 @@ def _zero_totals(limit: float) -> dict[str, float | bool]:
 
 
 def get_spend_ledger() -> SpendLedger:
-    """Процессный леджер. Роутер без своего экземпляра пишет сюда."""
+    """Процессный леджер. Роутер без своего экземпляра пишет сюда.
+
+    Потолки читаются один раз, из ``load_config()`` (с env). Следующий
+    роутер их не переписывает, в том числе собранный с ``apply_env=False``.
+    """
     global _PROCESS
     with _PROCESS_LOCK:
         if _PROCESS is None:
-            _PROCESS = SpendLedger()
+            from app.orchestrator.routing.config import load_config
+
+            cfg = load_config()
+            _PROCESS = SpendLedger(cfg.internal_budget_usd, cfg.pipeline_budget_usd)
         return _PROCESS
 
 
-def reset_spend_ledger(internal_budget_usd: float = 10.0) -> SpendLedger:
+def reset_spend_ledger(
+    internal_budget_usd: float = 10.0,
+    pipeline_budget_usd: float = 40.0,
+) -> SpendLedger:
     """Подмена процессного леджера. Нужна тестам, не бою."""
     global _PROCESS
     with _PROCESS_LOCK:
-        _PROCESS = SpendLedger(internal_budget_usd)
+        _PROCESS = SpendLedger(internal_budget_usd, pipeline_budget_usd)
         return _PROCESS

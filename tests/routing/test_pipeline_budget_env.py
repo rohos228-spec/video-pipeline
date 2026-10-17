@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.orchestrator.routing.config import default_config_path, load_config
+from app.orchestrator.routing.ledger import get_spend_ledger
+from app.orchestrator.routing.model_router import LiveRouter
 
 
 def test_pipeline_budget_defaults_to_40(monkeypatch):
@@ -43,6 +45,20 @@ def test_internal_budget_rejects_non_finite(tmp_path, raw):
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="internal_sub_budget_usd"):
         load_config(path, apply_env=False)
+
+
+def test_apply_env_false_does_not_overwrite_ledger(monkeypatch):
+    monkeypatch.setenv("ORCH_PIPELINE_BUDGET_USD", "12.5")
+    shared = get_spend_ledger()
+    shared.pipeline_budget_usd = 12.5
+    shared.internal_budget_usd = 7
+    config = load_config(apply_env=False)
+    assert config.pipeline_budget_usd == 40
+    assert config.internal_budget_usd == 10
+    router = LiveRouter(config)
+    assert router.ledger is shared
+    assert router.ledger.pipeline_budget_usd == 12.5
+    assert router.ledger.internal_budget_usd == 7
 
 
 def test_pipeline_yaml_bool_and_missing_key(monkeypatch):

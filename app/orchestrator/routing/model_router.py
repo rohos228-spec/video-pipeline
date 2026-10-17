@@ -249,10 +249,7 @@ class ModelRouter:
         self.config = config or load_config()
         self.transport = transport
         if ledger is None:
-            shared = get_spend_ledger()
-            shared.internal_budget_usd = float(self.config.internal_budget_usd)
-            shared.pipeline_budget_usd = float(self.config.pipeline_budget_usd)
-            self.ledger = shared
+            self.ledger = get_spend_ledger()
         else:
             self.ledger = ledger
         self.sink = sink or NullLlmCallSink()
