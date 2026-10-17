@@ -575,6 +575,29 @@ async def test_delete_other_frame_keeps_pending_ops(
     assert ops[0]["action"] == "оставить"
 
 
+def test_board_action_skips_inactive_kadry() -> None:
+    """Действие на доске не берётся из неактивного шота. кадры[] не меняется."""
+    from types import SimpleNamespace
+
+    from app.services.montage_board import _action_for_frame
+
+    kadry = [
+        {"id": "d", "действие": "МЁРТВЫЙ ШАГ", "активен": False},
+        {"id": "l", "действие": "живой шаг"},
+    ]
+    frame = SimpleNamespace(
+        number=1,
+        attrs={
+            "кадры": kadry,
+            "camera_subdivide": {},
+        },
+    )
+    assert _action_for_frame(frame) == "живой шаг"
+    assert len(kadry) == 2
+    assert kadry[0]["активен"] is False
+    assert kadry[0]["действие"] == "МЁРТВЫЙ ШАГ"
+
+
 @pytest.mark.asyncio
 async def test_rewrite_vo_cell_keeps_missing_shots_inactive(
     session: AsyncSession, project: Project

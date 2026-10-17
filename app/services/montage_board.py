@@ -691,7 +691,11 @@ def _first_text(*vals: Any) -> str:
 
 
 def _matching_kadry_item(frame: Any) -> dict[str, Any] | None:
-    planned = planned_shots_from_attrs(frame)
+    from app.services.frame_tombstones import shot_is_active
+
+    planned = [
+        item for item in planned_shots_from_attrs(frame) if shot_is_active(item)
+    ]
     if not planned:
         return None
     shot_id = coverage_shot_id(frame)
