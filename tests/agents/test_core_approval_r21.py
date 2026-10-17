@@ -1,12 +1,15 @@
-"""A1: ядро само выдаёт change_id. Заглушки — контракт WS2 r2.1 (ed355997).
+"""A1: ядро само выдаёт change_id. Заглушки — контракт WS2 r2.2 (a17ff283).
 
+HEAD #378 на момент сверки — ``a17ff283`` (ws2-r2.2), не ``ed355997``.
 Схема ``docs/fable/action_results_contract.schema.json``, sha256
-``e4eb29277f0d2128fcae5ec1006c7b95ba5522529e362129a90d39884c1fab9d``.
+``26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013``.
 Пакет WS2 не импортируется: конверты — dict.
-``ApprovalRequired`` без ``change_id``. ``EditResult`` — ``version`` и
-``before`` или непустой ``snapshot_id``. ``SoftDeleteResult`` — ``marked``
-и ссылка на снимок (``snapshot_id`` / ``archive_ref`` / ``snapshot_ref``).
-``revert_node_to_git`` и правка без версии — destructive.
+``ApprovalRequired`` без своего ``change_id`` (чужое поле в заглушке ядро
+игнорирует). ``EditResult``: ``version`` > ``base_version``, якорь
+``before`` или непустой ``snapshot_id``. Непустой ``skipped`` идёт вместе
+с ``partial: true``. ``SoftDeleteResult``: ``marked`` и непустой
+``snapshot_id`` (пустая строка не годится). ``revert_node_to_git`` и
+правка без версии — destructive.
 """
 
 from __future__ import annotations
@@ -27,7 +30,9 @@ from app.web.routers.orchestrator_chat import router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
-_SCHEMA = "ws2-r2.1"
+_SCHEMA = "ws2-r2.2"
+_SCHEMA_SHA256 = "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013"
+_SCHEMA_HEAD = "a17ff283153cc1dd51fec23a99ed38e178f4ebb6"
 
 
 def _app() -> FastAPI:
@@ -168,7 +173,26 @@ def test_metadata_gate_uses_r21_flags() -> None:
     assert metadata_call_gate("montage.suggest_scene_variants", registry) == "paid"
     assert metadata_call_gate("read_pipeline_code", registry) is None
     assert metadata_call_gate("look", MockActions()) is None
-    assert _SCHEMA == "ws2-r2.1"
+    assert _SCHEMA == "ws2-r2.2"
+    assert _SCHEMA_SHA256.startswith("26373fb9")
+    assert _SCHEMA_HEAD.startswith("a17ff283")
+
+
+def test_stubs_follow_r22_n1_n2_n3() -> None:
+    """N1 version > base_version, N2 непустой снимок, N3 skipped ⇒ partial."""
+    edit = _edit_ok("revert_node_to_git", "foreign-edit")["result"]
+    assert edit["version"] > edit["base_version"]
+    assert edit["skipped"]
+    assert edit["partial"] is True
+    assert str(edit["before"]).strip()
+
+    soft = _soft_ok("prompt.retire_master", "foreign-soft")["result"]
+    assert soft["marked"] is True
+    assert str(soft["snapshot_id"]).strip()
+
+    paid = _paid_ok("montage.suggest_scene_variants", "foreign-paid")["result"]
+    assert paid["skipped"]
+    assert paid["partial"] is True
 
 
 async def _wait_status(runtime, task_id: int, status: str) -> None:
