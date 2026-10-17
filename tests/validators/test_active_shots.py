@@ -168,6 +168,50 @@ def test_op_cannot_drop_the_last_active_shot_while_vo_remains() -> None:
     ) == []
 
 
+def test_mark_inactive_with_scene_voiceover_passes_reject() -> None:
+    """Пометка шота неактивным не рвёт закадр сцены: текст остаётся на шоте."""
+
+    before = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "b", "закадр": "Хвост на месте."},
+        ],
+        "Первая фраза. Хвост на месте.",
+    )
+    marked = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "b", "активен": False, "закадр": "Хвост на месте."},
+        ],
+        "Первая фраза. Хвост на месте.",
+    )
+    assert run_preservation_validators(before, marked, mode="reject") == []
+    assert marked["сцены"][0]["кадры"][1]["закадр"] == "Хвост на месте."
+
+
+def test_mark_inactive_with_scene_voiceover_passes_soft() -> None:
+    """Тот же кейс в soft: закадр сцены не даёт error и не переписывает шот."""
+
+    before = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "b", "закадр": "Хвост на месте."},
+        ],
+        "Первая фраза. Хвост на месте.",
+    )
+    marked = _project(
+        [
+            {"id": "a", "закадр": "Первая фраза."},
+            {"id": "b", "активен": False, "закадр": "Хвост на месте."},
+        ],
+        "Первая фраза. Хвост на месте.",
+    )
+    violations = run_preservation_validators(before, marked, mode="soft")
+    assert all(item.severity != "error" for item in violations)
+    assert all(item.code != "vo_on_inactive" for item in violations)
+    assert marked["сцены"][0]["кадры"][1]["закадр"] == "Хвост на месте."
+
+
 def test_mark_inactive_keeps_vo_text_passes_reject() -> None:
     """Неактивный шот оставляет закадр на месте. reject это не ошибка."""
 
@@ -219,5 +263,5 @@ def test_participation_follows_shots_of(monkeypatch: pytest.MonkeyPatch) -> None
         "Первая фраза. Вторая фраза.",
     )
     violations = check_active_shots(project, copy.deepcopy(project))
-    assert ("vo_on_inactive", "error", "s1") in _codes(violations)
+    assert ("vo_on_inactive", "error", "s1") not in _codes(violations)
     assert ("vo_on_inactive", "error", "b") not in _codes(violations)

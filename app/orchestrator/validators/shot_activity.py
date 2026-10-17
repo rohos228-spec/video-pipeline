@@ -91,7 +91,14 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
                     fid,
                 )
         scene_text = _scene_text(scene)
-        joined = text_of(" ".join(_shot_text(shot) for shot in active if _shot_text(shot)))
+        # Закадр ячейки остаётся на неактивном шоте, поэтому склейка — все шоты.
+        joined = text_of(
+            " ".join(
+                _shot_text(shot)
+                for shot in raw
+                if isinstance(shot, dict) and _shot_text(shot)
+            )
+        )
         if scene_text and joined != scene_text:
             _add(violations, seen, "vo_on_inactive", f"scenes/{entity}/закадр" if entity else "закадр", entity)
         if deactivated and scene_text and not active:
