@@ -1,18 +1,19 @@
-"""Временные типы роутера.
+"""Типы роутера.
 
-TODO(WS3): перенести ``LLMResponse`` / ``LLMUsage`` и строку ``orch_llm_calls``
-в ``app/orchestrator/contracts.py``, когда контракт заморозят. Пока WS5 держит
-их здесь и не пишет в чужой ``contracts.py``.
+Поля ``LLMResponse.task_status`` / ``approval``, ``MessageMode.task`` и
+``ClassifyResult.kill_switch`` совпадают с WS3 ``contracts.py``
+``CONTRACT_VERSION=ws3-r3`` (HEAD ``04a5506a``, ветка
+``cursor/ws3-agents-r3-3c7d``). На ``main`` этого модуля ещё нет, поэтому
+здесь те же имена и значения. Если модуль импортируется, берутся его классы.
 
-``ApprovalEvent`` и ``waiting_approval`` — точные имена WS3. Локальный
-dataclass нужен, пока ``contracts.py`` нет на ``main``.
-
-Спецификация таблицы и формат фикстур: ``CONTRACTS.md`` в этом пакете.
+``reason`` и ``effective_tier`` у ``Classification`` в контракте нет.
+Спецификация таблицы и фикстур: ``CONTRACTS.md``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 
 @dataclass(frozen=True)
@@ -22,20 +23,40 @@ class LLMUsage:
     reasoning_tokens: int = 0
 
 
-# Точные имена из WS3 ``app/orchestrator/contracts.py``
-# (ветка cursor/ws3-agents-core-r1-3c7d): TaskStatus.waiting_approval,
-# ApprovalEvent.reason. Отдельного статуса задачи под бюджет нет.
-WAITING_APPROVAL = "waiting_approval"
-BUDGET_EXHAUSTED = "budget_exhausted"
+class TaskStatus(StrEnum):
+    """FSM супервизора. Пишет статусы только Supervisor. Зеркало ws3-r3."""
+
+    queued = "queued"
+    planning = "planning"
+    critic_review = "critic_review"
+    executing = "executing"
+    paused = "paused"
+    waiting_approval = "waiting_approval"
+    done = "done"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class MessageMode(StrEnum):
+    """Режим входящего сообщения. ``task`` — значение ``MessageMode`` ws3-r3."""
+
+    interrupt = "interrupt"
+    steer = "steer"
+    append = "append"
+    task = "task"
+
+
+class ApprovalReason(StrEnum):
+    """Причина ``waiting_approval``. Зеркало ws3-r3."""
+
+    budget_exhausted = "budget_exhausted"
+    risk = "risk"
+    critic_escalation = "critic_escalation"
 
 
 @dataclass
 class ApprovalEvent:
-    """Зеркало WS3 ``ApprovalEvent`` (пока contracts нет на этой ветке).
-
-    Поля и значения совпадают с контрактом: ``task_id``, ``action``,
-    ``reason``, ``risk``, ``change_id``, ``payload``.
-    """
+    """Поля WS3 ``ApprovalEvent``: типы совпадают с контрактом ``04a5506a``."""
 
     task_id: int | None = None
     action: str = ""
@@ -45,13 +66,29 @@ class ApprovalEvent:
     payload: dict = field(default_factory=dict)
 
 
-def waiting_approval_status() -> str:
-    """``TaskStatus.waiting_approval``, если контракт уже импортируется."""
+def _contract_attr(name: str):
     try:
-        from app.orchestrator.contracts import TaskStatus
-    except (ImportError, AttributeError):
-        return WAITING_APPROVAL
-    return str(TaskStatus.waiting_approval.value)
+        import app.orchestrator.contracts as contracts
+    except ImportError:
+        return None
+    return getattr(contracts, name, None)
+
+
+def waiting_approval_status() -> TaskStatus:
+    """``TaskStatus.waiting_approval`` из контракта, если модуль уже есть."""
+    status = _contract_attr("TaskStatus")
+    if status is None:
+        return TaskStatus.waiting_approval
+    return status.waiting_approval
+
+
+def coerce_mode(value: str, *, kill_switch: bool = False) -> MessageMode:
+    """``kill_switch`` важнее обычного режима: всегда ``interrupt``."""
+    chosen = "interrupt" if kill_switch else value
+    mode = _contract_attr("MessageMode")
+    if mode is None:
+        return MessageMode(chosen)
+    return mode(chosen)
 
 
 def budget_approval(
@@ -70,30 +107,29 @@ def budget_approval(
     }
     if task_ref is not None:
         payload["task_ref"] = task_ref
+    reason = _contract_attr("ApprovalReason")
+    local_reason = ApprovalReason.budget_exhausted.value
+    reason_value = local_reason if reason is None else reason.budget_exhausted.value
     fields = {
         "task_id": task_id,
         "action": "",
-        "reason": BUDGET_EXHAUSTED,
+        "reason": reason_value,
         "risk": "",
         "change_id": None,
         "payload": payload,
     }
-    try:
-        from app.orchestrator.contracts import ApprovalEvent as ContractApproval
-    except (ImportError, AttributeError):
-        ContractApproval = None
-    if ContractApproval is not None:
-        return ContractApproval(**fields)
-    return ApprovalEvent(**fields)
+    event_cls = _contract_attr("ApprovalEvent") or ApprovalEvent
+    return event_cls(**fields)
 
 
 @dataclass
 class LLMResponse:
     """Ответ ``router.call``.
 
-    ``task_status`` и ``approval`` — сигнал супервизору WS3, не новый статус
-    LLM-вызова. Исчерпание суб-бюджета: ``task_status="waiting_approval"``
-    и ``approval.reason="budget_exhausted"``. Статус задачи пишет Supervisor.
+    ``task_status: TaskStatus | None`` и ``approval: ApprovalEvent | None`` —
+    как в ``LLMResponse`` ws3-r3. Исчерпание суб-бюджета:
+    ``task_status=waiting_approval`` и ``approval.reason="budget_exhausted"``.
+    Статус задачи пишет Supervisor. Исключение роутер не бросает.
     """
 
     text: str
@@ -108,7 +144,7 @@ class LLMResponse:
     fallback_index: int
     deterministic: bool
     fixture_key: str | None = None
-    task_status: str | None = None
+    task_status: TaskStatus | None = None
     approval: ApprovalEvent | None = None
 
 
@@ -119,13 +155,13 @@ class Classification:
     ``tier`` — логический (его меряет E6). ``effective_tier`` — после флага D6:
     пока D6 не подтверждён, fast исполняется как strong high.
 
-    ``kill_switch`` — поле WS3 ``ClassifyResult`` (ws3-r3). Его ставят
-    детерминированные фразы аварийного стопа до LLM. Обычный interrupt
-    оставляет ``False``. Локальный shim, пока contracts нет на ``main``.
+    ``kill_switch`` — поле ``ClassifyResult``. Если оно true, ``mode``
+    всегда ``MessageMode.interrupt`` и важнее обычного interrupt.
+    ``reason`` и ``effective_tier`` в контракте нет.
     """
 
     tier: str
-    mode: str
+    mode: MessageMode
     deterministic: bool
     confidence: float = 1.0
     reason: str = ""

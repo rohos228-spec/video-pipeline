@@ -9,10 +9,18 @@
 ## router
 
 ```text
-router.call(tier|auto, messages, stream) -> LLMResponse
-router.classify(message, *, agent_role=None, risk=None, mutating=None) -> Classification
+router.call(tier, messages, stream=False, *, run_id=None, task_id=None,
+            agent_role=None, budget_scope=None) -> LLMResponse
+router.classify(message) -> Classification
 router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 ```
+
+`run_id`, `task_id`, `agent_role`, `budget_scope` — keyword-only, как
+`ModelRouter` в ws3-r3 (`04a5506a`). Супервизор передаёт их всегда.
+`budget_scope=None` трактуется как `internal`. `task_id` — строка.
+Дополнительно, не из протокола: `temperature`, `max_tokens`, `risk`,
+`mutating`, `on_delta` (тоже keyword-only). У `classify` сверх протокола
+keyword-only `agent_role`, `risk`, `mutating`, `run_id`, `task_id`.
 
 `classify` — **async**. Спорный tier делает LLM-ход; синхронная функция не может
 его дождаться. Это отступление от сигнатуры в плане, иначе Replay/Live нечем
@@ -26,29 +34,31 @@ router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 | поле | смысл |
 |---|---|
 | `tier` | логический fast\|strong. Его меряет E6. Не зависит от D6 |
-| `mode` | `interrupt` \| `steer` \| `append` \| `task` |
+| `mode` | `MessageMode`: `interrupt` \| `steer` \| `append` \| `task` |
 | `deterministic` | tier решили правила, LLM не звали |
 | `confidence` | 1.0 у правил; иначе уверенность классификатора |
 | `effective_tier` | tier после D6. Пока D6 выключен, fast → strong |
 | `reason` | короткая метка правила |
 | `kill_switch` | bool, дефолт false. Поле `ClassifyResult` из ws3-r3 |
 
-`mode=task` — обычный ход, не interrupt/steer/append. В `MessageMode` WS3
-этого значения нет (`interrupt|steer|append`). Режим всегда считают
-правила (стоп-слова, steer, вопрос без упоминания задачи). Модель может
-подсказать mode только если правило режима не сработало. `kill_switch`
-модель не ставит.
+`mode=task` — то же значение, что `MessageMode.task` в ws3-r3: новая задача,
+не interrupt/steer/append. Режим считают правила. Модель подсказывает mode
+только если правило режима не сработало. `kill_switch` модель не ставит.
 
-`kill_switch=true` — аварийный стоп, отдельный случай от обычного
-interrupt. Фразы до LLM: «аварийный стоп», «kill switch», «стоп всё»,
-«останови всё немедленно». Режим при этом `interrupt`, tier считается
-теми же правилами (без других strong-сигналов это fast). «стой» / «стоп» /
-«отмена» остаются обычным interrupt с `kill_switch=false`. Классификатор
-для этих фраз не вызывается.
+`kill_switch=true` важнее обычного interrupt: `mode` в этом случае всегда
+`interrupt`. Фразы до LLM: «аварийный стоп», «kill switch», «стоп всё»,
+«останови всё немедленно». Tier считается теми же правилами (без других
+strong-сигналов это fast). «стой» / «стоп» / «отмена» остаются обычным
+interrupt с `kill_switch=false`. Классификатор для аварийных фраз не
+вызывается.
+
+`reason` и `effective_tier` в `ClassifyResult` ws3-r3 нет. Это единственные
+лишние поля классификации.
 
 ## LLMResponse
 
-Поля черновика WS3, плюс `task_status` и `approval` (их в `LLMResponse` ws3-r3 ещё нет).
+Поля как у `LLMResponse` ws3-r3 (`04a5506a`), включая необязательные
+`task_status: TaskStatus | None` и `approval: ApprovalEvent | None`.
 
 | поле | тип |
 |---|---|
@@ -64,8 +74,8 @@ interrupt. Фразы до LLM: «аварийный стоп», «kill switch»
 | `fallback_index` | int, 0 = основная модель |
 | `deterministic` | bool, tier выбрали правила |
 | `fixture_key` | str \| None |
-| `task_status` | `waiting_approval` или None. Имя из `TaskStatus` (WS3) |
-| `approval` | `ApprovalEvent` или None. См. ниже |
+| `task_status` | `TaskStatus \| None`. При бюджете — `TaskStatus.waiting_approval` |
+| `approval` | `ApprovalEvent \| None`. Поля ниже |
 
 ## Как супервизор узнаёт про $10
 
@@ -89,10 +99,10 @@ interrupt. Фразы до LLM: «аварийный стоп», «kill switch»
    В `orch_llm_calls` у этой попытки `status=ok`.
 3. Следующий internal-вызов того же `run_id` транспорт не трогает:
    `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
-4. Супервизор WS3, увидев эти два поля, ставит задаче
-   `waiting_approval` и кладёт событие `approval_required` с тем же
-   `reason`. Пока в `LLMResponse` ws3-r3 полей нет, они живут на локальном
-   dataclass (shim, как `ClassifyResult.kill_switch`).
+4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
+   `task_status` равен `waiting_approval` и `approval.reason` равен
+   `budget_exhausted`. Дальше он пишет статус задачи и событие
+   `approval_required`. Исключение для этого не нужно.
 
 Исчерпание **не** заводит отдельный статус задачи. Поля `ApprovalEvent`:
 

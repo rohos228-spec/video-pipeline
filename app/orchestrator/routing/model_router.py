@@ -53,6 +53,7 @@ from app.orchestrator.routing.types import (
     RouterError,
     RouterExhausted,
     budget_approval,
+    coerce_mode,
     waiting_approval_status,
 )
 from app.orchestrator.routing.wire import kie_model_slug
@@ -168,14 +169,19 @@ class ModelRouter:
         agent_role: str | None = None,
         risk: str | None = None,
         mutating: bool | None = None,
-        budget_scope: str = "internal",
+        budget_scope: str | None = None,
         on_delta: Any = None,
     ) -> LLMResponse:
-        """``call(tier|auto, messages, stream) -> LLMResponse``."""
+        """``call(tier, messages, stream, *, run_id, task_id, agent_role, budget_scope)``.
+
+        ``run_id``, ``task_id``, ``agent_role``, ``budget_scope`` — keyword-only,
+        как ``ModelRouter`` ws3-r3. ``budget_scope=None`` значит ``internal``.
+        """
         normalized = normalize_messages(messages)
         if not normalized:
             raise ValueError("messages is empty")
-        if budget_scope not in _SCOPES:
+        scope = "internal" if budget_scope is None else budget_scope
+        if scope not in _SCOPES:
             raise ValueError("budget_scope must be internal|pipeline")
         requested = (tier or "auto").strip().lower()
         role = _role(agent_role)
@@ -210,7 +216,7 @@ class ModelRouter:
             run_id=run_id,
             task_id=task_id,
             agent_role=role,
-            budget_scope=budget_scope,
+            budget_scope=scope,
             deterministic=deterministic,
             classifier_confidence=confidence,
             on_delta=on_delta,
@@ -243,7 +249,7 @@ class ModelRouter:
         if hit.tier is not None:
             return Classification(
                 tier=hit.tier,
-                mode=hit.mode,
+                mode=coerce_mode(hit.mode, kill_switch=hit.kill_switch),
                 deterministic=True,
                 confidence=1.0,
                 reason=hit.reason,
@@ -267,7 +273,7 @@ class ModelRouter:
         mode = hit.mode if hit.mode_locked else parsed.mode
         return Classification(
             tier=chosen,
-            mode=mode,
+            mode=coerce_mode(mode, kill_switch=hit.kill_switch),
             deterministic=False,
             confidence=parsed.confidence,
             reason="classifier",
