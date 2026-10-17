@@ -12,6 +12,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:orch": "playwright test -c e2e/orchestrator/playwright.config.ts",
+    "test:e2e:r6": "playwright test -c e2e/orchestrator/r6/playwright.config.ts",
     "test:visual": "playwright test -c e2e/visual/playwright.config.ts"
   },
   "dependencies": {
