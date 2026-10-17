@@ -23,6 +23,8 @@ import {
 } from "@/lib/orchestratorApi";
 import {
   PAID_OUTCOME_DECISION,
+  paidOutcomeDecisionBody,
+  paidOutcomeGrantBody,
   type PaidOutcomeDecision,
 } from "@/lib/orchestratorPaidOutcome";
 import {
@@ -47,9 +49,9 @@ function approvalPostAccepted(result: ApprovalHttpResult, approvalId: string): b
   return true;
 }
 
-function paidPostAccepted(result: PaidOutcomeDecisionResult, approvalId: string): boolean {
-  if (!result.ok || result.matched === false) return false;
-  if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
+function paidPostAccepted(result: PaidOutcomeDecisionResult, changeId: string): boolean {
+  if (!result.ok) return false;
+  if (result.changeId != null && result.changeId !== changeId) return false;
   return true;
 }
 
@@ -260,16 +262,15 @@ export function useOrchestratorChat() {
   }, []);
 
   const decidePaidOutcome = useCallback(
-    async (
-      approvalId: string,
-      taskId: string | null,
-      decision: PaidOutcomeDecision,
-    ): Promise<PaidOutcomeDecisionResult> => {
+    async (approvalId: string, decision: PaidOutcomeDecision): Promise<PaidOutcomeDecisionResult> => {
       const rejected: PaidOutcomeDecisionResult = {
         ok: false,
+        changeId: null,
+        decision: null,
         forecast: null,
         executed: false,
         reason: null,
+        retryArmed: false,
         retryReady: false,
       };
       if (decisionLock.current) return rejected;
@@ -282,12 +283,8 @@ export function useOrchestratorChat() {
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        const result = await postPaidOutcomeDecision(cfg, {
-          approval_id: approvalId,
-          task_id: taskId,
-          decision,
-        });
-        if (!paidPostAccepted(result, approvalId)) {
+        const result = await postPaidOutcomeDecision(cfg, paidOutcomeDecisionBody(card.changeId, decision));
+        if (!paidPostAccepted(result, card.changeId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return { ...result, ok: false, retryReady: false };
         }
@@ -317,7 +314,7 @@ export function useOrchestratorChat() {
   );
 
   const confirmPaidRestart = useCallback(
-    async (approvalId: string, taskId: string | null) => {
+    async (approvalId: string) => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
       if (!card?.changeId) {
@@ -328,11 +325,8 @@ export function useOrchestratorChat() {
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        const result = await postPaidOutcomeRestartGrant(cfg, {
-          approval_id: approvalId,
-          task_id: taskId,
-        });
-        if (!paidPostAccepted(result, approvalId)) {
+        const result = await postPaidOutcomeRestartGrant(cfg, paidOutcomeGrantBody(card.changeId));
+        if (!paidPostAccepted(result, card.changeId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }

@@ -11,9 +11,8 @@
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
- * Сверено с #358 @ c9221498: forecast_usd, decisions, retry_grant (флаг, не токен).
- * change_id платного approval_required — только `orch-appr-<task_id>-<n>`.
- * TODO(ws3-358): HTTP-пути grant в #358 нет, мок держит POST .../approve.
+ * paid_outcome_unknown: POST /api/orchestrator/chat/{session}/approve
+ * тело {change_id, decision, retry_grant}. Карточки change_control — POST /approvals/{id}/approve|reject.
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -924,28 +923,174 @@ async function runPaidOutcome(session, taskId, restartOffered) {
   }
 }
 
-function consumePaidRetryGrant(res, approvalId) {
-  const session = pickLiveWait("grantWait", approvalId);
-  if (session) {
-    const wait = session.grantWait;
-    if (session.grantUsed) {
-      sendJson(res, 409, { executed: false, reason: "retry_grant_spent", forecast_usd: PAID_FORECAST_USD });
-      return;
-    }
-    session.grantUsed = true;
-    wait.resolve(true);
-    session.grantWait = null;
-    sendJson(res, 200, {
-      ok: true,
-      matched: true,
-      approval_id: approvalId,
-      executed: true,
-      decision: "retry_step",
-      forecast_usd: PAID_FORECAST_USD,
-    });
+const PAID_BODY_KEYS = new Set(["change_id", "decision", "retry_grant"]);
+const PAID_DECISION_VALUES = new Set(["approve", "retry_step", "deny"]);
+
+function invalidPaidBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "invalid body";
+  for (const key of Object.keys(body)) {
+    if (!PAID_BODY_KEYS.has(key)) return "unexpected field";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "change_id")) {
+    const id = body.change_id;
+    if (id != null && typeof id !== "string") return "invalid change_id";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "decision") && body.decision != null && !PAID_DECISION_VALUES.has(body.decision)) {
+    return "invalid decision";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "retry_grant") && typeof body.retry_grant !== "boolean") {
+    return "invalid retry_grant";
+  }
+  return null;
+}
+
+function paidWire({ executed, reason, forecast, retryArmed, changeId, decision }) {
+  return {
+    executed: executed === true,
+    reason: reason ?? null,
+    forecast_usd: forecast === undefined ? null : forecast,
+    retry_armed: retryArmed === true,
+    change_id: changeId ?? null,
+    decision: decision ?? null,
+  };
+}
+
+function sessionHoldsChange(session, changeId) {
+  return session.approvalWait?.id === changeId || session.grantWait?.id === changeId;
+}
+
+/** Свой id сессии из URL важнее такого же id у другой сессии мока. */
+function classifyChange(session, changeId) {
+  if (typeof changeId !== "string" || !changeId) return "unknown";
+  if (sessionHoldsChange(session, changeId)) return "own";
+  for (const other of sessions.values()) {
+    if (other.id !== session.id && sessionHoldsChange(other, changeId)) return "foreign";
+  }
+  return "unknown";
+}
+
+function finishPaidGrant(res, session, changeId) {
+  if (!session.grantWait || session.grantWait.id !== changeId) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: "retry_grant_required",
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
     return;
   }
-  sendJson(res, 409, { executed: false, reason: "retry_grant_required", forecast_usd: null });
+  if (session.grantUsed) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: "retry_grant_spent",
+      forecast: PAID_FORECAST_USD,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
+  session.grantUsed = true;
+  session.grantWait.resolve(true);
+  session.grantWait = null;
+  sendJson(res, 200, paidWire({
+    executed: true,
+    reason: null,
+    forecast: PAID_FORECAST_USD,
+    retryArmed: false,
+    changeId,
+    decision: null,
+  }));
+}
+
+async function handleChatApprove(req, res, url, sessionId) {
+  const body = await readBody(req);
+  if (invalidPaidBody(body)) {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
+  const scenario = scenarioOf(req, url);
+  const session = sessionOf(sessionId);
+  const changeId = typeof body.change_id === "string" ? body.change_id : null;
+  const decision = body.decision ?? null;
+  const retryGrant = body.retry_grant === true;
+
+  if (scenario === "paid404") {
+    sendJson(res, 404, { detail: "unknown change_id" });
+    return;
+  }
+  if (scenario === "paid404foreign") {
+    sendJson(res, 404, { detail: "foreign change_id" });
+    return;
+  }
+  if (scenario === "paid409") {
+    sendJson(res, 409, { detail: "change_id already decided" });
+    return;
+  }
+  if (scenario === "paid409stale" || (scenario === "paidgrant409" && retryGrant)) {
+    sendJson(res, 409, { detail: "change_id is not current" });
+    return;
+  }
+  if (scenario === "paid422") {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
+
+  const ownership = classifyChange(session, changeId);
+  if (ownership === "unknown") {
+    sendJson(res, 404, { detail: "unknown change_id" });
+    return;
+  }
+  if (ownership === "foreign") {
+    sendJson(res, 404, { detail: "foreign change_id" });
+    return;
+  }
+
+  if (retryGrant) {
+    finishPaidGrant(res, session, changeId);
+    return;
+  }
+
+  if (decision == null) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: null,
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
+
+  if (session.approvalWait?.id !== changeId) {
+    sendJson(res, 409, { detail: session.grantWait?.id === changeId ? "change_id already decided" : "change_id is not current" });
+    return;
+  }
+  session.approvalWait.resolve(decision);
+  session.approvalWait = null;
+
+  if (decision === "retry_step" && (scenario.startsWith("paidbad-") || scenario === "paidzero")) {
+    const literal = paidBadForecastLiteral(scenario);
+    const forecastField = literal == null ? "" : `,"forecast_usd":${literal}`;
+    sendRawJson(
+      res,
+      200,
+      `{"executed":false,"reason":null,"retry_armed":true,"change_id":${JSON.stringify(changeId)},"decision":"retry_step"${forecastField}}`,
+    );
+    return;
+  }
+
+  sendJson(res, 200, paidWire({
+    executed: false,
+    reason: null,
+    forecast: decision === "retry_step" ? PAID_FORECAST_USD : null,
+    retryArmed: decision === "retry_step",
+    changeId,
+    decision,
+  }));
 }
 
 async function runMissingProject(session, taskId) {
@@ -1318,6 +1463,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "approve") {
+    await handleChatApprove(req, res, url, decodeURIComponent(parts[3]));
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "message") {
     const body = await readBody(req);
     const text = String(body.text || "").trim();
@@ -1342,30 +1492,6 @@ const server = http.createServer(async (req, res) => {
     const approvalId = decodeURIComponent(parts[3]);
     const body = await readBody(req);
     const scenario = scenarioOf(req, url);
-    if (body.retry_grant === true) {
-      if (scenario === "paid404") {
-        sendJson(res, 404, { detail: "unknown change_id" });
-        return;
-      }
-      if (scenario === "paid404foreign") {
-        sendJson(res, 404, { detail: "foreign change_id" });
-        return;
-      }
-      if (scenario === "paid409") {
-        sendJson(res, 409, { detail: "change_id already decided" });
-        return;
-      }
-      if (scenario === "paid409stale" || scenario === "paidgrant409") {
-        sendJson(res, 409, { detail: "change_id is not current" });
-        return;
-      }
-      if (scenario === "paid422") {
-        sendJson(res, 422, { detail: "approval unprocessable" });
-        return;
-      }
-      consumePaidRetryGrant(res, approvalId);
-      return;
-    }
     const wireDecision = typeof body.decision === "string" ? body.decision : "";
     const decision = wireDecision || (parts[4] === "approve" ? "approve" : "reject");
     if (decision === "approve" && scenario === "approvefail") {
@@ -1377,27 +1503,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "approval not found" });
       return;
     }
-    if (scenario === "paid404") {
-      sendJson(res, 404, { detail: "unknown change_id" });
-      return;
-    }
-    if (scenario === "paid404foreign") {
-      sendJson(res, 404, { detail: "foreign change_id" });
-      return;
-    }
     if (scenario === "approve409" && decision === "approve") {
       sendJson(res, 409, { detail: "approval conflict" });
       return;
     }
-    if (scenario === "paid409") {
-      sendJson(res, 409, { detail: "change_id already decided" });
-      return;
-    }
-    if (scenario === "paid409stale") {
-      sendJson(res, 409, { detail: "change_id is not current" });
-      return;
-    }
-    if ((scenario === "approve422" && decision === "approve") || scenario === "paid422") {
+    if (scenario === "approve422" && decision === "approve") {
       sendJson(res, 422, { detail: "approval unprocessable" });
       return;
     }
@@ -1411,22 +1521,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "approval not found" });
       return;
     }
-    const payload = { ok: true, approval_id: approvalId, decision, matched: true };
-    if (decision === "retry_step" && (scenario === "paidoutcome" || scenario === "paidgrant409")) {
-      payload.executed = false;
-      payload.forecast_usd = PAID_FORECAST_USD;
-    }
-    if (decision === "retry_step" && (scenario.startsWith("paidbad-") || scenario === "paidzero")) {
-      const literal = paidBadForecastLiteral(scenario);
-      const forecastField = literal == null ? "" : `,"forecast_usd":${literal}`;
-      sendRawJson(
-        res,
-        200,
-        `{"ok":true,"matched":true,"approval_id":${JSON.stringify(approvalId)},"decision":"retry_step","executed":false${forecastField}}`,
-      );
-      return;
-    }
-    sendJson(res, 200, payload);
+    sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched: true });
     return;
   }
 

@@ -292,8 +292,8 @@ export function OrchestratorWorkspace() {
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
                   onClose={() => chat.dismissBlock(approval.id)}
-                  onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, approval.taskId, decision)}
-                  onPaidGrant={() => chat.confirmPaidRestart(approval.id, approval.taskId)}
+                  onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, decision)}
+                  onPaidGrant={() => chat.confirmPaidRestart(approval.id)}
                 />
               ))}
             </div>

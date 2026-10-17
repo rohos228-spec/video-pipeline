@@ -10,17 +10,10 @@
  * Сервер сам ставит `change_id` вида `orch-appr-<task_id>-<n>`
  * (`tests/agents/test_change_id.py`, `_paid_id`). Клиентский id отбрасывается.
  *
- * `grant_approval` отвечает 404 `unknown change_id` или `foreign change_id`,
- * если id не выдан этим сервером или принадлежит другой задаче/сессии.
- * 409 — `change_id already decided` или `change_id is not current`.
- * Повторный `retry_grant` после `retry_step` этим 409 не режется.
- * Проверка владельца идёт раньше 409. HTTP-роутера под эти коды в #358 нет:
- * мок отдаёт тот же `detail` на временном POST. 422 для grant в #358 нет.
- *
- * TODO(ws3-358): HTTP-роутера `grant_approval` в #358 нет. Мок принимает то же
- * тело на POST `.../approvals/{id}/approve`. Если WS3 опубликует другой путь,
- * менять только `PAID_OUTCOME_GRANT_SEGMENT` и копию строк в
- * `web/e2e/orchestrator/mock-server.mjs`.
+ * HTTP: `POST /api/orchestrator/chat/{session_id}/approve`.
+ * Тело только `{change_id, decision, retry_grant}`. Лишнее поле — 422.
+ * 404 — чужой или неизвестный id. 409 — уже решён или не текущий.
+ * 401 — нет Bearer. Карточки change_control (#342) этот путь не используют.
  */
 
 /** Нет в union ApprovalReason контракта ws3-r3.3. */
@@ -52,14 +45,26 @@ export const PAID_OUTCOME_EXECUTED_FIELD = "executed";
 /** #358: `retry_grant_spent` | `retry_grant_required` | `budget_exhausted`. */
 export const PAID_OUTCOME_GRANT_FAILURES = ["retry_grant_spent", "retry_grant_required", "budget_exhausted"] as const;
 
-/**
- * TODO(ws3-358): хвост пути, пока роутера нет.
- * Тело — `ApprovalDecisionBody` (`decision` и/или `retry_grant`).
- */
-export const PAID_OUTCOME_GRANT_SEGMENT = "approve";
+/** Ровно эти ключи. Любое другое поле сервер отклоняет 422. */
+export const PAID_OUTCOME_BODY_FIELDS = ["change_id", "decision", "retry_grant"] as const;
 
-export function paidOutcomeApprovalPath(approvalId: string): string {
-  return `/api/orchestrator/approvals/${encodeURIComponent(approvalId)}/${PAID_OUTCOME_GRANT_SEGMENT}`;
+export function paidOutcomeApprovePath(sessionId: string): string {
+  return `/api/orchestrator/chat/${encodeURIComponent(sessionId)}/approve`;
+}
+
+export interface PaidOutcomeApproveBody {
+  change_id: string | null;
+  decision: PaidOutcomeDecision | null;
+  retry_grant: boolean;
+}
+
+export function paidOutcomeDecisionBody(changeId: string, decision: PaidOutcomeDecision): PaidOutcomeApproveBody {
+  return { change_id: changeId, decision, retry_grant: false };
+}
+
+/** Второй шаг. `decision` пустой: grant не является новым решением. */
+export function paidOutcomeGrantBody(changeId: string): PaidOutcomeApproveBody {
+  return { change_id: changeId, decision: null, retry_grant: true };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

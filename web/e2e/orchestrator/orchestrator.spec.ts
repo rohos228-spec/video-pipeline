@@ -284,6 +284,10 @@ test.describe("orchestrator chat", () => {
   });
 
   test("approval: approve доводит задачу", async ({ page }) => {
+    const approveUrls: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/approve")) approveUrls.push(req.url());
+    });
     await openWithToken(page, "approval", "approval-1");
     await page.getByTestId("orch-composer").fill("запусти ноду");
     await page.getByTestId("orch-send").click();
@@ -295,6 +299,8 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-approve").click();
     await expect(page.getByTestId("orch-task-summary")).toContainText("Одобрено");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+    expect(approveUrls.some((url) => url.includes("/approvals/appr-1/approve"))).toBe(true);
+    expect(approveUrls.some((url) => url.includes("/chat/"))).toBe(false);
   });
 
   test("approve 404, 409 и 422 оставляют карточку", async ({ page }) => {
@@ -912,10 +918,10 @@ test.describe("orchestrator chat", () => {
   });
 
   test("paid_outcome_unknown: шаг выполнен без повторного execute", async ({ page }) => {
-    const posts: { url: string; body: unknown }[] = [];
+    const posts: { url: string; body: unknown; authorization?: string }[] = [];
     page.on("request", (req) => {
       if (req.method() !== "POST") return;
-      posts.push({ url: req.url(), body: req.postDataJSON() });
+      posts.push({ url: req.url(), body: req.postDataJSON(), authorization: req.headers().authorization });
     });
     await openWithToken(page, "paidoutcome", "paid-done");
     await page.getByTestId("orch-composer").fill("платный шаг оборвался");
@@ -928,11 +934,16 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
     const execute = posts.filter((item) => item.url.includes("/execute"));
     expect(execute).toEqual([]);
-    const approvals = posts.filter((item) => item.url.includes("/approvals/"));
+    const approvals = posts.filter((item) => item.url.includes("/approve"));
     expect(approvals).toHaveLength(1);
-    expect(approvals[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
-    expect(approvals[0]?.body).toMatchObject({ decision: "approve", approval_id: "orch-appr-1-1" });
-    expect(approvals[0]?.body).not.toHaveProperty("retry_grant");
+    expect(approvals[0]?.url).toContain("/chat/paid-done/approve");
+    expect(approvals[0]?.url).not.toContain("/approvals/");
+    expect(approvals[0]?.body).toEqual({
+      change_id: "orch-appr-1-1",
+      decision: "approve",
+      retry_grant: false,
+    });
+    expect(approvals[0]?.authorization).toBe(`Bearer ${TOKEN}`);
   });
 
   test("paid_outcome_unknown: перезапуск показывает прогноз и шлёт одноразовый grant", async ({ page }) => {
@@ -951,12 +962,19 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveAttribute("data-status", "running");
     const retry = posts.filter((item) => item.url.includes("/approve"));
     expect(retry).toHaveLength(2);
-    expect(retry[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
-    expect(retry[0]?.body).toMatchObject({ decision: "retry_step", approval_id: "orch-appr-1-1" });
-    expect(retry[0]?.body).not.toHaveProperty("retry_grant");
-    expect(retry[1]?.url).toContain("/approvals/orch-appr-1-1/approve");
-    expect(retry[1]?.body).toMatchObject({ retry_grant: true, approval_id: "orch-appr-1-1" });
-    expect(retry[1]?.body).not.toHaveProperty("decision");
+    expect(retry[0]?.url).toContain("/chat/paid-retry/approve");
+    expect(retry[0]?.url).not.toContain("/approvals/");
+    expect(retry[0]?.body).toEqual({
+      change_id: "orch-appr-1-1",
+      decision: "retry_step",
+      retry_grant: false,
+    });
+    expect(retry[1]?.url).toContain("/chat/paid-retry/approve");
+    expect(retry[1]?.body).toEqual({
+      change_id: "orch-appr-1-1",
+      decision: null,
+      retry_grant: true,
+    });
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
 
@@ -974,9 +992,13 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
     const denials = posts.filter((item) => item.url.includes("/approve"));
     expect(denials).toHaveLength(1);
-    expect(denials[0]?.url).toContain("/approvals/orch-appr-1-1/approve");
-    expect(denials[0]?.body).toMatchObject({ decision: "deny", approval_id: "orch-appr-1-1" });
-    expect(denials[0]?.body).not.toHaveProperty("retry_grant");
+    expect(denials[0]?.url).toContain("/chat/paid-deny/approve");
+    expect(denials[0]?.url).not.toContain("/approvals/");
+    expect(denials[0]?.body).toEqual({
+      change_id: "orch-appr-1-1",
+      decision: "deny",
+      retry_grant: false,
+    });
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
 
@@ -1043,7 +1065,7 @@ test.describe("orchestrator chat", () => {
   test("paid_outcome_unknown: без поддержки перезапуска кнопка неактивна", async ({ page }) => {
     const posts: string[] = [];
     page.on("request", (req) => {
-      if (req.method() === "POST" && req.url().includes("/approvals/")) posts.push(req.url());
+      if (req.method() === "POST" && req.url().includes("/approve")) posts.push(req.url());
     });
     await openWithToken(page, "paidoutcomeoff", "paid-off");
     await page.getByTestId("orch-composer").fill("платный шаг оборвался");
@@ -1109,7 +1131,7 @@ test.describe("orchestrator chat", () => {
   test("paid_outcome_unknown без change_id: решение не уходит и карточка закрывается статусом задачи", async ({ page }) => {
     const posts: string[] = [];
     page.on("request", (req) => {
-      if (req.method() === "POST" && /\/approvals\/.+\/approve/.test(req.url())) posts.push(req.url());
+      if (req.method() === "POST" && req.url().includes("/approve")) posts.push(req.url());
     });
     await openWithToken(page, "idle", "paid-noid");
     await emitBus(page, "paid-noid", "approval_required", 1, {

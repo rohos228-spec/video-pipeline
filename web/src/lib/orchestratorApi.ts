@@ -6,21 +6,21 @@
  * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
- * Approve/kill в том роутере нет — мок держит их до WS2.
+ * Платный approve: POST `.../chat/{session}/approve`, тело `{change_id, decision, retry_grant}`.
+ * Карточки change_control (#342) остаются на `/api/orchestrator/approvals/{id}/approve|reject`.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
 import {
-  PAID_OUTCOME_RETRY_GRANT_FIELD,
-  paidOutcomeApprovalPath,
+  paidOutcomeApprovePath,
   paidOutcomeRetryReady,
   parsePaidOutcomeJson,
   readPaidOutcomeExecuted,
   readPaidOutcomeFailureReason,
   readPaidOutcomeForecast,
-  type PaidOutcomeDecision,
+  type PaidOutcomeApproveBody,
 } from "./orchestratorPaidOutcome";
 import type {
   OrchApprovalDecision,
@@ -377,75 +377,65 @@ export function postOrchReject(
 
 export interface PaidOutcomeDecisionResult {
   ok: boolean;
-  matched?: boolean;
-  approval_id?: string;
+  changeId: string | null;
+  decision: string | null;
   forecast: number | null;
   executed: boolean;
   reason: string | null;
+  retryArmed: boolean;
   /** Ответ `retry_step` с прогнозом и без отказа: можно слать `retry_grant`. */
   retryReady: boolean;
 }
 
-function readPaidAcceptance(body: unknown): { ok?: boolean; matched?: boolean; approval_id?: string } {
-  if (!body || typeof body !== "object") return {};
-  const record = body as Record<string, unknown>;
-  return {
-    ok: typeof record.ok === "boolean" ? record.ok : undefined,
-    matched: typeof record.matched === "boolean" ? record.matched : undefined,
-    approval_id: typeof record.approval_id === "string" ? record.approval_id : undefined,
-  };
+function readPaidChangeId(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const value = (body as Record<string, unknown>).change_id;
+  return typeof value === "string" ? value : null;
 }
 
-/** Три `decision` — тело `ApprovalDecisionBody` на grant-пути. Deny тоже шлёт `decision`, не старый reject. */
-export async function postPaidOutcomeDecision(
-  cfg: OrchClientConfig,
-  body: { approval_id: string; task_id?: string | null; decision: PaidOutcomeDecision },
-  signal?: AbortSignal,
-): Promise<PaidOutcomeDecisionResult> {
-  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovalPath(body.approval_id), body, signal);
+function readPaidDecision(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const value = (body as Record<string, unknown>).decision;
+  return typeof value === "string" ? value : null;
+}
+
+function readPaidRetryArmed(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  return (body as Record<string, unknown>).retry_armed === true;
+}
+
+export function readPaidOutcomeDecisionResult(raw: unknown): PaidOutcomeDecisionResult {
   const reason = readPaidOutcomeFailureReason(raw);
-  const accepted = readPaidAcceptance(raw);
   return {
-    ok: reason == null && accepted.ok !== false,
-    matched: accepted.matched,
-    approval_id: accepted.approval_id,
+    ok: reason == null,
+    changeId: readPaidChangeId(raw),
+    decision: readPaidDecision(raw),
     forecast: readPaidOutcomeForecast(raw),
     executed: readPaidOutcomeExecuted(raw),
     reason,
+    retryArmed: readPaidRetryArmed(raw),
     retryReady: paidOutcomeRetryReady(raw),
   };
 }
 
-/** Второй шаг: одноразовый `retry_grant`, без повторного `decision` и без execute до подтверждения. */
-export async function postPaidOutcomeRestartGrant(
+/** Три `decision` на `POST /chat/{session}/approve`. Лишних полей нет. */
+export async function postPaidOutcomeDecision(
   cfg: OrchClientConfig,
-  body: { approval_id: string; task_id?: string | null },
+  body: PaidOutcomeApproveBody,
   signal?: AbortSignal,
 ): Promise<PaidOutcomeDecisionResult> {
-  const raw = await postJson<unknown>(
-    cfg,
-    paidOutcomeApprovalPath(body.approval_id),
-    {
-      approval_id: body.approval_id,
-      task_id: body.task_id,
-      [PAID_OUTCOME_RETRY_GRANT_FIELD]: true,
-    },
-    signal,
-  );
-  const reason = readPaidOutcomeFailureReason(raw);
-  const accepted = readPaidAcceptance(raw);
-  if (reason || readPaidOutcomeExecuted(raw) !== true || accepted.ok === false) {
-    throw new OrchApiError(409, reason || "retry_grant_required");
-  }
-  return {
-    ok: true,
-    matched: accepted.matched,
-    approval_id: accepted.approval_id,
-    forecast: readPaidOutcomeForecast(raw),
-    executed: true,
-    reason: null,
-    retryReady: false,
-  };
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), body, signal);
+  return readPaidOutcomeDecisionResult(raw);
+}
+
+/** Второй шаг: `{change_id, decision:null, retry_grant:true}`. Шаг исполняется один раз. */
+export async function postPaidOutcomeRestartGrant(
+  cfg: OrchClientConfig,
+  body: PaidOutcomeApproveBody,
+  signal?: AbortSignal,
+): Promise<PaidOutcomeDecisionResult> {
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), body, signal);
+  return readPaidOutcomeDecisionResult(raw);
 }
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
