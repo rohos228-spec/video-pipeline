@@ -19,6 +19,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -836,23 +837,51 @@ def _kept_voice_spans(
     return [(a, b) for a, b in spans if b > a + 0.01]
 
 
+def shift_words_past_cuts(words: list[Any], cuts: list[tuple[float, float]]) -> list[Any]:
+    """Слова вне вырезов в шкале live-дорожки. Слова внутри выреза выпадают."""
+    from app.services.whisper import WordTS
+
+    if not cuts:
+        return list(words)
+    shifted: list[WordTS] = []
+    for word in words:
+        start = float(word.start)
+        end = float(word.end)
+        if any(start < b - 1e-6 and end > a + 1e-6 for a, b in cuts):
+            continue
+        new_start = _shift_time(start, cuts)
+        new_end = _shift_time(end, cuts)
+        if new_end <= new_start + 1e-6:
+            continue
+        shifted.append(
+            WordTS(
+                word=str(word.word),
+                start=new_start,
+                end=new_end,
+                prob=float(getattr(word, "prob", 0.0) or 0.0),
+            )
+        )
+    return shifted
+
+
 async def prepare_r15_live_voice(
     markers: list[R15Marker],
     voice: Path,
     omit_numbers: set[int] | None,
-) -> tuple[list[R15Marker], Path, float]:
+) -> tuple[list[R15Marker], Path, float, list[tuple[float, float]]]:
     """Дорожка R15 без речи помеченных кадров и метки, сдвинутые под эту дорожку.
 
-    Исходный ``voice`` не перезаписывается: куски пишутся в новый ``*.live-*.mp3``
+    Исходный ``voice`` не перезаписывается: куски пишутся в ``audio/_live/*.live-*.mp3``
     тем же сборщиком, что и per-frame mux. Паузы между метками и хвост после
     последней метки остаются. Если помеченных меток нет — возвращается исходный файл.
+    Четвёртый элемент — интервалы выреза в шкале исходника (для сдвига ``words``).
     """
     voice_s = await probe_duration(voice)
     omit = {int(n) for n in (omit_numbers or set())}
     marked = [m for m in markers if int(m.frame_number) in omit]
     kept = [m for m in markers if int(m.frame_number) not in omit]
     if not marked:
-        return kept, voice, voice_s
+        return kept, voice, voice_s, []
     if not kept:
         raise RuntimeError("R15: после пометки кадров не осталось меток для монтажа")
 
@@ -861,7 +890,7 @@ async def prepare_r15_live_voice(
         [(max(0.0, a), min(voice_s, b)) for a, b in cuts if min(voice_s, b) > max(0.0, a)]
     )
     if not cuts:
-        return kept, voice, voice_s
+        return kept, voice, voice_s, []
 
     from app.services.frame_audio import FrameAudioClip, materialize_closed_timeline_audio
 
@@ -916,7 +945,7 @@ async def prepare_r15_live_voice(
         new_dur,
         voice.name,
     )
-    return shifted, built, new_dur
+    return shifted, built, new_dur, cuts
 
 
 async def run_variant2(
@@ -944,7 +973,9 @@ async def run_variant2(
         ts_row = 15
     if omit_numbers:
         # Помеченный кадр ещё в списке меток: вырезаем его речь и сдвигаем соседей.
-        markers, voice, _live_s = await prepare_r15_live_voice(markers, voice, omit_numbers)
+        markers, voice, _live_s, _cuts = await prepare_r15_live_voice(
+            markers, voice, omit_numbers
+        )
     voice_s = await probe_duration(voice)
     marker_end = markers[-1].end_s
     gap = voice_s - marker_end

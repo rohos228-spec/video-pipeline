@@ -1777,12 +1777,14 @@ async def test_mux_without_marked_raises_when_live_track_missing(tmp_path: Path)
         FrameAudioClip(2, source, "два", 1.0, 2.0, 1.0),
         FrameAudioClip(3, source, "три", 2.0, 3.0, 1.0),
     ]
-    with patch(
-        "app.services.frame_audio.materialize_closed_timeline_audio",
-        new=AsyncMock(return_value=None),
+    with (
+        patch(
+            "app.services.frame_audio.materialize_closed_timeline_audio",
+            new=AsyncMock(return_value=None),
+        ),
+        pytest.raises(RuntimeError, match="voice_full не микширую"),
     ):
-        with pytest.raises(RuntimeError, match="voice_full не микширую"):
-            await _mux_audio_without_marked(clips, source, {2})
+        await _mux_audio_without_marked(clips, source, {2})
     assert source.read_bytes() == b"original-voice"
 
 
@@ -1946,8 +1948,9 @@ async def test_r15_marked_middle_frame_speech_absent_from_final_audio(
     voiced = float(voice_line.split("=", 1)[1])
     assert voiced == pytest.approx(out_dur, abs=0.15)
     assert abs((rows[3][1] - rows[1][0]) - voiced) < 0.35
-    live = list(audio.glob("voice_full.live-*.mp3"))
+    live = list((audio / "_live").glob("voice_full.live-*.mp3"))
     assert len(live) == 1
+    assert list(audio.glob("voice_full.live-*.mp3")) == []
     assert live[0].resolve() != voice.resolve()
     assert any("речь помеченных кадров" in line for line in warn_log)
 
@@ -2338,3 +2341,84 @@ async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
     assert _cs(rows[2]).get("parent_uuid") == head_uid
     assert rows[2].voiceover_text == "второй шот"
     assert sum(1 for fr in rows if _cs(fr).get("role") == "vo_parent") == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_audio_ignores_live_mix_files(
+    session: AsyncSession, project: Project
+) -> None:
+    """Recovery берёт voice_full, а не более новый live-файл из audio/_live/."""
+    import time
+
+    from app.models import Artifact, ArtifactKind
+    from app.services.artifact_recovery import recover_audio_from_disk
+    from app.services.frame_audio import find_voice_full_on_disk
+
+    session.add(project)
+    await session.flush()
+    audio = project.data_dir / "audio"
+    live_dir = audio / "_live"
+    live_dir.mkdir(parents=True)
+    voice = audio / "voice_full.mp3"
+    voice.write_bytes(b"source-voice")
+    decoy_dir = live_dir / "voice_full.live-abcd.mp3"
+    decoy_dir.write_bytes(b"live-mix-not-source")
+    decoy_flat = audio / "voice_full.live-old.mp3"
+    decoy_flat.write_bytes(b"flat-live-not-source")
+    time.sleep(0.02)
+    decoy_dir.touch()
+    decoy_flat.touch()
+
+    found = find_voice_full_on_disk(project.data_dir)
+    assert found is not None
+    assert found.resolve() == voice.resolve()
+    ok = await recover_audio_from_disk(session, project)
+    assert ok is True
+    art = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.audio,
+            )
+        )
+    ).scalar_one()
+    assert Path(art.path).resolve() == voice.resolve()
+    assert voice.read_bytes() == b"source-voice"
+    assert decoy_dir.read_bytes() == b"live-mix-not-source"
+    assert decoy_flat.read_bytes() == b"flat-live-not-source"
+
+    voice.unlink()
+    assert find_voice_full_on_disk(project.data_dir) is None
+
+
+def test_shifted_words_match_subtitles_without_marked_frame() -> None:
+    """Слова помеченного кадра выпадают, остальные сдвигаются в шкалу live-звука."""
+    from app.services.mapper import FrameTiming
+    from app.services.montage.variant2 import shift_words_past_cuts
+    from app.services.subtitles import build_subtitle_cues_from_cells
+    from app.services.whisper import WordTS
+
+    words = [
+        WordTS("один", 0.0, 1.0),
+        WordTS("два", 1.0, 2.0),
+        WordTS("три", 2.0, 3.0),
+    ]
+    shifted = shift_words_past_cuts(words, [(1.0, 2.0)])
+    assert [w.word for w in shifted] == ["один", "три"]
+    assert shifted[0].start == 0.0 and shifted[0].end == 1.0
+    assert shifted[1].start == 1.0 and shifted[1].end == 2.0
+
+    cues = build_subtitle_cues_from_cells(
+        [(1, "один"), (3, "три")],
+        shifted,
+        [
+            FrameTiming(1, 0.0, 1.0, 1.0),
+            FrameTiming(3, 1.0, 2.0, 1.0),
+        ],
+        max_words=1,
+    )
+    by_text = {text: (start, end) for start, end, text in cues}
+    assert "два" not in by_text
+    assert by_text["один"][0] == pytest.approx(0.0, abs=0.05)
+    assert by_text["три"][0] == pytest.approx(1.0, abs=0.05)
+    assert by_text["три"][1] <= 2.0 + 0.05
