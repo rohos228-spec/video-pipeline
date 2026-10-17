@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -33,34 +34,47 @@ def _stored_version(target: Path) -> int:
     return version
 
 
+def _exclusive_lock(target: Path):
+    """Держит flock на <name>.lock на всё время чтения версии и replace."""
+    lock_path = target.with_name(target.name + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
 def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
     """Публикует text, если expected_version совпала с текущей версией файла."""
     target = Path(dest)
     target.parent.mkdir(parents=True, exist_ok=True)
-    current = _stored_version(target)
-    if current != int(expected_version):
-        raise VersionConflict(
-            f"версия {expected_version} не совпала с текущей {current}"
-        )
-    if target.is_file():
-        backup_dir = target.parent / "old"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(target, backup_dir / f"{target.name}.v{current}")
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"{target.name}.",
-        suffix=".tmp",
-        dir=target.parent,
-    )
-    tmp_path = Path(tmp_name)
+    lock_fd = _exclusive_lock(target)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            payload = json.dumps(
-                {"version": current + 1, "text": text},
-                ensure_ascii=False,
+        current = _stored_version(target)
+        if current != int(expected_version):
+            raise VersionConflict(
+                f"версия {expected_version} не совпала с текущей {current}"
             )
-            handle.write(payload)
-        os.replace(tmp_path, target)
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
+        if target.is_file():
+            backup_dir = target.parent / "old"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup_dir / f"{target.name}.v{current}")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                payload = json.dumps(
+                    {"version": current + 1, "text": text},
+                    ensure_ascii=False,
+                )
+                handle.write(payload)
+            os.replace(tmp_path, target)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
