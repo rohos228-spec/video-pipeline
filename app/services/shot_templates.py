@@ -1084,7 +1084,9 @@ def fill_kadry_from_catalog(
         out.extend(_assign_scene_vo(leftover, glue))
     elif unmatched:
         out.extend(unmatched)
-    return out
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    return keep_soft_kadry(incoming, out, scene_id=cell_number, number=cell_number)
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:

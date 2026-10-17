@@ -155,6 +155,43 @@ def test_scene_and_character_still_reject_in_soft_mode() -> None:
     assert any(item.code == "character_deleted" and item.id == "c1" for item in char_exc.value.violations)
 
 
+def test_fill_catalog_keeps_shot_builder_dropped_and_inactive_vo(monkeypatch) -> None:
+    from app.services import shot_templates as templates
+
+    real = templates._assign_scene_vo
+
+    def _drop(shots, vo, catalog_rows=None):
+        rows = real(shots, vo, catalog_rows=catalog_rows)
+        return rows[:1] if len(rows) > 1 else rows
+
+    monkeypatch.setattr(templates, "_assign_scene_vo", _drop)
+    out = templates.fill_kadry_from_catalog(
+        [
+            {"id": "a", "закадр": "первый"},
+            {"id": "b", "закадр": "фраза на месте"},
+        ],
+        "",
+    )
+    by_id = {row["id"]: row for row in out}
+    assert by_id["b"]["активен"] is False
+    assert by_id["b"]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in by_id["b"]
+
+    monkeypatch.setattr(templates, "_assign_scene_vo", real)
+    soft = templates.fill_kadry_from_catalog(
+        [
+            {"id": "a", "закадр": "первый"},
+            {"id": "b", "закадр": "фраза на месте", "активен": False},
+        ],
+        "",
+    )
+    ids = [row["id"] for row in soft]
+    assert ids.count("b") == 1
+    kept = next(row for row in soft if row["id"] == "b")
+    assert kept["активен"] is False
+    assert kept["закадр"] == "фраза на месте"
+
+
 def test_qc_candidate_keeps_dropped_shot_and_inactive_vo() -> None:
     from types import SimpleNamespace
 
