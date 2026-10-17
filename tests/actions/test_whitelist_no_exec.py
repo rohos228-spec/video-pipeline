@@ -79,6 +79,21 @@ _SHUTIL_WRITE = {
     "move": (0, 1),
 }
 _OS_RENAME = frozenset({"rename", "replace"})
+_OS_DELETE = frozenset({"remove", "unlink", "rmdir", "removedirs"})
+_PATH_DELETE = frozenset({"unlink", "rmdir"})
+_PATH_CREATE = frozenset({"touch", "mkdir"})
+_PATH_MOVE = frozenset({"rename", "replace"})
+_DELETE_KINDS = frozenset(
+    {
+        "shutil.rmtree",
+        "os.remove",
+        "os.unlink",
+        "os.rmdir",
+        "os.removedirs",
+        "Path.unlink",
+        "Path.rmdir",
+    }
+)
 _DYN = "<dyn>"
 
 _ALLOW_MARKERS = (
@@ -757,6 +772,7 @@ def _live_calls(
 def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     modules: set[str] = set()
     funcs: dict[str, str] = {}
+    watched = _OS_RENAME | _OS_DELETE
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -765,11 +781,22 @@ def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
         elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] == "os":
             for alias in node.names:
                 if alias.name == "*":
-                    for fname in _OS_RENAME:
+                    for fname in watched:
                         funcs[fname] = fname
-                elif alias.name in _OS_RENAME:
+                elif alias.name in watched:
                     funcs[alias.asname or alias.name] = alias.name
     return modules, funcs
+
+
+def _receiver_is_path(node: ast.AST, env: dict[str, str]) -> bool:
+    """Path.replace есть и у str. Файловой операцией считаем только путь."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Path":
+        return True
+    sketch = _sketch(node, env)
+    if not sketch:
+        return False
+    text = sketch.replace("\\", "/")
+    return "/" in text or text.startswith("{settings.data_dir}") or text.startswith("data")
 
 
 def _call_arg(call: ast.Call, index: int, *keywords: str) -> ast.AST | None:
@@ -812,8 +839,11 @@ def _write_hit(
     elif isinstance(func, ast.Name) and func.id in os_funcs:
         attr = os_funcs[func.id]
         kind = f"os.{attr}"
-        src = _call_arg(call, 0, "src")
-        dest = _call_arg(call, 1, "dst")
+        if attr in _OS_DELETE:
+            dest = _call_arg(call, 0, "path")
+        else:
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
     elif isinstance(func, ast.Attribute):
         attr = func.attr
         if attr == "open":
@@ -841,11 +871,28 @@ def _write_hit(
             kind = f"os.{attr}"
             src = _call_arg(call, 0, "src")
             dest = _call_arg(call, 1, "dst")
+        elif (
+            attr in _OS_DELETE
+            and isinstance(func.value, ast.Name)
+            and func.value.id in os_modules
+        ):
+            kind = f"os.{attr}"
+            dest = _call_arg(call, 0, "path")
+        elif attr in _PATH_DELETE:
+            kind = f"Path.{attr}"
+            dest = func.value
+        elif attr in _PATH_CREATE:
+            kind = f"Path.{attr}"
+            dest = func.value
+        elif attr in _PATH_MOVE and _receiver_is_path(func.value, env):
+            kind = f"Path.{attr}"
+            src = func.value
+            dest = _call_arg(call, 0, "target")
     if kind is None:
         return None
     sketch = _sketch(dest, env)
     source = _sketch(src, env) if src is not None else None
-    if kind == "shutil.rmtree":
+    if kind in _DELETE_KINDS:
         return WriteHit(
             kind,
             sketch,
@@ -854,7 +901,7 @@ def _write_hit(
             allowed=False,
             snapshot_delete=sketch is None or _under_snapshot(sketch),
         )
-    if kind in {"shutil.move", "os.rename", "os.replace"}:
+    if kind in {"shutil.move", "os.rename", "os.replace", "Path.rename", "Path.replace"}:
         dest_ok = bool(sketch) and _path_permitted(sketch, action_id)
         src_ok = bool(source) and _path_permitted(source, action_id)
         return WriteHit(
@@ -1258,6 +1305,135 @@ def test_rmtree_is_always_denied() -> None:
         assert len(hits) == 4
         assert all(hit.kind == "shutil.rmtree" and not hit.allowed for hit in hits)
         assert hits[2].snapshot_delete
+
+
+def test_shutil_rmtree_alias_is_denied() -> None:
+    source = (
+        "import shutil as sh\n"
+        "from shutil import rmtree as rt\n"
+        "def wipe():\n"
+        "    sh.rmtree('data/reports/old')\n"
+        "    rt('data/action_layer_snapshots/old')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["shutil.rmtree", "shutil.rmtree"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_os_remove_is_denied() -> None:
+    source = (
+        "import os as o\n"
+        "def save():\n"
+        "    o.remove('data/reports/a.txt')\n"
+        "    o.remove('data/action_layer_snapshots/a.txt')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["os.remove", "os.remove"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_os_unlink_is_denied() -> None:
+    source = (
+        "from os import unlink\n"
+        "def save():\n"
+        "    unlink('templates/a')\n"
+        "    unlink('data/action_layer_snapshots/b')\n"
+    )
+    hits = analyze_module_source(source, "montage.upload_voice")
+    assert [hit.kind for hit in hits] == ["os.unlink", "os.unlink"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_os_rmdir_is_denied() -> None:
+    source = (
+        "import os\n"
+        "def save():\n"
+        "    os.rmdir('data/node_overrides/empty')\n"
+        "    os.rmdir('data/action_layer_snapshots/empty')\n"
+    )
+    hits = analyze_module_source(source, "montage.upload_music")
+    assert [hit.kind for hit in hits] == ["os.rmdir", "os.rmdir"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_os_removedirs_is_denied() -> None:
+    source = (
+        "from os import removedirs as rd\n"
+        "def save():\n"
+        "    rd('data/reports/nested/empty')\n"
+        "    rd('data/action_layer_snapshots/nested')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["os.removedirs", "os.removedirs"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_path_unlink_is_denied() -> None:
+    source = (
+        "def save():\n"
+        "    Path('data/reports/a').unlink()\n"
+        "    p = Path('data/action_layer_snapshots/a')\n"
+        "    p.unlink(missing_ok=True)\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["Path.unlink", "Path.unlink"]
+    assert [hit.allowed for hit in hits] == [False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True]
+
+
+def test_path_rmdir_is_denied() -> None:
+    source = (
+        "def save(folder):\n"
+        "    Path('data/reports/empty').rmdir()\n"
+        "    snap = Path('data/action_layer_snapshots/empty')\n"
+        "    snap.rmdir()\n"
+        "    folder.rmdir()\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["Path.rmdir", "Path.rmdir", "Path.rmdir"]
+    assert [hit.allowed for hit in hits] == [False, False, False]
+    assert [hit.snapshot_delete for hit in hits] == [False, True, True]
+
+
+def test_path_rename_and_replace_check_both_sides() -> None:
+    source = (
+        "def save(text):\n"
+        "    Path('data/reports/a').replace('data/reports/b')\n"
+        "    src = Path('templates/a')\n"
+        "    src.rename('data/reports/a')\n"
+        "    Path('data/action_layer_snapshots/a').replace('data/reports/b')\n"
+        "    text.replace('a', 'b')\n"
+        "    note = 'прежняя версия'\n"
+        "    note.replace('прежняя', '')\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["Path.replace", "Path.rename", "Path.replace"]
+    assert [hit.allowed for hit in hits] == [True, False, True]
+    assert [hit.snapshot_delete for hit in hits] == [False, False, True]
+    foreign = analyze_module_source(source, "group.delete")
+    assert foreign[2].allowed is False
+    assert foreign[2].snapshot_delete is True
+
+
+def test_path_touch_and_mkdir_follow_allowlist() -> None:
+    source = (
+        "def save():\n"
+        "    Path('data/reports/a').touch()\n"
+        "    Path('templates/a').mkdir()\n"
+        "    folder = _data_root() / 'action_layer_snapshots' / 'dyn'\n"
+        "    folder.mkdir(parents=True)\n"
+    )
+    hits = analyze_module_source(source, "history.rollback")
+    assert [hit.kind for hit in hits] == ["Path.touch", "Path.mkdir", "Path.mkdir"]
+    assert [hit.allowed for hit in hits] == [True, False, True]
+    assert [hit.snapshot_delete for hit in hits] == [False, False, False]
+    other = analyze_module_source(source, "prompt.save_master")
+    assert [hit.allowed for hit in other] == [True, False, False]
 
 
 def test_move_and_rename_check_source_and_dest() -> None:
