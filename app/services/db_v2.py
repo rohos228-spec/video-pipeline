@@ -93,6 +93,22 @@ def frame_is_archived(frame: Any) -> bool:
         return False
 
 
+def entity_is_archived(entity: Any) -> bool:
+    """Персонаж, которого Каркас вывел из работы.
+
+    replace помечает карточку ``archived`` и ``inactive``. Оба флага
+    исключают её из меню, промтов и экспорта. ``hero_reference`` при этом
+    остаётся на карточке.
+    """
+    if isinstance(entity, dict):
+        if entity.get("archived") or entity.get("inactive"):
+            return True
+        attrs = entity.get("attrs")
+    else:
+        attrs = getattr(entity, "attrs", None)
+    return isinstance(attrs, dict) and bool(attrs.get("archived") or attrs.get("inactive"))
+
+
 async def ensure_single_seed_vo_cell(
     session: AsyncSession,
     project: Project,

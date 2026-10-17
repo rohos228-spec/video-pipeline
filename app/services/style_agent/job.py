@@ -692,9 +692,9 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
             logger.debug("style_agent: progress not saved: {}", exc)
 
     ov = _pipeline_text_override(model)
-    if ov is None:
-        raise RuntimeError("нет маршрута 52pay для разбора стиля")
     try:
+        if ov is None:
+            raise RuntimeError("нет маршрута 52pay для разбора стиля")
         if not videos:
             raise RuntimeError("нет роликов: загрузите mp4 в ноду или подключите «Файлы»")
         with use_override(ov):

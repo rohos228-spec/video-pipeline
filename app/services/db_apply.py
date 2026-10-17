@@ -1149,8 +1149,16 @@ async def upsert_characters(
             by_code[code] = en
         else:
             en.name = card["name"]
-            en.attrs = card["attrs"]
             en.type = "character"
+            old = dict(en.attrs) if isinstance(en.attrs, dict) else {}
+            merged = {**old, **card["attrs"]}
+            # Код снова в ответе Каркаса — карточка живая, реф не стираем.
+            merged.pop("archived", None)
+            merged.pop("inactive", None)
+            en.attrs = merged
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(en, "attrs")
         n += 1
     if replace and seen:
         from loguru import logger
@@ -1185,10 +1193,14 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         SHEET_PERSONS,
     )
 
+    from app.services.db_v2 import entity_is_archived
+
     chars = [
         e
         for e in entities
-        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+        if getattr(e, "type", None) == "character"
+        and getattr(e, "code", None)
+        and not entity_is_archived(e)
     ]
     chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
     if SHEET_PERSONS in wb.sheetnames:

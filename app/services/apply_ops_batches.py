@@ -1878,7 +1878,14 @@ _GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
-    _GATE_CHARACTERS.set(list(cards or []))
+    from app.services.db_v2 import entity_is_archived
+
+    live = [
+        card
+        for card in (cards or [])
+        if isinstance(card, dict) and not entity_is_archived(card)
+    ]
+    _GATE_CHARACTERS.set(live)
 
 
 _REPLY_SPLIT = re.compile(r"\s+—\s+(?=[^:.—«»]{1,40}:)")
