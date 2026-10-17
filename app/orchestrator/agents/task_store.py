@@ -193,6 +193,22 @@ class TaskStore:
         finally:
             conn.close()
 
+    def note_running_outcome(self, step_id: int, change_id: str | None, cost: float) -> None:
+        """Записать сдачу платного шага, не закрывая строку ``running``."""
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                UPDATE orch_steps
+                SET change_id = ?, cost = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (change_id, float(cost), step_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def finish_step(
         self,
         step_id: int,
