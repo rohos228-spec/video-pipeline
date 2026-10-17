@@ -995,6 +995,26 @@ def read_resolved_project_prompt(
     return name, path, inject_topic_placeholders(text, topic), source
 
 
+def _render_enrich_template(project, step_code: str, text: str, topic: str) -> str:
+    from app.services.prompt_composer import (
+        assert_prompt_resolved,
+        merge_project_prompt_config,
+        render_template_text,
+    )
+
+    if "{{" not in text:
+        return text
+    heroes = getattr(project, "hero_descriptions", None)
+    blocks, vars_ = merge_project_prompt_config(
+        getattr(project, "prompt_overrides", None) or {},
+        hero_description=heroes[0] if isinstance(heroes, list) and heroes else None,
+        topic=topic or None,
+    )
+    rendered = render_template_text(text, blocks, vars_)
+    assert_prompt_resolved(rendered, label=step_code)
+    return rendered
+
+
 def get_project_prompt(project, step_code: str) -> str:
     """Прочитать выбранный для проекта мастер-промт с диска.
 
