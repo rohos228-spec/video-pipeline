@@ -1204,6 +1204,190 @@ test.describe("orchestrator chat", () => {
     expect(decisions.filter((item) => item === "retry_step")).toHaveLength(2);
   });
 
+  test("paid_outcome_unknown: коды approve как у #358", async ({ page }) => {
+    const changeId = "orch-appr-1-1";
+    const auth = {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+    };
+
+    async function postApprove(
+      session: string,
+      body: Record<string, unknown>,
+      headers: Record<string, string> = auth,
+    ) {
+      return page.request.post(`${MOCK}/api/orchestrator/chat/${session}/approve`, {
+        headers,
+        data: body,
+      });
+    }
+
+    async function readApprove(session: string, click: () => Promise<void>) {
+      const pending = page.waitForResponse(
+        (res) => res.request().method() === "POST" && res.url().includes(`/chat/${session}/approve`),
+      );
+      await click();
+      const res = await pending;
+      return { status: res.status(), json: (await res.json()) as Record<string, unknown> };
+    }
+
+    const missingToken = await postApprove(
+      "wire-ghost",
+      { change_id: changeId, decision: "approve", retry_grant: false },
+      { "Content-Type": "application/json" },
+    );
+    expect(missingToken.status()).toBe(401);
+    expect(await missingToken.json()).toEqual({ detail: "unauthorized" });
+    const wrongToken = await postApprove(
+      "wire-ghost",
+      { change_id: changeId, decision: "approve", retry_grant: false },
+      { Authorization: "Bearer not-the-token", "Content-Type": "application/json" },
+    );
+    expect(wrongToken.status()).toBe(401);
+    expect(await wrongToken.json()).toEqual({ detail: "unauthorized" });
+
+    const noTask = await postApprove("wire-ghost", {
+      change_id: "missing-change",
+      decision: "approve",
+      retry_grant: false,
+    });
+    expect(noTask.status()).toBe(404);
+    expect(await noTask.json()).toEqual({ detail: "not found" });
+
+    await openWithToken(page, "paidoutcome", "wire-retry");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-retry")).toBeVisible();
+    const armed = await readApprove("wire-retry", () => page.getByTestId("orch-paid-retry").click());
+    expect(armed.status).toBe(200);
+    expect(armed.json).toMatchObject({
+      executed: false,
+      retry_armed: true,
+      forecast_usd: 2.4,
+      decision: "retry_step",
+      change_id: changeId,
+    });
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+
+    const granted = await readApprove("wire-retry", () => page.getByTestId("orch-paid-retry-confirm").click());
+    expect(granted.status).toBe(200);
+    expect(granted.json).toMatchObject({
+      executed: true,
+      reason: null,
+      retry_armed: false,
+      decision: "retry_step",
+      change_id: changeId,
+    });
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(1);
+    const spent = await postApprove("wire-retry", { change_id: changeId, decision: null, retry_grant: true });
+    expect(spent.status()).toBe(200);
+    expect(await spent.json()).toMatchObject({
+      executed: false,
+      reason: "retry_grant_spent",
+      retry_armed: false,
+      forecast_usd: null,
+    });
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(1);
+
+    await openWithToken(page, "paidoutcome", "wire-approve");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+    const approved = await readApprove("wire-approve", () => page.getByTestId("orch-paid-done").click());
+    expect(approved.json.retry_armed).toBe(false);
+    expect(approved.json.executed).toBe(false);
+    expect(approved.json.decision).toBe("approve");
+    const again = await postApprove("wire-approve", {
+      change_id: changeId,
+      decision: "approve",
+      retry_grant: false,
+    });
+    expect(again.status()).toBe(409);
+    expect(await again.json()).toEqual({ detail: "change_id already decided" });
+
+    await openWithToken(page, "paidoutcome", "wire-deny");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-deny")).toBeVisible();
+    const denied = await readApprove("wire-deny", () => page.getByTestId("orch-paid-deny").click());
+    expect(denied.json).toMatchObject({ executed: false, retry_armed: false, decision: "deny" });
+    await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+
+    await openWithToken(page, "paidoutcome", "wire-empty");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+    const empty = await postApprove("wire-empty", { change_id: changeId, decision: null, retry_grant: false });
+    expect(empty.status()).toBe(200);
+    expect(await empty.json()).toMatchObject({ executed: false, retry_armed: false, decision: null });
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-step").filter({ hasText: "Платная генерация" })).toHaveAttribute(
+      "data-status",
+      "running",
+    );
+    const extra = await postApprove("wire-empty", {
+      change_id: changeId,
+      decision: "approve",
+      retry_grant: false,
+      note: "лишнее",
+    });
+    expect(extra.status()).toBe(422);
+    expect(await extra.json()).toEqual({ detail: "approval unprocessable" });
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    await expect(page.getByTestId("orch-paid-done")).toBeEnabled();
+
+    const unknown = await postApprove("wire-empty", {
+      change_id: "missing-change",
+      decision: "approve",
+      retry_grant: false,
+    });
+    expect(unknown.status()).toBe(404);
+    expect(await unknown.json()).toEqual({ detail: "unknown change_id" });
+
+    await openWithToken(page, "paidoutcome", "wire-owner");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+    const started = await page.request.post(`${MOCK}/api/orchestrator/chat/wire-stranger/message`, {
+      headers: { ...auth, "X-Orch-Scenario": "stream" },
+      data: { text: "чужая сессия" },
+    });
+    expect(started.ok()).toBeTruthy();
+    const foreign = await postApprove("wire-stranger", {
+      change_id: changeId,
+      decision: "approve",
+      retry_grant: false,
+    });
+    expect(foreign.status()).toBe(404);
+    expect(await foreign.json()).toEqual({ detail: "foreign change_id" });
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+
+    await emitBus(page, "wire-owner", "approval_required", 1, {
+      change_id: "orch-appr-stale",
+      reason: "note",
+      title: "устаревший id",
+    });
+    const stale = await postApprove("wire-owner", {
+      change_id: "orch-appr-stale",
+      decision: "deny",
+      retry_grant: false,
+    });
+    expect(stale.status()).toBe(409);
+    expect(await stale.json()).toEqual({ detail: "change_id is not current" });
+    await expect(page.getByTestId("orch-paid-done")).toBeEnabled();
+
+    await openWithToken(page, "paid404nostep", "paid-no-step");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-done").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("not found");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    await expect(page.getByTestId("orch-paid-done")).toBeEnabled();
+  });
+
   test("paid_outcome_unknown: без retry_armed подтверждение перезапуска неактивно", async ({ page }) => {
     const grants: unknown[] = [];
     page.on("request", (req) => {

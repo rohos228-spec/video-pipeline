@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
+ *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -52,6 +52,10 @@ function sessionOf(id) {
       approvalWait: null,
       grantWait: null,
       grantUsed: false,
+      grantedId: null,
+      issued: new Set(),
+      decided: new Set(),
+      taskStarted: false,
       reconnectDropped: false,
     });
   }
@@ -140,8 +144,19 @@ function pickLiveWait(field, approvalId) {
   return chosen;
 }
 
+function noteIssued(session, changeId) {
+  if (typeof changeId === "string" && changeId) session.issued.add(changeId);
+}
+
+function noteDecided(session, changeId) {
+  if (typeof changeId === "string" && changeId) session.decided.add(changeId);
+}
+
 function emit(session, type, taskId, payload, sessionId = session.id) {
   touchSession(session);
+  if (type === "approval_required" && payload && typeof payload.change_id === "string") {
+    noteIssued(session, payload.change_id);
+  }
   const event = {
     type,
     task_id: taskId,
@@ -752,6 +767,7 @@ function startScenario(session, scenario, text, mode) {
   }
   session.taskSeq = (session.taskSeq || 0) + 1;
   session.currentTaskId = session.taskSeq;
+  session.taskStarted = true;
   const id = session.currentTaskId;
   session.killed = false;
   session.interrupted = false;
@@ -823,6 +839,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paidoutcome" ||
     scenario === "paid404" ||
     scenario === "paid404foreign" ||
+    scenario === "paid404nostep" ||
     scenario === "paid409" ||
     scenario === "paid409stale" ||
     scenario === "paid422" ||
@@ -967,13 +984,29 @@ function sessionHoldsChange(session, changeId) {
 function classifyChange(session, changeId) {
   if (typeof changeId !== "string" || !changeId) return "unknown";
   if (sessionHoldsChange(session, changeId)) return "own";
+  if (session.decided.has(changeId)) return "decided";
+  if (session.issued.has(changeId)) return "stale";
   for (const other of sessions.values()) {
-    if (other.id !== session.id && sessionHoldsChange(other, changeId)) return "foreign";
+    if (other.id === session.id) continue;
+    if (sessionHoldsChange(other, changeId) || other.issued.has(changeId) || other.decided.has(changeId)) {
+      return "foreign";
+    }
   }
   return "unknown";
 }
 
 function finishPaidGrant(res, session, changeId) {
+  if (session.grantedId === changeId) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: "retry_grant_spent",
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
   if (!session.grantWait || session.grantWait.id !== changeId) {
     sendJson(res, 200, paidWire({
       executed: false,
@@ -985,18 +1018,8 @@ function finishPaidGrant(res, session, changeId) {
     }));
     return;
   }
-  if (session.grantUsed) {
-    sendJson(res, 200, paidWire({
-      executed: false,
-      reason: "retry_grant_spent",
-      forecast: PAID_FORECAST_USD,
-      retryArmed: false,
-      changeId,
-      decision: null,
-    }));
-    return;
-  }
   session.grantUsed = true;
+  session.grantedId = changeId;
   session.grantWait.resolve(true);
   session.grantWait = null;
   sendJson(res, 200, paidWire({
@@ -1005,7 +1028,7 @@ function finishPaidGrant(res, session, changeId) {
     forecast: PAID_FORECAST_USD,
     retryArmed: false,
     changeId,
-    decision: null,
+    decision: "retry_step",
   }));
 }
 
@@ -1041,6 +1064,14 @@ async function handleChatApprove(req, res, url, sessionId) {
     sendJson(res, 422, { detail: "approval unprocessable" });
     return;
   }
+  if (scenario === "paid404nostep") {
+    sendJson(res, 404, { detail: "not found" });
+    return;
+  }
+  if (!session.taskStarted) {
+    sendJson(res, 404, { detail: "not found" });
+    return;
+  }
 
   const ownership = classifyChange(session, changeId);
   if (ownership === "unknown") {
@@ -1049,6 +1080,18 @@ async function handleChatApprove(req, res, url, sessionId) {
   }
   if (ownership === "foreign") {
     sendJson(res, 404, { detail: "foreign change_id" });
+    return;
+  }
+  if (ownership === "decided" && !retryGrant) {
+    sendJson(res, 409, { detail: "change_id already decided" });
+    return;
+  }
+  if (ownership === "stale") {
+    sendJson(res, 409, { detail: "change_id is not current" });
+    return;
+  }
+  if (ownership === "decided" && retryGrant) {
+    finishPaidGrant(res, session, changeId);
     return;
   }
 
@@ -1109,6 +1152,7 @@ async function handleChatApprove(req, res, url, sessionId) {
     return;
   }
   session.approvalWait.resolve(decision);
+  noteDecided(session, changeId);
   session.approvalWait = null;
 
   if (decision === "retry_step" && (scenario.startsWith("paidbad-") || scenario === "paidzero")) {
