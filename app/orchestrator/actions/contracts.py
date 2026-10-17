@@ -89,12 +89,23 @@ class NodeRef(BaseModel):
 
 
 class FieldChange(BaseModel):
-    """Один ключ полевого diff."""
+    """Один ключ полевого diff.
+
+    ``op=set`` и ``after=null`` — значение стало null.
+    ``op=removed`` — ключ исчез. Это не одно и то же.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    op: Literal["set", "removed"] = "set"
     before: Any = None
     after: Any = None
+
+    @model_validator(mode="after")
+    def _removed_has_no_value(self) -> FieldChange:
+        if self.op == "removed" and self.after is not None:
+            raise ValueError("removed не несёт новое значение")
+        return self
 
 
 class Diff(BaseModel):

@@ -53,7 +53,7 @@
 `update_report` — тот же `EditResult`, поэтому версия и база обязательны и у отчёта.
 Если `base_version` меньше текущей, данные не меняются: конверт `failed`,
 `error` равен `conflict`, HTTP 409. Это не повтор `change_id`.
-| `diff` | ровно одна форма: `unified` (текст) или `fields` (ключ → `{before, after}`) |
+| `diff` | ровно одна форма: `unified` (текст) или `fields` (ключ → `{op, before, after}`). `op=removed` — ключ исчез, `op=set` и `after=null` — значение стало null |
 | `open_url` | куда чат открывает результат |
 | `reversible` | откат тем же change_control возможен |
 
@@ -296,7 +296,7 @@ id и карточка приходят из ядра WS3. Лишнее поле
     "version": 5,
     "base_version": 4,
     "after": {"source": "git", "db_version": null},
-    "diff": {"fields": {"source": {"before": "db", "after": "git"}}},
+    "diff": {"fields": {"source": {"op": "set", "before": "db", "after": "git"}, "db_version": {"op": "removed", "before": 4}}},
     "open_url": "/api/projects/13",
     "reversible": true
   },

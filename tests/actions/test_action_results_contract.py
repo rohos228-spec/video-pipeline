@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "069f1ad3ebe52ec1de842adb31e34168aa9e4b2f7cbdba1857c8e2b8fe9e520c",
+    "ws2-r2.0": "541bbf57a029a40246ad99cc64f973b046b928cf802bc280d4baf9d45d98f84f",
 }
 
 
@@ -249,6 +249,20 @@ def test_approval_required_has_no_change_id() -> None:
     clean = dict(payload)
     clean.pop("change_id")
     ApprovalRequired.model_validate(clean)
+
+
+def test_diff_distinguishes_removed_key() -> None:
+    from app.orchestrator.actions.contracts import Diff, FieldChange
+
+    removed = FieldChange(op="removed", before=4)
+    nulled = FieldChange(op="set", before=4, after=None)
+    assert removed.op == "removed"
+    assert nulled.after is None
+    assert removed.model_dump() != nulled.model_dump()
+    diff = Diff(fields={"db_version": removed, "source": nulled})
+    assert diff.fields["db_version"].op == "removed"
+    with pytest.raises(ValidationError):
+        FieldChange(op="removed", before=4, after=1)
 
 
 def test_action_result_has_warnings_list() -> None:
