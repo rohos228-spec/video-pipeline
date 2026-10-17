@@ -285,7 +285,10 @@ export function useOrchestratorChat() {
       try {
         const result = await postPaidOutcomeDecision(cfg, paidOutcomeDecisionBody(card.changeId, decision));
         if (!paidPostAccepted(result, card.changeId)) {
-          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+          setDecisionError({
+            id: approvalId,
+            message: result.reason || "сервер не подтвердил это решение",
+          });
           return { ...result, ok: false, retryReady: false };
         }
         if (decision !== PAID_OUTCOME_DECISION.retryStep) {
@@ -327,7 +330,10 @@ export function useOrchestratorChat() {
       try {
         const result = await postPaidOutcomeRestartGrant(cfg, paidOutcomeGrantBody(card.changeId));
         if (!paidPostAccepted(result, card.changeId)) {
-          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+          setDecisionError({
+            id: approvalId,
+            message: result.reason || "сервер не подтвердил это решение",
+          });
           return;
         }
         dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });

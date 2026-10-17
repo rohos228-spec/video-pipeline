@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed
+ *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -828,6 +828,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paid422" ||
     scenario === "paidgrant409" ||
     scenario === "paidnoarmed" ||
+    scenario === "paidspent" ||
     scenario === "paidzero" ||
     scenario.startsWith("paidbad-")
   ) {
@@ -1050,6 +1051,17 @@ async function handleChatApprove(req, res, url, sessionId) {
   }
 
   if (retryGrant) {
+    if (scenario === "paidspent") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_spent",
+        forecast: PAID_FORECAST_USD,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
     finishPaidGrant(res, session, changeId);
     return;
   }

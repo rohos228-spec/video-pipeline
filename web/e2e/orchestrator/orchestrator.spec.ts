@@ -1073,6 +1073,46 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
   });
 
+  test("paid_outcome_unknown: 422 и retry_grant_spent на карточке, 401 — авторизация", async ({ page }) => {
+    await openWithToken(page, "paid422", "paid-err-422");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-done").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("approval unprocessable");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-token-gate")).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+
+    await openWithToken(page, "paidspent", "paid-spent");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("retry_grant_spent");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-forecast")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+
+    await openWithToken(page, "paidoutcome", "paid-auth");
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "unauthorized" }),
+      });
+    });
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+    await page.getByTestId("orch-paid-done").click();
+    await expect(page.getByTestId("orch-token-gate")).toBeVisible();
+    await expect(page.getByTestId("orch-token-error")).toContainText("401");
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+  });
+
   test("paid_outcome_unknown: без retry_armed подтверждение перезапуска неактивно", async ({ page }) => {
     const grants: unknown[] = [];
     page.on("request", (req) => {
