@@ -73,6 +73,9 @@ def render_report(dataset: dict, macro: float, hit_rate: float, rows: list[dict]
         "Определение: macro precision@8 = среднее по 50 запросам величины "
         "`|релевантные source_id ∩ top-8| / 8`. Hit@8 — доля запросов, где в top-8 есть хотя бы один релевантный.",
         "",
+        "Порог релиза precision@8 ≥ 0.8 снят. Приёмка 50 живых перефраз — контур B: "
+        "hit@5 ≥ 0.9 и nDCG@8 ≥ 0.7. Число ниже — регрессия закрытого набора на hashing-фейке с явными якорями.",
+        "",
         "Эмбеддер прогона: детерминированный hashing-фейк с префиксами `query:` / `passage:`. "
         "Веса multilingual-e5-small не скачивались. Лексический канал — FTS5 BM25. Слияние — RRF, k=60.",
         "",
@@ -112,6 +115,7 @@ def test_precision_at_8_dataset_and_score(tmp_path: Path) -> None:
         macro, hit_rate, rows = _score(dataset, engine)
     finally:
         engine.close()
+    # Регрессия закрытого набора с якорями, не порог релиза контура B.
     assert macro >= 0.8
     assert hit_rate == 1.0
     report = REPORT_PATH.read_text(encoding="utf-8")

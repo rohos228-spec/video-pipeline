@@ -1,8 +1,8 @@
 """Эмбеддинги с обязательными префиксами e5 (``query:`` / ``passage:``).
 
-Боевая модель плана — ``intfloat/multilingual-e5-small``. CI её не вызывает:
-по умолчанию детерминированный hashing-фейк, веса не качаются.
-``build_embedder("e5-small")`` грузит официальный ONNX в кэш Hugging Face.
+По умолчанию детерминированный hashing-фейк: CI его не подменяет и веса не качает.
+``build_embedder("e5-small")`` и ``build_embedder("e5-large")`` грузят официальный
+ONNX в кэш Hugging Face, не в ``data/``. Реранкер сюда не входит — см. ``rerank.py``.
 """
 
 from __future__ import annotations
@@ -94,8 +94,8 @@ class E5PrefixEmbedder:
         return vectors[0]
 
 
-def _weight_cache_dir() -> Path:
-    """Кэш весов e5. Не ``settings.data_dir``: стандартный каталог HF/fastembed."""
+def weight_cache_dir() -> Path:
+    """Кэш весов e5 и реранкера. Не ``settings.data_dir``: каталог HF/fastembed."""
     raw = os.environ.get("FASTEMBED_CACHE_PATH") or os.environ.get("HF_HOME")
     cache = Path(raw).expanduser() if raw else Path.home() / ".cache" / "huggingface"
     try:
@@ -110,31 +110,35 @@ def _weight_cache_dir() -> Path:
     return cache
 
 
-class OnnxMultilingualE5Small:
-    """``intfloat/multilingual-e5-small`` из официального ONNX.
+class OnnxMultilingualE5:
+    """Официальный ONNX ``intfloat/multilingual-e5-*``. Веса не в ``data/``.
 
-    FastEmbed 0.3–0.9 в каталоге имеет только ``multilingual-e5-large``, не small
-    из плана §5. Веса качаются в кэш Hugging Face, не в ``data/``.
+    FastEmbed 0.3–0.9 отдаёт large, но не small. Оба размера грузим одним кодом
+    из репозитория intfloat, чтобы CI по-прежнему не импортировал fastembed.
     """
 
-    embedder_id = "onnx-intfloat-multilingual-e5-small"
-
-    def __init__(self) -> None:
+    def __init__(self, repo: str, embedder_id: str) -> None:
         import numpy as np
         import onnxruntime as ort
         from huggingface_hub import hf_hub_download
         from tokenizers import Tokenizer
 
-        cache = _weight_cache_dir()
-        repo = "intfloat/multilingual-e5-small"
+        self.embedder_id = embedder_id
+        cache = weight_cache_dir()
         model_path = hf_hub_download(repo, "onnx/model.onnx", cache_dir=str(cache))
         tokenizer_path = hf_hub_download(repo, "tokenizer.json", cache_dir=str(cache))
         tokenizer = Tokenizer.from_file(tokenizer_path)
         tokenizer.enable_padding(pad_id=1, pad_token="<pad>")
         tokenizer.enable_truncation(max_length=512)
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = max(1, os.cpu_count() or 1)
         self._np = np
         self._tokenizer = tokenizer
-        self._session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        self._session = ort.InferenceSession(
+            model_path,
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
         self._input_names = {item.name for item in self._session.get_inputs()}
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -165,6 +169,20 @@ class OnnxMultilingualE5Small:
         return [row.astype(float).tolist() for row in pooled]
 
 
+class OnnxMultilingualE5Small(OnnxMultilingualE5):
+    """``intfloat/multilingual-e5-small``."""
+
+    def __init__(self) -> None:
+        super().__init__("intfloat/multilingual-e5-small", "onnx-intfloat-multilingual-e5-small")
+
+
+class OnnxMultilingualE5Large(OnnxMultilingualE5):
+    """``intfloat/multilingual-e5-large``."""
+
+    def __init__(self) -> None:
+        super().__init__("intfloat/multilingual-e5-large", "onnx-intfloat-multilingual-e5-large")
+
+
 class FastEmbedE5:
     """Опциональный бэкенд. Импорт fastembed происходит только здесь."""
 
@@ -177,7 +195,7 @@ class FastEmbedE5:
             raise RuntimeError(
                 "fastembed не установлен; CI и тесты должны использовать HashingEmbedder"
             ) from exc
-        cache = _weight_cache_dir()
+        cache = weight_cache_dir()
         self._model = TextEmbedding(model_name=model_name, cache_dir=str(cache))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -186,14 +204,16 @@ class FastEmbedE5:
 
 
 def build_embedder(kind: str = "hashing") -> E5PrefixEmbedder:
-    """``hashing`` (по умолчанию, офлайн), ``e5-small`` или ``fastembed``.
+    """``hashing`` (по умолчанию, офлайн), ``e5-small``, ``e5-large`` или ``fastembed``.
 
-    ``e5-small`` — модель из плана §5. CI его не вызывает.
+    Живые модели CI не вызывает и веса не качает.
     """
     if kind == "fastembed":
         return E5PrefixEmbedder(FastEmbedE5())
     if kind == "e5-small":
         return E5PrefixEmbedder(OnnxMultilingualE5Small())
+    if kind == "e5-large":
+        return E5PrefixEmbedder(OnnxMultilingualE5Large())
     if kind != "hashing":
         raise ValueError(f"неизвестный эмбеддер: {kind}")
     return E5PrefixEmbedder(HashingEmbedder())

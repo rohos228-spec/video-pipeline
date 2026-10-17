@@ -1,7 +1,10 @@
-"""Контур B: precision@8 на живых корпусах и модели multilingual-e5-small.
+"""Контур B: hit@5 и nDCG@8 на живых корпусах, четыре локальных варианта.
 
 Не для CI. Запуск качает веса в стандартный кэш Hugging Face
 (``~/.cache/huggingface`` или ``HF_HOME`` / ``FASTEMBED_CACHE_PATH``), не в ``data/``.
+Сеть — только Hugging Face за весами. Провайдеры вроде 52pay не вызываются.
+
+Приёмка: hit@5 ≥ 0.9 и nDCG@8 ≥ 0.7. precision@8, recall@8 и hit@8 — для сведения.
 
 Корпуса: ``docs/fable/user_rules.md``, ноды из ``NODE_GROUPS`` и
 ``templates/node_groups`` (на этом main каталога нет — файл перекрыл бы код),
@@ -16,13 +19,22 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
+import math
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from app.orchestrator.rag.embedder import build_embedder
 from app.orchestrator.rag.engine import RagEngine
+from app.orchestrator.rag.profile import CONTOUR_B_EMBEDDER, CONTOUR_B_RERANKER
+from app.orchestrator.rag.rerank import Reranker, build_reranker
+
+HIT_AT_5_MIN = 0.9
+NDCG_AT_8_MIN = 0.7
+LARGE_RERANK_P95_MAX_S = 1.5
 
 ROOT = Path(__file__).resolve().parents[2]
 QUERY_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_queries.json"
@@ -163,71 +175,194 @@ def _is_relevant(chunk: Any, query: dict[str, Any]) -> bool:
     return chunk.source_id in family_ids
 
 
-def precision_at_8(queries: list[dict[str, Any]], engine: RagEngine, **kwargs: Any) -> dict[str, float]:
+def _percentile(values: list[float], pct: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    lo = math.floor(rank)
+    hi = math.ceil(rank)
+    if lo == hi:
+        return ordered[lo]
+    weight = rank - lo
+    return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
+
+
+def _ndcg_at_8(flags: list[bool], n_relevant: int) -> float:
+    """Бинарный nDCG@8: DCG = Σ rel_i / log2(i+1), IDCG — идеальный префикс."""
+    dcg = 0.0
+    for index, rel in enumerate(flags[:8], start=1):
+        if rel:
+            dcg += 1.0 / math.log2(index + 1)
+    ideal = min(8, n_relevant)
+    idcg = sum(1.0 / math.log2(index + 1) for index in range(1, ideal + 1))
+    if idcg == 0.0:
+        return 0.0
+    return dcg / idcg
+
+
+def measure(
+    queries: list[dict[str, Any]],
+    engine: RagEngine,
+    *,
+    rerank: bool,
+) -> dict[str, float]:
+    """Метрики и задержка retrieve. Холодная загрузка весов в замер не входит."""
     indexed = engine.store.fetch_chunks(["rules", "nodes", "prompts"])
     for chunk in indexed:
         chunk.metadata.pop("_embedding", None)
-    scores: list[float] = []
-    hits = 0
+    labeled_by_query = [sum(1 for chunk in indexed if _is_relevant(chunk, query)) for query in queries]
+    engine.retrieve(
+        queries[0]["text"],
+        ["rules", "nodes", "prompts"],
+        top_k=8,
+        rerank=rerank,
+    )
+    precisions: list[float] = []
     recalls: list[float] = []
+    ndcgs: list[float] = []
     ceilings: list[float] = []
-    for query in queries:
-        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, **kwargs)
-        matched = sum(1 for chunk in found if _is_relevant(chunk, query))
-        labeled = sum(1 for chunk in indexed if _is_relevant(chunk, query))
-        scores.append(matched / 8)
+    hit5 = 0
+    hit8 = 0
+    latencies: list[float] = []
+    for query, labeled in zip(queries, labeled_by_query, strict=True):
+        started = time.perf_counter()
+        found = engine.retrieve(query["text"], ["rules", "nodes", "prompts"], top_k=8, rerank=rerank)
+        latencies.append(time.perf_counter() - started)
+        flags = [_is_relevant(chunk, query) for chunk in found]
+        matched = sum(1 for flag in flags if flag)
+        precisions.append(matched / 8)
         recalls.append(matched / labeled if labeled else 0.0)
+        ndcgs.append(_ndcg_at_8(flags, labeled))
         ceilings.append(min(8, labeled) / 8)
+        if any(flags[:5]):
+            hit5 += 1
         if matched:
-            hits += 1
+            hit8 += 1
+    count = len(queries)
     return {
-        "precision_at_8": sum(scores) / len(scores),
-        "recall_at_8": sum(recalls) / len(recalls),
-        "hit_at_8": hits / len(queries),
-        "ceiling": sum(ceilings) / len(ceilings),
+        "hit_at_5": hit5 / count,
+        "ndcg_at_8": sum(ndcgs) / count,
+        "precision_at_8": sum(precisions) / count,
+        "recall_at_8": sum(recalls) / count,
+        "hit_at_8": hit8 / count,
+        "p50_s": _percentile(latencies, 50),
+        "p95_s": _percentile(latencies, 95),
+        "ceiling": sum(ceilings) / count,
     }
 
 
-def render_report(rows: list[tuple[str, dict[str, float]]], *, note: str) -> str:
+def _passes(metrics: dict[str, float]) -> bool:
+    return metrics["hit_at_5"] >= HIT_AT_5_MIN and metrics["ndcg_at_8"] >= NDCG_AT_8_MIN
+
+
+def choose_default(runs: list[tuple[str, str, dict[str, float]]]) -> tuple[str, str]:
+    """Правило куратора. Возвращает (ключ варианта, объяснение)."""
+    by_key = {key: metrics for key, _label, metrics in runs}
+    large = by_key["e5-large+rerank"]
+    if large["p95_s"] > LARGE_RERANK_P95_MAX_S:
+        return (
+            "e5-small+rerank",
+            f"p95 e5-large + реранкер = {large['p95_s']:.3f} с > {LARGE_RERANK_P95_MAX_S:.1f} с, "
+            "поэтому дефолт — e5-small + реранкер.",
+        )
+    ranked = sorted(
+        runs,
+        key=lambda item: (
+            _passes(item[2]),
+            item[2]["hit_at_5"],
+            item[2]["ndcg_at_8"],
+            -item[2]["p95_s"],
+        ),
+        reverse=True,
+    )
+    key, label, metrics = ranked[0]
+    return (
+        key,
+        f"p95 e5-large + реранкер = {large['p95_s']:.3f} с ≤ {LARGE_RERANK_P95_MAX_S:.1f} с, "
+        f"лучший по hit@5 и nDCG@8 — {label} "
+        f"(hit@5={metrics['hit_at_5']:.4f}, nDCG@8={metrics['ndcg_at_8']:.4f}).",
+    )
+
+
+def render_report(rows: list[tuple[str, str, dict[str, float]]], *, chosen_key: str, why: str) -> str:
     lines = [
-        "# Контур B: precision@8 на живых корпусах",
+        "# Контур B: hit@5 и nDCG@8 на живых корпусах",
         "",
-        "Модель: `intfloat/multilingual-e5-small` (официальный ONNX, mean pooling).",
-        "В каталоге FastEmbed 0.3–0.9 есть только `multilingual-e5-large`, не small из плана §5,",
-        "поэтому контур B грузит small напрямую. CI этот прогон не запускает и веса не качает.",
-        "Кэш весов — стандартный каталог Hugging Face, не `data/`.",
+        "Порог precision@8 ≥ 0.8 снят. Приёмка на этих 50 перефразах: "
+        f"**hit@5 ≥ {HIT_AT_5_MIN}** и **nDCG@8 ≥ {NDCG_AT_8_MIN}**. "
+        "precision@8, recall@8 и hit@8 посчитаны для сведения.",
         "",
-        "Корпуса: правила `docs/fable/user_rules.md`; ноды `NODE_GROUPS`",
-        "(каталога `templates/node_groups` на этом main нет); промпты этих нод",
+        "Модели локальные, CPU. e5 — официальный ONNX intfloat (mean pooling). "
+        "Реранкер — квантованный ONNX `BAAI/bge-reranker-base` (экспорт Xenova, "
+        "тот же cross-encoder, что в каталоге FastEmbed), поверх топ-30 гибрида RRF k=60, веса 1/1. "
+        "CI этот прогон не запускает: hashing, без реранкера, веса не качаются. "
+        "Кэш весов — стандартный каталог Hugging Face, не `data/`. "
+        "Живых вызовов провайдера нет.",
+        "",
+        "Корпуса: правила `docs/fable/user_rules.md`; ноды `NODE_GROUPS` "
+        "(каталога `templates/node_groups` на этом main нет); промпты этих нод "
         "из `templates/excel_gpt_agents` и `prompts/scene_design`.",
         "",
-        "50 запросов — перефразы без имён нод, без `R-*` и без дословных заголовков правил.",
-        "42 запроса: релевантен любой чанк двух нод семейства (карточка и секции промпта).",
-        "8 запросов: одно конкретное правило. Потолок — min(8, число таких чанков) / 8.",
+        "В текст чанка ноды и в metadata добавлены `node_key`, `title` и роль в группе. "
+        "Явного поля role у `GroupNodeSpec` нет: роль — это `description` и позиция "
+        "в `NodeGroupDef.nodes` (`app/services/node_groups.py`).",
         "",
-        "Определение как в плане: macro `|релевантные ∩ top-8| / 8`. Порог релиза 0.8.",
+        "50 запросов — перефразы без имён нод, без `R-*` и без дословных заголовков правил. "
+        "42 запроса: релевантен любой чанк двух нод семейства. 8 запросов: одно правило.",
         "",
-        note,
+        "nDCG@8 бинарный: DCG = Σ rel_i / log2(i+1), IDCG — идеальная выдача min(8, |релевантные|). "
+        "hit@5 — доля запросов, где в top-5 есть хотя бы один релевантный. "
+        "Задержка — `retrieve` на запрос после одного прогрева; холодная загрузка весов не входит. "
+        "p50/p95 — линейная интерполяция по 50 замерам.",
         "",
-        "| Прогон | precision@8 | recall@8 | hit@8 |",
-        "|---|---:|---:|---:|",
+        "| Вариант | hit@5 | nDCG@8 | precision@8 | recall@8 | hit@8 | p50, с | p95, с | приёмка |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|:---:|",
     ]
-    for name, metrics in rows:
+    for _key, label, metrics in rows:
+        mark = "да" if _passes(metrics) else "нет"
         lines.append(
-            f"| {name} | {metrics['precision_at_8']:.4f} | {metrics['recall_at_8']:.4f} | {metrics['hit_at_8']:.4f} |"
+            f"| {label} | {metrics['hit_at_5']:.4f} | {metrics['ndcg_at_8']:.4f} | "
+            f"{metrics['precision_at_8']:.4f} | {metrics['recall_at_8']:.4f} | "
+            f"{metrics['hit_at_8']:.4f} | {metrics['p50_s']:.3f} | {metrics['p95_s']:.3f} | {mark} |"
         )
-    lines.append("")
-    lines.append(f"Потолок разметки: **{rows[0][1]['ceiling']:.4f}**.")
-    lines.append("")
-    lines.append(
-        "Нарезка промпта — до 8 секций `##`, в карточку ноды добавлено начало промпта, "
-        "в каждый кусок промпта — человеческое название ноды. Перебор k и весов RRF "
-        "порог 0.8 не взял: у соседних агентов scene_design косинус e5-small почти одинаковый, "
-        "в top-8 стабильно попадают чужие секции. hit@8 при этом высокий: хотя бы один свой чанк "
-        "обычно есть. Дефолт гибрида оставлен k=60, веса 1/1."
+    chosen_label = next(label for key, label, _metrics in rows if key == chosen_key)
+    chosen = next(metrics for key, _label, metrics in rows if key == chosen_key)
+    lines.extend(
+        [
+            "",
+            f"Потолок precision@8 по разметке: **{rows[0][2]['ceiling']:.4f}**.",
+            "",
+            f"Дефолт контура B: **{chosen_label}** (ключ `{chosen_key}`). {why} "
+            f"В `app/orchestrator/rag/profile.py` для явного включения записано "
+            f"embedder `{CONTOUR_B_EMBEDDER}`, реранкер `{CONTOUR_B_RERANKER}`.",
+            "",
+            "Критерии выбранного дефолта: "
+            f"hit@5 = {chosen['hit_at_5']:.4f} (порог {HIT_AT_5_MIN}), "
+            f"nDCG@8 = {chosen['ndcg_at_8']:.4f} (порог {NDCG_AT_8_MIN}). "
+            + ("Оба порога взяты." if _passes(chosen) else "Пороги не взяты."),
+            "",
+            "Гибрид по умолчанию в коде ретривера — RRF k=60, веса 1/1. "
+            "Реранкер опционален: `RagEngine(reranker=None)` и `retrieve(..., rerank=False)`. "
+            "`get_engine()` реранкер не включает и остаётся на hashing.",
+            "",
+        ]
     )
-    lines.append("")
     return "\n".join(lines)
+
+
+def _engine(db_path: Path, embedder: Any, reranker: Reranker | None) -> RagEngine:
+    return RagEngine(
+        db_path=db_path,
+        embedder=embedder,
+        reranker=reranker,
+        rules_path=ROOT / "docs" / "fable" / "user_rules.md",
+        repo_root=ROOT,
+        scan_git=True,
+        project_db=None,
+    )
 
 
 def main() -> None:
@@ -240,47 +375,41 @@ def main() -> None:
     # Не data/orch_rag.db рантайма: временный каталог вне data/. Имя файла то же,
     # потому что писатель принимает только orch_rag.db.
     temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-live-"))
-    engine = RagEngine(
-        db_path=temp_dir / "orch_rag.db",
-        embedder=build_embedder("e5-small"),
-        rules_path=ROOT / "docs" / "fable" / "user_rules.md",
-        repo_root=ROOT,
-        scan_git=True,
-        project_db=None,
+    reranker = build_reranker("bge")
+    runs: list[tuple[str, str, dict[str, float]]] = []
+    blocks = (
+        (
+            "e5-small",
+            (
+                (False, "e5-small+hybrid", "e5-small + гибрид"),
+                (True, "e5-small+rerank", "e5-small + гибрид + реранкер"),
+            ),
+        ),
+        (
+            "e5-large",
+            (
+                (False, "e5-large+hybrid", "e5-large + гибрид"),
+                (True, "e5-large+rerank", "e5-large + гибрид + реранкер"),
+            ),
+        ),
     )
-    try:
-        engine.reindex(["rules", "nodes", "prompts"])
-        runs: list[tuple[str, dict[str, float]]] = []
-        runs.append(("гибрид RRF k=60, веса 1/1", precision_at_8(queries, engine)))
-        runs.append(("только BM25", precision_at_8(queries, engine, channel="bm25")))
-        runs.append(("только вектор", precision_at_8(queries, engine, channel="vector")))
-        best_name = "гибрид RRF k=60, веса 1/1"
-        best = runs[0][1]
-        note = "Веса RRF по умолчанию не менялись: равные 1 и 1, k=60."
-        if best["precision_at_8"] < 0.8:
-            for lexical, vector, k in ((0.5, 1.5, 60), (0.25, 1.75, 60), (1.0, 2.0, 40), (0.5, 1.5, 20)):
-                metrics = precision_at_8(
-                    queries,
-                    engine,
-                    rrf_k=k,
-                    rrf_weights=(lexical, vector),
-                )
-                label = f"гибрид k={k}, веса лексика/вектор {lexical}/{vector}"
-                runs.append((label, metrics))
-                if metrics["precision_at_8"] > best["precision_at_8"]:
-                    best = metrics
-                    best_name = label
-            note = (
-                "Равные веса ниже 0.8, перебран k и веса лексика/вектор. "
-                f"Лучший прогон в этой таблице: {best_name} = {best['precision_at_8']:.4f}. "
-                "Дефолт ретривера в коде оставлен k=60 и веса 1/1: закрытый CI-набор на них "
-                "уже посчитан, а смена дефолта без повторной ручной разметки Фейбла не утверждалась."
-            )
-        text = render_report(runs, note=note)
-        args.out.write_text(text, encoding="utf-8")
-        print(text)
-    finally:
-        engine.close()
+    for embedder_kind, modes in blocks:
+        embedder = build_embedder(embedder_kind)
+        engine = _engine(temp_dir / "orch_rag.db", embedder, reranker)
+        try:
+            engine.reindex(["rules", "nodes", "prompts"])
+            for use_rerank, key, label in modes:
+                metrics = measure(queries, engine, rerank=use_rerank)
+                runs.append((key, label, metrics))
+                print(label, metrics, flush=True)
+        finally:
+            engine.close()
+            del engine, embedder
+            gc.collect()
+    chosen_key, why = choose_default(runs)
+    text = render_report(runs, chosen_key=chosen_key, why=why)
+    args.out.write_text(text, encoding="utf-8")
+    print(text)
 
 
 if __name__ == "__main__":

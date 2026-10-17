@@ -16,6 +16,7 @@ from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
 from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
 from app.orchestrator.rag.node_store import NodeStore
+from app.orchestrator.rag.rerank import Reranker
 from app.orchestrator.rag.rrf import rrf_merge
 from app.orchestrator.rag.store import RagStore, chunk_id_for
 from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
@@ -110,6 +111,7 @@ class RagEngine:
         history_documents: list[dict[str, Any]] | None = None,
         scan_git: bool = True,
         static_docs: dict[str, list[SourceDoc]] | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.embedder = embedder or E5PrefixEmbedder(HashingEmbedder())
@@ -120,6 +122,7 @@ class RagEngine:
         self.history_documents = history_documents if history_documents is not None else []
         self.scan_git = scan_git
         self.static_docs = static_docs
+        self.reranker = reranker
         self.store = RagStore(self.db_path)
         self._worker = ReindexWorker()
         self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
@@ -147,7 +150,14 @@ class RagEngine:
         channel: str = "hybrid",
         rrf_k: int = _RRF_K,
         rrf_weights: tuple[float, float] | None = None,
+        rerank: bool | None = None,
+        rerank_pool: int = 30,
     ) -> list[Chunk]:
+        """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
+
+        Cross-encoder применяется только к гибриду: топ ``rerank_pool`` после RRF,
+        затем срез до ``top_k``. BM25 и вектор реранкер не трогает.
+        """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
             return []
@@ -155,7 +165,16 @@ class RagEngine:
             return []
         if channel not in {"hybrid", "bm25", "vector"}:
             raise ValueError("channel должен быть hybrid, bm25 или vector")
+        if rerank_pool <= 0:
+            raise ValueError("rerank_pool должен быть > 0")
+        use_rerank = (self.reranker is not None) if rerank is None else rerank
+        if use_rerank and channel != "hybrid":
+            use_rerank = False
+        if use_rerank and self.reranker is None:
+            raise RuntimeError("rerank=True, но реранкер не подключён")
         pool = max(top_k * 4, 20)
+        if use_rerank:
+            pool = max(pool, rerank_pool)
         lexical = self.store.bm25(fts_match_query(query), selected, limit=pool) if channel != "vector" else []
         lexical_ids = [chunk_id for chunk_id, _score in lexical]
         lexical_scores = dict(lexical)
@@ -187,11 +206,26 @@ class RagEngine:
             chunk_id
             for chunk_id in sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
             if chunk_id in by_id
-        ][:top_k]
+        ]
+        rerank_scores: dict[str, float] = {}
+        if use_rerank and self.reranker is not None:
+            candidates = ordered[:rerank_pool]
+            passages = [by_id[chunk_id].text for chunk_id in candidates]
+            raw_scores = self.reranker.score(query, passages)
+            if len(raw_scores) != len(candidates):
+                raise RuntimeError("реранкер вернул не столько оценок, сколько пассажей")
+            rerank_scores = dict(zip(candidates, raw_scores, strict=True))
+            ordered = [
+                chunk_id
+                for chunk_id, _score in sorted(
+                    rerank_scores.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ]
         result: list[Chunk] = []
-        for rank, chunk_id in enumerate(ordered, start=1):
+        for rank, chunk_id in enumerate(ordered[:top_k], start=1):
             chunk = by_id[chunk_id]
-            chunk.score = fused[chunk_id]
+            chunk.score = rerank_scores[chunk_id] if chunk_id in rerank_scores else fused[chunk_id]
             chunk.score_bm25 = float(lexical_scores.get(chunk_id, 0.0))
             chunk.score_vec = float(vector_scores.get(chunk_id, 0.0))
             chunk.rank = rank

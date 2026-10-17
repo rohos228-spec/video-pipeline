@@ -28,6 +28,71 @@ from app.orchestrator.rag.types import SourceDoc
 
 _FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
+# У GroupNodeSpec нет поля role. Роль чанка — description спеки и её порядковый
+# номер в NodeGroupDef.nodes (app/services/node_groups.py: NODE_GROUPS и
+# пользовательские JSON). Ничего сверх этих полей не дописывается.
+_ROLE_SOURCE = (
+    "GroupNodeSpec.description и порядок в NodeGroupDef.nodes; "
+    "явного поля role нет. Источник: app/services/node_groups.py"
+)
+
+
+_GROUP_ROLE_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def group_role_index() -> dict[str, dict[str, Any]]:
+    """preferred_id ноды → роль в своей группе.
+
+    Ключ — ``GroupNodeSpec.preferred_id``. При коллизии побеждает группа,
+    которая позже в ``all_groups()`` (сначала встроенные, затем JSON).
+    """
+    global _GROUP_ROLE_CACHE
+    if _GROUP_ROLE_CACHE is None:
+        _GROUP_ROLE_CACHE = _build_group_role_index()
+    return _GROUP_ROLE_CACHE
+
+
+def _build_group_role_index() -> dict[str, dict[str, Any]]:
+    try:
+        from app.services.node_groups import all_groups
+
+        groups = all_groups()
+    except Exception:  # noqa: BLE001 — каталог групп не должен ронять индексацию
+        try:
+            from app.services.node_groups import NODE_GROUPS
+
+            groups = NODE_GROUPS
+        except Exception:  # noqa: BLE001
+            return {}
+    index: dict[str, dict[str, Any]] = {}
+    for group in groups.values():
+        size = len(group.nodes)
+        for order, spec in enumerate(group.nodes, start=1):
+            index[spec.preferred_id] = {
+                "group_id": group.group_id,
+                "group_title": group.title,
+                "local_key": spec.local_key,
+                "group_order": order,
+                "group_size": size,
+                "group_role": spec.description,
+                "role_source": _ROLE_SOURCE,
+            }
+    return index
+
+
+def _role_phrase(node: ResolvedNode) -> str:
+    role = group_role_index().get(node.node_key)
+    if not role:
+        return ""
+    duty = str(role["group_role"] or "").strip()
+    place = (
+        f"Роль в группе «{role['group_title']}», "
+        f"позиция {role['group_order']} из {role['group_size']}"
+    )
+    if not duty:
+        return f"{place}. Отдельного описания роли в группе нет."
+    return f"{place}: {duty}."
+
 
 def load_rules(path: Path) -> list[SourceDoc]:
     if not path.is_file():
@@ -257,7 +322,7 @@ def load_nodes_and_prompts(
                 continue
             merged[node.node_key] = node
     store = node_store or MemoryNodeStore()
-    for override in store.list_overrides():
+    for override in store.list_overrides(templates_root=repo_root / "templates" / "node_groups"):
         if not NODE_KEY_RE.match(override.node_key):
             skipped += 1
             continue
@@ -318,7 +383,15 @@ def _node_metadata(node: ResolvedNode, *, prompt_path: str | None = None) -> dic
         "group_key": node.group_key,
         "status": node.status,
         "updated_change_id": node.updated_change_id,
+        "title": node.title,
     }
+    role = group_role_index().get(node.node_key)
+    if role:
+        meta["group_role"] = role["group_role"]
+        meta["group_order"] = role["group_order"]
+        meta["group_size"] = role["group_size"]
+        meta["group_title"] = role["group_title"]
+        meta["role_source"] = role["role_source"]
     if prompt_path:
         meta["prompt_path"] = prompt_path
     return meta
@@ -337,9 +410,10 @@ def _node_doc(node: ResolvedNode) -> SourceDoc:
     glued = node.node_key.replace("_", "")
     params = json.dumps(node.params, ensure_ascii=False, sort_keys=True) if node.params else "{}"
     lead = _prompt_lead(node.prompt_template)
+    phrase = _role_phrase(node)
     text = (
         f"Нода {node.node_key}. Ключ {glued}. Группа {node.group_key}. "
-        f"Название: {node.title}. Статус: {node.status}. "
+        f"Название: {node.title}. {phrase} Статус: {node.status}. "
         f"Версия: {node.version}. Источник: {node.source}. "
         f"Описание: {node.description}. Параметры: {params}. "
         f"О чём промпт: {lead}"
@@ -359,6 +433,9 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     if not template:
         return []
     header = f"Промпт «{node.title}» ноды {node.node_key}, версия {node.version}."
+    phrase = _role_phrase(node)
+    if phrase:
+        header = f"{header} {phrase}"
     # До 8 секций ##, без склейки в 3 ведра: иначе вектор секции тонет в чужом тексте.
     parts = split_prompt(template, max_parts=8)
     docs: list[SourceDoc] = []

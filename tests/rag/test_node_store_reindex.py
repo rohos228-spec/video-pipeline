@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -247,7 +248,8 @@ def test_db_override_marks_stale_base_when_git_hash_differs(tmp_path: Path) -> N
         assert hit.metadata["version"] == 2
         assert hit.metadata["db_version"] == 2
         assert hit.metadata["stale_base"] is True
-        assert hit.metadata["git_sha256"] == sha256_text("GITPROMPT currentgitbody\n")
+        raw = (folder / "n_stale_qc.md").read_bytes()
+        assert hit.metadata["git_sha256"] == hashlib.sha256(raw).hexdigest()
         assert "active_version" not in hit.metadata
         assert "overridden_in_db" not in hit.metadata
         assert "active_version" not in hit.metadata
