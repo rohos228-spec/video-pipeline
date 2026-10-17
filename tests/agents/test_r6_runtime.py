@@ -56,6 +56,8 @@ async def r6_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncCl
     monkeypatch.setenv("ORCH_TEST_STEP_DELAY_S", "0.3")
     monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
     set_runtime(None)
+    AppStatus.should_exit = False
+    AppStatus.should_exit_event = None
     app = build_r6_app()
     config = uvicorn.Config(
         app,
@@ -81,6 +83,7 @@ async def r6_api(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncCl
             with contextlib.suppress(asyncio.CancelledError, SystemExit):
                 await job
         set_runtime(None)
+        AppStatus.should_exit = False
         AppStatus.should_exit_event = None
 
 
