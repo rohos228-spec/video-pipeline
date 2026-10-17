@@ -12,7 +12,7 @@ const PAYLOADS = [
 ];
 
 function reportsUrl(project = "13"): string {
-  const q = new URLSearchParams({ orchApi: MOCK, scenario: "idle", project });
+  const q = new URLSearchParams({ scenario: "idle", project });
   return `/orchestrator/reports?${q.toString()}`;
 }
 

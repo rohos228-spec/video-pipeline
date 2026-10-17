@@ -5,8 +5,9 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
+ *   | paid404 | paid409 | paidgrant409
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
  * Сверено с #358 @ 08fb355f: forecast_usd, decisions, retry_grant (флаг, не токен).
@@ -706,7 +707,7 @@ function startScenario(session, scenario, text, mode) {
     void runInterruptStart(session, id);
     return;
   }
-  if (scenario === "approval" || scenario === "approvefail") {
+  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409") {
     void runApproval(session, id);
     return;
   }
@@ -766,7 +767,7 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
-  if (scenario === "paidoutcome") {
+  if (scenario === "paidoutcome" || scenario === "paid404" || scenario === "paid409" || scenario === "paidgrant409") {
     void runPaidOutcome(session, id, true);
     return;
   }
@@ -871,7 +872,14 @@ function consumePaidRetryGrant(res, approvalId) {
     session.grantUsed = true;
     wait.resolve(true);
     session.grantWait = null;
-    sendJson(res, 200, { executed: true, decision: "retry_step", forecast_usd: PAID_FORECAST_USD });
+    sendJson(res, 200, {
+      ok: true,
+      matched: true,
+      approval_id: approvalId,
+      executed: true,
+      decision: "retry_step",
+      forecast_usd: PAID_FORECAST_USD,
+    });
     return;
   }
   sendJson(res, 409, { executed: false, reason: "retry_grant_required", forecast_usd: null });
@@ -985,6 +993,7 @@ function handleKill(session) {
   return {
     ok: true,
     status: "cancelled",
+    stop_key_set: true,
     detail: "Неплатные шаги отменены, новые действия запрещены. Платный шаг остановится на границе.",
   };
 }
@@ -1251,15 +1260,32 @@ const server = http.createServer(async (req, res) => {
   ) {
     const approvalId = decodeURIComponent(parts[3]);
     const body = await readBody(req);
+    const scenario = scenarioOf(req, url);
     if (body.retry_grant === true) {
+      if (scenario === "paid404") {
+        sendJson(res, 404, { detail: "approval not found" });
+        return;
+      }
+      if (scenario === "paid409" || scenario === "paidgrant409") {
+        sendJson(res, 409, { detail: "approval conflict" });
+        return;
+      }
       consumePaidRetryGrant(res, approvalId);
       return;
     }
     const wireDecision = typeof body.decision === "string" ? body.decision : "";
     const decision = wireDecision || (parts[4] === "approve" ? "approve" : "reject");
-    if (decision === "approve" && scenarioOf(req, url) === "approvefail") {
+    if (decision === "approve" && scenario === "approvefail") {
       await sleep(800);
       sendJson(res, 500, { detail: "approve failed" });
+      return;
+    }
+    if ((scenario === "approve404" && decision === "approve") || scenario === "paid404") {
+      sendJson(res, 404, { detail: "approval not found" });
+      return;
+    }
+    if ((scenario === "approve409" && decision === "approve") || scenario === "paid409") {
+      sendJson(res, 409, { detail: "approval conflict" });
       return;
     }
     let matched = false;
@@ -1272,8 +1298,12 @@ const server = http.createServer(async (req, res) => {
         break;
       }
     }
-    const payload = { ok: true, approval_id: approvalId, decision, matched };
-    if (decision === "retry_step" && scenarioOf(req, url) === "paidoutcome") {
+    if (!matched) {
+      sendJson(res, 404, { detail: "approval not found" });
+      return;
+    }
+    const payload = { ok: true, approval_id: approvalId, decision, matched: true };
+    if (decision === "retry_step" && (scenario === "paidoutcome" || scenario === "paidgrant409")) {
       payload.executed = false;
       payload.forecast_usd = PAID_FORECAST_USD;
     }

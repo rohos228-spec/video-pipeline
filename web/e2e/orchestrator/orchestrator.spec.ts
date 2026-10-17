@@ -17,7 +17,6 @@ const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
 
 function orchUrl(scenario: string, session = "studio", project?: number): string {
   const q = new URLSearchParams({
-    orchApi: MOCK,
     scenario,
     session,
   });
@@ -35,6 +34,46 @@ async function openWithToken(page: Page, scenario: string, session = "studio", p
   await page.goto(orchUrl(scenario, session, project));
   await expect(page.getByTestId("orch-composer")).toBeVisible();
 }
+
+test("?orchApi чужого origin не получает Bearer", async ({ page }) => {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  const allowed = new URL(MOCK).origin;
+  const foreigners = ["https://evil.example", "http://127.0.0.1:9"];
+  for (const [index, foreign] of foreigners.entries()) {
+    const foreignOrigin = new URL(foreign).origin;
+    const leaked: string[] = [];
+    const authed: string[] = [];
+    const onRequest = (req: { url: () => string; headers: () => Record<string, string> }) => {
+      const auth = req.headers().authorization || "";
+      if (!auth.toLowerCase().startsWith("bearer ")) return;
+      const url = req.url();
+      authed.push(url);
+      if (new URL(url).origin === foreignOrigin) leaked.push(url);
+    };
+    page.on("request", onRequest);
+    try {
+      const q = new URLSearchParams({
+        orchApi: foreign,
+        scenario: "idle",
+        session: `leak-${index}`,
+      });
+      await page.goto(`/orchestrator?${q.toString()}`);
+      await expect(page.getByTestId("orch-composer")).toBeVisible();
+      await expect.poll(() => authed.length).toBeGreaterThan(0);
+      expect(leaked).toEqual([]);
+      for (const url of authed) {
+        expect(new URL(url).origin).toBe(allowed);
+      }
+    } finally {
+      page.off("request", onRequest);
+    }
+  }
+});
 
 test.describe("orchestrator chat", () => {
   test("основной вид", async ({ page }) => {
@@ -109,6 +148,24 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
   });
 
+  test("approve 404 и 409 оставляют карточку", async ({ page }) => {
+    const cases = [
+      ["approve404", "approval not found"],
+      ["approve409", "approval conflict"],
+    ] as const;
+    for (const [scenario, detail] of cases) {
+      await openWithToken(page, scenario, scenario);
+      await page.getByTestId("orch-composer").fill("запусти ноду");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByTestId("orch-approval-error")).toContainText(detail);
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await expect(page.getByTestId("orch-approve")).toBeEnabled();
+      await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    }
+  });
+
   test("approve 500: карточка остаётся и ошибку можно повторить", async ({ page }) => {
     await openWithToken(page, "approvefail", "approvefail-1");
     await page.getByTestId("orch-composer").fill("запусти ноду");
@@ -154,6 +211,7 @@ test.describe("orchestrator chat", () => {
         body: JSON.stringify({
           ok: true,
           status: "cancelled",
+          stop_key_set: true,
           detail: "произвольный текст сервера",
         }),
       });
@@ -169,6 +227,46 @@ test.describe("orchestrator chat", () => {
     expect(text.indexOf("Платный шаг остановится на границе.")).toBeLessThan(
       text.indexOf("произвольный текст сервера"),
     );
+  });
+
+  test("kill: Останавливаю, ошибка при stop_key_set=false и повтор", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-pending");
+    let release = () => {};
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let body: { ok: boolean; stop_key_set: boolean; detail: string } = {
+      ok: true,
+      stop_key_set: false,
+      detail: "стоп-ключ не встал",
+    };
+    await page.route("**/api/orchestrator/kill", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    const banner = page.getByTestId("orch-kill-status");
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(banner).toContainText("Останавливаю…");
+    await expect(banner).not.toContainText("Остановлено");
+    release();
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("стоп-ключ не встал");
+    await expect(banner).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
+    gate = Promise.resolve();
+    body = { ok: true, stop_key_set: true, detail: "ключ установлен" };
+    await page.getByTestId("orch-kill-retry").click();
+    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(banner).toContainText("Остановлено");
+    await expect(banner).toContainText("Платный шаг остановится на границе");
+    await expect(banner).toContainText("ключ установлен");
+    await expect(page.getByTestId("orch-kill-retry")).toHaveCount(0);
   });
 
   test("план: риск, стоимость и параллельные read-only", async ({ page }) => {
@@ -202,8 +300,10 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-classification")).toContainText("остановка");
     await expect(page.getByTestId("orch-classification")).toContainText("kill switch из сообщения");
     await expect(page.getByTestId("orch-classification")).not.toContainText("interrupt");
-    await expect(page.getByTestId("orch-kill-status")).toContainText(/из сообщения/i);
-    await expect(page.getByTestId("orch-kill-status")).toContainText(/платный шаг остановится на границе/i);
+    await expect(page.getByTestId("orch-kill-status")).toHaveAttribute("data-kill-phase", "stopping");
+    await expect(page.getByTestId("orch-kill-status")).toContainText("Останавливаю…");
+    await expect(page.getByTestId("orch-kill-status")).not.toContainText("Остановлено");
+    await expect(page.getByTestId("orch-kill-status")).not.toContainText(/платный шаг остановится на границе/i);
   });
 
   test("task: новая задача встаёт в очередь и стартует после текущей", async ({ page }) => {
@@ -417,6 +517,41 @@ test.describe("orchestrator chat", () => {
     expect(denials[0]?.body).toMatchObject({ decision: "deny", approval_id: "ap-paid-outcome-paid-deny" });
     expect(denials[0]?.body).not.toHaveProperty("retry_grant");
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
+  });
+
+  test("paid_outcome_unknown: 404 и 409 оставляют карточку", async ({ page }) => {
+    const cases = [
+      ["paid404", "approval not found"],
+      ["paid409", "approval conflict"],
+    ] as const;
+    for (const [scenario, detail] of cases) {
+      await openWithToken(page, scenario, scenario);
+      await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-paid-done")).toBeVisible();
+      for (const button of ["orch-paid-done", "orch-paid-deny", "orch-paid-retry"] as const) {
+        await page.getByTestId(button).click();
+        await expect(page.getByTestId("orch-approval-error")).toContainText(detail);
+        await expect(page.getByTestId("orch-approval")).toBeVisible();
+        await expect(page.getByTestId("orch-paid-forecast")).toHaveCount(0);
+        await expect(page.getByTestId(button)).toBeEnabled();
+        await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+      }
+    }
+  });
+
+  test("paid_outcome_unknown: 409 на retry_grant оставляет прогноз", async ({ page }) => {
+    await openWithToken(page, "paidgrant409", "paid-grant-409");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("approval conflict");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-forecast")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
   test("paid_outcome_unknown: без поддержки перезапуска кнопка неактивна", async ({ page }) => {
