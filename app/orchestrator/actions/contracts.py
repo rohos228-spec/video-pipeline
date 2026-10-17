@@ -28,6 +28,15 @@ _AUDIT_PATH = Path(__file__).resolve().parents[3] / "docs" / "fable" / "actions_
 # Правка отчёта из чата. Имя из плана §6.3, не новое.
 REPORT_EDIT_ACTION = "update_report"
 
+# Мягкое удаление восстанавливает только свой kind. history.rollback
+# умеет другие снимки и эти четыре действия не возвращает.
+SOFT_DELETE_RESTORE: dict[str, str] = {
+    "montage.delete_frame": "frame.restore",
+    "montage.delete_child_frame": "frame.restore",
+    "group.delete": "group.restore",
+    "prompt.delete_master": "prompt.restore_master",
+}
+
 RiskName = Literal["none", "low", "medium", "high"]
 ActionStatusName = Literal["ok", "approval_required", "failed"]
 
@@ -182,6 +191,7 @@ class SoftDeleteResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     change_id: str
+    action: str = Field(min_length=1)
     marked: bool
     restore_action: str = Field(min_length=1)
     snapshot_id: str | None = None
@@ -192,19 +202,19 @@ class SoftDeleteResult(BaseModel):
     def _change_id(cls, value: str) -> str:
         return _check_change_id(value)
 
-    @field_validator("restore_action")
-    @classmethod
-    def _known_restore(cls, value: str) -> str:
-        if value not in metadata_registry():
-            raise ValueError("restore_action вне реестра")
-        return value
-
     @model_validator(mode="after")
     def _snapshot_ref(self) -> SoftDeleteResult:
-        """Без снимка или old/ восстанавливать не из чего."""
+        """Снимок обязателен, restore_action умеет именно этот kind."""
 
         if not (self.snapshot_id or self.archive_ref):
             raise ValueError("нужен snapshot_id или archive_ref")
+        expected = SOFT_DELETE_RESTORE.get(self.action)
+        if expected is None:
+            raise ValueError("action не из мягкого удаления")
+        if self.restore_action != expected:
+            raise ValueError("restore_action не восстанавливает этот kind")
+        if self.restore_action not in metadata_registry():
+            raise ValueError("restore_action вне реестра")
         return self
 
 
@@ -294,6 +304,9 @@ def _r2_metadata() -> dict[str, ActionMetadata]:
         ("update_report", "low", False, False, False),
         ("export_nodes_snapshot", "low", True, False, False),
         ("revert_node_to_git", "medium", False, False, False),
+        ("frame.restore", "high", False, True, False),
+        ("group.restore", "high", False, True, False),
+        ("prompt.restore_master", "high", False, True, False),
     )
     return {
         name: ActionMetadata(

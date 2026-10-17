@@ -91,15 +91,23 @@ DOM отчёта на месте не правится.
 |---|---|
 | `change_id` | серверный id пометки |
 | `marked` | при `status=ok` только `true`: строка и файл на месте. `false` при `ok` — ошибка валидации |
-| `restore_action` | id из реестра, которым чат снимает пометку |
+| `action` | id мягкого удаления |
+| `restore_action` | действие, которое возвращает именно этот kind |
 | `snapshot_id` | id снимка, из которого снимают пометку |
 | `archive_ref` | путь `old/…`, если снимка-id нет |
 
 Нужно хотя бы одно из `snapshot_id` и `archive_ref`. Без ссылки на снимок или архив результат невалиден.
 
-Отдельного id «восстановить» план не вводит. В моках поле равно
-`history.rollback`: это действие уже есть в реестре и возвращает прежнее
-значение из снимка.
+`history.rollback` эти kind не возвращает. Пара фиксирована:
+
+| Удаление | Восстановление |
+|---|---|
+| `montage.delete_frame` | `frame.restore` |
+| `montage.delete_child_frame` | `frame.restore` |
+| `group.delete` | `group.restore` |
+| `prompt.delete_master` | `prompt.restore_master` |
+
+Восстановление само `destructive`: снова через подтверждение.
 
 ### `ActionResult`
 
@@ -135,6 +143,9 @@ DOM отчёта на месте не правится.
 | `update_report` | low | false | false | false |
 | `export_nodes_snapshot` | low | true | false | false |
 | `revert_node_to_git` | medium | false | false | false |
+| `frame.restore` | high | false | true | false |
+| `group.restore` | high | false | true | false |
+| `prompt.restore_master` | high | false | true | false |
 
 `resume_node` платный: план §6.2 вешает на него paid-retry.
 `export_nodes_snapshot` по плану read-only относительно рантайма нод.
@@ -296,8 +307,9 @@ DOM отчёта на месте не правится.
   "status": "ok",
   "result": {
     "change_id": "orch-appr-13-6",
+    "action": "prompt.delete_master",
     "marked": true,
-    "restore_action": "history.rollback",
+    "restore_action": "prompt.restore_master",
     "snapshot_id": "snap-13-6"
   },
   "error": null

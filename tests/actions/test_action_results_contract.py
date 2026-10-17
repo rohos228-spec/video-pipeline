@@ -25,7 +25,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "5a98be05662f275a338a81ac8d4dd5d06609e6d4b72e639f055136f0a7b9304c",
+    "ws2-r2.0": "bcff54f25ad4f5807794b3e9c93f156c79fb456ddab012e32e07dd305cb6543f",
 }
 
 
@@ -87,8 +87,9 @@ def test_prompt_create_master_is_destructive() -> None:
 def test_soft_delete_ok_requires_marked_true() -> None:
     payload = {
         "change_id": "orch-appr-1-1",
+        "action": "montage.delete_frame",
         "marked": False,
-        "restore_action": "history.rollback",
+        "restore_action": "frame.restore",
         "snapshot_id": "snap-1",
     }
     SoftDeleteResult.model_validate(payload)
@@ -100,23 +101,48 @@ def test_soft_delete_result_requires_snapshot_ref() -> None:
     with pytest.raises(ValidationError):
         SoftDeleteResult(
             change_id="orch-appr-1-1",
+            action="montage.delete_frame",
             marked=True,
-            restore_action="history.rollback",
+            restore_action="frame.restore",
         )
     by_id = SoftDeleteResult(
         change_id="orch-appr-1-1",
+        action="montage.delete_frame",
         marked=True,
-        restore_action="history.rollback",
+        restore_action="frame.restore",
         snapshot_id="snap-1",
     )
     by_archive = SoftDeleteResult(
         change_id="orch-appr-1-1",
+        action="group.delete",
         marked=True,
-        restore_action="history.rollback",
+        restore_action="group.restore",
         archive_ref="old/scenes/1",
     )
     assert by_id.snapshot_id == "snap-1"
     assert by_archive.archive_ref == "old/scenes/1"
+
+
+def test_restore_action_supports_deleted_kind() -> None:
+    from app.orchestrator.actions.contracts import SOFT_DELETE_RESTORE
+
+    for action, restore in SOFT_DELETE_RESTORE.items():
+        result = SoftDeleteResult(
+            change_id="orch-appr-1-1",
+            action=action,
+            marked=True,
+            restore_action=restore,
+            snapshot_id="snap-1",
+        )
+        assert result.restore_action == restore
+        with pytest.raises(ValidationError):
+            SoftDeleteResult(
+                change_id="orch-appr-1-1",
+                action=action,
+                marked=True,
+                restore_action="history.rollback",
+                snapshot_id="snap-1",
+            )
 
 
 def test_suggest_scene_variants_tier_is_paid() -> None:
