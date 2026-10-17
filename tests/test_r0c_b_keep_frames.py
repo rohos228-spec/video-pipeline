@@ -132,6 +132,38 @@ def test_align_marks_foreign_room_and_keeps_shot_ids(warn_log) -> None:
     assert any("WARN align_shots_to_action_chain" in line for line in warn_log)
 
 
+def test_align_shots_marks_foreign_place_inactive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Чужое место остаётся в кадры[] с активен: False."""
+    from app.services.scene_shot_grammar import align_shots_to_action_chain
+
+    action = (
+        "1. кабинет следствия — следователь открывает папку\n"
+        "(Следователь открыл толстую следственную папку на столе.)"
+    )
+    shots = [
+        {"id": "a", "сцена": 1, "место": "кабинет следствия", "действие": "открывает"},
+        {"id": "lab", "сцена": 1, "место": "лаборатория криминалистики", "действие": "снимает"},
+        {"id": "c", "сцена": 1, "место": "кабинет следствия", "действие": "кладёт"},
+    ]
+    ops = [{"frame_uuid": "u1", "fields": {"кадры": shots}}]
+    frames = [{"uuid": "u1", "attrs": {"главное_действие": action}}]
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        align_shots_to_action_chain(ops, frames)
+    finally:
+        logger.remove(sink)
+    kept = ops[0]["fields"]["кадры"]
+    assert len(kept) == 3
+    assert [s["id"] for s in kept] == ["a", "lab", "c"]
+    assert kept[1]["активен"] is False
+    assert kept[0].get("активен") is not False
+    assert kept[2].get("активен") is not False
+    assert "WARN" in caplog.text
+    assert "lab" in caplog.text
+
+
 def test_vo_cap_marks_extra_shots_without_dropping_them(warn_log) -> None:
     from app.services.scene_shot_grammar import merge_gpt_shots_with_action
 
