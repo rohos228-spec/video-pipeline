@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.db import session_scope
 from app.models import Entity, Frame, Project
@@ -78,10 +78,57 @@ def _seed_assets(data_dir) -> None:
         Image.new("RGB", (256, 256), color).save(directory / f"{code}.png")
 
 
+def require_project_id(argv: list[str] | None = None) -> int:
+    """Явный project_id и VP_DEV_SEED=1. Без них скрипт не трогает базу."""
+    import os
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if os.environ.get("VP_DEV_SEED") != "1":
+        raise SystemExit("dev seed: задайте VP_DEV_SEED=1 и project_id ≥ 1")
+    if len(args) != 1:
+        raise SystemExit("dev seed: нужен один аргумент project_id")
+    try:
+        project_id = int(args[0])
+    except ValueError:
+        raise SystemExit("dev seed: project_id должен быть целым числом") from None
+    if project_id < 1:
+        raise SystemExit("dev seed: project_id должен быть ≥ 1")
+    return project_id
+
+
+def missing_asset_rows(existing_codes: set[str]) -> list[tuple]:
+    """Рефы, которых ещё нет. Уже записанные Entity не пересоздаём."""
+    return [row for row in ASSETS if row[1] not in existing_codes]
+
+
 def _split_by_anchors(text: str, anchors: list[str]) -> list[str]:
     from app.services.montage_scene_editor import split_vo_by_anchors
 
     return split_vo_by_anchors(text, anchors)
+
+
+async def archive_project_frames(session, project_id: int) -> int:
+    """Пометить кадры проекта leftover и увести номера вверх. Строки не удалять."""
+    rows = list(
+        (
+            await session.execute(select(Frame).where(Frame.project_id == project_id))
+        ).scalars()
+    )
+    if not rows:
+        return 0
+    hi = max(int(fr.number or 0) for fr in rows)
+    park = hi + 1_000_000
+    for i, fr in enumerate(rows):
+        attrs = dict(fr.attrs or {})
+        cs = dict(attrs.get("camera_subdivide") or {})
+        cs["leftover"] = True
+        attrs["camera_subdivide"] = cs
+        attrs["archived"] = True
+        fr.attrs = attrs
+        fr.number = park + i
+        fr.sort_key = float(park + i)
+    await session.flush()
+    return len(rows)
 
 
 async def main(project_id: int) -> None:
@@ -129,9 +176,18 @@ async def main(project_id: int) -> None:
         await sync_project_row_to_project_db(project, data_dir)
 
     async with project_db_session_scope(data_dir) as session:
-        await session.execute(delete(Frame).where(Frame.project_id == project_id))
-        await session.execute(delete(Entity).where(Entity.project_id == project_id))
-        for i, (_folder, code, kind, name, _color) in enumerate(ASSETS, start=1):
+        archived_n = await archive_project_frames(session, project_id)
+        existing_codes = {
+            str(row.code or "")
+            for row in (
+                await session.execute(
+                    select(Entity).where(Entity.project_id == project_id)
+                )
+            ).scalars()
+        }
+        for i, (_folder, code, kind, name, _color) in enumerate(
+            missing_asset_rows(existing_codes), start=1
+        ):
             session.add(
                 Entity(
                     project_id=project_id,
@@ -217,8 +273,8 @@ async def main(project_id: int) -> None:
             .scalars()
             .all()
         )
-        print(f"кадров создано: {len(rows)}")
+        print(f"кадров в проекте: {len(rows)} (новых {number}, в архиве {archived_n})")
 
 
 if __name__ == "__main__":
-    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 1))
+    asyncio.run(main(require_project_id()))
