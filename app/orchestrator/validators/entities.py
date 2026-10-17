@@ -256,6 +256,8 @@ def _walk_shots(node: Any, found: list[dict[str, Any]], seen: set[int], depth: i
 def _is_shot(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
+    if "кадры" in item or "cells" in item or "ячейки" in item:
+        return False
     if frame_id(item) is None:
         return False
     return any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план"))
