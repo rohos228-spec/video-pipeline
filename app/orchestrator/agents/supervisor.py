@@ -115,6 +115,15 @@ class ApprovalGrantError(RuntimeError):
         self.detail = detail
 
 
+class ProjectBindError(RuntimeError):
+    """Отказ поздней привязки project_id. 409 — не то ожидание."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
 def _coerce_decision(decision: ApprovalDecision | str | None) -> ApprovalDecision | None:
     if decision is None or decision == "":
         return None
@@ -232,6 +241,45 @@ class Supervisor:
             ),
             name=f"orch-resume-{task_id}",
         )
+
+    def _resolve_project_task(self, session_id: str, task_id: int | None) -> int | None:
+        if task_id is None:
+            return self.active_task(session_id)
+        row = self.tasks.get(int(task_id))
+        if row is None or str(row.get("session_id") or "") != session_id:
+            return None
+        return int(task_id)
+
+    async def bind_project(
+        self,
+        session_id: str,
+        project_id: int,
+        *,
+        task_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Записать project_id и снять только ``missing_project_id``.
+
+        Id не пишется внутри ``grant_approval``. После записи идёт тот же
+        путь: экран и продолжение с чекпоинта (или replan, если чекпоинта нет).
+        """
+        resolved = self._resolve_project_task(session_id, task_id)
+        if resolved is None:
+            raise ProjectBindError(409, "no such task")
+        if self._status(resolved) is not TaskStatus.waiting_approval:
+            raise ProjectBindError(409, "not waiting_approval")
+        if self._block_reason.get(resolved) != ApprovalReason.missing_project_id.value:
+            raise ProjectBindError(409, "not missing_project_id")
+        self.tasks.set_project_id(resolved, int(project_id))
+        self._block_reason.pop(resolved, None)
+        await self.grant_approval(session_id)
+        status = self._status(resolved)
+        return {
+            "ok": True,
+            "session": session_id,
+            "task_id": resolved,
+            "project_id": int(project_id),
+            "status": status.value if status is not None else "",
+        }
 
     async def grant_approval(
         self,

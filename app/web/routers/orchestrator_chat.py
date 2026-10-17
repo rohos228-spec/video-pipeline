@@ -12,11 +12,11 @@ import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.orchestrator.agents.runtime import get_runtime
-from app.orchestrator.agents.supervisor import ApprovalGrantError, Supervisor
+from app.orchestrator.agents.supervisor import ApprovalGrantError, ProjectBindError, Supervisor
 from app.orchestrator.auth import require_orch_token
 from app.orchestrator.contracts import MessageMode, OrchEvent
 
@@ -45,6 +45,29 @@ class MessageIn(BaseModel):
             data = dict(data)
             data.pop("change_id", None)
         return data
+
+
+class ProjectIn(BaseModel):
+    """Поздний project_id. ``0``, отрицательные и bool — 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int
+    task_id: int | None = None
+
+    @field_validator("project_id", "task_id", mode="before")
+    @classmethod
+    def _reject_bool(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("bool is not an id")
+        return value
+
+    @field_validator("project_id")
+    @classmethod
+    def _at_least_one(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("project_id must be >= 1")
+        return value
 
 
 class ApproveIn(BaseModel):
@@ -124,6 +147,17 @@ def _approval_result(
         "change_id": change_id,
         "decision": decision,
     }
+
+
+@router.post("/{session}/project")
+async def post_project(session: str, body: ProjectIn) -> dict[str, object]:
+    """Снять ``missing_project_id`` целым id проекта и продолжить задачу."""
+    _check_session(session)
+    runtime = get_runtime()
+    try:
+        return await runtime.supervisor.bind_project(session, body.project_id, task_id=body.task_id)
+    except ProjectBindError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/{session_id}/approve")

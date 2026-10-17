@@ -47,6 +47,17 @@ class TaskStore:
             return None
         return dict(row)
 
+    def set_project_id(self, task_id: int, project_id: int) -> None:
+        conn = connect()
+        try:
+            conn.execute(
+                "UPDATE orch_tasks SET project_id = ?, updated_at = ? WHERE id = ?",
+                (int(project_id), utc_now(), task_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def set_status(self, task_id: int, status: str, error: str | None = None) -> None:
         conn = connect()
         try:
