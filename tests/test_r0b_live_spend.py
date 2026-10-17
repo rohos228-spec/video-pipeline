@@ -162,3 +162,64 @@ async def test_concurrent_calls_cannot_both_pass_cap(
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_batches_parallel_through_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.services.apply_ops_batches import run_apply_ops_batched
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    _quiet_gate(monkeypatch, run_cap=0.0)
+    peak = 0
+    current = 0
+    reserves = 0
+    lock = asyncio.Lock()
+
+    async def fake_run(**kwargs: object) -> OperatorApiResult:
+        nonlocal peak, current, reserves
+        path = kwargs["input_paths"][0]
+        frames = json.loads(Path(path).read_text(encoding="utf-8"))["frames"]
+        async with spend_guard.paid_call("gpt", "batch", estimate_usd=0.05):
+            reserves += 1
+            async with lock:
+                current += 1
+                peak = max(peak, current)
+            await asyncio.sleep(0.05)
+            async with lock:
+                current -= 1
+            assert spend_guard.inflight_usd()["count"] >= 1
+        ops = [
+            {"frame_uuid": fr["uuid"], "fields": {"main_action": "x"}}
+            for fr in frames
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr("app.services.apply_ops_batches.run_operator_api", fake_run)
+    frames = [
+        {"uuid": f"{i:024d}", "voiceover_text": f"текст {i}"} for i in range(3)
+    ]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_2",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=1,
+        parallel_max=3,
+        stagger_sec=0,
+    )
+    assert reserves == 3
+    assert peak == 3
+    assert len(res.apply_ops["ops"]) == 3
+
+
