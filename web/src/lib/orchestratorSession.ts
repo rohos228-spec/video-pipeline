@@ -163,6 +163,8 @@ export interface ApprovalView {
   id: string;
   /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
   serverId: boolean;
+  /** ApprovalEvent.change_id. Событие закрывает карточку только этим значением. */
+  changeId: string | null;
   taskId: string | null;
   title: string;
   reason: string;
@@ -334,8 +336,17 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
   return null;
 }
 
-function closeServerApproval(state: OrchScreenState, id: string, decision: "approved" | "rejected"): void {
-  const item = state.approvals.find((entry) => entry.id === id && entry.serverId);
+/** change_id решения. Чужой или пустой id карточку не закрывает. */
+function approvalChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
+}
+
+function closeServerApproval(state: OrchScreenState, changeId: string, decision: "approved" | "rejected"): void {
+  const item = state.approvals.find((entry) => entry.serverId && entry.changeId === changeId);
   if (!item || item.resolved) return;
   item.resolved = decision;
 }
@@ -421,6 +432,7 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
     state.approvals.push({
       id,
       serverId: fromServer != null,
+      changeId: approvalChangeId(body),
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
@@ -535,8 +547,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   const taskId = taskKey(event.task_id);
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const decidedId = serverApprovalId(payload.approval_id);
-    if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+    const changeId = approvalChangeId(payload);
+    if (decided && changeId) closeServerApproval(next, changeId, decided);
   }
 
   if (event.type === "ack") {
@@ -669,6 +681,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id,
         serverId: fromServer != null,
+        changeId: approvalChangeId(body),
         taskId,
         title: str(body.title, "Нужно подтверждение"),
         reason: str(body.reason),
@@ -707,6 +720,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id: `block-${event.seq}`,
         serverId: false,
+        changeId: null,
         taskId,
         title: "",
         reason: error,

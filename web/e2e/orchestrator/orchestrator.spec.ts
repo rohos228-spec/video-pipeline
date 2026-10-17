@@ -645,6 +645,50 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("чужой change_id не закрывает карточку, свой закрывает", async ({ page }) => {
+    await openWithToken(page, "idle", "chg-close");
+    await emitBus(page, "chg-close", "approval_required", 1, {
+      change_id: "chg-own",
+      approval_id: "appr-other",
+      title: "Своя карточка",
+      reason: "нужно решение",
+      risk: "low",
+      action: "run_node",
+    });
+    const card = page.getByTestId("orch-approval");
+    await expect(card).toContainText("Своя карточка");
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "foreign-seen",
+      decision: "approved",
+      change_id: "chg-foreign",
+      approval_id: "appr-other",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("foreign-seen");
+    await expect(card).toBeVisible();
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "missing-id",
+      decision: "approved",
+      approval_id: "chg-own",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("missing-id");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+
+    await emitBus(page, "chg-close", "agent_status", 1, {
+      agent: "supervisor",
+      status: "own-seen",
+      decision: "approved",
+      change_id: "chg-own",
+      approval_id: "appr-other",
+    });
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-seen");
+    await expect(card).toHaveCount(0);
+  });
+
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
     await openWithToken(page, "unknownreason", "unknown-1");
     await page.getByTestId("orch-composer").fill("проверь");
