@@ -42,6 +42,21 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def shot_is_active(shot: Any) -> bool:
+    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
+
+    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
+    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
+    """
+    if not isinstance(shot, dict):
+        return False
+    if shot.get("удалён") or shot.get("карантин"):
+        return False
+    if shot.get("активен") is False:
+        return False
+    return True
+
+
 def parent_still_suppressed(frame: Any) -> bool:
     """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
     cs = _cs(frame)
@@ -1143,16 +1158,14 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             for m in members
         ]
         nonempty = [k for k in keys if k]
-        hits = sum(1 for k in nonempty if k in earlier)
-        threshold = max(3, (len(members) + 3) // 4)
         parent_key = _norm_vo_key(str(getattr(parent, "voiceover_text", "") or ""))
-        # Только полный закадр. Совпадение первых 40 символов детачило
-        # другую ячейку и срезало её лестницу до одного кадра.
+        # Реплика — только полный закадр родителя. Совпадение кусков
+        # (в том числе «huge»: ≥16 кадров и порог попаданий) не отцепляет
+        # живую ячейку и не обнуляет parent_uuid детей.
         same_opening = bool(
             first_parent_key and parent_key and parent_key == first_parent_key
         )
-        huge = len(members) >= 16 and hits >= threshold
-        replica = bool(earlier) and (same_opening or huge)
+        replica = bool(earlier) and same_opening
         if replica:
             for m in members:
                 extra: dict[str, Any] = {"leftover": True}
@@ -2001,7 +2014,7 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             plain_vo = _ladder_vo_text(items)
             if len(plain_vo) < 24:
                 continue
-            if not any(s_vo and (plain_vo == s_vo or plain_vo in s_vo) for s_vo in s_vos):
+            if not any(s_vo and plain_vo == s_vo for s_vo in s_vos):
                 continue
             for _idx, members in items:
                 _take(members)
@@ -2626,8 +2639,11 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
+        # На кадры — только живые шоты. Помеченный остаётся в лестнице
+        # родителя, но не занимает индекс и не подменяет зеркало ребёнка.
+        live_planned = [s for s in planned if shot_is_active(s)]
         for i, fr in enumerate(ordered):
-            shot = planned[i] if i < len(planned) else None
+            shot = live_planned[i] if i < len(live_planned) else None
             if not isinstance(shot, dict):
                 continue
             old_action = str(
