@@ -1763,6 +1763,29 @@ async def test_marked_frame_mux_audio_matches_live_clip_duration(tmp_path: Path,
     assert any("дорожка без помеченных" in line for line in warn_log)
 
 
+@pytest.mark.asyncio
+async def test_mux_without_marked_raises_when_live_track_missing(tmp_path: Path) -> None:
+    """Непустой omit не подменяет mux исходным voice_full, если live-файл не собрался."""
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.frame_audio import FrameAudioClip, _mux_audio_without_marked
+
+    source = tmp_path / "voice_full.mp3"
+    source.write_bytes(b"original-voice")
+    clips = [
+        FrameAudioClip(1, source, "один", 0.0, 1.0, 1.0),
+        FrameAudioClip(2, source, "два", 1.0, 2.0, 1.0),
+        FrameAudioClip(3, source, "три", 2.0, 3.0, 1.0),
+    ]
+    with patch(
+        "app.services.frame_audio.materialize_closed_timeline_audio",
+        new=AsyncMock(return_value=None),
+    ):
+        with pytest.raises(RuntimeError, match="voice_full не микширую"):
+            await _mux_audio_without_marked(clips, source, {2})
+    assert source.read_bytes() == b"original-voice"
+
+
 def _sha256(path: Path) -> str:
     import hashlib
 

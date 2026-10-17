@@ -399,7 +399,12 @@ async def _mux_audio_without_marked(
     if len(kept) == len(clips):
         return source
     built = await materialize_closed_timeline_audio(kept, source)
-    return built if built is not None else source
+    if built is None:
+        raise RuntimeError(
+            "assemble: не собрал дорожку без речи помеченных кадров, "
+            "исходный voice_full не микширую"
+        )
+    return built
 
 
 def close_marked_timeline(
