@@ -178,6 +178,26 @@ def estimate_usage(
     )
 
 
+def _is_empty_completion(exc: BaseException) -> bool:
+    """Пустой completion: провайдер мог взять деньги за промпт и reasoning."""
+    if "empty" in str(exc).lower():
+        return True
+    partial = getattr(exc, "partial", None)
+    if partial is None:
+        return False
+    return not str(getattr(partial, "text", "") or "").strip()
+
+
+def _usage_from_partial(partial: CompletionResult | None) -> LLMUsage:
+    if partial is None:
+        return LLMUsage()
+    return LLMUsage(
+        prompt_tokens=int(partial.prompt_tokens),
+        completion_tokens=int(partial.completion_tokens),
+        reasoning_tokens=int(partial.reasoning_tokens),
+    )
+
+
 def _usage_missing(usage: LLMUsage) -> bool:
     return (
         usage.prompt_tokens == 0
@@ -475,6 +495,19 @@ class ModelRouter:
                     last_error = str(exc) or "timeout"
                     break
                 except ProviderError as exc:
+                    usage = None
+                    cost = 0.0
+                    estimated = False
+                    if _is_empty_completion(exc):
+                        partial = getattr(exc, "partial", None)
+                        usage, cost, estimated = self._priced_usage(
+                            ctx,
+                            hop,
+                            text="" if partial is None else partial.text,
+                            usage=_usage_from_partial(partial),
+                            model="" if partial is None else partial.model,
+                        )
+                        self._charge(ctx, cost)
                     self._log(
                         ctx,
                         hop,
@@ -484,6 +517,9 @@ class ModelRouter:
                         status="error",
                         error=str(exc) or "error",
                         latency_ms=_latency_ms(started),
+                        usage=usage,
+                        cost_usd=cost,
+                        usage_estimated=estimated,
                     )
                     if exc.retryable and attempt <= self.config.retries:
                         await self._sleep(self.config.backoff_base_s * (2 ** (attempt - 1)))
@@ -543,27 +579,19 @@ class ModelRouter:
         cost_override: float | None = None,
         latency_override: int | None = None,
     ) -> LLMResponse:
-        usage = LLMUsage(
-            prompt_tokens=int(result.prompt_tokens),
-            completion_tokens=int(result.completion_tokens),
-            reasoning_tokens=int(result.reasoning_tokens),
+        usage, cost, estimated = self._priced_usage(
+            ctx,
+            hop,
+            text=result.text,
+            usage=LLMUsage(
+                prompt_tokens=int(result.prompt_tokens),
+                completion_tokens=int(result.completion_tokens),
+                reasoning_tokens=int(result.reasoning_tokens),
+            ),
+            model=result.model or hop.model,
+            cost_override=cost_override,
         )
         model = result.model or hop.model
-        price_model = model or self._strong_price_model()
-        estimated = False
-        if cost_override is None and _usage_missing(usage) and (result.text or "").strip():
-            usage = estimate_usage(
-                ctx.messages,
-                result.text,
-                max_tokens=ctx.max_tokens,
-                reasoning_effort=hop.reasoning_effort,
-            )
-            estimated = True
-        cost = (
-            float(cost_override)
-            if cost_override is not None
-            else compute_cost(price_model, usage, self.config.prices)
-        )
         approval = self._charge(ctx, cost)
         latency = _latency_ms(started) if latency_override is None else int(latency_override)
         response = LLMResponse(
@@ -598,6 +626,34 @@ class ModelRouter:
             usage_estimated=estimated,
         )
         return response
+
+    def _priced_usage(
+        self,
+        ctx: CallContext,
+        hop: Hop,
+        *,
+        text: str,
+        usage: LLMUsage,
+        model: str,
+        cost_override: float | None = None,
+    ) -> tuple[LLMUsage, float, bool]:
+        """Реальный usage, либо оценка. Пустой текст тоже оценивается."""
+        price_model = model or hop.model or self._strong_price_model()
+        estimated = False
+        if cost_override is None and _usage_missing(usage):
+            usage = estimate_usage(
+                ctx.messages,
+                text,
+                max_tokens=ctx.max_tokens,
+                reasoning_effort=hop.reasoning_effort,
+            )
+            estimated = True
+        cost = (
+            float(cost_override)
+            if cost_override is not None
+            else compute_cost(price_model, usage, self.config.prices)
+        )
+        return usage, cost, estimated
 
     def _charge(self, ctx: CallContext, cost: float) -> ApprovalEvent | None:
         result = self.ledger.charge(ctx.run_id, cost, scope=ctx.budget_scope)

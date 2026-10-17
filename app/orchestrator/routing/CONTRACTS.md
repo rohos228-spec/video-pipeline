@@ -112,7 +112,10 @@ interrupt с `kill_switch=false`. Классификатор для аварий
    ответ не ниже `max_tokens`, если он задан. При `reasoning_effort`
    столько же токенов пишется в reasoning. Цена — фактической модели хопа.
    В строке вызова `usage_estimated=1`. То же у нестримингового ответа
-   без usage. Списание идёт в `SpendLedger`.
+   без usage, и у пустого или пробельного текста: списываются промпт и
+   `max_tokens` (плюс reasoning, если у хопа есть effort). Retryable-ошибка
+   пустого completion (`empty …`) списывается до ретрая, каждая попытка
+   отдельно. Списание идёт в `SpendLedger`.
 4. Супервизор узнаёт это функцией `budget_exhausted_response` из контракта:
    `task_status` равен `waiting_approval` и `approval.reason` равен
    `budget_exhausted`. Дальше он пишет статус задачи и событие

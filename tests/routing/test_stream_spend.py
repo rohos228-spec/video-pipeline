@@ -7,7 +7,7 @@ from dataclasses import replace
 from app.orchestrator.routing.config import Price
 from app.orchestrator.routing.ledger import SpendLedger
 from app.orchestrator.routing.model_router import LiveRouter
-from app.orchestrator.routing.transport import ProviderRequest, build_body
+from app.orchestrator.routing.transport import ProviderError, ProviderRequest, build_body
 from tests.routing.fakes import FakeTransport, ok
 
 
@@ -113,6 +113,43 @@ async def test_missing_usage_charges_the_prompt(config, sink):
     assert ledger.spent("run-est") == response.cost_usd
     assert sink.records[-1].usage_estimated is True
     assert sink.records[-1].prompt_tokens == prompt_tokens
+
+
+async def test_empty_reply_and_retry_are_charged(config, sink, sleeper):
+    prices = dict(config.prices)
+    prices["gpt-5.6-sol"] = Price(prompt=1_000_000, completion=1_000_000, reasoning=1_000_000)
+    priced = replace(config, prices=prices)
+    prompt = "привет" * 4
+    prompt_tokens = (len(prompt) + 1) // 2
+    ledger = SpendLedger(internal_budget_usd=10_000)
+    blank = FakeTransport(
+        [ok("   ", prompt_tokens=0, completion_tokens=0, reasoning_tokens=0, finish_reason="length")]
+    )
+    router = LiveRouter(priced, transport=blank, ledger=ledger, sink=sink, sleeper=sleeper)
+    messages = [{"role": "user", "content": prompt}]
+    empty = await router.call("strong", messages, max_tokens=8, run_id="run-empty")
+    assert empty.text.strip() == ""
+    assert empty.usage.prompt_tokens == prompt_tokens
+    assert empty.usage.completion_tokens == 8
+    assert empty.usage.reasoning_tokens == 8
+    assert empty.cost_usd == prompt_tokens + 16
+    assert ledger.spent("run-empty") == empty.cost_usd
+
+    retry = FakeTransport(
+        [
+            ProviderError("empty chat completion", retryable=True),
+            ok("готово", prompt_tokens=1, completion_tokens=1),
+        ]
+    )
+    sink.records.clear()
+    router = LiveRouter(priced, transport=retry, ledger=ledger, sink=sink, sleeper=sleeper)
+    done = await router.call("strong", messages, max_tokens=8, run_id="run-empty")
+    assert done.text == "готово"
+    assert len(retry.calls) == 2
+    assert sink.records[0].status == "error"
+    assert sink.records[0].usage_estimated is True
+    assert sink.records[0].cost_usd == prompt_tokens + 16
+    assert ledger.spent("run-empty") == empty.cost_usd + sink.records[0].cost_usd + done.cost_usd
 
 
 async def test_exhausted_budget_blocks_stream_before_transport(config):
