@@ -132,7 +132,6 @@ export function useOrchestratorChat() {
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || !token || blocked) return;
-      const taskId = state.tasks.at(-1)?.id ?? null;
       dispatch({
         type: "user-message",
         id: `user-${Date.now()}-${state.messages.length}`,
@@ -141,7 +140,7 @@ export function useOrchestratorChat() {
       });
       setPending(true);
       try {
-        await postOrchMessage(cfg, { text: trimmed, task_id: taskId });
+        await postOrchMessage(cfg, { text: trimmed });
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
@@ -151,7 +150,7 @@ export function useOrchestratorChat() {
         setPending(false);
       }
     },
-    [blocked, cfg, noteAuth, state.messages.length, state.tasks, token],
+    [blocked, cfg, noteAuth, state.messages.length, token],
   );
 
   const decide = useCallback(

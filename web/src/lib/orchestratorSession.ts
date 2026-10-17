@@ -11,11 +11,50 @@ import {
   type CheckpointPayload,
   type ClassificationPayload,
   type MessageMode,
+  type NodeDef,
   type OrchEvent,
   type StepPayload,
   type TaskStatus,
   type ValidatorResultPayload,
 } from "./orchestratorTypes";
+
+const NODE_RESULT_ACTIONS = new Set([
+  "get_node",
+  "resolve_node",
+  "edit_node",
+  "edit_node_prompt",
+  "edit_node_params",
+]);
+
+export function isNodeResultAction(action: string): boolean {
+  return NODE_RESULT_ACTIONS.has(action);
+}
+
+function optNum(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function readNodeDef(value: unknown): NodeDef | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.source !== "git" && raw.source !== "db") return null;
+  const params = raw.params && typeof raw.params === "object" ? (raw.params as Record<string, unknown>) : {};
+  return {
+    node_key: typeof raw.node_key === "string" ? raw.node_key : "",
+    prompt_template: typeof raw.prompt_template === "string" ? raw.prompt_template : "",
+    params,
+    source: raw.source,
+    version: optNum(raw.version) ?? 0,
+    group_key: typeof raw.group_key === "string" ? raw.group_key : "",
+    title: typeof raw.title === "string" ? raw.title : "",
+    db_version: optNum(raw.db_version),
+    git_sha256: typeof raw.git_sha256 === "string" ? raw.git_sha256 : "",
+    stale_base: raw.stale_base === true,
+  };
+}
 
 export interface ChatMessage {
   id: string;
@@ -37,6 +76,7 @@ export interface StepView {
   paid: boolean;
   status: "running" | "done" | "failed";
   note: string;
+  node: NodeDef | null;
 }
 
 export interface CheckpointView {
@@ -138,8 +178,10 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
 export const AGENT_LABEL: Record<AgentRole, string> = {
   supervisor: "supervisor",
   planner: "planner",
-  executor: "executor",
   critic: "critic",
+  executor: "executor",
+  classifier: "classifier",
+  summarizer: "summarizer",
 };
 
 function asRecord(payload: unknown): Record<string, unknown> {
@@ -149,6 +191,13 @@ function asRecord(payload: unknown): Record<string, unknown> {
 
 function str(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+/** WS3: task_id — integer. В стейте карточки ключ строковый. */
+function taskKey(value: number | string | null | undefined): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value) return value;
+  return null;
 }
 
 function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
@@ -216,19 +265,24 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     agents: state.agents.map((agent) => ({ ...agent })),
     tasks: state.tasks.map((task) => ({
       ...task,
-      steps: task.steps.map((step) => ({ ...step })),
+      steps: task.steps.map((step) => ({
+        ...step,
+        node: step.node ? { ...step.node } : null,
+      })),
       checkpoints: task.checkpoints.map((checkpoint) => ({ ...checkpoint })),
       validators: [...task.validators],
     })),
     approvals: state.approvals.map((item) => ({ ...item })),
   };
   const payload = asRecord(event.payload);
-  const taskId = event.task_id;
+  const taskId = taskKey(event.task_id);
 
   if (event.type === "ack") {
+    const accepted = payload.accepted === true;
+    const echoed = str(payload.echo) || (accepted ? str(payload.text) : "");
     next.ack = {
-      echo: str(payload.echo),
-      text: str(payload.text, "принял, разбираю"),
+      echo: echoed,
+      text: accepted || !str(payload.text) ? "принял, разбираю" : str(payload.text),
       seq: event.seq,
     };
     return next;
@@ -278,6 +332,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         paid: payload.paid === true,
         status: "running",
         note: "",
+        node: null,
       };
       task.steps.push(step);
     }
@@ -285,6 +340,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     step.action = str(payload.action, step.action);
     if (payload.paid === true) step.paid = true;
     step.note = str(payload.note, step.note);
+    const node = readNodeDef(payload.node);
+    if (node) step.node = node;
     if (event.type === "step_finished") {
       const body = payload as StepPayload & Record<string, unknown>;
       step.status = body.ok === false ? "failed" : "done";

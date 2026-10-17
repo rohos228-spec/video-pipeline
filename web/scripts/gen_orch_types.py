@@ -1,233 +1,444 @@
 #!/usr/bin/env python3
 """Генерация web/src/lib/orchestratorTypes.ts из app/orchestrator/contracts.py.
 
-До freeze contracts (Д+2) файла может не быть. В этом случае скрипт ничего
-не перезаписывает и выходит с кодом 0 — в репозитории остаются ручные типы
-с пометкой «до freeze contracts Д+2».
+Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
+не копируется: если его нет в дереве, скрипт читает
 
-Когда contracts.py появится, скрипт читает Enum (str-значения) и dataclass'ы
-и перезаписывает orchestratorTypes.ts. Ожидаемые имена: OrchEventType,
-TaskStatus, MessageMode, AgentRole, OrchEvent.
+    git show origin/cursor/ws3-agents-core-r1-3c7d:app/orchestrator/contracts.py
+
+во временный файл и импортирует оттуда.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
-  python web/scripts/gen_orch_types.py --self-test
   python web/scripts/gen_orch_types.py --stdout
+  python web/scripts/gen_orch_types.py --self-test
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
+import importlib.util
+import json
+import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
+LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
+CONTRACT_REF = "origin/cursor/ws3-agents-core-r1-3c7d"
+CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
 
-_PY_SCALARS = {
-    "str": "string",
-    "int": "number",
-    "float": "number",
-    "bool": "boolean",
-    "dict": "Record<string, unknown>",
-    "Any": "unknown",
-    "object": "Record<string, unknown>",
+# Имена констант, которые уже импортирует UI.
+CONST_NAMES = {
+    "EventType": "ORCH_EVENT_TYPES",
+    "TaskStatus": "TASK_STATUSES",
+    "MessageMode": "MESSAGE_MODES",
+    "AgentRole": "AGENT_ROLES",
+    "NodeSource": "NODE_SOURCES",
 }
 
+SQL_TS = {
+    "INTEGER": "number",
+    "REAL": "number",
+    "TEXT": "string",
+}
 
-def _ann_to_ts(node: ast.AST | None) -> str:
-    if node is None:
-        return "unknown"
-    if isinstance(node, ast.Name):
-        return _PY_SCALARS.get(node.id, node.id)
-    if isinstance(node, ast.Constant):
-        if node.value is None:
-            return "null"
-        if isinstance(node.value, str):
-            return f'"{node.value}"'
-        return "unknown"
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        left = _ann_to_ts(node.left)
-        right = _ann_to_ts(node.right)
-        if left == "null":
-            return f"{right} | null"
-        if right == "null":
-            return f"{left} | null"
-        return f"{left} | {right}"
-    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
-        base = node.value.id
-        if base in {"list", "List", "Sequence"}:
-            return f"{_ann_to_ts(node.slice)}[]"
-        if base in {"dict", "Dict", "Mapping"}:
-            return "Record<string, unknown>"
-        if base == "Optional":
-            return f"{_ann_to_ts(node.slice)} | null"
-        if base == "Literal":
-            elts: list[ast.AST]
-            if isinstance(node.slice, ast.Tuple):
-                elts = list(node.slice.elts)
-            else:
-                elts = [node.slice]
-            parts = [_ann_to_ts(e) for e in elts]
-            return " | ".join(parts) if parts else "unknown"
-        return f"{base}<{_ann_to_ts(node.slice)}>"
-    if isinstance(node, ast.Attribute):
-        return node.attr
+# Финальное решение куратора: к модели NodeDef из contracts.py
+# добавляются только эти три поля. overridden_in_db и active_version не эмитим.
+NODEDEF_EXTRA: tuple[tuple[str, str, str], ...] = (
+    (
+        "db_version",
+        "number | null",
+        "Финальное решение куратора. В contracts.NodeDef нет.",
+    ),
+    (
+        "git_sha256",
+        "string",
+        "Финальное решение куратора. В contracts.NodeDef нет.",
+    ),
+    (
+        "stale_base",
+        "boolean",
+        "Финальное решение куратора. В contracts.NodeDef нет.",
+    ),
+)
+
+UI_TAIL = """
+/**
+ * Полезные нагрузки событий и REST, которых нет отдельными моделями в contracts.py.
+ * Шина кладёт свободный `payload`. Approve/kill в роутере WS3 (PR #346) нет —
+ * это временный контракт мока, пока ручки не появятся у WS2.
+ */
+
+export interface AckPayload {
+  /** WS3 queue.accept: текст принятой реплики. */
+  text?: string;
+  accepted?: boolean;
+  /** Старый мок. Если нет, UI берёт echo из text при accepted. */
+  echo?: string;
+  message_id?: string;
+}
+
+export interface TokenPayload {
+  text: string;
+}
+
+export interface AgentStatusPayload {
+  agent: AgentRole;
+  status: string;
+  detail?: string;
+  task_status?: TaskStatus;
+  title?: string;
+}
+
+export interface StepPayload {
+  step_id: string;
+  title: string;
+  action?: string;
+  paid?: boolean;
+  ok?: boolean;
+  note?: string;
+  node?: NodeDef;
+}
+
+export interface ApprovalPayload {
+  approval_id: string;
+  title: string;
+  reason: string;
+  risk?: string;
+  action: string;
+  cost_estimate?: number;
+}
+
+export interface CheckpointPayload {
+  checkpoint_id: string;
+  step_id?: string;
+  summary: string;
+  spend?: number;
+}
+
+export interface ValidatorResultPayload {
+  name: string;
+  pass: boolean;
+  details: string;
+  blocking?: boolean;
+}
+
+export interface TaskDonePayload {
+  summary?: string;
+}
+
+export interface TaskFailedPayload {
+  error?: string;
+  summary?: string;
+}
+
+export interface ClassificationPayload {
+  mode: MessageMode;
+  tier?: string;
+  deterministic?: boolean;
+  confidence?: number;
+  detail?: string;
+}
+
+/** POST /api/orchestrator/chat/{session}/message — MessageIn в WS3. */
+export interface OrchOutboundMessage {
+  text: string;
+}
+
+/** Ответ post_message: ack уходит в шину, HTTP его не ждёт. */
+export interface OrchMessageAckHttp {
+  ok: boolean;
+  session: string;
+  ack_seq: number;
+}
+
+export interface OrchApprovalDecision {
+  task_id?: string | null;
+  approval_id: string;
+  reason?: string;
+}
+
+export interface OrchKillRequest {
+  session_id: string;
+  reason?: string;
+}
+
+export interface OrchKillResult {
+  ok: boolean;
+  status?: TaskStatus | string;
+  /** Честная семантика: платный шаг останавливается на границе, не mid-flight. */
+  detail: string;
+}
+"""
+
+
+def _const_name(enum_name: str) -> str:
+    if enum_name in CONST_NAMES:
+        return CONST_NAMES[enum_name]
+    split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", enum_name)
+    split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", split)
+    return split.upper()
+
+
+def _pascal(name: str) -> str:
+    return "".join(part.capitalize() for part in name.split("_") if part)
+
+
+def _dedupe(parts: list[str]) -> str:
+    seen: list[str] = []
+    for part in parts:
+        if part not in seen:
+            seen.append(part)
+    return " | ".join(seen) if seen else "unknown"
+
+
+def schema_to_ts(schema: dict[str, Any]) -> str:
+    if "$ref" in schema:
+        return str(schema["$ref"]).rsplit("/", 1)[-1]
+    if "anyOf" in schema:
+        return _dedupe([schema_to_ts(item) for item in schema["anyOf"]])
+    if "enum" in schema:
+        return _dedupe([json.dumps(item, ensure_ascii=False) for item in schema["enum"]])
+    kind = schema.get("type")
+    if kind == "string":
+        return "string"
+    if kind in {"integer", "number"}:
+        return "number"
+    if kind == "boolean":
+        return "boolean"
+    if kind == "null":
+        return "null"
+    if kind == "array":
+        return f"{schema_to_ts(schema.get('items') or {})}[]"
+    if kind == "object":
+        return "Record<string, unknown>"
     return "unknown"
 
 
-def _enum_strings(node: ast.ClassDef) -> list[str] | None:
-    base_names: list[str] = []
-    for base in node.bases:
-        if isinstance(base, ast.Name):
-            base_names.append(base.id)
-        elif isinstance(base, ast.Attribute):
-            base_names.append(base.attr)
-    if "Enum" not in base_names:
-        return None
-    values: list[str] = []
-    for stmt in node.body:
-        target = None
-        value = None
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-            target = stmt.targets[0]
-            value = stmt.value
-        elif isinstance(stmt, ast.AnnAssign):
-            target = stmt.target
-            value = stmt.value
-        if not isinstance(target, ast.Name) or value is None:
-            continue
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            values.append(value.value)
-    return values
+def _comment(text: str) -> list[str]:
+    clean = " ".join(text.split())
+    if not clean:
+        return []
+    return ["/**", f" * {clean}", " */"]
 
 
-def _is_dataclass(node: ast.ClassDef) -> bool:
-    for dec in node.decorator_list:
-        name = ""
-        if isinstance(dec, ast.Name):
-            name = dec.id
-        elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name):
-            name = dec.func.id
-        elif isinstance(dec, ast.Attribute):
-            name = dec.attr
-        if name == "dataclass":
-            return True
-    return False
-
-
-def _dataclass_fields(node: ast.ClassDef) -> list[tuple[str, str]]:
-    fields: list[tuple[str, str]] = []
-    for stmt in node.body:
-        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            fields.append((stmt.target.id, _ann_to_ts(stmt.annotation)))
-    return fields
-
-
-def render_ts(source: str) -> str:
-    tree = ast.parse(source)
-    enums: list[tuple[str, list[str]]] = []
-    classes: list[tuple[str, list[tuple[str, str]]]] = []
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        values = _enum_strings(node)
-        if values is not None:
-            enums.append((node.name, values))
-            continue
-        if _is_dataclass(node):
-            classes.append((node.name, _dataclass_fields(node)))
-
-    lines: list[str] = [
-        "/**",
-        " * @generated from app/orchestrator/contracts.py",
-        " * Не править руками — python web/scripts/gen_orch_types.py",
-        " */",
-        "",
-    ]
-    for name, values in enums:
-        if not values:
-            continue
-        union = " | ".join(f'"{v}"' for v in values)
-        const = ", ".join(f'"{v}"' for v in values)
-        lines.append(f"export const {name.upper()}_VALUES = [{const}] as const;")
-        lines.append(f"export type {name} = {union};")
+def _render_enums(enums: dict[str, list[str]]) -> list[str]:
+    lines: list[str] = []
+    for name, values in enums.items():
+        const = _const_name(name)
+        joined = ", ".join(json.dumps(value, ensure_ascii=False) for value in values)
+        lines.append(f"export const {const} = [{joined}] as const;")
+        lines.append(f"export type {name} = (typeof {const})[number];")
+        if name == "EventType":
+            lines.append("export type OrchEventType = EventType;")
         lines.append("")
-    for name, fields in classes:
+    return lines
+
+
+def _render_models(models: dict[str, dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for name, schema in models.items():
+        desc = str(schema.get("description") or "").strip()
+        lines.extend(_comment(desc))
         lines.append(f"export interface {name} {{")
-        for fname, ftype in fields:
-            lines.append(f"  {fname}: {ftype};")
+        required = set(schema.get("required") or [])
+        props: dict[str, Any] = schema.get("properties") or {}
+        for prop, prop_schema in props.items():
+            optional = "" if prop in required else "?"
+            lines.append(f"  {prop}{optional}: {schema_to_ts(prop_schema)};")
+        if name == "NodeDef":
+            for field, ts_type, note in NODEDEF_EXTRA:
+                lines.append(f"  /** {note} */")
+                lines.append(f"  {field}?: {ts_type};")
         lines.append("}")
         lines.append("")
-    if not any(name == "OrchEvent" for name, _ in classes):
-        lines.extend(
-            [
-                "export interface OrchEvent<TPayload = Record<string, unknown>> {",
-                "  type: string;",
-                "  task_id: string | null;",
-                "  payload: TPayload;",
-                "  seq: number;",
-                "}",
-                "",
-            ]
-        )
-    return "\n".join(lines).rstrip() + "\n"
+    return lines
+
+
+def _render_tables(tables: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = ["/** Строки таблиц из TABLE_SPECS. */", ""]
+    for table in tables:
+        notes = str(table.get("notes") or "").strip().split("\n")[0]
+        lines.extend(_comment(notes))
+        lines.append(f"export interface {_pascal(table['name'])}Row {{")
+        for column in table.get("columns") or []:
+            base = SQL_TS.get(str(column.get("sql_type")), "unknown")
+            if column.get("nullable", True):
+                base = f"{base} | null"
+            note = str(column.get("note") or column.get("check") or "").strip()
+            if note:
+                lines.append(f"  /** {note} */")
+            lines.append(f"  {column['name']}: {base};")
+        lines.append("}")
+        lines.append("")
+    return lines
+
+
+def _render_fsm(fsm: dict[str, list[str]]) -> list[str]:
+    lines = ["export const FSM_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {"]
+    for src, dsts in fsm.items():
+        rendered = ", ".join(json.dumps(item, ensure_ascii=False) for item in dsts)
+        lines.append(f"  {json.dumps(src, ensure_ascii=False)}: [{rendered}],")
+    lines.append("};")
+    lines.append("")
+    return lines
+
+
+def render_schema(schema: dict[str, Any], source_label: str) -> str:
+    version = str(schema.get("version") or "")
+    lines = [
+        "/**",
+        " * @generated by web/scripts/gen_orch_types.py",
+        " * Не править руками.",
+        f" * source: {source_label}",
+        f" * contract: {version}",
+        " *",
+        " * Расхождение NodeDef с contracts.py (WS3 r1, PR #346):",
+        " * куратор добавил db_version, git_sha256, stale_base.",
+        " * overridden_in_db и active_version в тип ноды не входят.",
+        " */",
+        "",
+        f"export const ORCH_CONTRACT_VERSION = {json.dumps(version, ensure_ascii=False)};",
+        "",
+    ]
+    lines.extend(_render_enums(schema.get("enums") or {}))
+    lines.extend(_render_models(schema.get("models") or {}))
+    lines.extend(_render_tables(schema.get("tables") or []))
+    lines.extend(_render_fsm(schema.get("fsm") or {}))
+    lines.append(UI_TAIL.strip())
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _load_module(path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location("_orch_contracts_gen", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"не удалось загрузить {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_schema() -> tuple[dict[str, Any], str]:
+    """Вернуть (schema, подпись источника). Файл в репозиторий не пишется."""
+    if LOCAL_CONTRACTS.is_file():
+        module = _load_module(LOCAL_CONTRACTS)
+        label = "app/orchestrator/contracts.py"
+        return module.export_contract_schemas(), label
+
+    raw = subprocess.check_output(
+        ["git", "show", f"{CONTRACT_REF}:{CONTRACT_GIT_PATH}"],
+        cwd=ROOT,
+        text=True,
+    )
+    with tempfile.NamedTemporaryFile("w", suffix="_contracts.py", delete=False, encoding="utf-8") as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+    try:
+        module = _load_module(tmp_path)
+        schema = module.export_contract_schemas()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    label = f"git show {CONTRACT_REF}:{CONTRACT_GIT_PATH}"
+    return schema, label
 
 
 def _self_test() -> int:
-    sample = '''
-from enum import Enum
-from dataclasses import dataclass
-
-class OrchEventType(str, Enum):
-    ACK = "ack"
-    TOKEN = "token"
-    CLASSIFICATION = "classification"
-
-class TaskStatus(str, Enum):
-    QUEUED = "queued"
-    DONE = "done"
-
-class MessageMode(str, Enum):
-    INTERRUPT = "interrupt"
-    STEER = "steer"
-    APPEND = "append"
-
-@dataclass
-class OrchEvent:
-    type: str
-    task_id: str | None
-    payload: dict
-    seq: int
-'''
-    text = render_ts(sample)
+    sample = {
+        "version": "test",
+        "enums": {"TaskStatus": ["queued", "done"], "EventType": ["ack", "token"]},
+        "models": {
+            "NodeDef": {
+                "properties": {
+                    "node_key": {"type": "string"},
+                    "source": {"$ref": "#/$defs/NodeSource"},
+                    "version": {"type": "integer"},
+                },
+                "required": ["node_key"],
+                "type": "object",
+            },
+            "OrchEvent": {
+                "properties": {
+                    "type": {"type": "string"},
+                    "task_id": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                    "payload": {"type": "object"},
+                    "seq": {"type": "integer"},
+                    "session_id": {"type": "string"},
+                },
+                "required": ["type", "seq"],
+                "type": "object",
+            },
+        },
+        "tables": [
+            {
+                "name": "node_defs",
+                "notes": "spec",
+                "columns": [
+                    {"name": "node_key", "sql_type": "TEXT", "nullable": False},
+                    {"name": "active_version", "sql_type": "INTEGER", "nullable": True},
+                ],
+            }
+        ],
+        "fsm": {"queued": ["done"]},
+    }
+    text = render_schema(sample, "self-test")
     required = [
-        '"ack"',
-        '"token"',
-        '"classification"',
-        '"queued"',
-        '"interrupt"',
-        '"steer"',
-        '"append"',
-        "export interface OrchEvent",
-        "task_id: string | null;",
-        "seq: number;",
+        "export const TASK_STATUSES",
+        "export type TaskStatus",
+        "export const ORCH_EVENT_TYPES",
+        "export interface NodeDef",
+        "db_version?: number | null;",
+        "git_sha256?: string;",
+        "stale_base?: boolean;",
+        "task_id?: number | null;",
+        "session_id?: string;",
+        "export interface NodeDefsRow",
+        "active_version: number | null;",
+        "export interface OrchOutboundMessage",
+        "ack_seq: number;",
     ]
     missing = [item for item in required if item not in text]
     if missing:
         print("self-test failed, missing:", ", ".join(missing), file=sys.stderr)
-        print(text, file=sys.stderr)
         return 1
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "contracts.py"
-        path.write_text(sample, encoding="utf-8")
-        again = render_ts(path.read_text(encoding="utf-8"))
-    if again != text:
+    if render_schema(sample, "self-test") != text:
         print("self-test failed: unstable render", file=sys.stderr)
         return 1
+
+    schema, label = load_schema()
+    live = render_schema(schema, label)
+    live_need = [
+        '"message"',
+        "export interface NodeDef",
+        "prompt_template?: string;",
+        "source?: NodeSource;",
+        "db_version?: number | null;",
+        "git_sha256?: string;",
+        "stale_base?: boolean;",
+        "export interface OrchEvent",
+        "session_id?: string;",
+        "export const ORCH_CONTRACT_VERSION = \"ws3-r1\"",
+        "git show origin/cursor/ws3-agents-core-r1-3c7d:app/orchestrator/contracts.py",
+        "export const LLM_PROVIDER",
+    ]
+    if LOCAL_CONTRACTS.is_file():
+        live_need[-1] = "app/orchestrator/contracts.py"
+    missing_live = [item for item in live_need if item not in live]
+    if missing_live:
+        print("self-test failed on live contracts, missing:", ", ".join(missing_live), file=sys.stderr)
+        return 1
+    forbidden = [item for item in ("overridden_in_db?:", "active_version?:") if item in live]
+    if forbidden:
+        print("self-test failed, NodeDef must not include:", ", ".join(forbidden), file=sys.stderr)
+        return 1
+    if LOCAL_CONTRACTS.is_file():
+        print("self-test note: local contracts.py exists, git show path was not required")
     print("gen_orch_types self-test ok")
     return 0
 
@@ -235,24 +446,22 @@ class OrchEvent:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Сгенерировать TS-типы оркестратора из contracts.py")
     parser.add_argument("--stdout", action="store_true", help="печатать TS, не записывая файл")
-    parser.add_argument("--self-test", action="store_true", help="прогнать парсер на встроенном образце")
+    parser.add_argument("--self-test", action="store_true", help="проверить рендер и живой contracts.py")
     args = parser.parse_args()
     if args.self_test:
         return _self_test()
-    if not CONTRACTS.is_file():
-        print(
-            f"contracts.py ещё нет ({CONTRACTS}). "
-            "Типы остаются ручными: до freeze contracts Д+2. Файл не перезаписан."
-        )
-        return 0
-    source = CONTRACTS.read_text(encoding="utf-8")
-    rendered = render_ts(source)
+    schema, label = load_schema()
+    rendered = render_schema(schema, label)
     if args.stdout:
         sys.stdout.write(rendered)
         return 0
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(rendered, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(ROOT)}")
+    print(f"wrote {OUT.relative_to(ROOT)} from {label}")
+    if LOCAL_CONTRACTS.exists():
+        print("local contracts.py was used")
+    else:
+        print("contracts.py was not copied into the branch")
     return 0
 
 

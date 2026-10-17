@@ -5,7 +5,13 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | kill | reconnect | idle
+ *   stream | interrupt | approval | budget | kill | reconnect | idle
+ *
+ * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
+ * {type, task_id:number|null, payload, seq, session_id}.
+ * POST message {text} → {ok, session, ack_seq}. 401 {detail:"unauthorized"}.
+ * Replay: seq > Last-Event-ID.
+ * Approve/kill в роутере WS3 нет — мок оставляет их для UI.
  * Любой другой токен и пустой Authorization — 401.
  *
  * События копятся в памяти сессии и отдаются повторно по Last-Event-ID.
@@ -93,6 +99,7 @@ function emit(session, type, taskId, payload) {
     task_id: taskId,
     payload,
     seq: ++session.seq,
+    session_id: session.id,
   };
   session.events.push(event);
   for (const client of session.clients) {
@@ -116,6 +123,32 @@ function dropClients(session) {
   }
 }
 
+const NODE_DB = {
+  node_key: "n_scenes_to_frames",
+  prompt_template: "",
+  params: {},
+  source: "db",
+  version: 4,
+  group_key: "scenes",
+  title: "Сцены в кадры",
+  db_version: 4,
+  git_sha256: "a8b5a03f",
+  stale_base: false,
+};
+
+function ackPayload(session) {
+  return { text: session.lastEcho || "", accepted: true };
+}
+
+function classPayload(mode, detail) {
+  return { mode, tier: "fast", deterministic: true, confidence: 1, detail };
+}
+
+const NODE_STALE = {
+  ...NODE_DB,
+  stale_base: true,
+};
+
 function scenarioOf(req, url) {
   const header = req.headers["x-orch-scenario"];
   const fromHeader = Array.isArray(header) ? header[0] : header;
@@ -123,7 +156,7 @@ function scenarioOf(req, url) {
 }
 
 async function runStream(session, taskId) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo: session.lastEcho || "" });
+  emit(session, "ack", taskId, ackPayload(session));
   await sleep(40);
   if (session.killed) return;
   emit(session, "classification", taskId, {
@@ -185,6 +218,36 @@ async function runStream(session, taskId) {
     summary: "код проверен, можно идти дальше",
     spend: 0,
   });
+  emit(session, "step_started", taskId, {
+    step_id: "s-node",
+    title: "get_node",
+    action: "get_node",
+    paid: false,
+    node: NODE_DB,
+  });
+  emit(session, "step_finished", taskId, {
+    step_id: "s-node",
+    title: "get_node",
+    action: "get_node",
+    paid: false,
+    ok: true,
+    node: NODE_DB,
+  });
+  emit(session, "step_started", taskId, {
+    step_id: "s-edit",
+    title: "edit_node",
+    action: "edit_node",
+    paid: false,
+    node: NODE_STALE,
+  });
+  emit(session, "step_finished", taskId, {
+    step_id: "s-edit",
+    title: "edit_node",
+    action: "edit_node",
+    paid: false,
+    ok: true,
+    node: NODE_STALE,
+  });
   emit(session, "agent_status", taskId, {
     agent: "supervisor",
     status: "done",
@@ -196,7 +259,7 @@ async function runStream(session, taskId) {
 }
 
 async function runInterruptStart(session, taskId) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo: session.lastEcho || "" });
+  emit(session, "ack", taskId, ackPayload(session));
   await sleep(30);
   emit(session, "classification", taskId, {
     mode: "append",
@@ -226,7 +289,7 @@ async function runInterruptStart(session, taskId) {
 }
 
 function runInterruptFollowup(session, taskId, echo) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo });
+  emit(session, "ack", taskId, { text: echo, accepted: true });
   setTimeout(() => {
     session.interrupted = true;
     emit(session, "classification", taskId, {
@@ -252,7 +315,7 @@ function runInterruptFollowup(session, taskId, echo) {
 }
 
 async function runApproval(session, taskId) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo: session.lastEcho || "" });
+  emit(session, "ack", taskId, ackPayload(session));
   await sleep(30);
   emit(session, "classification", taskId, {
     mode: "append",
@@ -272,6 +335,21 @@ async function runApproval(session, taskId) {
     emit(session, "token", taskId, { text: ch });
     await sleep(8);
   }
+  emit(session, "step_started", taskId, {
+    step_id: "s-node",
+    title: "get_node",
+    action: "get_node",
+    paid: false,
+    node: NODE_STALE,
+  });
+  emit(session, "step_finished", taskId, {
+    step_id: "s-node",
+    title: "get_node",
+    action: "get_node",
+    paid: false,
+    ok: true,
+    node: NODE_STALE,
+  });
   emit(session, "approval_required", taskId, {
     approval_id: "appr-1",
     title: "Запустить run_node",
@@ -329,7 +407,7 @@ async function runApproval(session, taskId) {
 }
 
 async function runKillScenario(session, taskId) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo: session.lastEcho || "" });
+  emit(session, "ack", taskId, ackPayload(session));
   await sleep(20);
   emit(session, "classification", taskId, {
     mode: "append",
@@ -359,7 +437,7 @@ async function runKillScenario(session, taskId) {
 }
 
 async function runReconnect(session, taskId) {
-  emit(session, "ack", taskId, { text: "принял, разбираю", echo: session.lastEcho || "" });
+  emit(session, "ack", taskId, ackPayload(session));
   await sleep(40);
   emit(session, "classification", taskId, {
     mode: "append",
@@ -377,15 +455,33 @@ async function runReconnect(session, taskId) {
   emit(session, "task_done", taskId, { summary: "" });
 }
 
+async function runBudget(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "лимит бюджета"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Бюджет",
+    detail: "budget_exhausted",
+  });
+  emit(session, "approval_required", taskId, {
+    reason: "budget_exhausted",
+    action: "run_node",
+    risk: "high",
+  });
+}
+
 function startScenario(session, scenario, text) {
   session.messageCount += 1;
   session.lastEcho = text;
-  const taskId = session.currentTaskId || `task-${session.messageCount}`;
   if (scenario === "interrupt" && session.messageCount > 1) {
-    runInterruptFollowup(session, session.currentTaskId || taskId, text);
+    runInterruptFollowup(session, session.currentTaskId, text);
     return;
   }
-  session.currentTaskId = `task-${session.messageCount}`;
+  session.taskSeq = (session.taskSeq || 0) + 1;
+  session.currentTaskId = session.taskSeq;
   const id = session.currentTaskId;
   session.killed = false;
   session.interrupted = false;
@@ -397,6 +493,10 @@ function startScenario(session, scenario, text) {
     void runApproval(session, id);
     return;
   }
+  if (scenario === "budget") {
+    void runBudget(session, id);
+    return;
+  }
   if (scenario === "kill") {
     void runKillScenario(session, id);
     return;
@@ -406,7 +506,7 @@ function startScenario(session, scenario, text) {
     return;
   }
   if (scenario === "idle") {
-    emit(session, "ack", id, { text: "принял, разбираю", echo: text });
+    emit(session, "ack", id, ackPayload(session));
     return;
   }
   void runStream(session, id);
@@ -498,7 +598,7 @@ const server = http.createServer(async (req, res) => {
     const session = sessionOf(decodeURIComponent(parts[3]));
     const scenario = scenarioOf(req, url);
     startScenario(session, scenario, text);
-    sendJson(res, 200, { ok: true, message_id: `m-${session.messageCount}` });
+    sendJson(res, 200, { ok: true, session: session.id, ack_seq: session.seq });
     return;
   }
 

@@ -15,8 +15,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { AGENT_LABEL, TASK_STATUS_LABEL, type ApprovalView } from "@/lib/orchestratorSession";
-import type { TaskStatus } from "@/lib/orchestratorTypes";
+import {
+  AGENT_LABEL,
+  isNodeResultAction,
+  TASK_STATUS_LABEL,
+  type ApprovalView,
+  type StepView,
+} from "@/lib/orchestratorSession";
+import type { NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
 
@@ -152,6 +158,11 @@ export function OrchestratorWorkspace() {
                   </span>
                 </div>
               ))}
+              {chat.state.tasks.flatMap((item) =>
+                item.steps
+                  .filter((step) => step.node && isNodeResultAction(step.action))
+                  .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
+              )}
               {openApprovals.map((approval) => (
                 <ApprovalCard
                   key={approval.id}
@@ -266,6 +277,7 @@ export function OrchestratorWorkspace() {
                           {step.title}
                           {step.paid ? " · платный" : ""}
                           {step.note ? ` · ${step.note}` : ""}
+                          {step.node ? <NodeDefMarks node={step.node} /> : null}
                         </li>
                       ))}
                     </ul>
@@ -393,6 +405,42 @@ function TokenGate({
   );
 }
 
+function NodeDefMarks({ node }: { node: NodeDef }) {
+  const fromDb = node.source === "db";
+  if (!fromDb && !node.stale_base) return null;
+  const version = typeof node.db_version === "number" ? node.db_version : null;
+  return (
+    <div className="mt-1 flex flex-col items-start gap-1">
+      {fromDb ? (
+        <Badge data-testid="orch-node-badge" variant="info" className="normal-case tracking-normal">
+          {version != null ? `из БД, v${version}` : "из БД"}
+        </Badge>
+      ) : null}
+      {node.stale_base ? (
+        <p data-testid="orch-node-stale" className="text-[10px] leading-snug text-warning">
+          git-шаблон изменился после версии в БД
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function NodeResultCard({ step }: { step: StepView }) {
+  if (!step.node) return null;
+  return (
+    <div
+      data-testid="orch-node-result"
+      className="mb-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2"
+    >
+      <div className="text-[11px] text-white/70">
+        {step.action}
+        {step.node.node_key ? ` · ${step.node.node_key}` : ""}
+      </div>
+      <NodeDefMarks node={step.node} />
+    </div>
+  );
+}
+
 function ApprovalCard({
   approval,
   onApprove,
@@ -402,13 +450,20 @@ function ApprovalCard({
   onApprove: () => void;
   onReject: () => void;
 }) {
+  const budget = approval.reason === "budget_exhausted";
   return (
     <div
       data-testid="orch-approval"
       className="mb-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-3"
     >
-      <div className="text-xs font-semibold text-white">{approval.title}</div>
-      <p className="mt-1 text-[11px] leading-relaxed text-white/70">{approval.reason}</p>
+      <div className="text-xs font-semibold text-white" data-testid={budget ? "orch-budget" : undefined}>
+        {budget ? "Бюджет исчерпан" : approval.title}
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-white/70">
+        {budget
+          ? "Лимит прогона выбран. Задача ждёт подтверждения, новые платные шаги не стартуют."
+          : approval.reason}
+      </p>
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}
         {approval.risk ? ` · ${approval.risk}` : ""}

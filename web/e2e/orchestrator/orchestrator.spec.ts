@@ -42,13 +42,17 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-composer").fill("собери раскадровку");
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-transcript")).toContainText("Соберу");
-    await saveShot(page, "orch-streaming");
     await expect(page.getByTestId("orch-ack")).toContainText("принял, разбираю");
     await expect(page.getByTestId("orch-transcript")).toContainText(
       "Соберу раскадровку сцен 3–5 и проверю длину закадра.",
     );
     await expect(page.getByTestId("orch-classification")).toContainText("append");
     await expect(page.getByTestId("orch-task-panel")).toContainText("код проверен");
+    await expect(page.getByTestId("orch-transcript")).toContainText("из БД, v4");
+    await expect(page.getByTestId("orch-transcript")).toContainText("git-шаблон изменился после версии в БД");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("из БД, v4");
+    await expect(page.getByTestId("orch-task-panel")).toContainText("git-шаблон изменился после версии в БД");
+    await saveShot(page, "orch-streaming");
     await expect(page.getByTestId("orch-agent-supervisor")).toContainText("done");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
   });
@@ -83,11 +87,23 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-composer").fill("запусти ноду");
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-transcript")).toContainText("из БД, v4");
+    await expect(page.getByTestId("orch-transcript")).toContainText("git-шаблон изменился после версии в БД");
     await saveShot(page, "orch-approval");
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
     await page.getByTestId("orch-approve").click();
     await expect(page.getByTestId("orch-task-summary")).toContainText("Одобрено");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+  });
+
+  test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
+    await openWithToken(page, "budget", "budget-1");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
+    await expect(page.getByTestId("orch-approval")).toContainText("Лимит прогона выбран");
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    await saveShot(page, "orch-budget");
   });
 
   test("kill switch честно говорит про границу платного шага", async ({ page }) => {

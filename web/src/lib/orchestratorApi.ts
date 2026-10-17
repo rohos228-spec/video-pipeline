@@ -2,9 +2,12 @@
  * Клиент оркестратора: SSE через fetch (EventSource не умеет Authorization)
  * и REST message / approve / reject / kill.
  *
- * Эндпоинты согласованы с планом 3.2 и черновиком WS2/WS3.
- * Пока WS3 не отдал живой SSE, базовый URL можно подменить мок-сервером
- * (`?orchApi=http://127.0.0.1:8799`).
+ * Формат сверен с WS3 (PR #346, `orchestrator_chat.py`):
+ * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
+ * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
+ * replay по Last-Event-ID (seq строго больше).
+ * Approve/kill в том роутере нет — мок держит их до WS2.
+ * Базовый URL можно подменить мок-сервером (`?orchApi=http://127.0.0.1:8799`).
  */
 
 import type {
@@ -164,18 +167,28 @@ export function takeSseEvents(buffer: string): { events: ParsedSse[]; rest: stri
   return { events, rest };
 }
 
+function readTaskId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+/** data — JSON OrchEvent: type, task_id (int|null), payload, seq, session_id. id кадра = seq. */
 export function eventFromSse(parsed: ParsedSse): OrchEvent | null {
   try {
     const json = JSON.parse(parsed.data) as Partial<OrchEvent> & { seq?: number };
     const seqFromId = parsed.id ? Number(parsed.id) : NaN;
     const seq = typeof json.seq === "number" ? json.seq : seqFromId;
     if (!Number.isFinite(seq)) return null;
-    const type = (json.type ?? parsed.event) as OrchEvent["type"];
+    const type = String(json.type ?? parsed.event);
+    const payload =
+      json.payload && typeof json.payload === "object" ? (json.payload as Record<string, unknown>) : {};
     return {
       type,
-      task_id: json.task_id ?? null,
-      payload: (json.payload ?? {}) as Record<string, unknown>,
+      task_id: readTaskId(json.task_id),
+      payload,
       seq,
+      session_id: typeof json.session_id === "string" ? json.session_id : "",
     };
   } catch {
     return null;
