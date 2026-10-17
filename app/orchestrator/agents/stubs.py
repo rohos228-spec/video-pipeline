@@ -76,10 +76,13 @@ class ActionBackedExecutor:
         self.router = router
         self.last_response: Any = None
 
-    async def run(self, step: PlanStep, ctx: dict[str, Any]) -> ActionResult:
+    async def run(self, step: PlanStep, ctx: dict[str, Any]) -> Any:
         self.last_response = None
         result = await self.actions.execute(step.action, dict(step.params), dict(ctx))
         if isinstance(result, ActionResult):
+            return result
+        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        if status in {"ok", "failed", "approval_required"}:
             return result
         return ActionResult.model_validate(result)
 

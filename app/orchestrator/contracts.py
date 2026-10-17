@@ -659,7 +659,10 @@ class ActionMetadata(BaseModel):
 
     ``read_only=True`` — явное разрешение. Нет метаданных или нет явного
     ``read_only`` — действие потенциально разрушительное.
-    ``destructive=True`` — жёсткий запрет, approval его не снимает.
+    ``destructive=True`` — вызов только после одобренного ядром ``change_id``.
+    Имя с маркером удаления остаётся ``deletion_blocked``: approval его не снимает.
+    Поле ``paid`` в эту модель не добавляется: его читает ``registry_marks_paid``
+    из dict будущего реестра.
     """
 
     risk: str = "high"
@@ -688,7 +691,8 @@ class ActionExecutor(Protocol):
         """Метаданные реестра. ``None`` — имя неизвестно.
 
         Неизвестное имя или отсутствие явного ``read_only=True`` —
-        потенциально разрушительное. ``destructive=True`` — запрет без approval.
+        потенциально разрушительное. ``destructive=True`` и ``paid``
+        ждут одобренный ядром ``change_id``, это не ``deletion_blocked``.
         """
 
 
@@ -1159,6 +1163,153 @@ def step_with_registry_paid(step: PlanStep, registry: Any | None) -> PlanStep:
     return step.model_copy(update={"paid": True})
 
 
+def metadata_call_gate(action: str, registry: Any | None) -> str | None:
+    """``paid`` / ``destructive`` / ``unknown`` — вызов только с ядровым ``change_id``.
+
+    ``None`` — ``metadata_of`` нет (открытый мок) или запись не платная и не
+    разрушительная. ``unknown`` — ``KeyError``: имени нет, это и paid, и destructive.
+    ``value is None`` сюда не входит: это прежний запрет экрана удалений.
+    """
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind == "miss":
+        return "unknown"
+    if kind != "value" or meta is None:
+        return None
+    if bool(_meta_field(meta, "destructive", False)):
+        return "destructive"
+    if bool(_meta_field(meta, "paid", False)):
+        return "paid"
+    return None
+
+
+def _has_field(obj: Any, key: str) -> bool:
+    if isinstance(obj, dict):
+        return key in obj
+    return hasattr(obj, key)
+
+
+def _envelope_field(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+_R21_STATUSES = frozenset({"ok", "failed", "approval_required"})
+
+
+def envelope_status(result: Any) -> str | None:
+    """Статус конверта r2.1 или прежний ``ActionResult.ok``.
+
+    Поле читается лениво (dict / getattr). Модель WS2 не импортируется.
+    """
+    status = _envelope_field(result, "status", None)
+    if status in _R21_STATUSES:
+        return str(status)
+    ok = _envelope_field(result, "ok", None)
+    if ok is True:
+        return "ok"
+    if ok is False:
+        return "failed"
+    return None
+
+
+def envelope_body(result: Any) -> Any:
+    """Тело r2.1 ``result``. У старого ``ActionResult`` — сам объект."""
+    if _envelope_field(result, "status", None) in _R21_STATUSES:
+        return _envelope_field(result, "result", None)
+    return result
+
+
+def envelope_change_id(result: Any) -> str | None:
+    """``change_id`` из тела, иначе с конверта. Пустая строка — нет id."""
+    body = envelope_body(result)
+    raw = _envelope_field(body, "change_id", None) if body is not None else None
+    if raw is None:
+        raw = _envelope_field(result, "change_id", None)
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text or None
+
+
+def envelope_warnings(result: Any) -> list[str]:
+    raw = _envelope_field(result, "warnings", None)
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw]
+
+
+def envelope_skipped(result: Any) -> list[str]:
+    body = envelope_body(result)
+    raw = _envelope_field(body, "skipped", None) if body is not None else None
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw]
+
+
+def _nonempty_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _version_ok(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return value >= 1
+
+
+def r21_result_problem(result: Any) -> str | None:
+    """Почему ``ok`` r2.1 нельзя засчитать. ``None`` — не конверт или он годный.
+
+    Правка без ``version`` либо без ``before``/непустого ``snapshot_id``
+    (и ``snapshot_ref``, если исполнитель прислал его) — ``unversioned_edit``.
+    ``marked is not True`` — ``soft_delete_unmarked``. Нет ссылки на снимок —
+    ``missing_snapshot_ref``. ``partial: true`` без ``skipped`` —
+    ``partial_without_skipped``.
+    """
+    if envelope_status(result) != "ok":
+        return None
+    body = envelope_body(result)
+    if body is None:
+        return None
+    partial = _r21_partial_problem(body, result)
+    edit = _r21_edit_problem(body)
+    soft = _r21_soft_delete_problem(body)
+    return edit or soft or partial
+
+
+def _r21_partial_problem(body: Any, result: Any) -> str | None:
+    if not _has_field(body, "partial"):
+        return None
+    if _envelope_field(body, "partial", False) is True and not envelope_skipped(result):
+        return "partial_without_skipped"
+    return None
+
+
+def _r21_edit_problem(body: Any) -> str | None:
+    if not any(_has_field(body, key) for key in ("node_ref", "diff", "version", "base_version")):
+        return None
+    before = _envelope_field(body, "before", None)
+    snap = _envelope_field(body, "snapshot_id", None)
+    ref = _envelope_field(body, "snapshot_ref", None)
+    anchored = before is not None or _nonempty_text(snap) or _nonempty_text(ref)
+    if _version_ok(_envelope_field(body, "version", None)) and anchored:
+        return None
+    return "unversioned_edit"
+
+
+def _r21_soft_delete_problem(body: Any) -> str | None:
+    if not _has_field(body, "marked"):
+        return None
+    if _envelope_field(body, "marked", None) is not True:
+        return "soft_delete_unmarked"
+    snap = _envelope_field(body, "snapshot_id", None)
+    ref = _envelope_field(body, "snapshot_ref", None)
+    archive = _envelope_field(body, "archive_ref", None)
+    if _nonempty_text(snap) or _nonempty_text(ref) or _nonempty_text(archive):
+        return None
+    return "missing_snapshot_ref"
+
+
 def action_unknown(action: str, registry: Any | None) -> bool:
     """Имени нет в реестре.
 
@@ -1221,6 +1372,8 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     kind, _meta = lookup_action_metadata(action, registry)
     if kind == "miss":
         return None
+    if metadata_call_gate(action, registry) in {"paid", "destructive"}:
+        return None
     if not explicitly_safe(action, registry):
         return "name"
     return None
@@ -1240,6 +1393,8 @@ def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
         return True
     kind, _meta = lookup_action_metadata(step.action, registry)
     if kind == "miss":
+        return False
+    if metadata_call_gate(step.action, registry) in {"paid", "destructive"}:
         return False
     return not explicitly_safe(step.action, registry)
 

@@ -79,13 +79,19 @@ from app.orchestrator.contracts import (
     budget_exhausted_response,
     can_transition,
     ceiling_blocks,
+    envelope_change_id,
+    envelope_skipped,
+    envelope_status,
+    envelope_warnings,
     forecast_cost,
     forecast_unknown,
     grant_forbidden,
+    metadata_call_gate,
     orch_run_id,
     paid_step_identity,
     plan_missing_verify,
     plan_without_client_money,
+    r21_result_problem,
     server_forecast_limit,
     step_is_deletion,
     step_is_readonly,
@@ -190,6 +196,7 @@ class Supervisor:
         self._appr_owner: dict[str, tuple[int, str]] = {}
         self._appr_decided: dict[str, str | None] = {}
         self._appr_loaded: set[int] = set()
+        self._decided_change_id: dict[int, str] = {}
 
     async def start_task(
         self,
@@ -293,8 +300,8 @@ class Supervisor:
         }
 
     def _step_needs_separate_approval(self, step: PlanStep) -> bool:
-        """Привязка проекта не заменяет approve риска и платного шага."""
-        if step.paid:
+        """Привязка проекта не заменяет approve риска, paid и destructive."""
+        if step.paid or metadata_call_gate(step.action, self.actions):
             return True
         return effective_risk(self.actions, step) in APPROVAL_RISKS
 
@@ -1345,6 +1352,22 @@ class Supervisor:
                     extra={"action": step.action, "risk": risk.value, "plan_risk": step.risk},
                 )
                 return
+            gate = metadata_call_gate(step.action, self.actions)
+            if gate and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
+                await self._checkpoint(task_id, session_id, plan, index)
+                reason = "paid" if gate == "paid" else "destructive"
+                extra = {
+                    "action": step.action,
+                    "risk": risk.value,
+                    "plan_risk": step.risk,
+                    "gate": gate,
+                }
+                if gate == "unknown":
+                    extra["paid"] = True
+                    extra["destructive"] = True
+                self._block_reason[task_id] = reason
+                await self._escalate(task_id, session_id, reason, extra=extra)
+                return
 
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None
             if skip:
@@ -1469,6 +1492,27 @@ class Supervisor:
                     "task_failed",
                     {"error": "step_failed", "action": step.action},
                     task_id=task_id,
+                )
+                return
+
+            held = next(
+                (
+                    (item, offset, result)
+                    for offset, (item, result) in enumerate(zip(started, results, strict=True))
+                    if envelope_status(result) == "approval_required"
+                ),
+                None,
+            )
+            if held is not None:
+                (done_step, step_id), offset, result = held
+                await self._hold_executor_approval(
+                    task_id,
+                    session_id,
+                    done_step,
+                    step_id,
+                    plan,
+                    index + offset,
+                    result,
                 )
                 return
 
@@ -1697,10 +1741,53 @@ class Supervisor:
         self._step_recorded.add(step_id)
         return True
 
-    def _write_step_done(self, task_id: int, step: PlanStep, step_id: int, result: Any) -> None:
-        ok = bool(getattr(result, "ok", False))
-        cost = float(getattr(result, "cost", 0) or 0)
-        change_id = getattr(result, "change_id", None) if ok else None
+    async def _hold_executor_approval(
+        self,
+        task_id: int,
+        session_id: str,
+        step: PlanStep,
+        step_id: int,
+        plan: list[PlanStep],
+        position: int,
+        result: Any,
+    ) -> None:
+        """Исполнитель вернул ``approval_required``. Чужой ``change_id`` не пишется.
+
+        Карточка — событие ядра ``approval_required`` с новым ``orch-appr-*``.
+        ``ApprovalRequired`` контракта r2.1 этого поля не несёт.
+        """
+        if not self._claim_step(step_id):
+            return
+        await self._checkpoint(task_id, session_id, plan, position)
+        extra: dict[str, Any] = {"action": step.action, "source": "executor"}
+        warnings = envelope_warnings(result)
+        if warnings:
+            extra["warnings"] = warnings
+        self._block_reason[task_id] = "approval_required"
+        await self._escalate(task_id, session_id, "approval_required", extra=extra)
+        minted = self._appr_open.get(task_id)
+        self.tasks.finish_step(step_id, "waiting_approval", minted, 0.0)
+
+    def _write_step_done(
+        self,
+        task_id: int,
+        step: PlanStep,
+        step_id: int,
+        result: Any,
+    ) -> tuple[str | None, str | None]:
+        """Записать шаг. ``(problem, change_id)``: problem — шаг не ``done``."""
+        ok = envelope_status(result) == "ok"
+        raw_cost = result.get("cost") if isinstance(result, dict) else getattr(result, "cost", 0)
+        cost = float(raw_cost or 0)
+        gated = metadata_call_gate(step.action, self.actions) is not None
+        core_id = self._decided_change_id.get(task_id) if gated else None
+        problem = "unapproved_action" if ok and gated and not core_id else None
+        if problem is None and ok:
+            problem = r21_result_problem(result)
+        if problem:
+            self.tasks.finish_step(step_id, problem, None, cost)
+            return problem, None
+        change_id = (core_id or envelope_change_id(result)) if ok else None
         self.tasks.finish_step(step_id, "done" if ok else "failed", change_id, cost)
         if ok and change_id:
             self._change_ids.setdefault(task_id, []).append(str(change_id))
@@ -1711,6 +1798,7 @@ class Supervisor:
                 self.tasks.add_spend(task_id, actions=cost)
             else:
                 self.tasks.add_spend(task_id, internal=cost)
+        return None, change_id
 
     async def _run_parallel(self, session_id: str, steps: list[PlanStep], ctx: dict[str, Any]) -> list[Any]:
         return await self._cancellable(session_id, run_many(self.executor, steps, ctx))
@@ -1876,22 +1964,45 @@ class Supervisor:
         position: int,
     ) -> bool:
         """True — шаг успешен или уже записан. ``ok=False`` не done и не paid-retry."""
-        ok = bool(getattr(result, "ok", False))
         if not self._claim_step(step_id):
             return True
-        self._write_step_done(task_id, step, step_id, result)
+        problem, change_id = self._write_step_done(task_id, step, step_id, result)
+        if problem:
+            await self.bus.publish(
+                session_id,
+                problem,
+                {
+                    "position": position,
+                    "action": step.action,
+                    "status": problem,
+                    "ok": False,
+                },
+                task_id=task_id,
+            )
+            current = self._status(task_id)
+            if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
+                await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error=problem)
+                await self.bus.publish(
+                    session_id,
+                    "task_failed",
+                    {"error": problem, "action": step.action},
+                    task_id=task_id,
+                )
+            return False
         await self.bus.publish(
             session_id,
             "step_finished",
             {
                 "position": position,
                 "action": step.action,
-                "ok": bool(getattr(result, "ok", False)),
-                "change_id": getattr(result, "change_id", None),
+                "ok": envelope_status(result) == "ok",
+                "change_id": change_id,
+                "warnings": envelope_warnings(result),
+                "skipped": envelope_skipped(result),
             },
             task_id=task_id,
         )
-        return ok
+        return envelope_status(result) == "ok"
 
     def _skip_reason(
         self,
@@ -2145,6 +2256,7 @@ class Supervisor:
         label = decision.value if decision is not None else None
         if change_id:
             self._appr_decided[change_id] = label
+            self._decided_change_id[key] = change_id
             if label != ApprovalDecision.retry_step.value:
                 self._appr_open[key] = None
         await self.bus.publish(
@@ -2196,6 +2308,7 @@ class Supervisor:
                 continue
             label = payload.get("decision")
             self._appr_decided[change_id] = label if isinstance(label, str) else None
+            self._decided_change_id[key] = change_id
             if (
                 self._appr_decided[change_id] != ApprovalDecision.retry_step.value
                 and self._appr_open.get(key) == change_id
