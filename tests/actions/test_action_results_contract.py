@@ -84,6 +84,18 @@ def test_prompt_create_master_is_destructive() -> None:
     assert meta.needs_approval is True
 
 
+def test_soft_delete_ok_requires_marked_true() -> None:
+    payload = {
+        "change_id": "orch-appr-1-1",
+        "marked": False,
+        "restore_action": "history.rollback",
+        "snapshot_id": "snap-1",
+    }
+    SoftDeleteResult.model_validate(payload)
+    with pytest.raises(ValidationError):
+        ActionResult.model_validate({"status": "ok", "result": payload, "error": None})
+
+
 def test_soft_delete_result_requires_snapshot_ref() -> None:
     with pytest.raises(ValidationError):
         SoftDeleteResult(

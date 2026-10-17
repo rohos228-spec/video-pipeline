@@ -229,6 +229,12 @@ class ActionResult(BaseModel):
             raise ValueError("approval_required: result это ApprovalRequired")
         if self.status == "ok" and isinstance(self.result, ApprovalRequired):
             raise ValueError("ok не несёт ApprovalRequired")
+        if (
+            self.status == "ok"
+            and isinstance(self.result, SoftDeleteResult)
+            and self.result.marked is not True
+        ):
+            raise ValueError("ok требует marked=true")
         return self
 
 
