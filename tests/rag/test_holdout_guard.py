@@ -351,18 +351,19 @@ def test_short_clean_pool_shrinks_quotas_from_the_tail() -> None:
     }
 
 
-def test_filtered_project65_pool_is_not_rewritten() -> None:
-    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, HoldoutPoolError, build_holdout3_document, load_holdout3_queries
+def test_stub_pool_still_raises_and_the_frozen_file_stays() -> None:
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH, HoldoutPoolError, draw, filter_pool, load_holdout3_queries, project65_records
 
     before = file_sha256(HOLDOUT3_PATH)
     assert before == FROZEN_SHA256["precision_live_holdout3.json"]["sha256"]
-    with pytest.raises(HoldoutPoolError) as built:
-        build_holdout3_document()
-    assert built.value.report["kept"] == 0
-    assert built.value.report["rejected"]["vo_bracket"] == 24
-    assert built.value.report["rejected"]["dataset_frame_id"] == 8
-    assert built.value.report["rejected"]["single_letter"] == 24
-    assert built.value.report["rejected"]["few_content_words"] == 32
+    _kept, report = filter_pool(project65_records())
+    assert report["kept"] == 0
+    with pytest.raises(HoldoutPoolError) as raised:
+        draw(65, project65_records(), ["rule-1"])
+    assert raised.value.report["rejected"]["vo_bracket"] == 24
+    assert raised.value.report["rejected"]["dataset_frame_id"] == 8
+    assert raised.value.report["rejected"]["single_letter"] == 24
+    assert raised.value.report["rejected"]["few_content_words"] == 32
     with pytest.raises(HoldoutPoolError):
         load_holdout3_queries()
     assert file_sha256(HOLDOUT3_PATH) == before

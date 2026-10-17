@@ -38,10 +38,12 @@ QUOTA: tuple[tuple[str, int], ...] = (
 )
 
 HOLDOUT3_PATH = Path(__file__).resolve().parent / "datasets" / HOLDOUT3_NAME
+EXPORT_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "project65_export.json"
 
 SOURCE = (
-    "Пул — load_dataset('65-clean') и load_dataset('65-seeded'): каждый fragment "
-    "и каждый id из frames_before. 65-canary не входит. "
+    "Пул — tests/fixtures/project65_export.json: тексты fragments.texts, "
+    "voiceover_text сцен и voiceover_text кадров. Повтор того же текста не второй запрос. "
+    "Полный voiceover_script отдельной записью не берётся: фрагменты уже внутри него. "
     "До shuffle работает filter_pool: тексты с [vo-…], тексты вида dataset + id кадра, "
     "ряды из одной буквы и тексты меньше чем из 3 содержательных слов "
     "(стоп-слова, id и односимвольные токены не считаются). "
@@ -56,6 +58,96 @@ LABEL_RULE = (
     "отсортированных по номеру. Grade 1. chunk_id = chunk_id_for. "
     "Подгонки под текущую выдачу нет."
 )
+
+
+def _add_export_text(
+    records: list[dict[str, Any]],
+    seen: set[str],
+    text: Any,
+    *,
+    record_type: str,
+    record_id: str,
+    scene_id: str,
+    kind: str,
+    slug: str,
+    project_id: int,
+) -> None:
+    if not isinstance(text, str) or not text.strip():
+        return
+    key = text.strip()
+    if key in seen:
+        return
+    seen.add(key)
+    records.append(
+        {
+            "dataset": "project65-export",
+            "record_type": record_type,
+            "record_id": record_id,
+            "scene_id": scene_id,
+            "kind": kind,
+            "text": text,
+            "slug": slug,
+            "project_id": project_id,
+        }
+    )
+
+
+def records_from_export(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Тексты выгрузки как есть. Порядок стабильный, без random."""
+    project = data.get("project") or {}
+    project_id = int(project.get("id") or 0)
+    if project_id != 65:
+        raise RuntimeError(f"выгрузка не проект 65: {project_id}")
+    slug = str(project.get("slug") or "")
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    fragments = (data.get("fragments") or {}).get("texts") or []
+    for index, text in enumerate(fragments, start=1):
+        _add_export_text(
+            records,
+            seen,
+            text,
+            record_type="fragment",
+            record_id=f"frag-{index:02d}",
+            scene_id="",
+            kind="vo_cell",
+            slug=slug,
+            project_id=project_id,
+        )
+    for scene in data.get("scenes") or []:
+        _add_export_text(
+            records,
+            seen,
+            scene.get("voiceover_text"),
+            record_type="scene",
+            record_id=str(scene.get("uuid") or scene.get("number") or ""),
+            scene_id=str(scene.get("uuid") or ""),
+            kind="vo_cell",
+            slug=slug,
+            project_id=project_id,
+        )
+    frames = list(data.get("frames_table") or [])
+    frames.sort(key=lambda row: (int(row.get("number") or 0), str(row.get("id") or "")))
+    for frame in frames:
+        _add_export_text(
+            records,
+            seen,
+            frame.get("voiceover_text"),
+            record_type="frame",
+            record_id=str(frame.get("id") or ""),
+            scene_id=str(frame.get("scene_id") or ""),
+            kind="frame",
+            slug=slug,
+            project_id=project_id,
+        )
+    return records
+
+
+def load_export_records() -> list[dict[str, Any]]:
+    """Пул holdout-3 из закоммиченной выгрузки. Заглушки 65-clean сюда не входят."""
+    if not EXPORT_PATH.is_file():
+        raise FileNotFoundError(EXPORT_PATH)
+    return records_from_export(json.loads(EXPORT_PATH.read_text(encoding="utf-8")))
 
 
 def project65_records() -> list[dict[str, Any]]:
@@ -302,7 +394,7 @@ def draw(seed: int, records: list[dict[str, Any]], rule_part_keys: list[str]) ->
 def build_holdout3_document(docs: list[Any] | None = None, *, seed: int = SEED) -> dict[str, Any]:
     from evals.orchestrator.holdout import _index_docs
 
-    records = project65_records()
+    records = load_export_records()
     _kept, report = filter_pool(records)
     if report["kept"] < MIN_QUERY_COUNT:
         raise HoldoutPoolError(report)
