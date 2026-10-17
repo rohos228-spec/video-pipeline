@@ -10,6 +10,8 @@ import {
   EXAMPLE_CORE_APPROVAL,
   EXAMPLE_DELETE_OK,
   EXAMPLE_FAILED,
+  EXAMPLE_FRAME_DELETE,
+  EXAMPLE_GROUP_DELETE,
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
   EXAMPLE_PARAMS_EDIT,
@@ -225,7 +227,7 @@ test("сбой и мягкое удаление рисуются карточк�
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
     text: "Восстановить",
-    action: { name: "prompt.restore_master", change_id: "orch-appr-13-6", snapshot_id: "snap-13-6" },
+    action: { name: "prompt.restore_master", snapshot_id: "snap-13-6" },
   });
 });
 
@@ -283,6 +285,35 @@ test("конфликт версии 409 предлагает обновить и
   });
 });
 
+test("восстановление мягкого удаления идёт по kind и снимку", async ({ page }) => {
+  await openWithToken(page, "act-restore");
+  await emit(page, "act-restore", "step_finished", EXAMPLE_GROUP_DELETE);
+  const group = page.getByTestId("orch-action-card").filter({ hasText: "group.delete" });
+  await expect(group.getByTestId("orch-archive")).toContainText("old/scenes/13");
+  await emit(page, "act-restore", "step_finished", EXAMPLE_FRAME_DELETE);
+  const frame = page.getByTestId("orch-action-card").filter({ hasText: "montage.delete_frame" });
+  await expect(frame.getByTestId("orch-snapshot")).toContainText("snap-frame-9");
+  const posts: { text?: string; action?: { name?: string; snapshot_id?: string; archive_ref?: string; change_id?: string } }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes("/message")) return;
+    posts.push(req.postDataJSON());
+  });
+  await group.getByTestId("orch-restore").click();
+  await expect.poll(() => posts.length).toBe(1);
+  await frame.getByTestId("orch-restore").click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[0]).toEqual({
+    text: "Восстановить",
+    action: { name: "group.restore", archive_ref: "old/scenes/13" },
+  });
+  expect(posts[1]).toEqual({
+    text: "Восстановить",
+    action: { name: "frame.restore", snapshot_id: "snap-frame-9" },
+  });
+  expect(JSON.stringify(posts)).not.toContain("history.rollback");
+  expect(JSON.stringify(posts)).not.toContain("change_id");
+});
+
 test("поля r2.1: предупреждения, пропуск, конфликт и снимок", async ({ page }) => {
   await openWithToken(page, "act-r21");
   await emit(page, "act-r21", "step_finished", EXAMPLE_R21_CONFLICT);
@@ -306,7 +337,6 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]?.action).toEqual({
     name: "prompt.restore_master",
-    change_id: "orch-appr-13-6",
     snapshot_id: "snap-r21-6",
   });
 });

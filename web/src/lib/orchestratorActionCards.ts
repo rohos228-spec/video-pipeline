@@ -104,8 +104,8 @@ export interface RestoreBody {
   text: string;
   action: {
     name: string;
-    change_id?: string;
     snapshot_id?: string;
+    archive_ref?: string;
   };
 }
 
@@ -460,10 +460,10 @@ export function reportEditBody(reportId: number, instruction: string): ReportEdi
   };
 }
 
-export function restoreBody(restoreAction: string, changeId: string | null, snapshotId: string | null): RestoreBody {
+export function restoreBody(restoreAction: string, snapshotId: string | null, archiveRef: string | null): RestoreBody {
   const action: RestoreBody["action"] = { name: restoreAction };
-  if (changeId) action.change_id = changeId;
   if (snapshotId) action.snapshot_id = snapshotId;
+  if (archiveRef) action.archive_ref = archiveRef;
   return { text: "Восстановить", action };
 }
 
@@ -665,6 +665,30 @@ export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт 
     reversible: false,
   },
   error: "конфликт версий",
+});
+
+export const EXAMPLE_GROUP_DELETE = stepPayload("s-group-del", "пометка группы", {
+  status: "ok",
+  result: {
+    change_id: "orch-appr-13-8",
+    action: "group.delete",
+    marked: true,
+    restore_action: "group.restore",
+    archive_ref: "old/scenes/13",
+  },
+  error: null,
+});
+
+export const EXAMPLE_FRAME_DELETE = stepPayload("s-frame-del", "пометка кадра", {
+  status: "ok",
+  result: {
+    change_id: "orch-appr-13-9",
+    action: "montage.delete_frame",
+    marked: true,
+    restore_action: "frame.restore",
+    snapshot_id: "snap-frame-9",
+  },
+  error: null,
 });
 
 /** Мягкое удаление со снимком. restore_action — kind этой пометки. */

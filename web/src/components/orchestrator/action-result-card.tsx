@@ -93,6 +93,11 @@ function Extras({ result }: { result: ActionResultView }) {
           {result.baseVersion != null ? ` · база ${result.baseVersion}` : ""}
         </p>
       ) : null}
+      {result.archiveRef ? (
+        <p className="mt-1 text-[11px] text-white/60" data-testid="orch-archive">
+          {`архив ${result.archiveRef}`}
+        </p>
+      ) : null}
       {result.snapshotId ? (
         <p className="mt-1 text-[11px] text-white/60" data-testid="orch-snapshot">
           {result.snapshotUrl ? (
@@ -140,7 +145,7 @@ export function ActionResultCard({
 }: {
   result: ActionResultView;
   onReportEdit: (reportId: number, instruction: string) => Promise<boolean>;
-  onRestore: (restoreAction: string, changeId: string | null, snapshotId: string | null) => Promise<boolean>;
+  onRestore: (restoreAction: string, snapshotId: string | null, archiveRef: string | null) => Promise<boolean>;
   onConflictRetry: (actionName: string, baseVersion: number | null) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -165,7 +170,7 @@ export function ActionResultCard({
     if (!result.restoreAction || busy || restored) return;
     setBusy(true);
     try {
-      const ok = await onRestore(result.restoreAction, result.changeId, result.snapshotId);
+      const ok = await onRestore(result.restoreAction, result.snapshotId, result.archiveRef);
       if (ok) setRestored(true);
     } finally {
       setBusy(false);

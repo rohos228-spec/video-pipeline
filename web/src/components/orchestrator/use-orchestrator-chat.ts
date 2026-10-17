@@ -229,12 +229,12 @@ export function useOrchestratorChat() {
   );
 
   const sendRestore = useCallback(
-    async (restoreAction: string, changeId: string | null, snapshotId: string | null) => {
-      const body = restoreBody(restoreAction, changeId, snapshotId);
+    async (restoreAction: string, snapshotId: string | null, archiveRef: string | null) => {
+      const body = restoreBody(restoreAction, snapshotId, archiveRef);
       if (!body.text || !token || blocked) return false;
       dispatch({
         type: "user-message",
-        id: `user-restore-${changeId ?? restoreAction}-${state.messages.length}`,
+        id: `user-restore-${snapshotId ?? archiveRef ?? restoreAction}-${state.messages.length}`,
         text: body.text,
         taskId: null,
       });
