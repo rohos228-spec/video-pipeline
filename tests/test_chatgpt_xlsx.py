@@ -41,8 +41,9 @@ def test_plan_prompt_file_contains_master_not_in_chat(project: Project) -> None:
     assert "unique-token-xyz" not in chat
     assert "(план проекта)" in content
     assert "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА" in content
-    assert "JSON apply-ops" in content
-    assert "общий_план" in content
+    # R0a: план пишется в DB текстом или JSON general_plan, не apply-ops.
+    assert "general_plan" in content
+    assert "TSV" in content
     assert "Общий план" in chat
     assert "не лист «план»" in chat
 
