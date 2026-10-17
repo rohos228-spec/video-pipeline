@@ -99,9 +99,10 @@ def _open_store(path: Path) -> sqlite3.Connection:
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # CHECK (node_key REGEXP ...) из миграции #346 требует функцию до CREATE.
+    ensure_conn(conn)
     conn.executescript(_SCHEMA)
     conn.commit()
-    ensure_conn(conn)
     return conn
 
 
