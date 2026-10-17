@@ -41,6 +41,8 @@ def _is_user_voice_file(path: Path) -> bool:
     ext = path.suffix.lower()
     if ext not in _VOICE_EXTENSIONS:
         return False
+    if path.parent.name == "_live" or ".live-" in path.stem.lower():
+        return False
     stem = path.stem.lower()
     if stem.startswith(FRAME_AUDIO_PREFIX) or stem.startswith("words_"):
         return False
@@ -295,6 +297,7 @@ async def materialize_closed_timeline_audio(
 
     Per-frame: у клипов разные path — склейка этих mp3.
     Whisper: все клипы смотрят в один voice_full — вырезаем [start, start+duration).
+    Новый файл лежит в ``audio/_live/``, чтобы не попасть под маску ``voice_full*.mp3``.
     """
     if not clips:
         return None
@@ -305,9 +308,11 @@ async def materialize_closed_timeline_audio(
     except OSError:
         same = set(paths)
         source_key = source
-    dest = source.with_name(f"{source.stem}.live-{uuid.uuid4().hex[:8]}.mp3")
+    live_dir = source.parent / "_live"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    dest = live_dir / f"{source.stem}.live-{uuid.uuid4().hex[:8]}.mp3"
     if dest.resolve() == source_key:
-        dest = source.with_name(f"voice_live_{uuid.uuid4().hex[:8]}.mp3")
+        dest = live_dir / f"voice_live_{uuid.uuid4().hex[:8]}.mp3"
     one_file = len(same) == 1 and paths[0].resolve() == source_key
     if one_file:
         if not source.is_file():
@@ -399,7 +404,12 @@ async def _mux_audio_without_marked(
     if len(kept) == len(clips):
         return source
     built = await materialize_closed_timeline_audio(kept, source)
-    return built if built is not None else source
+    if built is None:
+        raise RuntimeError(
+            "assemble: не собрал дорожку без речи помеченных кадров, "
+            "исходный voice_full не микширую"
+        )
+    return built
 
 
 def close_marked_timeline(

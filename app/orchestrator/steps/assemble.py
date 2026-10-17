@@ -423,7 +423,7 @@ async def _assemble_body(
     else:
         from app.services.frame_audio import FrameAudioClip
         from app.services.montage.r15 import load_r15_markers, resolve_montage_frame_numbers
-        from app.services.montage.variant2 import prepare_r15_live_voice
+        from app.services.montage.variant2 import prepare_r15_live_voice, shift_words_past_cuts
 
         frame_numbers = resolve_montage_frame_numbers(project, frame_numbers)
         marked_set = {int(n) for n in marked_numbers}
@@ -437,9 +437,11 @@ async def _assemble_body(
         if marked_in_sheet:
             marked_markers, _marked_row = load_r15_markers(project, marked_in_sheet)
             markers = [*markers, *marked_markers]
-        markers, mux_audio, audio_duration = await prepare_r15_live_voice(
+        markers, mux_audio, audio_duration, r15_cuts = await prepare_r15_live_voice(
             markers, audio_path, marked_set
         )
+        if r15_cuts:
+            words = shift_words_past_cuts(words, r15_cuts)
         frame_numbers = [m.frame_number for m in markers]
         if mux_audio.resolve() != audio_path.resolve():
             logger.warning(
