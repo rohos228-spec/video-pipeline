@@ -127,13 +127,15 @@ class MessageQueue:
         text: str,
         mode: MessageMode | None = None,
         project_id: int | None = None,
+        *,
+        kill_switch: bool = False,
     ) -> int:
         """Записать реплику, опубликовать ack и поставить разбор в фон.
 
         ``run_id`` резервируется здесь, до ``classify`` и ``call``.
-        Явный ``mode`` не классифицируется, кроме фразы kill switch:
-        она перебивает mode. Неизвестное значение mode отсекает HTTP.
-        Возвращает seq события ack. Не ждёт разбор.
+        Явный ``mode`` не классифицируется, кроме фразы kill switch
+        и поля ``kill_switch``: оба перебивают mode. Неизвестное значение
+        mode отсекает HTTP. Возвращает seq события ack. Не ждёт разбор.
         """
         task_id = self.supervisor.active_task(session_id)
         run_id = orch_run_id(task_id=task_id, session_id=session_id)
@@ -152,7 +154,15 @@ class MessageQueue:
             task_id=task_id,
         )
         job = asyncio.create_task(
-            self._classify(session_id, text, run_id, mode, project_id, message_id),
+            self._classify(
+                session_id,
+                text,
+                run_id,
+                mode,
+                project_id,
+                message_id,
+                kill_switch=kill_switch,
+            ),
             name=f"orch-classify-{session_id}",
         )
         self._pending.add(job)
@@ -174,12 +184,21 @@ class MessageQueue:
         mode: MessageMode | None,
         project_id: int | None = None,
         message_id: int | None = None,
+        *,
+        kill_switch: bool = False,
     ) -> None:
         published = False
         try:
             forced = classify_deterministic(text)
-            if forced is not None and forced.kill_switch:
-                decided = forced
+            phrase = forced is not None and forced.kill_switch
+            if kill_switch or phrase:
+                decided = ClassifyResult(
+                    tier="fast",
+                    mode=MessageMode.interrupt,
+                    deterministic=True,
+                    confidence=1.0,
+                    kill_switch=True,
+                )
             elif mode is not None:
                 decided = ClassifyResult(
                     tier=ORCH_DEFAULT_TIER,
