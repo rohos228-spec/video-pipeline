@@ -1,49 +1,43 @@
 /**
- * Предварительные типы карточек действий WS2.
+ * Карточки результатов действий по контракту WS2.
  *
- * #344 @ 85ffb76c — только аудит и белый список, форм результатов там нет.
- * Поле paid в реестре появится в R2. Точные pydantic-модели WS2 ещё не прислал.
- * Когда придёт черновой PR, сверять этот файл.
+ * ws2-r2.0 — PR #378 @ ae950ce6 (база #344, сейчас ead3f7e8).
+ * Схема: web/src/lib/orchestratorActionResults.schema.json
+ * sha256 850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa
  *
- * Предположение о шине: отдельного типа события под результат нет.
- * Кладём объект в payload `step_finished` или `message`:
- * `{ action, metadata, result: { before, after, node_ref, change_id, html, report_id } }`.
- * Платное или деструктивное действие прячем, пока approval с тем же change_id
- * не станет approved. Путь approve — существующий POST /approvals/{id}/approve.
+ * Моки без пометки r2.1 — JSON из docs/fable/action_results_contract.md.
+ * Поля snapshot_id / version / base_version / warnings / skipped / partial
+ * в r2.0 нет: они опциональны и помечены как r2.1-предварительные.
+ * Когда WS2 выложит ws2-r2.1, сверять этот файл, флаг версии и sha256.
+ *
+ * Шина (в contracts.py события нет): конверт ActionResult лежит в payload
+ * step_finished или message.
+ *
+ * ApprovalRequired не становится кнопкой одобрения и его change_id
+ * не используется. Строка «Ждёт подтверждения» ждёт событие ядра
+ * approval_required / approval_decided. ActionMetadata — только подпись риска.
+ *
+ * Тело POST «Править» и «Восстановить» моделью не задано.
  */
 
-export const ACTION_AUDIT_REF = "85ffb76c";
+export const ACTION_CONTRACT_VERSION = "ws2-r2.0";
+export const ACTION_CONTRACT_REF = "ae950ce6c81892c9b8b3fc07b095780b5f26c075";
+export const ACTION_SCHEMA_SHA256 = "850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa";
+export const REPORT_EDIT_ACTION = "update_report";
 
 export interface ActionMetadata {
   name: string;
-  /** Шкала аудита: none | low | medium | high. Чужие строки не режем. */
-  risk: string;
+  risk: "none" | "low" | "medium" | "high";
   read_only: boolean;
   destructive: boolean;
-  /** В #344 поля ещё нет. Для моков задаём явно. */
   paid: boolean;
 }
 
 export interface ActionNodeRef {
-  node_key: string;
-  project_id?: number | null;
+  project_id: number;
+  node_id: string;
+  kind: "node" | "prompt" | "params" | "report";
 }
-
-export interface ActionResultBody {
-  before?: unknown;
-  after?: unknown;
-  node_ref?: unknown;
-  change_id?: string | null;
-  html?: string | null;
-  report_id?: string | null;
-}
-
-/** Имена, для которых есть своя карточка. Остальные — платные и деструктивные. */
-export const KNOWN_ACTION_NAMES = ["node.create", "node.edit", "prompt.edit", "params.edit", "report.show"] as const;
-
-export type KnownActionName = (typeof KNOWN_ACTION_NAMES)[number];
-
-export type ActionCardKind = "create" | "node" | "prompt" | "params" | "report" | "neutral";
 
 export interface TextDiffLine {
   kind: "same" | "add" | "remove";
@@ -56,79 +50,87 @@ export interface FieldDiffRow {
   after: string | null;
 }
 
+export type ActionCardKind = "create" | "node" | "prompt" | "params" | "report" | "mark" | "error" | "waiting" | "neutral";
+
 export interface ActionResultView {
   id: string;
   action: string;
+  /** Change_id конверта правки или пометки. У ApprovalRequired всегда null. */
   changeId: string | null;
   metadata: ActionMetadata;
   kind: ActionCardKind;
-  beforeText: string | null;
-  afterText: string | null;
-  beforeFields: Record<string, string> | null;
-  afterFields: Record<string, string> | null;
+  unified: TextDiffLine[] | null;
+  fields: FieldDiffRow[] | null;
+  hideBefore: boolean;
   nodeRef: ActionNodeRef | null;
   html: string | null;
-  reportId: string | null;
+  reportId: number | null;
+  editAction: string | null;
+  marked: boolean;
+  restoreAction: string | null;
+  error: string | null;
+  /** r2.1-предварительные. Пустые, если в конверте полей нет. */
+  warnings: string[];
+  skipped: string[];
+  partial: boolean;
+  snapshotId: string | null;
+  snapshotUrl: string | null;
+  version: number | null;
+  baseVersion: number | null;
+  conflict: boolean;
 }
 
-export const REPORT_EDIT_ACTION = "report.edit";
-
-/** Тело POST message для правки отчёта. Поля action в контракте #347 нет — предварительные. */
 export interface ReportEditBody {
   text: string;
   action: {
     name: typeof REPORT_EDIT_ACTION;
-    report_id: string;
+    report_id: number;
+  };
+}
+
+export interface RestoreBody {
+  text: string;
+  action: {
+    name: string;
     change_id?: string;
+    snapshot_id?: string;
   };
 }
 
-export function isKnownActionName(name: string): name is KnownActionName {
-  return (KNOWN_ACTION_NAMES as readonly string[]).includes(name);
+const R2_METADATA: Record<string, ActionMetadata> = {
+  read_pipeline_code: { name: "read_pipeline_code", risk: "none", read_only: true, destructive: false, paid: false },
+  rag_search: { name: "rag_search", risk: "none", read_only: true, destructive: false, paid: false },
+  run_validators: { name: "run_validators", risk: "none", read_only: true, destructive: false, paid: false },
+  stop_node: { name: "stop_node", risk: "medium", read_only: false, destructive: false, paid: false },
+  resume_node: { name: "resume_node", risk: "medium", read_only: false, destructive: false, paid: true },
+  create_node: { name: "create_node", risk: "medium", read_only: false, destructive: false, paid: false },
+  edit_node_prompt: { name: "edit_node_prompt", risk: "medium", read_only: false, destructive: false, paid: false },
+  edit_node_params: { name: "edit_node_params", risk: "medium", read_only: false, destructive: false, paid: false },
+  create_report: { name: "create_report", risk: "low", read_only: false, destructive: false, paid: false },
+  update_report: { name: "update_report", risk: "low", read_only: false, destructive: false, paid: false },
+  export_nodes_snapshot: { name: "export_nodes_snapshot", risk: "low", read_only: true, destructive: false, paid: false },
+  revert_node_to_git: { name: "revert_node_to_git", risk: "medium", read_only: false, destructive: false, paid: false },
+  "prompt.delete_master": { name: "prompt.delete_master", risk: "high", read_only: false, destructive: true, paid: false },
+  "prompt.create_master": { name: "prompt.create_master", risk: "medium", read_only: false, destructive: true, paid: false },
+  "montage.suggest_scene_variants": {
+    name: "montage.suggest_scene_variants",
+    risk: "high",
+    read_only: false,
+    destructive: false,
+    paid: true,
+  },
+  "history.rollback": { name: "history.rollback", risk: "high", read_only: false, destructive: true, paid: false },
+};
+
+export function isKnownActionName(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(R2_METADATA, name);
 }
 
-export function actionCardKind(name: string): ActionCardKind {
-  if (name === "node.create") return "create";
-  if (name === "node.edit") return "node";
-  if (name === "prompt.edit") return "prompt";
-  if (name === "params.edit") return "params";
-  if (name === "report.show") return "report";
-  return "neutral";
-}
-
-function bool(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function str(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-/** Неизвестное имя принудительно paid и destructive. Известное имя берёт флаги из metadata. */
-export function resolveActionMetadata(name: string, raw: unknown): ActionMetadata {
-  const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const known = isKnownActionName(name);
-  return {
-    name,
-    risk: str(body.risk, known ? "low" : "high"),
-    read_only: known ? bool(body.read_only, false) : false,
-    destructive: known ? bool(body.destructive, false) : true,
-    paid: known ? bool(body.paid, false) : true,
-  };
-}
-
-export function actionNeedsApproval(meta: ActionMetadata): boolean {
-  return meta.paid || meta.destructive;
-}
-
-export function actionResultVisible(
-  result: Pick<ActionResultView, "metadata" | "changeId">,
-  approvals: { id: string; resolved: "approved" | "rejected" | "closed" | null }[],
-): boolean {
-  if (!actionNeedsApproval(result.metadata)) return true;
-  if (!result.changeId) return false;
-  const card = approvals.find((item) => item.id === result.changeId);
-  return card?.resolved === "approved";
+/** Имя вне таблицы — платное и деструктивное. Сырые флаги конверта не доверяем. */
+export function metadataOf(name: string, _raw?: unknown): ActionMetadata {
+  const known = R2_METADATA[name];
+  if (known) return known;
+  return { name, risk: "high", read_only: false, destructive: true, paid: true };
 }
 
 export function lineDiff(before: string, after: string): TextDiffLine[] {
@@ -169,51 +171,38 @@ export function lineDiff(before: string, after: string): TextDiffLine[] {
   return lines;
 }
 
+export function unifiedLines(unified: string): TextDiffLine[] {
+  const raw = unified.split("\n");
+  if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
+  return raw.map((line) => {
+    if (line.startsWith("+") && !line.startsWith("+++")) return { kind: "add" as const, text: line.slice(1) };
+    if (line.startsWith("-") && !line.startsWith("---")) return { kind: "remove" as const, text: line.slice(1) };
+    return { kind: "same" as const, text: line };
+  });
+}
+
 function plainObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
-function fieldString(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value == null) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
-  }
+function str(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
 }
 
-export function fieldMap(value: unknown): Record<string, string> | null {
-  const raw = plainObject(value);
-  if (!raw) return null;
-  const out: Record<string, string> = {};
-  for (const [key, item] of Object.entries(raw)) out[key] = fieldString(item);
-  return out;
+function num(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export function fieldDiff(before: Record<string, string> | null, after: Record<string, string> | null): FieldDiffRow[] {
-  const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]);
-  return [...keys].sort().map((key) => ({
-    key,
-    before: before && Object.prototype.hasOwnProperty.call(before, key) ? before[key] : null,
-    after: after && Object.prototype.hasOwnProperty.call(after, key) ? after[key] : null,
-  }));
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 }
 
-function readNodeRef(value: unknown): ActionNodeRef | null {
-  const raw = plainObject(value);
-  if (!raw || typeof raw.node_key !== "string" || !raw.node_key.trim()) return null;
-  const project = raw.project_id;
-  const projectId = typeof project === "number" && Number.isFinite(project) ? project : null;
-  return { node_key: raw.node_key.trim(), project_id: projectId };
-}
-
-function textOf(value: unknown): string | null {
-  if (typeof value === "string") return value;
+function fieldString(value: unknown): string | null {
   if (value == null) return null;
-  const fields = fieldMap(value);
-  if (fields) return JSON.stringify(fields, null, 2);
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
   try {
     return JSON.stringify(value);
   } catch {
@@ -221,183 +210,359 @@ function textOf(value: unknown): string | null {
   }
 }
 
-export function readActionResult(payload: Record<string, unknown>, seq: number): ActionResultView | null {
-  const result = plainObject(payload.result);
-  if (!result) return null;
-  const metaRaw = plainObject(payload.metadata);
-  const name = str(payload.action) || str(metaRaw?.name);
-  if (!name) return null;
-  const metadata = resolveActionMetadata(name, metaRaw);
-  const kind = actionCardKind(name);
-  const changeId = str(result.change_id) || str(payload.change_id) || null;
-  const nodeRef = readNodeRef(result.node_ref);
-  const reportId = str(result.report_id) || null;
-  const html = typeof result.html === "string" ? result.html : null;
-  const beforeFields = kind === "params" || (kind === "node" && plainObject(result.before)) ? fieldMap(result.before) : null;
-  const afterFields =
-    kind === "create" || kind === "params" || (kind === "node" && (plainObject(result.after) || plainObject(result.before)))
-      ? fieldMap(result.after)
-      : null;
-  const useText = kind === "prompt" || kind === "neutral" || (kind === "node" && !beforeFields && !afterFields);
-  const id = changeId || reportId || str(payload.step_id) || `action-${seq}`;
+function readNodeRef(value: unknown): ActionNodeRef | null {
+  const raw = plainObject(value);
+  if (!raw || typeof raw.node_id !== "string" || !raw.node_id.trim()) return null;
+  const project = raw.project_id;
+  if (typeof project !== "number" || !Number.isFinite(project)) return null;
+  const kind = raw.kind;
+  if (kind !== "node" && kind !== "prompt" && kind !== "params" && kind !== "report") return null;
+  return { project_id: project, node_id: raw.node_id.trim(), kind };
+}
+
+function readFields(value: unknown): FieldDiffRow[] | null {
+  const raw = plainObject(value);
+  if (!raw) return null;
+  const rows: FieldDiffRow[] = [];
+  for (const key of Object.keys(raw).sort()) {
+    const cell = plainObject(raw[key]);
+    if (!cell) continue;
+    rows.push({ key, before: fieldString(cell.before), after: fieldString(cell.after) });
+  }
+  return rows.length ? rows : null;
+}
+
+function cardKind(action: string, nodeKind: ActionNodeRef["kind"] | null): ActionCardKind {
+  if (action === "create_node") return "create";
+  if (action === "edit_node_prompt" || nodeKind === "prompt") return "prompt";
+  if (action === "edit_node_params" || nodeKind === "params") return "params";
+  if (action === "create_report" || action === "update_report" || nodeKind === "report") return "report";
+  if (nodeKind === "node" || action === "revert_node_to_git") return "node";
+  return "neutral";
+}
+
+const QUIET: ActionMetadata = { name: "", risk: "low", read_only: true, destructive: false, paid: false };
+
+function blankView(id: string, metadata: ActionMetadata, kind: ActionCardKind): ActionResultView {
   return {
     id,
-    action: name,
-    changeId,
+    action: metadata.name,
+    changeId: null,
     metadata,
     kind,
-    beforeText: useText ? textOf(result.before) : null,
-    afterText: useText || (kind === "create" && !afterFields) ? textOf(result.after) : null,
-    beforeFields: kind === "create" ? null : beforeFields,
-    afterFields,
-    nodeRef,
-    html: kind === "report" ? html : null,
-    reportId: kind === "report" ? reportId : null,
+    unified: null,
+    fields: null,
+    hideBefore: false,
+    nodeRef: null,
+    html: null,
+    reportId: null,
+    editAction: null,
+    marked: false,
+    restoreAction: null,
+    error: null,
+    warnings: [],
+    skipped: [],
+    partial: false,
+    snapshotId: null,
+    snapshotUrl: null,
+    version: null,
+    baseVersion: null,
+    conflict: false,
   };
 }
 
-export function reportEditBody(reportId: string, instruction: string, changeId?: string | null): ReportEditBody {
-  const text = instruction.trim();
-  const action: ReportEditBody["action"] = {
-    name: REPORT_EDIT_ACTION,
-    report_id: reportId,
-  };
-  if (changeId && changeId.trim()) action.change_id = changeId.trim();
-  return { text, action };
+function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unknown>, result: Record<string, unknown> | null): void {
+  view.warnings = stringList(payload.warnings);
+  view.skipped = stringList(payload.skipped);
+  view.partial = payload.partial === true;
+  const source = result ?? {};
+  view.snapshotId = str(source.snapshot_id).trim() || str(payload.snapshot_id).trim() || null;
+  view.snapshotUrl = str(source.snapshot_url).trim() || str(payload.snapshot_url).trim() || null;
+  view.version = num(source.version) ?? num(payload.version);
+  view.baseVersion = num(source.base_version) ?? num(payload.base_version);
+  const statusCode = num(payload.status_code);
+  const error = str(payload.error);
+  view.conflict =
+    payload.status === "failed" &&
+    (statusCode === 409 || (view.version != null && view.baseVersion != null && view.version !== view.baseVersion) || /409|конфликт версий/i.test(error));
 }
 
-/** Тот же способ, что панель оркестратора на канвасе. Страница /orchestrator слушателей не имеет. */
-export function openStudioNode(ref: ActionNodeRef): void {
-  if (typeof window === "undefined" || !ref.node_key) return;
-  if (ref.project_id != null) {
-    window.dispatchEvent(new CustomEvent("studio-select-project", { detail: { projectId: ref.project_id } }));
+export function readActionEnvelope(payload: Record<string, unknown>, seq: number): ActionResultView | null {
+  const status = payload.status;
+  if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
+  const result = plainObject(payload.result);
+  if (status === "approval_required") {
+    const metaRaw = result ? plainObject(result.metadata) : null;
+    const name = str(metaRaw?.name).trim() || "unknown";
+    const metadata = metadataOf(name, metaRaw);
+    const view = blankView(`wait-${seq}`, metadata, "waiting");
+    view.action = metadata.name;
+    applyEnvelopeExtras(view, payload, result);
+    view.changeId = null;
+    view.conflict = false;
+    return view;
   }
-  window.dispatchEvent(new CustomEvent("canvas-select-node", { detail: { nodeKey: ref.node_key } }));
-  window.dispatchEvent(new CustomEvent("studio-open-node-prompts", { detail: { nodeKey: ref.node_key } }));
+  if (status === "failed") {
+    const error = str(payload.error).trim();
+    const action = result ? str(result.action).trim() : "";
+    if (result && (action || num(result.version) != null || num(result.base_version) != null)) {
+      const view = readEdit(result, seq);
+      view.error = error || null;
+      applyEnvelopeExtras(view, payload, result);
+      if (!view.conflict && error) view.kind = view.unified || view.fields ? view.kind : "error";
+      return view;
+    }
+    if (!error) return null;
+    const view = blankView(`failed-${seq}`, QUIET, "error");
+    view.error = error;
+    applyEnvelopeExtras(view, payload, null);
+    return view;
+  }
+  if (!result) return null;
+  const reportId = num(result.report_id);
+  const html = typeof result.html === "string" ? result.html : null;
+  if (reportId != null && html != null && result.edit_action === REPORT_EDIT_ACTION) {
+    const view = blankView(`report-${reportId}`, metadataOf("create_report"), "report");
+    view.action = "create_report";
+    view.html = html;
+    view.reportId = reportId;
+    view.editAction = REPORT_EDIT_ACTION;
+    applyEnvelopeExtras(view, payload, result);
+    return view;
+  }
+  const changeId = str(result.change_id).trim();
+  if (result.marked === true && changeId) {
+    const restore = str(result.restore_action).trim() || "history.rollback";
+    const view = blankView(changeId, metadataOf(restore), "mark");
+    view.action = restore;
+    view.changeId = changeId;
+    view.marked = true;
+    view.restoreAction = restore;
+    applyEnvelopeExtras(view, payload, result);
+    view.conflict = false;
+    return view;
+  }
+  if (!str(result.action).trim() && !plainObject(result.diff)) return null;
+  const view = readEdit(result, seq);
+  applyEnvelopeExtras(view, payload, result);
+  view.conflict = false;
+  return view;
 }
 
-function meta(name: string, patch: Partial<ActionMetadata> = {}): ActionMetadata {
+function readEdit(result: Record<string, unknown>, seq: number): ActionResultView {
+  const action = str(result.action).trim();
+  const metadata = action ? metadataOf(action) : QUIET;
+  const nodeRef = readNodeRef(result.node_ref);
+  const diff = plainObject(result.diff);
+  const unified = diff && typeof diff.unified === "string" ? unifiedLines(diff.unified) : null;
+  const fields = diff ? readFields(diff.fields) : null;
+  const fallback =
+    !unified && !fields && (typeof result.before === "string" || typeof result.after === "string")
+      ? lineDiff(typeof result.before === "string" ? result.before : "", typeof result.after === "string" ? result.after : "")
+      : null;
+  const changeId = str(result.change_id).trim() || null;
+  const view = blankView(changeId || `action-${seq}`, metadata, action ? cardKind(action, nodeRef?.kind ?? null) : "neutral");
+  view.action = action || metadata.name;
+  view.changeId = changeId;
+  view.unified = unified ?? fallback;
+  view.fields = fields;
+  view.hideBefore = action === "create_node" || result.before == null;
+  view.nodeRef = nodeRef && nodeRef.kind !== "report" ? nodeRef : null;
+  return view;
+}
+
+export function reportEditBody(reportId: number, instruction: string): ReportEditBody {
   return {
-    name,
-    risk: "low",
-    read_only: false,
-    destructive: false,
-    paid: false,
-    ...patch,
+    text: instruction.trim(),
+    action: { name: REPORT_EDIT_ACTION, report_id: reportId },
   };
 }
 
-export const EXAMPLE_PROMPT_EDIT = {
-  step_id: "s-prompt",
-  title: "правка промта",
-  action: "prompt.edit",
-  ok: true,
-  metadata: meta("prompt.edit"),
-  result: {
-    before: "кадр у окна\nгерой молчит",
-    after: "кадр у окна\nгерой говорит",
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
-    change_id: "chg-prompt-1",
-  },
-};
+export function restoreBody(restoreAction: string, changeId: string | null, snapshotId: string | null): RestoreBody {
+  const action: RestoreBody["action"] = { name: restoreAction };
+  if (changeId) action.change_id = changeId;
+  if (snapshotId) action.snapshot_id = snapshotId;
+  return { text: "Восстановить", action };
+}
 
-export const EXAMPLE_NODE_CREATE = {
-  step_id: "s-create",
-  title: "новая нода",
-  action: "node.create",
-  ok: true,
-  metadata: meta("node.create"),
-  result: {
-    after: { title: "Проверка", enabled: true },
-    node_ref: { node_key: "n_check", project_id: 13 },
-    change_id: "chg-create-1",
-  },
-};
+export function openStudioNode(ref: ActionNodeRef): void {
+  if (typeof window === "undefined" || !ref.node_id) return;
+  window.dispatchEvent(new CustomEvent("studio-select-project", { detail: { projectId: ref.project_id } }));
+  window.dispatchEvent(new CustomEvent("canvas-select-node", { detail: { nodeKey: ref.node_id } }));
+  window.dispatchEvent(new CustomEvent("studio-open-node-prompts", { detail: { nodeKey: ref.node_id } }));
+}
 
-export const EXAMPLE_NODE_EDIT = {
-  step_id: "s-node",
-  title: "правка ноды",
-  action: "node.edit",
-  ok: true,
-  metadata: meta("node.edit"),
-  result: {
-    before: { title: "Старая" },
-    after: { title: "Новая" },
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
-    change_id: "chg-node-1",
-  },
-};
+function stepPayload(stepId: string, title: string, envelope: Record<string, unknown>): Record<string, unknown> {
+  return { step_id: stepId, title, ok: envelope.status !== "failed", ...envelope };
+}
 
-export const EXAMPLE_PARAMS_EDIT = {
-  step_id: "s-params",
-  title: "параметры",
-  action: "params.edit",
-  ok: true,
-  metadata: meta("params.edit"),
+export const EXAMPLE_NODE_CREATE = stepPayload("s-create", "новая нода", {
+  status: "ok",
   result: {
-    before: { temperature: "0.2", shots: "3" },
-    after: { temperature: "0.4", shots: "3" },
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
-    change_id: "chg-params-1",
+    action: "create_node",
+    change_id: "orch-appr-13-1",
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "node" },
+    before: null,
+    after: { title: "Сцены", group: "script_frames_qc" },
+    diff: { fields: { title: { before: null, after: "Сцены" } } },
+    open_url: "/api/projects/13",
+    reversible: true,
   },
-};
+  error: null,
+});
 
-export const EXAMPLE_REPORT = {
-  step_id: "s-report",
-  title: "отчёт",
-  action: "report.show",
-  ok: true,
-  metadata: meta("report.show", { risk: "none", read_only: true }),
+export const EXAMPLE_PROMPT_EDIT = stepPayload("s-prompt", "правка промта", {
+  status: "ok",
   result: {
-    html: "<p>Герой молчит.</p><script>window.__xss=1</script>",
-    report_id: "rpt-1",
-    change_id: "chg-report-1",
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
+    action: "edit_node_prompt",
+    change_id: "orch-appr-13-2",
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "prompt" },
+    before: { prompt_template: "было" },
+    after: { prompt_template: "стало" },
+    diff: { unified: "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n" },
+    open_url: "/api/projects/13",
+    reversible: true,
   },
-};
+  error: null,
+});
 
-export const EXAMPLE_PAID_PROMPT = {
-  step_id: "s-paid",
-  title: "платная правка промта",
-  action: "prompt.edit",
-  ok: true,
-  metadata: meta("prompt.edit", { risk: "high", paid: true, destructive: true }),
+export const EXAMPLE_PARAMS_EDIT = stepPayload("s-params", "параметры", {
+  status: "ok",
   result: {
-    before: "было",
-    after: "стало",
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
-    change_id: "chg-paid-1",
+    action: "edit_node_params",
+    change_id: "orch-appr-13-3",
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "params" },
+    before: { temperature: 0.2 },
+    after: { temperature: 0.4 },
+    diff: { fields: { temperature: { before: 0.2, after: 0.4 } } },
+    open_url: "/api/projects/13",
+    reversible: true,
   },
-};
+  error: null,
+});
 
-export const EXAMPLE_PAID_APPROVAL = {
-  change_id: "chg-paid-1",
-  approval_id: "chg-paid-1",
-  title: "Платная правка промта",
+export const EXAMPLE_NODE_EDIT = stepPayload("s-revert", "откат к git", {
+  status: "ok",
+  result: {
+    action: "revert_node_to_git",
+    change_id: "orch-appr-13-5",
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "node" },
+    before: { source: "db", db_version: 4 },
+    after: { source: "git", db_version: null },
+    diff: { fields: { source: { before: "db", after: "git" } } },
+    open_url: "/api/projects/13",
+    reversible: true,
+  },
+  error: null,
+});
+
+export const EXAMPLE_REPORT = stepPayload("s-report", "отчёт", {
+  status: "ok",
+  result: {
+    report_id: 7,
+    html: "<h1>Сводка</h1><p>Кадры на месте.</p>",
+    version: 1,
+    edit_action: "update_report",
+  },
+  error: null,
+});
+
+export const EXAMPLE_FAILED = stepPayload("s-failed", "сбой", {
+  status: "failed",
+  result: null,
+  error: "нода n_scene_writer уже есть",
+});
+
+export const EXAMPLE_DELETE_OK = stepPayload("s-delete-ok", "пометка промта", {
+  status: "ok",
+  result: {
+    change_id: "orch-appr-13-6",
+    marked: true,
+    restore_action: "history.rollback",
+  },
+  error: null,
+});
+
+export const EXAMPLE_PAID_APPROVAL = stepPayload("s-paid", "платный вызов", {
+  status: "approval_required",
+  result: {
+    change_id: "orch-appr-13-7",
+    metadata: {
+      name: "montage.suggest_scene_variants",
+      risk: "high",
+      read_only: false,
+      destructive: false,
+      paid: true,
+    },
+    summary: "Один вызов LLM за вариантами сцены",
+    estimate: 0,
+  },
+  error: null,
+});
+
+export const EXAMPLE_UNKNOWN_APPROVAL = stepPayload("s-unknown", "неизвестное", {
+  status: "approval_required",
+  result: {
+    change_id: "orch-appr-13-9",
+    metadata: {
+      name: "widget.spin",
+      risk: "none",
+      read_only: true,
+      destructive: false,
+      paid: false,
+    },
+    summary: "Неизвестное действие",
+    estimate: 0,
+  },
+  error: null,
+});
+
+/** Ядро ws3, не конверт действия. change_id нарочно другой, чем в EXAMPLE_PAID_APPROVAL. */
+export const EXAMPLE_CORE_APPROVAL = {
+  change_id: "orch-appr-99-3",
+  approval_id: "orch-appr-99-3",
+  title: "Один вызов LLM за вариантами сцены",
   reason: "risk",
   risk: "high",
-  action: "prompt.edit",
+  action: "montage.suggest_scene_variants",
 };
 
-export const EXAMPLE_UNKNOWN = {
-  step_id: "s-unknown",
-  title: "неизвестное",
-  action: "widget.spin",
-  ok: true,
-  metadata: meta("widget.spin", { risk: "none", read_only: true, paid: false, destructive: false }),
+/**
+ * r2.1-предварительный мок. В ws2-r2.0 этих полей нет.
+ * Снимок и версии станут обязательными, когда выйдет схема r2.1.
+ */
+export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт версий", {
+  status: "failed",
+  status_code: 409,
+  warnings: ["черновик устарел"],
+  skipped: ["group"],
+  partial: true,
   result: {
-    before: "старое",
-    after: "новое",
-    change_id: "chg-unknown-1",
-    node_ref: { node_key: "n_excel_gpt", project_id: 13 },
+    action: "edit_node_prompt",
+    change_id: "orch-appr-13-2",
+    snapshot_id: "snap-r21-1",
+    version: 5,
+    base_version: 4,
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "prompt" },
+    before: { prompt_template: "было" },
+    after: { prompt_template: "стало" },
+    diff: { unified: "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n" },
+    open_url: "/api/projects/13",
+    reversible: false,
   },
-};
+  error: "конфликт версий",
+});
 
-export const EXAMPLE_UNKNOWN_APPROVAL = {
-  change_id: "chg-unknown-1",
-  approval_id: "chg-unknown-1",
-  title: "Неизвестное действие",
-  reason: "risk",
-  risk: "high",
-  action: "widget.spin",
-};
+/** r2.1-предварительный: ссылка на снимок у мягкого удаления. */
+export const EXAMPLE_R21_DELETE = stepPayload("s-r21-delete", "пометка со снимком", {
+  status: "ok",
+  result: {
+    change_id: "orch-appr-13-6",
+    marked: true,
+    restore_action: "history.rollback",
+    snapshot_id: "snap-r21-6",
+    snapshot_url: "/api/projects/13/snapshots/snap-r21-6",
+    version: 2,
+  },
+  error: null,
+});

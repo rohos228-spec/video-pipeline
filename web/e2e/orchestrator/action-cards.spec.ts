@@ -1,17 +1,20 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  ACTION_CONTRACT_REF,
+  ACTION_CONTRACT_VERSION,
+  ACTION_SCHEMA_SHA256,
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
-  EXAMPLE_PAID_APPROVAL,
-  EXAMPLE_PAID_PROMPT,
   EXAMPLE_PARAMS_EDIT,
   EXAMPLE_PROMPT_EDIT,
   EXAMPLE_REPORT,
-  EXAMPLE_UNKNOWN,
-  EXAMPLE_UNKNOWN_APPROVAL,
-  lineDiff,
+  metadataOf,
   reportEditBody,
-  resolveActionMetadata,
+  unifiedLines,
 } from "../../src/lib/orchestratorActionCards";
 
 const TOKEN = "orch-dev-token";
@@ -41,17 +44,28 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
   expect(res.ok()).toBeTruthy();
 }
 
+test("схема ws2-r2.0 закреплена sha256", () => {
+  const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorActionResults.schema.json");
+  const hash = createHash("sha256").update(readFileSync(file)).digest("hex");
+  expect(hash).toBe(ACTION_SCHEMA_SHA256);
+  expect(hash).toBe("850ad63329195bd6d58b7b313550e2cc3994521616c57476df655ddd7c1337aa");
+  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.0");
+  expect(ACTION_CONTRACT_REF).toBe("ae950ce6c81892c9b8b3fc07b095780b5f26c075");
+});
+
 test("построчный дифф промта не теряет строки", () => {
-  const lines = lineDiff("кадр у окна\nгерой молчит", "кадр у окна\nгерой говорит");
+  const lines = unifiedLines("--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n");
   expect(lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
-    "same:кадр у окна",
-    "remove:герой молчит",
-    "add:герой говорит",
+    "same:--- a/prompt",
+    "same:+++ b/prompt",
+    "same:@@",
+    "remove:было",
+    "add:стало",
   ]);
 });
 
 test("неизвестное имя считается платным и деструктивным", () => {
-  const meta = resolveActionMetadata("widget.spin", {
+  const meta = metadataOf("widget.spin", {
     name: "widget.spin",
     risk: "none",
     read_only: true,
@@ -61,9 +75,9 @@ test("неизвестное имя считается платным и дес�
   expect(meta.paid).toBe(true);
   expect(meta.destructive).toBe(true);
   expect(meta.read_only).toBe(false);
-  expect(reportEditBody("rpt-1", "  убери скрипт  ", "chg-report-1")).toEqual({
-    text: "убери скрипт",
-    action: { name: "report.edit", report_id: "rpt-1", change_id: "chg-report-1" },
+  expect(reportEditBody(7, "  сверь кадры  ")).toEqual({
+    text: "сверь кадры",
+    action: { name: "update_report", report_id: 7 },
   });
 });
 
@@ -80,22 +94,22 @@ test("карточка правки: дифф текстом, создание �
   await emit(page, "act-diff", "step_finished", EXAMPLE_PROMPT_EDIT);
   const prompt = page.getByTestId("orch-action-card").filter({ hasText: "Правка промта" });
   await expect(prompt).toBeVisible();
-  await expect(prompt.getByTestId("orch-diff-line").filter({ hasText: "герой молчит" })).toHaveAttribute("data-kind", "remove");
-  await expect(prompt.getByTestId("orch-diff-line").filter({ hasText: "герой говорит" })).toHaveAttribute("data-kind", "add");
+  await expect(prompt.getByTestId("orch-diff-line").filter({ hasText: "было" })).toHaveAttribute("data-kind", "remove");
+  await expect(prompt.getByTestId("orch-diff-line").filter({ hasText: "стало" })).toHaveAttribute("data-kind", "add");
   await prompt.getByTestId("orch-open-node").click();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __opened: string[] }).__opened)).toEqual(["n_excel_gpt"]);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __opened: string[] }).__opened)).toEqual(["n_scene_writer"]);
 
   await emit(page, "act-diff", "step_finished", EXAMPLE_NODE_CREATE);
   const created = page.getByTestId("orch-action-card").filter({ hasText: "Новая нода" });
   await expect(created).toBeVisible();
   await expect(created.getByTestId("orch-field-before")).toHaveCount(0);
-  await expect(created).toContainText("стало Проверка");
+  await expect(created).toContainText("стало Сцены");
   await expect(created).not.toContainText("было");
 
   await emit(page, "act-diff", "step_finished", EXAMPLE_NODE_EDIT);
   const node = page.getByTestId("orch-action-card").filter({ hasText: "Правка ноды" });
-  await expect(node.getByTestId("orch-field-row").filter({ hasText: "title" })).toContainText("было Старая");
-  await expect(node.getByTestId("orch-field-row").filter({ hasText: "title" })).toContainText("стало Новая");
+  await expect(node.getByTestId("orch-field-row").filter({ hasText: "source" })).toContainText("было db");
+  await expect(node.getByTestId("orch-field-row").filter({ hasText: "source" })).toContainText("стало git");
 
   await emit(page, "act-diff", "step_finished", EXAMPLE_PARAMS_EDIT);
   const params = page.getByTestId("orch-action-card").filter({ hasText: "Параметры" });
@@ -120,56 +134,19 @@ test("html-отчёт: sandbox без скриптов, правка шлёт о
   expect(access.sandbox ?? "").not.toContain("allow-scripts");
   expect(access.sandbox ?? "").not.toContain("allow-same-origin");
   expect(access.readable).toBe(false);
-  const posts: { text?: string; action?: { name?: string; report_id?: string; change_id?: string } }[] = [];
+  const posts: { text?: string; action?: { name?: string; report_id?: number } }[] = [];
   page.on("request", (req) => {
     if (req.method() !== "POST" || !req.url().includes("/message")) return;
     posts.push(req.postDataJSON());
   });
   await page.getByTestId("orch-report-edit").click();
   expect(posts).toHaveLength(0);
-  await page.getByTestId("orch-report-instruction").fill("убери скрипт");
+  await page.getByTestId("orch-report-instruction").fill("сверь кадры");
   await page.getByTestId("orch-report-send").click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
-    text: "убери скрипт",
-    action: { name: "report.edit", report_id: "rpt-1", change_id: "chg-report-1" },
+    text: "сверь кадры",
+    action: { name: "update_report", report_id: 7 },
   });
   await expect(page.getByTestId("orch-report-send")).toBeDisabled();
-});
-
-test("платное и неизвестное действие: результат только после approve", async ({ page }) => {
-  await page.route("**/api/orchestrator/approvals/**/approve", async (route) => {
-    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true, matched: true, approval_id: id }),
-    });
-  });
-  await page.route("**/api/orchestrator/approvals/**/reject", async (route) => {
-    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true, matched: true, approval_id: id }),
-    });
-  });
-  await openWithToken(page, "act-paid");
-  await emit(page, "act-paid", "approval_required", EXAMPLE_PAID_APPROVAL);
-  await emit(page, "act-paid", "step_finished", EXAMPLE_PAID_PROMPT);
-  await expect(page.getByTestId("orch-approval")).toContainText("Шаг с риском");
-  await expect(page.getByTestId("orch-action-card")).toHaveCount(0);
-  await page.getByTestId("orch-approve").click();
-  await expect(page.getByTestId("orch-action-card")).toContainText("стало");
-  await expect(page.getByTestId("orch-diff-line").filter({ hasText: "стало" })).toHaveAttribute("data-kind", "add");
-
-  await emit(page, "act-paid", "approval_required", EXAMPLE_UNKNOWN_APPROVAL);
-  await emit(page, "act-paid", "step_finished", EXAMPLE_UNKNOWN);
-  const cards = page.getByTestId("orch-action-card");
-  await expect(cards).toHaveCount(1);
-  const unknown = page.getByTestId("orch-approval").filter({ hasText: "widget.spin" });
-  await expect(unknown).toBeVisible();
-  await unknown.getByTestId("orch-reject").click();
-  await expect(page.getByTestId("orch-action-card")).toHaveCount(1);
-  await expect(page.getByTestId("orch-action-card")).not.toContainText("widget.spin");
 });

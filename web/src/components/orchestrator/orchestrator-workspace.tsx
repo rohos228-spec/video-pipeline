@@ -16,7 +16,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ActionResultCard } from "@/components/orchestrator/action-result-card";
-import { actionResultVisible } from "@/lib/orchestratorActionCards";
 import {
   AGENT_LABEL,
   groupPlanSteps,
@@ -121,7 +120,6 @@ export function OrchestratorWorkspace() {
 
   const task = chat.state.tasks.at(-1) ?? null;
   const openApprovals = chat.state.approvals.filter((item) => item.resolved == null);
-  const visibleResults = chat.state.actionResults.filter((item) => actionResultVisible(item, chat.state.approvals));
 
   const send = () => {
     const text = draft;
@@ -269,8 +267,8 @@ export function OrchestratorWorkspace() {
                   .filter((step) => step.node && isNodeResultAction(step.action))
                   .map((step) => <NodeResultCard key={`${item.id}:${step.id}`} step={step} />),
               )}
-              {visibleResults.map((result) => (
-                <ActionResultCard key={result.id} result={result} onReportEdit={chat.sendReportEdit} />
+              {chat.state.actionResults.map((result) => (
+                <ActionResultCard key={result.id} result={result} onReportEdit={chat.sendReportEdit} onRestore={chat.sendRestore} />
               ))}
               {openApprovals.map((approval) => (
                 <ApprovalCard
@@ -632,6 +630,7 @@ function ApprovalCard({
   return (
     <div
       data-testid="orch-approval"
+      data-change-id={approval.id}
       data-terminal={terminal ? "true" : "false"}
       className={`mb-3 rounded-xl border px-3 py-3 ${
         terminal ? "border-destructive/40 bg-destructive/10" : "border-warning/40 bg-warning/10"

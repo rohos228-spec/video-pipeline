@@ -19,7 +19,7 @@ import {
   writeOrchToken,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
-import { reportEditBody } from "@/lib/orchestratorActionCards";
+import { reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
 import {
   initialOrchScreen,
   reduceOrchScreen,
@@ -205,8 +205,8 @@ export function useOrchestratorChat() {
   );
 
   const sendReportEdit = useCallback(
-    async (reportId: string, instruction: string, changeId: string | null) => {
-      const body = reportEditBody(reportId, instruction, changeId);
+    async (reportId: number, instruction: string) => {
+      const body = reportEditBody(reportId, instruction);
       if (!body.text || !token || blocked) return false;
       dispatch({
         type: "user-message",
@@ -221,6 +221,30 @@ export function useOrchestratorChat() {
       } catch (error) {
         if (!noteAuth(error)) {
           setSendError(error instanceof Error ? error.message : "правка отчёта не ушла");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
+  const sendRestore = useCallback(
+    async (restoreAction: string, changeId: string | null, snapshotId: string | null) => {
+      const body = restoreBody(restoreAction, changeId, snapshotId);
+      if (!body.text || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-restore-${changeId ?? restoreAction}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "восстановление не ушло");
         }
         return false;
       }
@@ -347,6 +371,7 @@ export function useOrchestratorChat() {
     submitToken,
     sendMessage,
     sendReportEdit,
+    sendRestore,
     decide,
     dismissBlock,
     kill,

@@ -3,7 +3,7 @@
  * Дедуп по seq делает вызывающий код до dispatch.
  */
 
-import { readActionResult, type ActionResultView } from "./orchestratorActionCards";
+import { readActionEnvelope, type ActionResultView } from "./orchestratorActionCards";
 import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
@@ -482,7 +482,7 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 }
 
 function rememberActionResult(state: OrchScreenState, payload: Record<string, unknown>, seq: number): void {
-  const view = readActionResult(payload, seq);
+  const view = readActionEnvelope(payload, seq);
   if (!view) return;
   if (state.actionResults.some((item) => item.id === view.id)) return;
   state.actionResults.push(view);
