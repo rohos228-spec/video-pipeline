@@ -80,13 +80,15 @@ from app.services.img_streams import (
     acquire_image_slot,
     get_img_streams,
 )
-from app.services.outsee_retry import generate_image_with_retries
+from app.services.outsee_retry import KieSlugWithoutOutseeBotError, generate_image_with_retries
+from app.services.video_error_policy import is_no_resubmit
 from app.services.step_cancel import (
     StepCancelledError,
     consume_stop,
     raise_if_cancelled,
     sleep_cancellable,
 )
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -123,6 +125,10 @@ def is_transient_network_error(exc: BaseException) -> bool:
 def _img_http_primary() -> bool:
     """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
+    from app.services.observation import _attempt
+    ctx = _attempt.get()
+    if ctx and ctx.scope.mode == "managed":
+        return True
 
     return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
@@ -577,6 +583,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     # PNG на диске без Artifact (после partial wipe / restore) → подтянуть в БД,
     # иначе шаг «всё есть» по диску, а compute_actual_status видит дыры.
+    from app.services.media_jobs import MediaPolicyError
     try:
         from app.services.artifact_recovery import recover_scene_images_from_disk
 
@@ -587,7 +594,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id,
                 recovered[:40],
             )
-    except Exception:  # noqa: BLE001
+    except MediaPolicyError as exc:
+        from app.services.media_jobs import _hold
+        from app.services.observation import _attempt
+        ctx = _attempt.get()
+        if ctx and ctx.scope.mode == "managed":
+            await _hold(ctx, str(exc), "image-recovery:"+ctx.node_key+":"+ctx.attempt_id)
+        raise
+    except Exception:
         logger.exception(
             "[#{}] generate_images: recover_scene_images_from_disk failed",
             project.id,
@@ -607,6 +621,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     from app.services.vo_shot_expand import is_shot_child
+
+    from app.generation_options import is_scene_prompt_hollow
+    from app.settings import settings as _settings
+
+    if not getattr(_settings, "images_allow_hollow_prompts", False):
+        hollow = [
+            fr.number
+            for fr in frames
+            if not is_shot_child(fr) and is_scene_prompt_hollow(frame_image_prompt_text(fr, frames))
+        ]
+        non_child = [fr for fr in frames if not is_shot_child(fr)]
+        if hollow:
+            raise RuntimeError(
+                f"промты картинок пустые у {len(hollow)} из {len(non_child)} кадров ({hollow[:12]}): поля сцены заполнены заглушкой «нет исходных данных». "
+                "Платная генерация не запускается. Заполните сцены шагом «Работа с GPT» (нужен промт для описания сцен) "
+                "или задайте IMAGES_ALLOW_HOLLOW_PROMPTS=true, если так и задумано."
+            )
 
     missing_prompts = [
         fr.number
@@ -898,7 +929,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         break
 
-                    # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
                         session, project.id, project=project, limit=streams
                     )
@@ -1307,7 +1337,6 @@ async def _generate_frame_job(
     bot: Bot,
     outsee: OutseeBot | None,
     gpt: Any,
-    session_maker: Any = None,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
     from app.project_db import project_db_session_scope
@@ -1341,7 +1370,6 @@ async def _generate_frame_job(
                     shot1_reference=shot1_reference,
                 )
             finally:
-                # _generate_and_send уже commit'ит; освежим и снимем lease
                 try:
                     await session.refresh(frame)
                 except Exception:  # noqa: BLE001
@@ -1412,10 +1440,6 @@ async def _run_claimed_batch(
         return
 
     await session.commit()
-    from app.project_db import get_project_sessionmaker
-
-    p_dir = getattr(project, "data_dir", None) or out_dir.parent
-    sm = await get_project_sessionmaker(p_dir)
 
     jobs = []
     for fr in claimed:
@@ -1427,7 +1451,9 @@ async def _run_claimed_batch(
             else None
         )
         if shot == 2 and ref is None:
-            async with sm() as s:
+            from app.project_db import project_db_session_scope
+
+            async with project_db_session_scope(project.id) as s:
                 f2 = await s.get(Frame, fr.id)
                 if f2 is not None:
                     attrs = dict(f2.attrs or {})
@@ -1446,7 +1472,6 @@ async def _run_claimed_batch(
                 bot=bot,
                 outsee=outsee,
                 gpt=gpt,
-                session_maker=sm,
             )
         )
     if jobs:
@@ -1539,7 +1564,6 @@ async def _init_shot2_queue(
     out_dir: Path,
     xlsx_path: Path,
 ) -> int:
-    """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
     from app.services.vo_shot_expand import is_shot_child
 
     if _skip_legacy_shot2(project, frames):
@@ -1896,7 +1920,6 @@ async def _generate_and_send(
         )
 
     try:
-        # regenerate_image — только CDP UI; при HTTP (outsee is None) — fresh generate.
         if use_regen_button and outsee is not None:
             try:
                 await session.commit()
@@ -1907,9 +1930,6 @@ async def _generate_and_send(
                     model_slug=model_slug,
                 )
             except OutseeImageError:
-                # Если на странице нет предыдущего результата (или другая
-                # «структурная» ошибка regenerate) — падаем на полноценный
-                # generate с тем же gen_id, чтобы не плодить ложных файлов.
                 logger.warning(
                     "[#{}] frame {}: «Повторить» не сработала — падаю на generate",
                     project.id,
@@ -1932,6 +1952,7 @@ async def _generate_and_send(
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
                     project_id=project.id,
+                    idempotent=True,
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -1952,6 +1973,7 @@ async def _generate_and_send(
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,
                 project_id=project.id,
+                idempotent=True,
             )
     except StepCancelledError:
         raise
@@ -1975,7 +1997,6 @@ async def _generate_and_send(
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
         # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика
-        # анти-зацикливания (MAX_FAIL=3) защитит проект целиком.
         logger.exception(
             "[#{}] frame {}: outsee fail (gen_id={})",
             project.id,
@@ -2004,17 +2025,37 @@ async def _generate_and_send(
                     f"outsee отклонил промт (модерация). "
                     f"6 попыток + GPT-rewrite не помогли.\n\n"
                 )
+            elif isinstance(e, KieSlugWithoutOutseeBotError):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: модель Kie не используется "
+                    f"в этом маршруте, бота Outsee нет. Платный запрос не отправлялся.\n\n"
+                )
+            elif getattr(e, "context", {}).get("code") in ("outsee_uncertain_submit", "outsee_resume_only_no_result") or (
+                    is_no_resubmit(e) and "Outsee" in type(e).__name__):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: исход прошлой платной отправки в Outsee "
+                    f"неизвестен (запрос мог быть оплачен). Новый платный запрос не отправляю. Проверьте историю "
+                    f"генераций и баланс Outsee и решите: снять блокировку или подставить найденный файл.\n\n"
+                )
+            elif is_no_resubmit(e):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: задача Kie не завершена "
+                    f"или исход отправки неизвестен. Новый платный запрос не отправляю.\n\n"
+                )
             else:
                 head = (
                     f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
                     f"картинку поймать не удалось ({kind}).\n\n"
                 )
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 settings.telegram_owner_chat_id,
                 (head + f"<pre>{_html_escape(e.format_text())}</pre>")[:3800],
+                kind="image_capture_failed",
+                project_id=project.id,
                 parse_mode="HTML",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await session.commit()
         return
@@ -2029,9 +2070,11 @@ async def _generate_and_send(
             "gen_id": gen_id,
             "raw_url": result.raw_url or "",
             "shot": shot,
+            **({"provider_task_id": result.gen_id} if result.gen_id and result.gen_id != gen_id else {}),
         },
     )
-    session.add(art)
+    from app.services.media_jobs import persist_artifact
+    art = await persist_artifact(session, art)
     if is_shot2:
         attrs = dict(frame.attrs or {})
         attrs[SHOT2_STATUS_ATTR] = "image_generated"
@@ -2079,6 +2122,8 @@ async def _generate_and_send(
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
+    from app.services import media_spend as _media_spend, outsee_idempotency
+    await outsee_idempotency.mark_consumed(project.id, _media_spend._task_key(file_path))
     try:
         from app.services.event_bus import publish_project_event
 

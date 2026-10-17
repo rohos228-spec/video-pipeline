@@ -11,7 +11,7 @@ import asyncio
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -51,6 +51,7 @@ from app.project_db import (
     register_text_project,
     resolve_project_db_path,
 )
+from app.web.auth_sessions import AuthDep
 from app.web.deps import (
     get_edge_session,
     get_entity_session,
@@ -2388,8 +2389,52 @@ class OrchestratorChatBody(BaseModel):
     fix_bugs: bool = False
 
 
+_CHAT_CODE_ACTIONS = ("edit_files", "git_commit_push")
+_CHAT_CODE_OFF_MESSAGE = (
+    "Правка кода и git push из чата отключены (CHAT_CODE_ACTIONS_ENABLED=false, это значение "
+    "по умолчанию). Чтобы включить, задайте CHAT_CODE_ACTIONS_ENABLED=true и перезапустите сервер."
+)
+_CHAT_AUDIT_SKIP = ("read_file",)
+
+
+def _chat_actor_id(operator: str | None, request: Request | None) -> str:
+    import hashlib
+
+    who = ("web_operator:" + hashlib.sha256(operator.encode()).hexdigest()[:16]
+           if operator else "local_web_operator")
+    host = getattr(getattr(request, "client", None), "host", None)
+    return f"{who}@{host}" if host else who
+
+
+def _chat_action_name(act: dict) -> str:
+    for k in act:
+        if k != "actions":
+            return str(k)[:60]
+    return "unknown"
+
+
+async def _audit_chat_action(project_id: int, actor: str, act: dict, outcome: str,
+                             error: str | None = None) -> None:
+    try:
+        from app.services.action_layer import store
+        from app.services.observation import digest, redact
+
+        name = _chat_action_name(act)
+        params = {"project_id": project_id, "keys": sorted(str(k) for k in act)[:20],
+                  "params_digest": digest(act)}
+        async with store.sessions()() as s:
+            store.append_history(
+                s, event="chat_action", actor=actor, action_id=name, params=params,
+                outcome=outcome, error=str(redact(str(error or "")))[:500])
+            await s.commit()
+    except Exception as exc:
+        logger.warning("chat action audit failed: {}", type(exc).__name__)
+
+
 @router.post("/projects/{project_id}/orchestrator/chat")
 async def orchestrator_chat(
+    request: Request,
+    operator: AuthDep,
     project_id: int,
     body: OrchestratorChatBody,
     session: AsyncSession = Depends(get_project_session),
@@ -2402,6 +2447,9 @@ async def orchestrator_chat(
     """
     from app.services.gpt_client import GptApiUnavailable, get_gpt_client
 
+    from app.services.actions_v1 import managed_project_enabled
+    if await managed_project_enabled(project_id):
+        raise HTTPException(409, "Managed execution: legacy chat/Fix bugs cannot bypass Actions policy")
     project = await _project(session, project_id)
     await db_v2.backfill_project_v2(session, project)
     await commit_with_retry(session)
@@ -2418,9 +2466,12 @@ async def orchestrator_chat(
     diagnose_only = _is_diagnose_only_question(
         body.message, fix_bugs=fix_bugs
     )
+    from app.settings import settings as _chat_cfg
+
+    code_actions_on = bool(_chat_cfg.chat_code_actions_enabled)
     code_lines = (
         []
-        if diagnose_only
+        if diagnose_only or not code_actions_on
         else await asyncio.to_thread(_code_workspace_context)
     )
     topic_snip = (project.topic or "").strip().replace("\n", " ")[:160]
@@ -2452,8 +2503,14 @@ async def orchestrator_chat(
             else (
                 "\n\nРЕЖИМ ФИКС БАГОВ: пользователь нажал кнопку «Фикс багов». "
                 "Не ограничивайся объяснением. Найди причину по ДИАГНОСТИКА "
-                "и СРАЗУ чини: actions (run_step/run_harness/…) и при необходимости "
-                "edit_files + run_tests. Краткий отчёт по-русски что сломано и что сделал."
+                "и СРАЗУ чини: actions (run_step/run_harness/…)"
+                + (
+                    " и при необходимости edit_files + run_tests."
+                    if code_actions_on
+                    else ". Правка кода и git push из чата отключены: НЕ предлагай edit_files "
+                    "и git_commit_push, если причина в коде программы — объясни её словами."
+                )
+                + " Краткий отчёт по-русски что сломано и что сделал."
                 if fix_bugs
                 else ""
             )
@@ -2526,6 +2583,16 @@ async def orchestrator_chat(
             act = act or {}
             if diagnose_only and any(k in act for k in _CODE_ACT_KEYS):
                 # Вопрос про ошибку — код в чат не тащим и не читаем.
+                continue
+            from app.settings import settings as _chat_settings
+
+            _chat_actor = _chat_actor_id(operator, request)
+            _act_err = None
+            _n_pending = len(pending_confirm)
+            if (not _chat_settings.chat_code_actions_enabled
+                    and any(k in act for k in _CHAT_CODE_ACTIONS)):
+                error = _CHAT_CODE_OFF_MESSAGE
+                await _audit_chat_action(project_id, _chat_actor, act, "refused", error)
                 continue
             try:
                 if "run_step" in act:
@@ -2801,10 +2868,15 @@ async def orchestrator_chat(
                     )
             except db_apply.ApplyOpsError as e:
                 error = str(e)
+                _act_err = error
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
                 error = f"действие {act}: {e}"
-    # Контур самообучения: каждый диалог — в ops-журнал проекта.
+                _act_err = error
+            if not any(k in act for k in _CHAT_AUDIT_SKIP):
+                _outcome = ("error" if _act_err else
+                            "pending_confirm" if len(pending_confirm) > _n_pending else "ok")
+                await _audit_chat_action(project_id, _chat_actor, act, _outcome, _act_err)
     try:
         from app.services.agent_harness import append_ops_event
 
@@ -2919,19 +2991,25 @@ class ConfirmDeleteProjectsBody(BaseModel):
 
 @router.post("/projects/{project_id}/orchestrator/confirm-delete-projects")
 async def orchestrator_confirm_delete_projects(
+    request: Request,
+    operator: AuthDep,
     project_id: int,
     body: ConfirmDeleteProjectsBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Подтверждённое удаление проектов (кнопка в чате оркестратора)."""
     await _project(session, project_id)  # auth / existence of chat context
     ids = [int(x) for x in (body.ids or [])]
     if not ids:
         raise HTTPException(400, "delete_projects: пустой ids")
+    _actor = _chat_actor_id(operator, request)
     try:
-        return await _apply_delete_projects(session, ids)
+        res = await _apply_delete_projects(session, ids)
     except db_apply.ApplyOpsError as e:
+        await _audit_chat_action(project_id, _actor, {"confirm_delete_projects": {"ids": ids}},
+                                 "error", str(e))
         raise HTTPException(400, str(e)) from None
+    await _audit_chat_action(project_id, _actor, {"confirm_delete_projects": {"ids": ids}}, "ok")
+    return res
 
 
 class ConfirmGitPushBody(BaseModel):
@@ -2941,21 +3019,30 @@ class ConfirmGitPushBody(BaseModel):
 
 @router.post("/projects/{project_id}/orchestrator/confirm-git-push")
 async def orchestrator_confirm_git_push(
+    request: Request,
+    operator: AuthDep,
     project_id: int,
     body: ConfirmGitPushBody,
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Подтверждённый commit+push в origin/main (кнопка в чате оркестратора)."""
     await _project(session, project_id)  # auth / existence
     from app.services.code_autofix import CodeAutofixError
     from app.services.git_ops import GitOpsError, commit_and_push
+    from app.settings import settings as _chat_settings
 
+    _actor = _chat_actor_id(operator, request)
+    _act = {"confirm_git_push": {"message": body.message[:200], "files": list(body.files or [])}}
+    if not _chat_settings.chat_code_actions_enabled:
+        await _audit_chat_action(project_id, _actor, _act, "refused", "CHAT_CODE_ACTIONS_ENABLED=false")
+        raise HTTPException(403, _CHAT_CODE_OFF_MESSAGE)
     try:
         pushed = await asyncio.to_thread(
             commit_and_push, list(body.files or []), body.message.strip()
         )
     except (GitOpsError, CodeAutofixError) as e:
+        await _audit_chat_action(project_id, _actor, _act, "error", str(e))
         raise HTTPException(400, str(e)) from None
+    await _audit_chat_action(project_id, _actor, _act, "ok")
     return {
         "git_commit_push": (
             f"git HEAD: {pushed['sha']} уже в {pushed['branch']} "

@@ -8,7 +8,6 @@ from typing import Any
 
 from loguru import logger
 
-from app.db import session_scope
 from app.project_db import project_db_session_scope, sync_project_row_to_master_db
 from app.models import Project, ProjectStatus
 from app.services.event_bus import publish_project_event

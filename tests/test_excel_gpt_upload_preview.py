@@ -110,6 +110,7 @@ def test_resolve_operator_upload_replaces_edge_xlsx(
     _write_xlsx(upload, "UPLOADED")
     # Даже если takeFromEdges=True в конфиге — upload Excel вытесняет стрелку.
     p.meta["excel_gpt_nodes"]["n_gpt"]["takeFromEdges"] = True
+    p.meta["excel_gpt_nodes"]["n_gpt"]["outputMode"] = "text"
     res = resolve_operator(p, "n_gpt")
     names = [f["name"] for f in res["files"] if f.get("ok")]
     assert "new.xlsx" in names
@@ -118,6 +119,20 @@ def test_resolve_operator_upload_replaces_edge_xlsx(
     # Главное — в files нет project.xlsx со стрелки
     origins = {f.get("origin") for f in res["files"] if f.get("ok")}
     assert "upload" in origins
+
+
+def test_resolve_operator_project_file_drops_xlsx_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    p = _project(tmp_path, monkeypatch)
+    upload = upload_file_path(p, "n_gpt", "new.xlsx")
+    _write_xlsx(upload, "UPLOADED")
+    p.meta["excel_gpt_nodes"]["n_gpt"]["takeFromEdges"] = True
+    p.meta["excel_gpt_nodes"]["n_gpt"]["outputMode"] = "project_file"
+    res = resolve_operator(p, "n_gpt")
+    names = [f["name"] for f in res["files"]]
+    assert not [n for n in names if n.lower().endswith((".xlsx", ".xlsm", ".xls"))]
+    assert any("DB SoT" in w for w in res["warnings"])
 
 
 def test_clear_bound_snapshot_and_upload_path(tmp_path: Path, monkeypatch) -> None:

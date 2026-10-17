@@ -76,6 +76,21 @@ prompts/**/.history/
 # Черновики агента в корне репозитория
 /_tmp*
 
+
+# CI junit output
+reports/
+
+# scheduled DB backups (runtime artefacts)
+api-tracker/backups/
+
+# Поставка (W49): данные заказчика, служебные файлы агентов, внутренние отчёты по потокам
+/exports/
+/tasks/
+/.ai-orchestra-mcp/
+/.clinerules
+/.clineignore
+/.skill*.txt
+/START_AI_ORCHESTRA_PROMPT.txt
 # Все промты — только локально (не тянуть с GitHub при install/update)
 prompts/*
 !prompts/.gitkeep

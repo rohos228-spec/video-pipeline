@@ -1,10 +1,9 @@
 ai-pack build
-git_head: 2286a55b
-built_at: 2026-09-09 09:35 UTC
-repo: C:\Users\kir00\video-pipeline
+git_head: 16780c3d
+built_at: 2026-10-16 18:30 UTC
+repo: C:\video-pipeline\_merge
 
 copied:
-  00_core/AGENTS.md
   00_core/AGENT_MAP.md
   00_core/video-pipeline-ops.md
   00_core/video-pipeline-map.md

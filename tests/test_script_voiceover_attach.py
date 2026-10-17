@@ -118,6 +118,7 @@ async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) 
     assert len(captured) == 1
     names = [f.name for f in captured[0]]
     assert "voiceover.txt" in names
+    assert "project.xlsx" not in names
 
 
 @pytest.mark.asyncio

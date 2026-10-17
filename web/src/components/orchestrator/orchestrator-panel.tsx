@@ -22,7 +22,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { usePersistedState } from "@/hooks/use-persisted-state";
+import { NARROW_QUERY, useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
+import { ObservationSection } from "./observation-section";
+import { KillSwitchSection } from "./kill-switch-section";
+import { SpendSection } from "./spend-section";
+import { ReservesSection } from "./reserves-section";
+import { PublicationsSection } from "./publications-section";
+import { JournalSection } from "./journal-section";
+import { ActionLayerSection } from "../action-layer/action-layer-section";
+import { ChangeControlSection } from "../change-control/change-control-section";
 
 interface Props {
   projectId: number | null;
@@ -57,6 +66,11 @@ const FIX_BUGS_PREFIX =
   "если баг в коде — edit_files + короткий run_tests + git_commit_push auto=false. " +
   "Проекты/ноды Studio — через actions (delete_projects / create_project / add_node…), " +
   "не через edit_files. Кратко по-русски: причина + что исправил.\n\nПОРУЧЕНИЕ:\n";
+
+export const BUG_MODE_LABEL = "Диагностика багов";
+export const BUG_MODE_CODE_NOTE =
+  "Правка кода и git push из чата по умолчанию выключены (CHAT_CODE_ACTIONS_ENABLED=false): " +
+  "оркестратор ищет причину и запускает шаги пайплайна, но код не меняет, пока настройку не включат на сервере.";
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
@@ -521,12 +535,12 @@ export function OrchestratorPanel({ projectId }: Props) {
             aria-pressed={fixBugsMode}
             title={
               fixBugsMode
-                ? "Повторное нажатие — выйти из режима фикса"
-                : "Нажать — режим фикса; потом опиши баг. Ещё раз — выйти"
+                ? "Повторное нажатие — выйти из режима диагностики"
+                : `Нажать — режим диагностики; потом опиши баг. Ещё раз — выйти. ${BUG_MODE_CODE_NOTE}`
             }
           >
             <Bug className="h-3.5 w-3.5" />
-            Фикс багов
+            {BUG_MODE_LABEL}
           </Button>
         )}
 
@@ -565,15 +579,25 @@ export function OrchestratorPanel({ projectId }: Props) {
           )}
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+            <ObservationSection projectId={projectId} />
+            <KillSwitchSection projectId={projectId} />
+            <SpendSection projectId={projectId} />
+            <ReservesSection />
+            <PublicationsSection projectId={projectId} />
+            <JournalSection projectId={projectId} />
+            <ActionLayerSection projectId={projectId} />
+            <ChangeControlSection projectId={projectId} />
+            <div className="my-3 border-t border-white/10" />
             {fixBugsMode ? (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
-                Режим фикса: оркестратор должен чинить (шаги/код), не только объяснить.
-                Напиши баг → Enter. Ещё раз «Фикс багов» — выход в обычный чат.
+                Режим диагностики: оркестратор ищет причину и запускает шаги, не только объясняет.
+                {" "}{BUG_MODE_CODE_NOTE}
+                {" "}Напиши баг → Enter. Ещё раз «{BUG_MODE_LABEL}» — выход в обычный чат.
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
               <div className="text-[11px] text-white/35 leading-relaxed">
-                Задайте вопрос по проекту, попросите изменить параметры или нажмите «Фикс багов» для решения проблемы.
+                Задайте вопрос по проекту, попросите изменить параметры или нажмите «{BUG_MODE_LABEL}», чтобы найти причину проблемы.
               </div>
             ) : null}
             {chatLog.map((m, i) => (
@@ -588,10 +612,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`rm-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Удалить {c.count} нод
                           {c.node_type ? ` типа «${c.node_type}»` : ""}
                           {c.only === "duplicates" ? " (только дубли)" : ""}?
@@ -621,10 +645,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`del-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Удалить {c.count} проект(ов)
                           {(c.files ?? []).length
                             ? `: ${(c.files ?? []).slice(0, 4).join(", ")}`
@@ -656,10 +680,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`git-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
                       >
                         <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Push: {c.message || "commit"}
                           {(c.files ?? c.nodes).length
                             ? ` (${(c.files ?? c.nodes).slice(0, 3).join(", ")})`

@@ -66,7 +66,6 @@ def img_pr_live_streams(project: Project | None) -> int:
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
-    """Понятная ошибка: импортёр читает «Общий план», GPT часто пишет в «план»."""
     sheets: list[str] = []
     try:
         from openpyxl import load_workbook
@@ -236,6 +235,8 @@ class XlsxRoundtripResult:
     apply_ops: list[dict] | None = None
     # True = ops уже записаны в DB по батчам внутри runner (не apply повторно).
     ops_applied_inline: bool = False
+    split_source: str | None = None
+    split_verified: bool | None = None
 
 
 def _ts() -> str:
@@ -351,6 +352,8 @@ async def run_plan_xlsx(
     """
     from app.services.plan_validation import is_meaningful_general_plan
 
+    from app.services.node_capabilities import record_project_text_input, record_project_text_parse
+    await record_project_text_input(project, 'plan')
     proj_xlsx = _ensure_project_xlsx(project)
     actual_topic = topic if topic is not None else (project.topic or "")
 
@@ -381,6 +384,7 @@ async def run_plan_xlsx(
 
     reply = await xgf.run_under_xlsx_lock(project.id, "plan", _gpt)
     plan_text = extract_general_plan_from_gpt_reply(reply)
+    await record_project_text_parse(reply, plan_text, 'plan')
     if not is_meaningful_general_plan(plan_text):
         raise RuntimeError(
             "GPT не вернул общий_план в apply-ops JSON "
@@ -1138,6 +1142,8 @@ _SCRIPT_NII67_HINT = (
 
 
 def _voiceover_from_script_reply(reply: str) -> str:
+    import json
+
     from app.services import db_apply
     from app.services.voiceover_sanitize import extract_voiceover_block
 
@@ -1166,10 +1172,6 @@ def _voiceover_from_script_reply(reply: str) -> str:
             if voiceover_text:
                 break
     if not voiceover_text:
-        # Проверяем plain JSON без ops (например {"закадровый_текст": "..."} или {"voiceover": "..."})
-        import json
-        import re
-
         json_candidates: list[str] = []
         for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply or "", re.DOTALL):
             json_candidates.append(m.group(1))
@@ -1200,7 +1202,7 @@ def _voiceover_from_script_reply(reply: str) -> str:
                 break
 
     if not voiceover_text:
-        voiceover_text = (extract_voiceover_block(reply) or "").strip()
+        voiceover_text = (extract_voiceover_block(reply or "") or "").strip()
     if not voiceover_text:
         raw = (reply or "").strip()
         if (
@@ -1675,6 +1677,8 @@ async def run_script_xlsx(
         extract_scenario_block,
     )
 
+    from app.services.node_capabilities import record_project_text_input, record_project_text_parse
+    await record_project_text_input(project, 'script')
     proj_xlsx = _ensure_project_xlsx(project)
     source_voiceover = cx.ensure_current_voiceover(project)
 
@@ -1750,6 +1754,7 @@ async def run_script_xlsx(
     )
 
     voiceover_text = _voiceover_from_script_reply(reply)
+    await record_project_text_parse(reply, voiceover_text, 'script')
     if len(voiceover_text) < 200:
         raise RuntimeError(
             "GPT не вернул закадр (apply-ops закадровый_текст или "
@@ -1782,7 +1787,6 @@ async def run_script_xlsx(
 
 
 def target_frames_from_project(project: Project | None) -> int:
-    """Извлекает ориентировочное число кадров из общего плана или параметров проекта (дефолт 30)."""
     if project is None:
         return 30
     plan = str(getattr(project, "general_plan", "") or "")
@@ -1878,10 +1882,34 @@ def clamp_parent_frames(frames_spec: list[dict], max_frames: int = 30) -> list[d
 
 
 
-def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
-    """Достать кадры из replace_frames JSON или --- блоков / локальной разбивки."""
+_SPLIT_WORD = re.compile(r"\w+", re.UNICODE)
+SPLIT_COVERAGE_TOLERANCE = 0.85
+
+
+def split_answer_covers_voiceover(
+    blocks: list[str], voiceover_text: str, *, tolerance: float = SPLIT_COVERAGE_TOLERANCE
+) -> bool:
+    from collections import Counter
+
+    words = lambda t: [w.casefold() for w in _SPLIT_WORD.findall(t or "")]
+    vo = Counter(words(voiceover_text))
+    total_vo = sum(vo.values())
+    if not total_vo:
+        return True
+    ans = Counter(words(" ".join(blocks)))
+    total_ans = sum(ans.values())
+    if not total_ans:
+        return False
+    common = sum((vo & ans).values())
+    return common / total_vo >= tolerance and common / total_ans >= tolerance
+
+
+def extract_frames_spec_with_source(
+    reply: str, *, voiceover_path: Path | None
+) -> tuple[list[dict], str, dict]:
     from app.services import db_apply
 
+    info = {"dash_rejected": False}
     data = db_apply.extract_apply_ops_json(reply or "")
     if isinstance(data, dict):
         for op in data.get("ops") or []:
@@ -1898,15 +1926,27 @@ def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | Non
                     elif isinstance(item, dict):
                         out.append(item)
                 if len(out) >= 2:
-                    return out
+                    return out, "json_replace_frames", info
+    voiceover_text: str | None = None
+    if voiceover_path is not None and voiceover_path.exists():
+        voiceover_text = voiceover_path.read_text(encoding="utf-8", errors="replace")
     blocks = parse_dash_separated_blocks(reply or "")
-    if len(blocks) < 2 and voiceover_path is not None and voiceover_path.exists():
-        blocks = split_voiceover_locally(
-            voiceover_path.read_text(encoding="utf-8", errors="replace")
-        )
+    source = "dash_blocks"
+    if len(blocks) >= 2 and voiceover_text is not None and not split_answer_covers_voiceover(
+        blocks, voiceover_text
+    ):
+        info["dash_rejected"] = True
+        blocks = []
+    if len(blocks) < 2 and voiceover_text is not None:
+        blocks = split_voiceover_locally(voiceover_text)
+        source = "local_voiceover_fallback"
     if len(blocks) >= 2:
-        return [{"закадр": b.strip()} for b in blocks if b.strip()]
-    return []
+        return [{"закадр": b.strip()} for b in blocks if b.strip()], source, info
+    return [], "none", info
+
+
+def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
+    return extract_frames_spec_with_source(reply, voiceover_path=voiceover_path)[0]
 
 
 async def run_split_xlsx(
@@ -1914,13 +1954,15 @@ async def run_split_xlsx(
     *,
     project_id: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «Разбивка»: GPT → replace_frames (DB); Excel только через export."""
     proj_xlsx = _ensure_project_xlsx(project)
     voiceover = cx.ensure_current_voiceover(project)
     if voiceover is None:
         raise FileNotFoundError(
             "voiceover.txt не найден — сначала пройди шаг «Закадровый текст»"
         )
+
+    from app.services.node_capabilities import record_split_input,record_split_parse
+    await record_split_input(voiceover.read_text(encoding='utf-8',errors='replace'))
 
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
@@ -1945,13 +1987,21 @@ async def run_split_xlsx(
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "split", _gpt)
-    frames_spec = extract_frames_spec_from_gpt_reply(reply, voiceover_path=voiceover)
+    frames_spec, split_source, split_info = extract_frames_spec_with_source(
+        reply, voiceover_path=voiceover
+    )
+    await record_split_parse(
+        reply, frames_spec, frames_source=split_source,
+        dash_rejected=split_info["dash_rejected"],
+    )
     if len(frames_spec) < 2:
         raise RuntimeError(
             "GPT не вернул разбивку в apply-ops replace_frames "
             f"(кадров={len(frames_spec)}). Нужен JSON "
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
+    from app.services.node_capabilities import enforce_split_contract_before_write
+    await enforce_split_contract_before_write(frames_spec)
 
     target_n = target_frames_from_project(project)
     max_frames_limit = max(35, target_n + 2)
@@ -1965,6 +2015,8 @@ async def run_split_xlsx(
         backup_path=None,
         frames_spec=frames_spec,
         apply_ops=[{"target": "replace_frames", "frames": frames_spec}],
+        split_source=split_source,
+        split_verified=True,
     )
 
 
@@ -2050,7 +2102,6 @@ async def _load_img_pr_context(
 ) -> tuple[list[Frame], list[dict], str, list[Frame]]:
     """Кадры + Entity cards + general_plan для img_pr."""
     from app.models import Entity
-    from app.project_db import project_db_session_scope
     from app.services import db_v2
     from app.services.excel_characters import entity_cards_for_gpt
     from app.services.vo_shot_expand import is_shot_child
@@ -2279,7 +2330,6 @@ async def run_img_pr_xlsx(
     uuid_map_text: str = "",
     n_batches: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «Промты картинок»: GPT батчами → apply-ops (DB)."""
     from app.services import img_pr_batches as ipb
 
     proj_xlsx = _ensure_project_xlsx(project)
@@ -2483,6 +2533,9 @@ async def run_img_pr_xlsx(
                 wrap_style=not plastilin,
                 style_id=style_id,
             )
+            from app.services.node_capabilities import record_image_prompt_parse
+            await record_image_prompt_parse(last_reply or '',batch_ops,batch_i=bi,
+                target_uuids=[str(fr.uuid or '') for fr in batch])
             if batch_ops:
                 break
             empty_stub = ipb.is_empty_ops_reply(last_reply or "")
@@ -2563,6 +2616,9 @@ async def run_img_pr_xlsx(
                         len(all_ops),
                     )
                     return
+                from app.services.node_capabilities import note_image_prompt_unusable
+
+                note_image_prompt_unusable(last_reply, batch_i=bi)
                 raise RuntimeError(
                     f"img_pr batch {bi} L{level}: нет apply-ops "
                     f"(reply_len={len(last_reply)}). "
@@ -2663,13 +2719,15 @@ async def run_img_pr_xlsx(
                 added = all_ops[before:]
                 if added:
                     try:
-                        await _apply_img_pr_ops_now(
-                            project,
-                            added,
-                            export_xlsx=False,
-                            label=f"batch-{bi}",
-                        )
-                    except Exception as apply_err:  # noqa: BLE001
+                        from app.services.observation import bind_image_prompt_batch_request
+                        with bind_image_prompt_batch_request(bi):
+                            await _apply_img_pr_ops_now(
+                                project,
+                                added,
+                                export_xlsx=False,
+                                label=f"batch-{bi}",
+                            )
+                    except Exception as apply_err:
                         logger.warning(
                             "img_pr_db: batch {} apply failed (ckpt keeps ops): {}",
                             bi,
@@ -2677,6 +2735,10 @@ async def run_img_pr_xlsx(
                         )
 
         if not any_ok and not all_ops:
+            if replies:
+                from app.services.node_capabilities import note_image_prompt_unusable
+
+                note_image_prompt_unusable(replies[-1])
             raise RuntimeError(
                 "img_pr: все параллельные батчи провалились без ops"
             )
@@ -2684,6 +2746,10 @@ async def run_img_pr_xlsx(
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 
     if not all_ops:
+        if replies:
+            from app.services.node_capabilities import note_image_prompt_unusable
+
+            note_image_prompt_unusable(replies[-1])
         raise RuntimeError(
             "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'

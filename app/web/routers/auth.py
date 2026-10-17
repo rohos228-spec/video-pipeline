@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.services import access_guard
 from app.settings import settings
 from app.web import user_accounts as ua
-from app.web.auth_sessions import _extract_bearer, issue_session_token
+from app.web.auth_sessions import AuthDep, _extract_bearer, issue_session_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -68,6 +69,14 @@ def _me(req: Request):
     if not u:
         raise HTTPException(401, "login required")
     return u
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response) -> dict:
+    token = auth_sessions._extract_bearer(request)
+    auth_sessions.revoke_session_token(token)
+    response.delete_cookie("vp_session", path="/")
+    return {"ok": True}
 
 
 @router.get("/status")
@@ -172,3 +181,16 @@ async def delete_account(body: DeleteBody, request: Request) -> dict:
         raise HTTPException(401, "Неверный пароль")
     ua.delete_user(u["id"])
     return {"ok": True}
+
+
+@router.get("/operator-token", dependencies=[Depends(access_guard.local_only_when_no_auth)])
+async def operator_token(request: Request, operator: AuthDep) -> dict:
+    origin = request.headers.get("origin")
+    host = request.headers.get("host")
+    cross_site = (request.headers.get("sec-fetch-site") or "").lower() == "cross-site"
+    if cross_site or (origin is not None and not access_guard.origin_allowed(origin, host)):
+        raise HTTPException(status_code=403, detail={
+            "code": "bad_origin",
+            "message": "Токен оператора выдаётся только странице самого Studio."})
+    return {"token": access_guard.get_operator_token(), "header": access_guard.OPERATOR_HEADER,
+            "required": access_guard.operator_token_enforced()}

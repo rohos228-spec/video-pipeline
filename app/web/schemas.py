@@ -269,6 +269,8 @@ class HITLDTO(_ORM):
 class HITLDecisionRequest(BaseModel):
     decision: str  # approve | regenerate | reject | edit_prompt
     edited_prompt: str | None = None
+    project_id: int | None = None
+    advance: bool = True
 
 
 # ── Artifact ──

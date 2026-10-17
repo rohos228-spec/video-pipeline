@@ -44,6 +44,11 @@ from app.web.auth_sessions import AuthDep
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
 
+@router.get("/transfers/active")
+async def active_transfers() -> dict:
+    return {"transfers": []}
+
+
 def _pipeline_root() -> Path:
     return find_project_root().resolve()
 
@@ -58,7 +63,9 @@ def _check_agent_token(authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token != expected:
+    import hmac
+
+    if not hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="invalid fleet token")
 
 
@@ -471,8 +478,10 @@ def _safe_path(base: Path, rel: str) -> Path:
     rel = rel.replace("\\", "/").lstrip("/")
     target = (base / rel).resolve()
     base_res = base.resolve()
-    if not str(target).startswith(str(base_res)):
-        raise HTTPException(status_code=400, detail="path escapes sandbox")
+    try:
+        target.relative_to(base_res)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="path escapes sandbox") from None
     return target
 
 
@@ -828,6 +837,10 @@ async def local_files_download(path: str, _auth: AgentAuth = None):
     target = _safe_path(root, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
+    from app.web.routers.artifacts import _is_private_file
+
+    if _is_private_file(target):
+        raise HTTPException(status_code=403, detail="private file")
     return FileResponse(
         path=target,
         filename=target.name,

@@ -17,16 +17,20 @@
 from __future__ import annotations
 
 import contextvars
+import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Iterable
 
 from loguru import logger
 
 from app.models import NodeRun, NodeRunStatus
+from app.services.disk_guard import append_rotating
 from app.settings import settings
 
 STATUS_LOG_PATH = Path("logs/status.log")
+STATUS_SNAPSHOT_PATH = Path("logs/status.snapshot.log")
 
 _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
     NodeRunStatus.pending: frozenset({NodeRunStatus.queued, NodeRunStatus.skipped}),
@@ -76,7 +80,6 @@ def allow_replica_status_write():
 
 
 def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:
-    """Runtime-защита от записи nr.status мимо машины состояний."""
     if is_status_write_allowed():
         return
     msg = (
@@ -88,17 +91,37 @@ def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:
     logger.error(msg)
 
 
-def _ensure_log_dir() -> None:
-    STATUS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _transitions_log_enabled() -> bool:
+    return (os.environ.get("VP_STATUS_LOG_TRANSITIONS") or "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _write_status_log(line: str) -> None:
+    if not _transitions_log_enabled():
+        return
     try:
-        _ensure_log_dir()
-        with STATUS_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_rotating(STATUS_LOG_PATH, line)
     except OSError as e:
         logger.warning("node_status_machine: cannot write {}: {}", STATUS_LOG_PATH, e)
+
+
+def format_status_line(
+    *,
+    node_key: str,
+    node_type: str,
+    old: NodeRunStatus,
+    new: NodeRunStatus,
+    initiator: str,
+    project_id: int | None,
+    blocked: bool = False,
+    ts: str | None = None,
+) -> str:
+    ts = ts or datetime.utcnow().isoformat(timespec="seconds")
+    pid = project_id if project_id is not None else "?"
+    action = "BLOCKED" if blocked else "OK"
+    return (
+        f"{ts}\t{action}\tproject={pid}\tnode={node_type}/{node_key}\t"
+        f"{old.value} → {new.value}\tinitiator={initiator}"
+    )
 
 
 def _log_line(
@@ -111,14 +134,52 @@ def _log_line(
     project_id: int | None,
     blocked: bool = False,
 ) -> None:
-    ts = datetime.utcnow().isoformat(timespec="seconds")
-    pid = project_id if project_id is not None else "?"
-    action = "BLOCKED" if blocked else "OK"
-    line = (
-        f"{ts}\t{action}\tproject={pid}\tnode={node_type}/{node_key}\t"
-        f"{old.value} → {new.value}\tinitiator={initiator}"
-    )
-    _write_status_log(line)
+    _write_status_log(format_status_line(
+        node_key=node_key, node_type=node_type, old=old, new=new, initiator=initiator,
+        project_id=project_id, blocked=blocked,
+    ))
+
+
+def _row_ts(nr: Any) -> str:
+    for attr in ("finished_at", "started_at", "created_at"):
+        v = getattr(nr, attr, None)
+        if v is not None:
+            return v.isoformat(timespec="seconds") if hasattr(v, "isoformat") else str(v)
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def derive_status_lines(rows: Iterable[tuple[Any, int | None]]) -> list[str]:
+    out: list[str] = []
+    for nr, project_id in rows:
+        status = nr.status.value if hasattr(nr.status, "value") else str(nr.status)
+        pid = project_id if project_id is not None else "?"
+        line = (f"{_row_ts(nr)}\tSNAPSHOT\tproject={pid}\tnode={nr.node_type}/{nr.node_key}\t"
+                f"{status}\tattempts={getattr(nr, 'attempts', 0) or 0}")
+        err = (getattr(nr, "error", None) or "").strip()
+        if status == "failed" and err:
+            line += "\terror=" + err.replace("\n", " ").replace("\t", " ")[:200]
+        out.append(line)
+    out.sort()
+    return out
+
+
+async def rebuild_status_snapshot(session, *, project_id: int | None = None,
+                                  path: Path | None = None) -> int:
+    from sqlalchemy import select
+
+    from app.models import WorkflowRun
+
+    stmt = select(NodeRun, WorkflowRun.project_id).join(WorkflowRun, WorkflowRun.id == NodeRun.workflow_run_id)
+    if project_id is not None:
+        stmt = stmt.where(WorkflowRun.project_id == project_id)
+    result = await session.execute(stmt)
+    lines = derive_status_lines((nr, pid) for nr, pid in result.all())
+    target = Path(path) if path is not None else STATUS_SNAPSHOT_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    os.replace(tmp, target)
+    return len(lines)
 
 
 def _apply_side_effects(
@@ -130,6 +191,12 @@ def _apply_side_effects(
     error: str | None,
 ) -> None:
     now = datetime.utcnow()
+    nr.__dict__.setdefault("_observation_transitions", []).append({
+        "from": old.value, "to": new.value, "initiator": initiator,
+        "actor": "worker" if initiator == "worker" else (
+            "operator_route" if initiator in {"api_stop", "ui_reset", "api_reset", "ui_restart"} else "runtime"),
+        "human_identity": None,
+    })
     token = _status_machine_write.set(True)
     try:
         nr.status = new
@@ -180,6 +247,26 @@ def transition_node_status(
     if old == new_status:
         return False
 
+    if new_status == NodeRunStatus.running:
+        from app.services.actions_v1 import check_managed_start
+
+        decision = check_managed_start(project_id=project_id, node_key=nr.node_key)
+        if decision is not None and not decision.allowed:
+            logger.warning(
+                "actions-v1 blocked start project={} node={} reason={}",
+                project_id, nr.node_key, decision.reason,
+            )
+            _log_line(
+                node_key=nr.node_key,
+                node_type=nr.node_type,
+                old=old,
+                new=new_status,
+                initiator=f"actions_v1:{decision.reason}",
+                project_id=project_id,
+                blocked=True,
+            )
+            return False
+
     if new_status == NodeRunStatus.pending and initiator in _RESET_INITIATORS:
         _apply_side_effects(nr, old, new_status, initiator=initiator, error=error)
         _log_line(
@@ -192,8 +279,6 @@ def transition_node_status(
         )
         return True
 
-    # Heal: Project уже на следующем ready/assembled, а NodeRun залип в failed
-    # (гонка reconcile / WA после успеха). Не открываем failed→done для worker.
     if (
         initiator == "heal_success"
         and new_status == NodeRunStatus.done
@@ -266,6 +351,24 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
     """queued → running (воркер взял шаг)."""
     if nr.status == NodeRunStatus.running:
         return False
+    from app.services.actions_v1 import check_managed_start
+
+    decision = check_managed_start(project_id=project_id, node_key=nr.node_key)
+    if decision is not None and not decision.allowed:
+        logger.warning(
+            "actions-v1 blocked start project={} node={} reason={}",
+            project_id, nr.node_key, decision.reason,
+        )
+        _log_line(
+            node_key=nr.node_key,
+            node_type=nr.node_type,
+            old=nr.status,
+            new=NodeRunStatus.running,
+            initiator=f"actions_v1:{decision.reason}",
+            project_id=project_id,
+            blocked=True,
+        )
+        return False
     if nr.status == NodeRunStatus.queued:
         return transition_node_status(
             nr, NodeRunStatus.running, initiator=initiator, project_id=project_id
@@ -282,7 +385,6 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
 
 
 def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "worker") -> bool:
-    """running | waiting_hitl → done после успешного шага (только initiator=worker)."""
     if initiator != "worker":
         logger.error(
             "complete_node: initiator={!r} запрещён для {}/{}",

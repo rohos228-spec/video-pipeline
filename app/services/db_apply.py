@@ -255,7 +255,6 @@ FIELD_ALIASES: dict[str, str] = {
     "camera_subdivide": "camera_subdivide",
 }
 
-# Поля, которые живут в Frame.attrs (не колонки Frame.*).
 _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
@@ -378,6 +377,10 @@ def _hamming_distance(a: str, b: str) -> int:
     return sum(1 for x, y in zip(a, b, strict=True) if x != y)
 
 
+from app.services.observation import observe_check
+
+
+@observe_check("frame_uuid_repair", lambda args, kw, result: {"status": "performed", "changed": bool(result), "repairs": len(result)})
 def repair_near_miss_frame_uuids(
     ops: list[dict[str, Any]],
     known_uuids: list[str] | set[str],
@@ -568,7 +571,6 @@ def close_truncated_json(text: str) -> dict[str, Any] | None:
 
 
 def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
-    """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
     if not text:
         return []
     text = repair_apply_ops_json_text(text)
@@ -701,7 +703,6 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
 
 
 def _normalize_scene_card(raw: dict[str, Any]) -> dict[str, Any]:
-    """Сцена из ответа агента → реестр (границы по словам, не по столбцу)."""
     if not isinstance(raw, dict):
         raise ApplyOpsError("scenes: каждый элемент — объект")
     sid = str(
@@ -1336,6 +1337,10 @@ def export_project_xlsx(
     }
 
 
+from app.services.observation import observe_apply
+
+
+@observe_apply
 async def apply_ops(
     session: AsyncSession,
     project: Project,

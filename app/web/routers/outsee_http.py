@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.bots import outsee_http as oh
+from app.services import media_spend, spend_guard
 from app.services.create_jobs import enqueue_generation, get_job, queue_snapshot
 from app.settings import settings
 
@@ -108,6 +109,14 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             detail="Outsee Developer API не поддерживает audio",
         )
 
+    verdict = await spend_guard.paid_precheck(
+        "outsee", f"create {media}",
+        estimate_usd=(spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if media == "video"
+                      else spend_guard.MEDIA_SUBMIT_ESTIMATE_USD),
+        project_id=body.project_id)
+    if not verdict.get("allowed"):
+        raise HTTPException(status_code=423, detail=verdict.get("message_ru") or "Платный вызов заблокирован.")
+
     params = {
         "aspect": body.aspect,
         "resolution": body.resolution,
@@ -123,8 +132,10 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     if media == "video":
         model = oh.studio_id_to_outsee_video_slug(body.model)
 
+        tracked_generate_video = media_spend.outsee_tracked(oh.generate_video, "video")
+
         async def run(out_path):
-            return await oh.generate_video(
+            return await tracked_generate_video(
                 text,
                 out_path,
                 model_slug=model,

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "mode": "production",
+  "online_enabled": false,
+  "endpoint": null,
+  "decision": null,
+  "profiles": {},
+  "allowed_actions": []
+}

@@ -54,7 +54,7 @@ async def _get_default_workflow_id(
     Самовосстанавливающийся поиск:
     1. Ищет Workflow с is_default == True.
     2. Если не найден — берет любой существующий Workflow и делает его дефолтным.
-    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон через seed_default_workflow().
+    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон в master через seed_default_workflow().
     """
 
     async def _lookup(s: AsyncSession) -> int | None:
@@ -86,27 +86,20 @@ async def _get_default_workflow_id(
         return None
 
     if session is not None:
-        res = await _lookup(session)
-        if res is not None:
-            return res
-
+        found = await _lookup(session)
+        if found is not None:
+            return found
     async with session_scope() as s:
-        res = await _lookup(s)
-    if res is not None:
-        return res
+        found = await _lookup(s)
+    if found is not None:
+        return found
 
-    # Фолбэк 2: база пуста, вызываем авто-засев
     try:
         from app.web.settings_default import seed_default_workflow
 
-        await seed_default_workflow(session)
+        await seed_default_workflow()
     except Exception:  # noqa: BLE001
         logger.warning("auto seed_default_workflow failed", exc_info=True)
-
-    if session is not None:
-        res = await _lookup(session)
-        if res is not None:
-            return res
 
     async with session_scope() as s:
         return await _lookup(s)
@@ -721,7 +714,6 @@ async def prepare_node_for_step_start(
 
     if nr.status == NodeRunStatus.skipped:
         if explicit_ui_start:
-            # Ручной старт: включаем ноду обратно и продолжаем.
             meta = dict(project.meta or {})
             disabled = [str(x) for x in (meta.get("disabled_nodes") or [])]
             if nr.node_key in disabled:
@@ -1896,18 +1888,16 @@ async def _reconcile_stale_node_runs(
 
 
 async def reconcile_stale_node_runs_on_startup() -> int:
-    """NodeRun running/queued без живого воркера после перезапуска → failed."""
     return await _reconcile_stale_node_runs(initiator="startup_reconcile")
 
 
 async def background_node_run_reconcile_loop(*, interval_sec: float = 60.0) -> None:
-    """Фон: running/queued без живой задачи дольше N сек → failed."""
     while True:
         try:
             await _reconcile_stale_node_runs(
                 initiator="background_reconcile",
                 require_no_live_task=True,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("background_node_run_reconcile_loop failed")
         await asyncio.sleep(interval_sec)

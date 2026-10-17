@@ -100,8 +100,11 @@ def test_diagnose_truncated_and_empty_arrays() -> None:
     reason, data = diagnose_apply_ops_text(
         '{"characters":[],"scenes":[{"id_scene":"scene_01","shots":[{"id_shot":"x"'
     )
-    assert reason == "json_truncated"
-    assert data is None
+    assert reason == "ok"
+    assert isinstance(data, dict) and data.get("_salvaged_partial") is True
+    reason_t, data_t = diagnose_apply_ops_text('{"scenes":[{"id_scene"')
+    assert reason_t == "json_truncated"
+    assert data_t is None
     reason2, data2 = diagnose_apply_ops_text(
         '{"characters":[],"scenes":[],"ops":[],"report":""}'
     )

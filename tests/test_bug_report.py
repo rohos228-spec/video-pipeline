@@ -50,5 +50,5 @@ def test_write_bug_report_file(tmp_path: Path, monkeypatch) -> None:
     assert "hello" in res["content"]
     assert "clipboardPrompt" in res
     assert "hello" in res["clipboardPrompt"]
-    assert "баги/" in res["rel"]
+    assert "bug-reports/" in res["rel"]
     assert int(res.get("logChars") or 0) > 0

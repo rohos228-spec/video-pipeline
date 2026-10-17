@@ -12,7 +12,7 @@ import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +48,9 @@ from app.web.routers import (
 )
 from app.web.routers import (
     generation_options as generation_options_router,
+)
+from app.web.routers import (
+    gen_assistant as gen_assistant_router,
 )
 from app.web.routers import (
     gpt_workspace as gpt_workspace_router,
@@ -129,6 +132,9 @@ async def _lifespan(app: FastAPI):
     Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
+    from app.services.access_guard import assert_safe_bind
+
+    assert_safe_bind()
     try:
         from app.db import engine
         from app.models import Base
@@ -142,7 +148,10 @@ async def _lifespan(app: FastAPI):
 
             await migrate_db_v2_schema(conn)
             await migrate_scene_space_schema(conn)
-    except Exception:  # noqa: BLE001
+            from app.services.schema_migrations import migrate_orchestrator_schema
+
+            await migrate_orchestrator_schema(conn)
+    except Exception:
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
         from app.db import session_scope
@@ -191,6 +200,9 @@ async def _lifespan(app: FastAPI):
     from app.settings import settings
     from app.telegram.noop_bot import get_worker_bot
 
+    from app.services.redact import install_log_redaction
+
+    install_log_redaction()
     live_log_path = settings.data_dir / "studio-live.log"
     live_log_path.parent.mkdir(parents=True, exist_ok=True)
     live_log_sink = logger.add(
@@ -200,6 +212,7 @@ async def _lifespan(app: FastAPI):
         enqueue=True,
         rotation="30 MB",
         retention=2,
+        diagnose=False,
     )
     logger.info("studio live log → {}", live_log_path)
 
@@ -233,8 +246,50 @@ async def _lifespan(app: FastAPI):
         )
 
     try:
+        from app.services.project_db_guard import migrate_existing_project_dbs
+
+        schema_report = await migrate_existing_project_dbs()
+        if schema_report["failed"]:
+            logger.error("web lifespan: project.db schema migration failed for {}", schema_report["failed"])
+    except Exception:
+        logger.exception("migrate_existing_project_dbs failed (non-fatal)")
+
+    try:
+        from app.services.diagnosis import register_default_escalation_notifier
+
+        register_default_escalation_notifier()
+    except Exception:
+        logger.exception("escalation notifier registration failed (non-fatal)")
+
+    from app.services.observation import get_observer
+
+    from app.services import supervisor_heartbeat
+
+    observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")
+    checker_task = asyncio.create_task(supervisor_heartbeat.run_checker(), name="observer-heartbeat-checker")
+    backup_stop = asyncio.Event()
+    backup_task = None
+    try:
+        from app.services.project_db_guard import start_scheduled_backups
+
+        backup_task = start_scheduled_backups(stop=backup_stop)
+    except Exception:
+        logger.exception("scheduled backups failed to start (non-fatal)")
+    try:
         yield
     finally:
+        backup_stop.set()
+        if backup_task is not None:
+            backup_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await backup_task
+        checker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await checker_task
+        observer_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await observer_task
+        supervisor_heartbeat.mark_stopped()
         logger.remove(live_log_sink)
         try:
             from app.project_db import close_all_project_engines
@@ -253,54 +308,80 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # Локальный фронт ходит с localhost:3000 в dev — открываем CORS.
+    from app.services import access_guard
+
+    app.add_middleware(access_guard.SecurityGuardMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=access_guard.allowed_origins(),
         allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", access_guard.OPERATOR_HEADER,
+                       "Idempotency-Key", "X-Action-Layer-Operator"],
     )
+    from app.services.operator_audit import OperatorAuditMiddleware
+    from app.web.auth_sessions import require_web_user
 
-    app.include_router(workflows_router.router, prefix=API_PREFIX)
-    app.include_router(projects_router.router, prefix=API_PREFIX)
-    app.include_router(project_ops_router.router, prefix=API_PREFIX)
-    app.include_router(ratings_router.router, prefix=API_PREFIX)
-    app.include_router(profile_router.router, prefix=API_PREFIX)
-    app.include_router(generation_options_router.router, prefix=API_PREFIX)
-    app.include_router(config_presets_router.router, prefix=API_PREFIX)
-    app.include_router(outsee_create_router.router, prefix=API_PREFIX)
-    app.include_router(outsee_http_router.router, prefix=API_PREFIX)
-    app.include_router(create_queue_router.router, prefix=API_PREFIX)
-    app.include_router(kie_create_router.router, prefix=API_PREFIX)
-    app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
-    app.include_router(text_llm_router.router, prefix=API_PREFIX)
-    app.include_router(gen_assistant_router.router, prefix=API_PREFIX)
-    app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
-    app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
-    app.include_router(runs_router.router, prefix=API_PREFIX)
-    app.include_router(prompts_router.router, prefix=API_PREFIX)
-    app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
-    app.include_router(prompt_files_router.router, prefix=API_PREFIX)
-    app.include_router(library_router.router, prefix=API_PREFIX)
-    app.include_router(hitl_router.router, prefix=API_PREFIX)
-    app.include_router(knowledge_router.router, prefix=API_PREFIX)
-    app.include_router(frames_router.router, prefix=API_PREFIX)
-    app.include_router(artifacts_router.router, prefix=API_PREFIX)
-    app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
-    app.include_router(bug_reports_router.router, prefix=API_PREFIX)
-    app.include_router(fleet_router.router, prefix=API_PREFIX)
+    app.add_middleware(OperatorAuditMiddleware)
+    auth = Depends(require_web_user)
+    mut = [auth, access_guard.MutationLocalOnlyDep]
+
+    # Роутеры R0a сохранены; мутации закрыты local-only как в #342.
+    # Роутеры только из R0a (ratings/profile/storage/nii67/style_agent) — с тем же auth.
+    app.include_router(workflows_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(projects_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(project_ops_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(ratings_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(profile_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(generation_options_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(config_presets_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(outsee_create_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(outsee_http_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(create_queue_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(kie_create_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(gpt_workspace_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(text_llm_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(gen_assistant_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(sidebar_layout_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(runtime_streams_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(runs_router.router, prefix=API_PREFIX, dependencies=[auth])
+    from app.web.routers import observations
+
+    app.include_router(observations.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(observations.timeline_router, prefix=API_PREFIX, dependencies=[auth])
+    from app.services.action_layer.router import router as action_layer_router
+
+    app.include_router(action_layer_router, prefix=API_PREFIX, dependencies=[auth])
+    from app.services.change_control.router import router as change_control_router
+
+    app.include_router(change_control_router, prefix=API_PREFIX, dependencies=[auth])
+    from app.web.routers import media_recovery as media_recovery_router
+
+    app.include_router(media_recovery_router.router, prefix=API_PREFIX, dependencies=[auth])
+    from app.web.routers import publications as publications_router
+
+    app.include_router(publications_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(prompts_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(prompt_studio_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(prompt_files_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(library_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(hitl_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(knowledge_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(frames_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(artifacts_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(artifacts_router.files_router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(bug_reports_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(fleet_router.router, prefix=API_PREFIX, dependencies=[auth])
     app.include_router(auth_router.router, prefix=API_PREFIX)
-    app.include_router(db_browser_router.router, prefix=API_PREFIX)
-    app.include_router(node_groups_router.router, prefix=API_PREFIX)
-    app.include_router(storage_router.router, prefix=API_PREFIX)
-    app.include_router(meta_agent_router.router, prefix=API_PREFIX)
-    app.include_router(nii67_router.router, prefix=API_PREFIX)
-    app.include_router(style_agent_router.router, prefix=API_PREFIX)
+    app.include_router(db_browser_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(node_groups_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(storage_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(meta_agent_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(nii67_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(style_agent_router.router, prefix=API_PREFIX, dependencies=[auth])
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:
-        """Не даём GET catch-all отвечать 405 на неизвестные POST /api/*."""
         from fastapi import HTTPException
 
         raise HTTPException(
@@ -308,7 +389,6 @@ def create_app() -> FastAPI:
             detail="API route not found — перезапустите Studio (STUDIO.cmd → [1])",
         )
 
-    # ── WebSocket: live-стрим событий выбранного канала ──
     # Лимит: утечки на клиенте (до WS-hub) иначе копят 200+ сокетов и
     # душат event loop — anim_pr / GPT API выглядят «зависшими».
     _ws_active = {"n": 0}
@@ -319,6 +399,15 @@ def create_app() -> FastAPI:
         """Клиент подписывается на канал (например, `runs.42`, `global`,
         `hitl.7`). Сервер шлёт JSON-сообщения каждое полученное событие.
         """
+        from app.settings import settings as _s
+
+        if _s.web_auth_enabled:
+            from app.web.auth_sessions import validate_session_token
+
+            bearer = (ws.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+            if not validate_session_token(bearer or ws.cookies.get("vp_session")):
+                await ws.close(code=1008)
+                return
         if _ws_active["n"] >= _WS_MAX:
             await ws.accept()
             with suppress(Exception):
@@ -465,7 +554,18 @@ def _mount_frontend(app: FastAPI) -> None:
                     headers={"Cache-Control": "no-cache, must-revalidate"},
                 )
         # Next static export — все маршруты как .html-файлы.
+        base = out_dir.resolve()
+
+        def _inside(p):
+            try:
+                p.resolve().relative_to(base)
+                return True
+            except (ValueError, OSError):
+                return False
+
         candidate = out_dir / full_path
+        if not _inside(candidate):
+            return _html_response(out_dir / "index.html")
         if candidate.is_file():
             if candidate.suffix.lower() in {".html", ".htm"}:
                 return _html_response(candidate)
@@ -476,13 +576,12 @@ def _mount_frontend(app: FastAPI) -> None:
                 )
             return FileResponse(candidate)
         html_variant = out_dir / f"{full_path}.html"
-        if html_variant.is_file():
+        if html_variant.is_file() and _inside(html_variant):
             return _html_response(html_variant)
         return _html_response(out_dir / "index.html")  # SPA fallback
 
 
 def _mount_frontend_missing_help(app: FastAPI, out_dir: Path) -> None:
-    """Показываем понятную страницу, если web/out ещё не собран."""
     from fastapi.responses import HTMLResponse
 
     html = f"""<!DOCTYPE html>

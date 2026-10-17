@@ -97,6 +97,10 @@ function Invoke-StudioGit {
     }
     git -C $Root fetch origin $br 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
+    if ($env:VP_HARD_RESET_ALLOWED -eq "0") {
+        Write-StudioLog "STOP: local edits not saved, git hard reset forbidden - update skipped" "Red"
+        return $false
+    }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root checkout -B $br "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }

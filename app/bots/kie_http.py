@@ -32,6 +32,7 @@ from app.bots.kie_kling import (
     kie_uses_vps_relay,
 )
 from app.bots.outsee import GenerationResult
+from app.services import media_spend, spend_guard
 from app.settings import settings
 
 _POLL_INTERVAL_S = 4.0
@@ -52,6 +53,24 @@ _POLL_PATHS = {
 
 class KieHttpError(KieKlingError):
     """Ошибка kie Market/Create — совместима с outsee_retry."""
+
+
+class KieUncertainError(KieHttpError):
+    pass
+
+
+class KieSubmitUnknownError(KieUncertainError):
+
+    def __init__(self, message: str, *, context: dict[str, Any] | None = None):
+        super().__init__(message, context={**(context or {}), "uncertain": True, "no_resubmit": True,
+                                           "submit_unknown": True})
+
+
+class KieTaskPending(KieUncertainError):
+
+    def __init__(self, message: str, *, task_id: str, kind: str = "timeout", context: dict[str, Any] | None = None):
+        super().__init__(message, context={"provider_code": 504, **(context or {}), "task_id": task_id,
+                                           "kind": kind, "no_resubmit": True, "pending": True})
 
 
 def kie_configured() -> bool:
@@ -133,8 +152,21 @@ async def upload_file(
     return dl
 
 
+def _create_estimate(_args: tuple, _kwargs: dict) -> float | None:
+    try:
+        usd = float((media_spend._kie_ctx.get() or {}).get("usd") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return usd if usd > 0 else None
+
+
+def _blocked_as_kie(blocked: spend_guard.PaidCallBlocked) -> KieHttpError:
+    return KieHttpError(blocked.message_ru, context=dict(blocked.context))
+
+
+@spend_guard.paid_seam("kie", "createTask", estimate=_create_estimate, wrap_error=_blocked_as_kie)
+@media_spend.tracked_kie_create
 async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> str:
-    """Создать задачу; возвращает taskId."""
     if api == "jobs":
         path = "/api/v1/jobs/createTask"
     else:
@@ -148,7 +180,12 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
             # suno/runway требуют callBackUrl — мы поллим, колбэк-заглушка
             body = {**body, "callBackUrl": _CALLBACK_PLACEHOLDER}
     url = f"{kie_api_base_url()}{path}"
-    r, payload, _src = await kie_post_json(url, body, timeout=120.0)
+    from app.services.media_transport import current_job, json_request
+    if current_job.get() is not None:
+        r = await json_request("POST", path, payload=body, headers=_headers())
+        payload = r.json()
+    else:
+        r, payload, _src = await kie_post_json(url, body, timeout=120.0)
     data = _check(payload, http_status=r.status_code, where=f"create {path}")
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     task_id = str(
@@ -157,7 +194,7 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
     if not task_id:
         raise KieHttpError(
             f"kie create {path}: ответ без taskId",
-            context={"provider_code": 500, "raw": str(payload)[:200]},
+            context={"provider_code": 500, "raw": str(payload)[:200], "no_task_id": True},
         )
     return task_id
 
@@ -262,7 +299,8 @@ def _task_state(api: str, data: dict[str, Any]) -> str:
     st = str(data.get("status") or data.get("state") or "").upper()
     if st in ("SUCCESS", "FIRST_SUCCESS"):
         return "success"
-    if st in ("FAILED", "FAIL", "CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED"):
+    if st in ("FAILED", "FAIL", "CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED") or any(
+            m in st for m in ("ERROR", "FAIL", "EXCEPTION")):
         return "fail"
     return "pending"
 
@@ -275,35 +313,86 @@ def _fail_message(data: dict[str, Any]) -> str:
     return "generation failed"
 
 
+def _poll_backoff(fails: int) -> float:
+    return min(_POLL_INTERVAL_S * (2 ** min(max(fails, 1) - 1, 3)), 30.0)
+
+
+async def task_status(api: str, task_id: str) -> tuple[str, dict[str, Any]]:
+    path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(f"{kie_api_base_url()}{path}", headers=_headers(), params={"taskId": task_id})
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"msg": (r.text or "")[:300], "code": r.status_code}
+    data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return _task_state(api, inner), inner
+
+
+@media_spend.tracked_kie_poll
 async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -> dict[str, Any]:
     path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
     url = f"{kie_api_base_url()}{path}"
     deadline = asyncio.get_running_loop().time() + max(60.0, timeout_s)
     net_fails = 0
+    from app.services.media_transport import current_job, json_request
+    from app.services.media_jobs import MediaPolicyError
+    job = current_job.get()
+    polls = 0
+    interval = job.config["media"]["poll_interval_s"] if job else _POLL_INTERVAL_S
+    if job:
+        deadline = asyncio.get_running_loop().time() + min(timeout_s, job.config["media"]["timeout_s"])
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
             try:
-                r = await client.get(
-                    url, headers=_headers(), params={"taskId": task_id}
-                )
+                if job:
+                    if polls >= job.config["media"]["max_polls"]:
+                        raise MediaPolicyError("media status polling allowance exhausted")
+                    r = await json_request("GET", path, params={"taskId": task_id}, headers=_headers())
+                    polls += 1
+                else:
+                    r = await client.get(url, headers=_headers(), params={"taskId": task_id})
                 net_fails = 0
+                media_spend.count_poll()
             except (httpx.TransportError, httpx.TimeoutException) as e:
+                if job:
+                    raise
                 net_fails += 1
-                if net_fails >= 8 or asyncio.get_running_loop().time() >= deadline:
-                    raise KieHttpError(
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise KieTaskPending(
                         f"kie poll {task_id}: сеть/таймаут ({type(e).__name__})",
-                        context={"provider_code": 504, "task_id": task_id},
+                        task_id=task_id, kind="network",
                     ) from e
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_poll_backoff(net_fails))
                 continue
             try:
                 payload = r.json()
             except Exception:  # noqa: BLE001
                 payload = {"msg": (r.text or "")[:300], "code": r.status_code}
-            data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+            try:
+                data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+            except KieHttpError as e:
+                code = (e.context or {}).get("provider_code")
+                if job or not (isinstance(code, int) and (code >= 500 or code in (429, 433, 455))):
+                    raise
+                net_fails += 1
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise KieTaskPending(f"kie poll {task_id}: HTTP {code} до конца ожидания",
+                                         task_id=task_id, kind="timeout") from e
+                await asyncio.sleep(_poll_backoff(net_fails))
+                continue
+            net_fails = 0
             inner = data.get("data") if isinstance(data.get("data"), dict) else {}
             state = _task_state(api, inner)
-            # FIRST_SUCCESS у Suno часто без audioUrl — ждём SUCCESS, иначе качаем jpeg/stream.
+            if job:
+                raw_state = str(inner.get("state") or "").lower()
+                phase = {"success": "completed", "fail": "failed", "cancelled": "cancelled",
+                    "queued": "queued", "queuing": "queued", "waiting": "queued",
+                    "pending": "queued", "generating": "running", "running": "running"}.get(raw_state, "unknown")
+                await job.update(phase=phase)
+                if phase in {"unknown", "cancelled"}:
+                    raise MediaPolicyError("provider state " + phase)
             if (
                 state == "success"
                 and api == "suno"
@@ -323,14 +412,14 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                     },
                 )
             if asyncio.get_running_loop().time() >= deadline:
-                raise KieHttpError(
-                    f"kie: таймаут ожидания task {task_id}",
-                    context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
-                )
-            await asyncio.sleep(_POLL_INTERVAL_S)
+                raise KieTaskPending(f"kie: таймаут ожидания task {task_id}", task_id=task_id, kind="timeout")
+            await asyncio.sleep(interval)
 
 
 async def download(url: str, out_path: Path) -> Path:
+    from app.services.media_transport import current_job, download as managed_download
+    if current_job.get() is not None:
+        return await managed_download(current_job.get(), url)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
         r = await client.get(url)
@@ -339,8 +428,27 @@ async def download(url: str, out_path: Path) -> Path:
                 f"kie download HTTP {r.status_code} size={len(r.content or b'')}",
                 context={"provider_code": r.status_code, "kind": "download"},
             )
-        out_path.write_bytes(r.content)
+        tmp = out_path.with_name(out_path.name + ".part")
+        tmp.write_bytes(r.content)
+        tmp.replace(out_path)
     return out_path
+
+
+async def _download_keep_task(url: str, out_path: Path, task_id: str) -> Path:
+    last: BaseException | None = None
+    for i in range(3):
+        try:
+            return await download(url, out_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            last = e
+            if i < 2:
+                await asyncio.sleep(2.0 * (i + 1))
+    raise KieTaskPending(
+        f"kie task {task_id}: результат готов, скачать не удалось ({type(last).__name__}); повторю скачивание без нового submit",
+        task_id=task_id, kind="download", context={"raw_url": url},
+    ) from last
 
 
 async def run_generation(
@@ -349,24 +457,81 @@ async def run_generation(
     out_path: Path,
     *,
     timeout_s: float = _POLL_MAX_S,
+    project_id: int | None = None,
 ) -> GenerationResult:
-    """create → poll → download. spec.api выбирает семейство эндпоинтов."""
+    from app.services.media_jobs import assert_entry
+    if await assert_entry(provider="kie") is not None:
+        return await _managed_generation(spec, payload, out_path, timeout_s=timeout_s)
+    from app.services import media_resume
     api = str(spec.get("api") or "jobs")
-    task_id = await create_task(api, spec.get("endpoint"), payload)
-    logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
-    data = await poll_task(api, task_id, timeout_s=timeout_s)
+    rctx = media_resume.make_ctx(project_id, out_path, str(spec.get("id") or ""), api, payload)
+    with media_spend.kie_scope(spec, payload, out_path):
+        resumed = await media_resume.begin(rctx)
+        if resumed is not None:
+            task_id = resumed
+            logger.info("kie_http: возобновляю task {} без нового submit (model={})", task_id, spec.get("id"))
+        else:
+            task_id = await media_resume.submit(rctx, lambda: create_task(api, spec.get("endpoint"), payload))
+            logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
+        data = await poll_task(api, task_id, timeout_s=timeout_s)
     urls = _result_media_urls(data)
     if not urls:
         raise KieHttpError(
             "kie: success без ссылок на результат",
             context={"provider_code": 500, "task_id": task_id},
         )
-    path = await download(urls[0], out_path)
+    path = await _download_keep_task(urls[0], out_path, task_id)
+    await media_resume.mark_downloaded(rctx, task_id)
     logger.info("kie_http: ok {} → {} ({} bytes)", task_id, path.name, path.stat().st_size)
     return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
 
 
-# Маппинг генераторов видео на ID модели в kie_catalog
+async def _managed_generation(spec, payload, out_path, *, timeout_s):
+    from app.services.media_jobs import open_job, _hold, MediaPolicyError
+    from app.services.media_transport import current_job, verify
+    from app.services.observation import _attempt, record_fact
+    if spec.get("api") != "jobs" or spec.get("result") not in {"image", "video", "audio"}:
+        raise MediaPolicyError("provider family has no approved managed route")
+    job = await open_job(provider="kie", kind=spec["result"], model_id=spec["id"],
+                         payload=payload, out_path=out_path)
+    token = current_job.set(job)
+    try:
+        if job.phase == "verified":
+            await verify(job)
+            return GenerationResult(file_path=job.path, gen_id=job.provider_job_id, raw_url=None)
+        task_id = job.provider_job_id
+        if not task_id:
+            task_id = await create_task("jobs", spec.get("endpoint"), payload)
+            await job.update(phase="queued", provider_job_id=task_id)
+        data = await poll_task("jobs", task_id, timeout_s=timeout_s)
+        urls = _result_media_urls(data)
+        if not urls:
+            raise MediaPolicyError("completed job has no artifact URL")
+        path = await download(urls[0], job.path)
+        await verify(job)
+        return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
+    except asyncio.CancelledError:
+        if job.provider_job_id:
+            await record_fact("media_wait", {"job_id": job.job_id,
+                "provider_job_id": job.provider_job_id, "reason": "local_wait_cancelled",
+                "provider_cancelled": False, "cost_refunded": False})
+        else:
+            await job.update(phase="unknown", error="submit_interrupted")
+            await _hold(_attempt.get(), "unknown media submit; no repeat", job.job_id)
+        raise
+    except Exception as exc:
+        if job.phase not in {"verified", "failed", "cancelled"}:
+            await job.update(phase="unknown",
+                             error=type(exc).__name__)
+        await record_fact("media_failure", {"job_id": job.job_id, "phase": job.phase,
+            "error_type": type(exc).__name__, "provider_job_id": job.provider_job_id,
+            "uncertain": not bool(job.provider_job_id), "protective_stop": isinstance(exc, MediaPolicyError)})
+        await _hold(_attempt.get(), "media result requires review: " + type(exc).__name__, job.job_id)
+        raise
+    finally:
+        current_job.reset(token)
+
+
 VIDEO_GENERATOR_TO_KIE_ID: dict[str, str] = {
     "seedance_2_5": "seedance-2-5",
     "seedance-2-5": "seedance-2-5",
@@ -429,8 +594,10 @@ async def generate_kie_video(
     """Генерация видео через KIE для любой из поддерживаемых KIE-моделей."""
     from app.bots.kie_kling import _frame_to_public_url
     from app.services import kie_catalog
+    from app.services.media_jobs import assert_entry, MediaPolicyError
 
-    if not kie_configured():
+    managed = await assert_entry(project_id=project_id, provider="kie")
+    if not managed and not kie_configured():
         raise KieHttpError(
             f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
             context={"provider_code": 401, "error_kind": "no_key"},
@@ -439,23 +606,31 @@ async def generate_kie_video(
     kie_id = VIDEO_GENERATOR_TO_KIE_ID.get(model_slug) or model_slug.replace("_", "-")
     spec = kie_catalog.get_model(kie_id)
     if not spec:
+        if managed:
+            raise MediaPolicyError("managed video requires an explicit catalog model; no fallback")
         from app.bots.kie_kling import generate_video as kie_kling_generate_video
 
-        return await kie_kling_generate_video(
-            prompt,
-            out_path,
-            start_frame=start_frame,
-            aspect_ratio=aspect_ratio,
-            duration=duration,
-            generate_audio=generate_audio,
-            timeout=timeout,
-            project_id=project_id,
-            gen_id=gen_id,
+        return await media_spend.track_kling(
+            kie_kling_generate_video(
+                prompt,
+                out_path,
+                start_frame=start_frame,
+                aspect_ratio=aspect_ratio,
+                duration=duration,
+                generate_audio=generate_audio,
+                timeout=timeout,
+                project_id=project_id,
+                gen_id=gen_id,
+            ),
+            kie_id=kie_id, duration=duration, has_frame=start_frame is not None,
         )
 
-    image_url = await _frame_to_public_url(start_frame)
+    field_names = {f["name"] for f in spec.get("fields") or []}
+    image_fields = {"first_frame_url", "image_url", "image_urls", "imageUrls", "input_image_url"}
+    if managed and start_frame and field_names & image_fields:
+        raise MediaPolicyError("managed reference upload has no authorized adapter")
+    image_url = None if managed else await _frame_to_public_url(start_frame)
     ar = (aspect_ratio or "9:16").replace("_", ":")
-    # ByteDance Seedance first-frame I2V requires aspect_ratio='adaptive'
     if "seedance" in str(kie_id).lower() and image_url:
         ar = "adaptive"
 
@@ -490,7 +665,7 @@ async def generate_kie_video(
         bool(image_url),
         project_id,
     )
-    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+    return await run_generation(spec, payload, out_path, timeout_s=timeout, project_id=project_id)
 
 
 async def generate_kie_image(
@@ -508,8 +683,12 @@ async def generate_kie_image(
     """Генерация изображения через KIE."""
     from app.bots.kie_kling import _frame_to_public_url
     from app.services import kie_catalog
+    from app.services.media_jobs import assert_entry, MediaPolicyError
 
-    if not kie_configured():
+    managed = await assert_entry(project_id=project_id, provider="kie")
+    if managed and reference_images:
+        raise MediaPolicyError("managed reference upload has no authorized adapter")
+    if not managed and not kie_configured():
         raise KieHttpError(
             f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
             context={"provider_code": 401, "error_kind": "no_key"},
@@ -555,5 +734,5 @@ async def generate_kie_image(
         len(ref_urls),
         project_id,
     )
-    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+    return await run_generation(spec, payload, out_path, timeout_s=timeout, project_id=project_id)
 

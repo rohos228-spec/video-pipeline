@@ -67,6 +67,10 @@ def drop_ai_job_checkpoint(project: Any, name: str) -> None:
 # ── Текстовая ИИ-задача (GPT → JSON → валидация → retry) ──────────────────
 
 
+class TextJobFailed(RuntimeError):
+    pass
+
+
 @dataclass
 class TextJobResult:
     payload: Any
@@ -139,7 +143,7 @@ async def text_job(
             max_attempts,
             problems,
         )
-    raise RuntimeError(f"ai_job {name}: не прошло валидацию: {problems_log[-1]}")
+    raise TextJobFailed(f"ai_job {name}: не прошло валидацию: {problems_log[-1]}")
 
 
 # ── Приём аудио-результата (верификация файла) ────────────────────────────

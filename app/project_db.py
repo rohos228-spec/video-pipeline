@@ -87,13 +87,15 @@ async def migrate_single_project_data(
     db_path = resolve_project_db_path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    if db_path.exists() and create_backup:
-        try:
+    if db_path.exists():
+        from app.services.schema_migrations import KEEP_PRE_MIGRATION, _has_user_data, backup_sqlite
+
+        if create_backup or await asyncio.to_thread(_has_user_data, db_path):
+            made = await asyncio.to_thread(backup_sqlite, db_path, None, tag="pre-master-sync",
+                                           keep=KEEP_PRE_MIGRATION)
             bak = db_path.with_suffix(".db.bak")
-            shutil.copy2(db_path, bak)
-            logger.info("Backup created: {}", bak)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Backup failed for {}: {}", db_path, exc)
+            shutil.copy2(made.path, bak)
+            logger.info("Backup created: {} (verified copy {})", bak, made.path)
 
     await init_project_db(target_dir)
 
@@ -334,155 +336,62 @@ def register_text_project(text_id: int, project_id: int) -> None:
     _TEXT_TO_PROJECT[text_id] = project_id
 
 
-async def resolve_frame_project_id(frame_id: int) -> int | None:
-    """Определить project_id по frame_id с поиском в кэше, state.db и проектных базах."""
-    if frame_id in _FRAME_TO_PROJECT:
-        return _FRAME_TO_PROJECT[frame_id]
+async def _resolve_owner_project_id(model: type, obj_id: int, cache: dict[int, int], label: str) -> int | None:
+    if obj_id in cache:
+        return cache[obj_id]
 
     from app.db import SessionLocal
+    from app.services.project_db_guard import IdCollisionError, ambiguity
 
+    owners: dict[str, int | None] = {}
     async with SessionLocal() as s:
-        fr = await s.get(Frame, frame_id)
-        if fr is not None:
-            _FRAME_TO_PROJECT[frame_id] = fr.project_id
-            return fr.project_id
+        row = await s.get(model, obj_id)
+        if row is not None:
+            owners["master"] = row.project_id
 
-    # Проверяем в активных проектных базах
     for key, sm in list(_SESSION_MAKERS.items()):
         try:
             async with sm() as p_sess:
-                fr = await p_sess.get(Frame, frame_id)
-                if fr is not None:
-                    _FRAME_TO_PROJECT[frame_id] = fr.project_id
-                    return fr.project_id
+                row = await p_sess.get(model, obj_id)
+                if row is not None:
+                    owners[key] = row.project_id
         except Exception:
             continue
-    return None
+
+    if not owners:
+        return None
+    if ambiguity(set(owners.values())):
+        logger.error("ID COLLISION: {} id={} belongs to different projects: {}", label, obj_id, owners)
+        raise IdCollisionError(f"{label} id={obj_id} принадлежит разным проектам в разных базах: {owners}")
+    owner = next(iter(owners.values()))
+    cache[obj_id] = owner
+    return owner
+
+
+async def resolve_frame_project_id(frame_id: int) -> int | None:
+    return await _resolve_owner_project_id(Frame, frame_id, _FRAME_TO_PROJECT, "frame")
 
 
 async def resolve_entity_project_id(entity_id: int) -> int | None:
-    """Определить project_id по entity_id."""
-    if entity_id in _ENTITY_TO_PROJECT:
-        return _ENTITY_TO_PROJECT[entity_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        en = await s.get(Entity, entity_id)
-        if en is not None:
-            _ENTITY_TO_PROJECT[entity_id] = en.project_id
-            return en.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                en = await p_sess.get(Entity, entity_id)
-                if en is not None:
-                    _ENTITY_TO_PROJECT[entity_id] = en.project_id
-                    return en.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(Entity, entity_id, _ENTITY_TO_PROJECT, "entity")
 
 
 async def resolve_scene_project_id(scene_id: int) -> int | None:
-    """Определить project_id по scene_id."""
-    if scene_id in _SCENE_TO_PROJECT:
-        return _SCENE_TO_PROJECT[scene_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        sc = await s.get(Scene, scene_id)
-        if sc is not None:
-            _SCENE_TO_PROJECT[scene_id] = sc.project_id
-            return sc.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                sc = await p_sess.get(Scene, scene_id)
-                if sc is not None:
-                    _SCENE_TO_PROJECT[scene_id] = sc.project_id
-                    return sc.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(Scene, scene_id, _SCENE_TO_PROJECT, "scene")
 
 
 async def resolve_edge_project_id(edge_id: int) -> int | None:
-    """Определить project_id по edge_id."""
-    if edge_id in _EDGE_TO_PROJECT:
-        return _EDGE_TO_PROJECT[edge_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        ed = await s.get(FrameEdge, edge_id)
-        if ed is not None:
-            _EDGE_TO_PROJECT[edge_id] = ed.project_id
-            return ed.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                ed = await p_sess.get(FrameEdge, edge_id)
-                if ed is not None:
-                    _EDGE_TO_PROJECT[edge_id] = ed.project_id
-                    return ed.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(FrameEdge, edge_id, _EDGE_TO_PROJECT, "frame_edge")
 
 
 async def resolve_prompt_project_id(prompt_id: int) -> int | None:
     """Определить project_id по prompt_id."""
-    if prompt_id in _PROMPT_TO_PROJECT:
-        return _PROMPT_TO_PROJECT[prompt_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        pv = await s.get(PromptVersion, prompt_id)
-        if pv is not None:
-            _PROMPT_TO_PROJECT[prompt_id] = pv.project_id
-            return pv.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                pv = await p_sess.get(PromptVersion, prompt_id)
-                if pv is not None:
-                    _PROMPT_TO_PROJECT[prompt_id] = pv.project_id
-                    return pv.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(PromptVersion, prompt_id, _PROMPT_TO_PROJECT, "prompt_version")
 
 
 async def resolve_text_project_id(text_id: int) -> int | None:
     """Определить project_id по text_id."""
-    if text_id in _TEXT_TO_PROJECT:
-        return _TEXT_TO_PROJECT[text_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        ft = await s.get(FrameText, text_id)
-        if ft is not None:
-            _TEXT_TO_PROJECT[text_id] = ft.project_id
-            return ft.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                ft = await p_sess.get(FrameText, text_id)
-                if ft is not None:
-                    _TEXT_TO_PROJECT[text_id] = ft.project_id
-                    return ft.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(FrameText, text_id, _TEXT_TO_PROJECT, "frame_text")
 
 
 async def get_project_engine(project_data_dir: Path | str) -> AsyncEngine:
@@ -691,7 +600,11 @@ async def run_on_replica_project(session: AsyncSession, project: Project, fn) ->
         await commit_with_retry(p_sess)
 
 
-def _apply_runtime_fields(src: Project, dest: Project) -> None:
+_COUNTER_META_KEYS = ("restart_chain", "regen_budget", "restart_chain_stop", "regen_budget_stop")
+SYNC_PENDING_KEY = "master_sync_pending"
+
+
+def _apply_runtime_fields(src: Project, dest: Project, *, mirror_counters: bool = False) -> None:
     """Скопировать статус / auto_mode / runtime-meta (не весь контент проекта)."""
     from app.services.project_state import is_running_status
 
@@ -711,6 +624,12 @@ def _apply_runtime_fields(src: Project, dest: Project) -> None:
             and key in _CLEAR_WHEN_MASTER_RUNNING
         ):
             d_meta.pop(key, None)
+    if mirror_counters:
+        for key in _COUNTER_META_KEYS:
+            if key in s_meta:
+                d_meta[key] = s_meta[key]
+            else:
+                d_meta.pop(key, None)
     dest.meta = d_meta
 
 
@@ -777,6 +696,19 @@ async def push_runtime_to_project_db(
         )
 
 
+def _pick_completed_node(nodes):
+    nodes = list(nodes or [])
+    if any(n.status == NodeRunStatus.running for n in nodes):
+        return None
+    done = [
+        n for n in nodes
+        if n.status == NodeRunStatus.done and n.started_at is not None and n.finished_at is not None
+    ]
+    if not done:
+        return None
+    return max(done, key=lambda n: (n.started_at, n.finished_at))
+
+
 async def pull_master_runtime_into_project(
     session: AsyncSession,
     project: Project,
@@ -801,6 +733,38 @@ async def pull_master_runtime_into_project(
             take_master_status = is_running_status(m.status) and not is_running_status(
                 project.status
             )
+            node_type = RUNNING_TO_NODE_TYPE.get(m.status)
+            if (
+                take_master_status
+                and node_type
+                and READY_TO_NODE_TYPE.get(project.status) == node_type
+            ):
+                nodes = (
+                    await session.scalars(
+                        select(NodeRun).join(WorkflowRun).where(
+                            WorkflowRun.project_id == project.id,
+                            NodeRun.node_type == node_type,
+                        )
+                    )
+                ).all()
+                completed = _pick_completed_node(nodes)
+                if completed is not None:
+                    command = await master.scalar(
+                        select(NodeRun).join(WorkflowRun).where(
+                            WorkflowRun.project_id == project.id,
+                            NodeRun.workflow_run_id == completed.workflow_run_id,
+                            NodeRun.node_key == completed.node_key,
+                            NodeRun.node_type == node_type,
+                        )
+                    )
+                    if (
+                        command is not None
+                        and command.status == NodeRunStatus.running
+                        and command.started_at is not None
+                        and command.started_at <= completed.started_at
+                        and command.attempts <= completed.attempts
+                    ):
+                        take_master_status = False
             if not take_master_status:
                 take_master_status = master_park_overrides_running(m, project)
             if take_master_status:
@@ -883,12 +847,80 @@ async def push_runtime_to_master(
             project.id,
             getattr(project.status, "value", project.status),
         )
-    except Exception as exc:  # noqa: BLE001
+        return True
+    except Exception as exc:
         logger.warning(
             "push_runtime_to_master: #{} failed: {}",
             project.id,
             exc,
         )
+        return False
+
+
+async def push_runtime_to_master_recorded(session: AsyncSession, project: Project) -> bool:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db import commit_with_retry
+
+    ok = await push_runtime_to_master(session, project)
+    meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+    try:
+        if ok:
+            if SYNC_PENDING_KEY in meta:
+                meta.pop(SYNC_PENDING_KEY, None)
+                project.meta = meta
+                flag_modified(project, "meta")
+                await commit_with_retry(session)
+            return True
+        prev = meta.get(SYNC_PENDING_KEY)
+        failures = int(prev.get("failures") or 0) + 1 if isinstance(prev, dict) else 1
+        meta[SYNC_PENDING_KEY] = {
+            "since": (prev.get("since") if isinstance(prev, dict) else None) or datetime.utcnow().isoformat(),
+            "failures": failures,
+            "status": getattr(project.status, "value", str(project.status)),
+        }
+        project.meta = meta
+        flag_modified(project, "meta")
+        await commit_with_retry(session)
+        logger.error(
+            "push_runtime_to_master: #{} master не обновлён (сбоев подряд: {}), повтор на следующей границе такта",
+            project.id, failures,
+        )
+        try:
+            from app.services.observation import record_fact
+            await record_fact("runtime_check", {
+                "check": "master_sync", "performed": True, "status": "failed", "failures": failures,
+                "summary": "статус и счётчики проекта не отправлены в master; повтор на следующем такте"})
+        except Exception:
+            logger.debug("master_sync: observation fact skipped", exc_info=True)
+    except Exception:
+        logger.warning("push_runtime_to_master_recorded: #{} marker update failed", project.id, exc_info=True)
+    return ok
+
+
+_MASTER_MIRROR_FIELDS = (
+    "title", "topic", "hero_mode", "image_generator", "aspect_ratio", "image_resolution", "image_quality",
+    "image_relax", "video_generator", "video_resolution", "video_relax", "hero_count",
+)
+
+
+async def push_display_fields_to_master(session: AsyncSession, project: Project, keys) -> None:
+    from app.db import commit_with_retry, session_scope
+
+    names = [k for k in keys if k in _MASTER_MIRROR_FIELDS]
+    if not names or "project.db" not in _bind_url(session):
+        return
+    try:
+        async with session_scope() as master:
+            existing = await master.get(Project, int(project.id))
+            if existing is None:
+                return
+            for name in names:
+                setattr(existing, name, getattr(project, name))
+            existing.updated_at = project.updated_at
+            await commit_with_retry(master)
+    except Exception as exc:
+        logger.warning("push_display_fields_to_master: #{} failed: {}", project.id, exc)
 
 
 async def sync_runtime_both_ways(
@@ -1028,13 +1060,14 @@ async def _copy_noderuns_from_master_into_session(
 
 
 async def sync_project_row_to_master_db(project: Project) -> None:
-    """Синхронизирует мета/статус и текстовые поля Project из project.db обратно в мастер state.db."""
     from app.db import commit_with_retry, session_scope
 
     async with session_scope() as master_sess:
         m_proj = await master_sess.get(Project, project.id)
         if m_proj is not None:
-            m_proj.status = project.status
+            parked = master_park_overrides_running(m_proj, project)
+            if not parked:
+                m_proj.status = project.status
             if project.general_plan is not None:
                 m_proj.general_plan = project.general_plan
             if project.script_text is not None:
@@ -1042,7 +1075,15 @@ async def sync_project_row_to_master_db(project: Project) -> None:
             if project.hero_description is not None:
                 m_proj.hero_description = project.hero_description
             if isinstance(project.meta, dict):
-                m_proj.meta = dict(project.meta)
+                new_meta = dict(project.meta)
+                if parked:
+                    old_meta = m_proj.meta if isinstance(m_proj.meta, dict) else {}
+                    for key in _RUNTIME_META_KEYS:
+                        if key in old_meta:
+                            new_meta[key] = old_meta[key]
+                        else:
+                            new_meta.pop(key, None)
+                m_proj.meta = new_meta
             m_proj.updated_at = project.updated_at
             await commit_with_retry(master_sess)
 
@@ -1050,7 +1091,6 @@ async def sync_project_row_to_master_db(project: Project) -> None:
 async def init_project_db(
     project_data_dir: Path | str, project: Project | None = None
 ) -> None:
-    """Инициализировать схему таблиц в project.db проекта (create_all) и синхронизировать проект."""
     eng = await get_project_engine(project_data_dir)
     async with eng.begin() as conn:
         from app.services.scene_space import models as _scene_space_models  # noqa: F401
@@ -1061,11 +1101,14 @@ async def init_project_db(
 
         await migrate_db_v2_schema(conn)
         await migrate_scene_space_schema(conn)
+        from app.services.schema_migrations import SCOPE_PROJECT, migrate_orchestrator_schema
+
+        await migrate_orchestrator_schema(conn, scope=SCOPE_PROJECT)
 
     if project is not None:
         try:
             await sync_project_row_to_project_db(project, data_dir=project_data_dir)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("init_project_db: sync project row failed: {}", exc)
 
 
@@ -1073,7 +1116,6 @@ async def init_project_db(
 async def project_session_scope(
     project_data_dir: Path | str,
 ) -> AsyncIterator[AsyncSession]:
-    """Контекстный менеджер транзакции для персональной проектной БД с автокоммитом."""
     sm = await get_project_sessionmaker(project_data_dir)
     async with sm() as session:
         try:
@@ -1084,6 +1126,15 @@ async def project_session_scope(
         except Exception:
             await session.rollback()
             raise
+
+
+async def _check_collisions_once(project_id: int, data_dir: Path | str) -> None:
+    try:
+        from app.services.project_db_guard import check_project_id_collisions
+
+        await check_project_id_collisions(project_id, data_dir)
+    except Exception as exc:
+        logger.warning("id collision check failed for project #{}: {}", project_id, exc)
 
 
 @asynccontextmanager
@@ -1105,6 +1156,7 @@ async def project_db_session_scope(
         db_path = resolve_project_db_path(target_dir)
         if not db_path.exists():
             await migrate_project_by_id(project_id_or_dir, create_backup=False)
+        await _check_collisions_once(project_id_or_dir, target_dir)
     else:
         target_dir = Path(project_id_or_dir)
         db_path = resolve_project_db_path(target_dir)
@@ -1130,6 +1182,7 @@ async def get_project_db_session(project_id: int) -> AsyncIterator[AsyncSession]
     db_path = resolve_project_db_path(data_dir)
     if not db_path.exists():
         await migrate_project_by_id(project_id, create_backup=False)
+    await _check_collisions_once(project_id, data_dir)
 
     sm = await get_project_sessionmaker(data_dir)
     session = sm()

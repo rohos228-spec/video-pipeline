@@ -21,6 +21,7 @@ from playwright.async_api import Locator, Page
 from playwright.async_api import TimeoutError as PWTimeoutError
 
 from app.bots.browser import BrowserSession, browser_session
+from app.services.disk_guard import append_rotating
 from app.services.elevenlabs_voices import (
     DEFAULT_ELEVENLABS_VOICE_ID,
     ELEVENLABS_VOICES,
@@ -135,11 +136,9 @@ def elevenlabs_error_in_text(text: str) -> str | None:
 
 def _log_elevenlabs_error(*, kind: str, text: str, node: str = "elevenlabs") -> None:
     try:
-        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.utcnow().isoformat(timespec="seconds")
         line = f"{ts}\tbot=elevenlabs\tnode={node}\tkind={kind}\t{text}"
-        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_rotating(ERRORS_LOG_PATH, line)
     except OSError as e:
         logger.warning("11Labs: cannot write {}: {}", ERRORS_LOG_PATH, e)
 

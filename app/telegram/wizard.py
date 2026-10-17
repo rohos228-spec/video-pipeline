@@ -48,6 +48,7 @@ from app.generation_options import (
     is_gpt_image_generator,
 )
 from app.models import Project
+from app.services.notification_log import notify
 
 # Корень репо (для картинок-референсов). Файл app/telegram/wizard.py →
 # app/telegram → app → repo. repo/assets/reference/*.png
@@ -278,22 +279,26 @@ async def send_config_preset_menu(bot: Bot, chat_id: int, project: Project) -> N
             callback_data=f"proj:{project.id}:menu",
         )
     ])
-    await bot.send_message(
+    await notify(
+        bot, "send_message",
         chat_id,
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        kind="wizard_preset_menu", project_id=project.id,
     )
 
 
 async def prompt_save_preset_name(bot: Bot, chat_id: int, project_id: int) -> None:
     _pending_preset_name_by_chat[chat_id] = project_id
-    await bot.send_message(
+    await notify(
+        bot, "send_message",
         chat_id,
         "💾 <b>Сохранение конфигурации</b>\n\n"
         "Пришли имя для этой конфигурации одним сообщением.\n"
         "Или отправь <code>-</code> чтобы пропустить.",
         parse_mode="HTML",
+        kind="wizard_preset_name", project_id=project_id,
     )
 
 
@@ -362,34 +367,40 @@ async def send_wizard_question(bot: Bot, chat_id: int, project: Project) -> None
         # Фото с подписью. TG caption limit = 1024 символа.
         caption = body if len(body) <= 1000 else (body[:997] + "…")
         try:
-            await bot.send_photo(
+            await notify(
+                bot, "send_photo",
                 chat_id,
                 FSInputFile(str(image_path)),
                 caption=caption,
                 parse_mode="HTML",
                 reply_markup=kb if len(body) <= 1000 else None,
+                kind="wizard_question", project_id=project.id,
             )
             if len(body) > 1000:
                 tail = body[1000:]
-                await bot.send_message(
-                    chat_id, tail, parse_mode="HTML", reply_markup=kb
+                await notify(
+                    bot, "send_message",
+                    chat_id, tail, parse_mode="HTML", reply_markup=kb,
+                    kind="wizard_question", project_id=project.id,
                 )
             return
         except Exception as e:  # noqa: BLE001
             logger.warning("wizard: send_photo failed, fallback to text: {}", e)
     # Фоллбэк — только текст.
-    await bot.send_message(chat_id, body, parse_mode="HTML", reply_markup=kb)
+    await notify(bot, "send_message", chat_id, body, parse_mode="HTML", reply_markup=kb, kind="wizard_question", project_id=project.id)
 
 
 async def _send_wizard_complete(bot: Bot, chat_id: int, project: Project) -> None:
     from app.telegram.menu import project_header, project_menu_kb
 
-    await bot.send_message(
+    await notify(
+        bot, "send_message",
         chat_id,
         "✅ Настройки проекта сохранены. Теперь можно запускать шаги.\n\n"
         + project_header(project),
         parse_mode="HTML",
         reply_markup=project_menu_kb(project),
+        kind="wizard_complete", project_id=project.id,
     )
 
 
@@ -492,11 +503,13 @@ def _settings_overview_kb(project: Project) -> InlineKeyboardMarkup:
 async def _send_settings_overview(
     bot: Bot, chat_id: int, project: Project
 ) -> None:
-    await bot.send_message(
+    await notify(
+        bot, "send_message",
         chat_id,
         _settings_overview_text(project),
         parse_mode="HTML",
         reply_markup=_settings_overview_kb(project),
+        kind="wizard_settings", project_id=project.id,
     )
 
 
@@ -537,7 +550,7 @@ async def _send_edit_picker(
     """
     question = _QUESTIONS_BY_FIELD.get(field)
     if question is None:
-        await bot.send_message(chat_id, f"wizard: неизвестное поле {field}")
+        await notify(bot, "send_message", chat_id, f"wizard: неизвестное поле {field}", kind="wizard_edit_picker", project_id=project.id)
         return
     kb = _kb_for_edit(project.id, field, question.choices, question.cols)
     current = _current_value_label(project, question)
@@ -558,24 +571,28 @@ async def _send_edit_picker(
     if image_path is not None and image_path.exists():
         caption = body if len(body) <= 1000 else (body[:997] + "…")
         try:
-            await bot.send_photo(
+            await notify(
+                bot, "send_photo",
                 chat_id,
                 FSInputFile(str(image_path)),
                 caption=caption,
                 parse_mode="HTML",
                 reply_markup=kb if len(body) <= 1000 else None,
+                kind="wizard_edit_picker", project_id=project.id,
             )
             if len(body) > 1000:
                 tail = body[1000:]
-                await bot.send_message(
-                    chat_id, tail, parse_mode="HTML", reply_markup=kb
+                await notify(
+                    bot, "send_message",
+                    chat_id, tail, parse_mode="HTML", reply_markup=kb,
+                    kind="wizard_edit_picker", project_id=project.id,
                 )
             return
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "wizard: send_photo failed in edit picker: {}", e
             )
-    await bot.send_message(chat_id, body, parse_mode="HTML", reply_markup=kb)
+    await notify(bot, "send_message", chat_id, body, parse_mode="HTML", reply_markup=kb, kind="wizard_edit_picker", project_id=project.id)
 
 
 async def handle_wizard_callback(cb: CallbackQuery) -> None:

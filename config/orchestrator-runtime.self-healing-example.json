@@ -1,0 +1,35 @@
+{
+  "_comment": "NOT a default. This is an annotated recipe for enabling the one already-built self-healing path: a bounded production fallback profile (lower reasoning effort + repair-json-only-v1 prompt) for exhausted text invalid_json/missing_payload incidents, selected by DecisionSupervisor's retry_profile action. Copy only the fields you need into your own config/orchestrator-runtime.json; do not point ORCHESTRATOR_RUNTIME_CONFIG at this file directly (JSON does not support comments, so this key is cosmetic and validate_config() will reject it as an unknown field if you try). online_enabled is still false here on purpose: flipping it to true additionally requires a real GPT_API_KEY (not 'synthetic*') and is a decision only the deployment's operator should make. See docs/ARCHITECTURE.md (Gateway / Profiles) and docs/ORCHESTRATOR_STATUS_CURRENT.md before enabling.",
+  "version": 1,
+  "mode": "production",
+  "online_enabled": false,
+  "endpoint": "https://api.kie.ai/codex/v1/responses",
+  "decision": {
+    "catalog_id": "gpt-kie",
+    "model_id": "gpt-5-6-sol",
+    "reasoning_effort": "medium",
+    "max_output_tokens": 1024,
+    "timeout_s": 30
+  },
+  "profiles": {
+    "production-json-repair-v1": {
+      "model_id": "gpt-5-6-sol",
+      "provider": "kie",
+      "kind": "text",
+      "channel": "stable",
+      "reasoning_effort": "low",
+      "max_output_tokens": 2048,
+      "prompt_variant": "repair-json-only-v1",
+      "synthetic_only": false
+    }
+  },
+  "allowed_actions": [
+    "finish",
+    "human_review",
+    "read_contract",
+    "read_events",
+    "retry_profile",
+    "retry_same",
+    "wait"
+  ]
+}

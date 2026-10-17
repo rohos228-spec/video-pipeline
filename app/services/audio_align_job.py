@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.db import session_scope
+from app.db import is_sqlite_locked as _is_sqlite_locked, session_scope
 from app.models import Project
 from app.services.audio_align_run import run_audio_align_for_project
 from app.services.event_bus import publish_project_event
@@ -26,11 +26,6 @@ _tasks: dict[int, asyncio.Task[None]] = {}
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _is_sqlite_locked(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "database is locked" in msg or "database is busy" in msg
 
 
 def get_audio_align_job(project: Project) -> dict[str, Any]:
