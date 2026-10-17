@@ -564,3 +564,161 @@ async def test_delete_other_frame_keeps_pending_ops(
     ops = montage_meta(project).get("pending_ops") or []
     assert [op["frame_number"] for op in ops] == [1]
     assert ops[0]["action"] == "оставить"
+
+def _three_frame_scene(project_id: int) -> tuple[Frame, Frame, Frame]:
+    a = _vo_parent(project_id, 21, "aa" * 12, "голова")
+    kids = []
+    for num, uid, vo in ((22, "bb" * 12, "середина"), (23, "cc" * 12, "хвост")):
+        kids.append(
+            Frame(
+                project_id=project_id,
+                number=num,
+                uuid=uid,
+                voiceover_text=vo,
+                sort_key=float(num * 10),
+                status="planned",
+                attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+            )
+        )
+    return a, kids[0], kids[1]
+
+
+async def _attrs_by_number(session: AsyncSession, project_id: int) -> dict[int, dict]:
+    from copy import deepcopy
+
+    rows = (await session.execute(select(Frame).where(Frame.project_id == project_id))).scalars().all()
+    return {int(fr.number): deepcopy(dict(fr.attrs or {})) for fr in rows}
+
+
+@pytest.mark.asyncio
+async def test_split_undo_restores_scenes_and_keeps_paid_media(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.models import Artifact, ArtifactKind
+    from app.services.montage_board_frames import split_undo_info, undo_montage_split
+
+    session.add(project)
+    a, b, c = _three_frame_scene(project.id)
+    session.add_all([a, b, c])
+    await session.flush()
+    session.add_all(
+        [
+            Artifact(project_id=project.id, frame_id=b.id, kind=ArtifactKind.scene_image,
+                     uuid="img-b", path="x/b.png"),
+            Artifact(project_id=project.id, frame_id=c.id, kind=ArtifactKind.scene_video,
+                     uuid="vid-c", path="x/c.mp4"),
+        ]
+    )
+    await session.commit()
+    before = await _attrs_by_number(session, project.id)
+
+    res = await split_montage_scene_at(session, project, at_frame_id=int(b.id))
+    await session.commit()
+    assert res["undo_id"]
+    assert (res["left_ordinal"], res["right_ordinal"]) == (1, 2)
+    assert await _attrs_by_number(session, project.id) != before
+    assert split_undo_info(project)["can_undo"] is True
+
+    out = await undo_montage_split(session, project, undo_id=res["undo_id"])
+    await session.commit()
+    assert out["ok"] and out["paid_media_kept"] == {"images": 1, "videos": 1, "total": 2}
+    assert await _attrs_by_number(session, project.id) == before
+    assert split_undo_info(project)["can_undo"] is False
+    arts = (await session.execute(select(Artifact).where(Artifact.project_id == project.id))).scalars().all()
+    assert {(x.uuid, x.frame_id) for x in arts} == {("img-b", b.id), ("vid-c", c.id)}
+    with pytest.raises(RuntimeError):
+        await undo_montage_split(session, project)
+
+
+@pytest.mark.asyncio
+async def test_split_undo_refuses_when_frames_were_edited_after_split(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board_frames import undo_montage_split
+
+    session.add(project)
+    a, b, c = _three_frame_scene(project.id)
+    session.add_all([a, b, c])
+    await session.flush()
+    res = await split_montage_scene_at(session, project, at_frame_id=int(b.id))
+    await session.commit()
+    c.attrs = {**dict(c.attrs or {}), "camera_subdivide": {"role": "shot", "parent_uuid": "bb" * 12, "plan": "крупный"}}
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(c, "attrs")
+    await session.commit()
+    snapshot = await _attrs_by_number(session, project.id)
+    with pytest.raises(RuntimeError, match="правили"):
+        await undo_montage_split(session, project, undo_id=res["undo_id"])
+    assert await _attrs_by_number(session, project.id) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_split_undo_only_latest_and_split_all_is_undoable(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board_frames import undo_montage_split
+
+    session.add(project)
+    a, b, c = _three_frame_scene(project.id)
+    session.add_all([a, b, c])
+    await session.flush()
+    await session.commit()
+    before = await _attrs_by_number(session, project.id)
+    r = await split_montage_scene_frames(session, project, frame_id=int(a.id))
+    await session.commit()
+    assert r["undo_id"] and r["parent_ordinal"] == 1
+    with pytest.raises(RuntimeError, match="последнее"):
+        await undo_montage_split(session, project, undo_id="not-the-latest")
+    await undo_montage_split(session, project, undo_id=r["undo_id"])
+    await session.commit()
+    assert await _attrs_by_number(session, project.id) == before
+
+
+@pytest.mark.asyncio
+async def test_board_shows_scene_ordinal_field(session: AsyncSession, project: Project) -> None:
+    from app.services.montage_board import build_montage_board
+
+    session.add(project)
+    session.add_all(
+        [
+            _vo_parent(project.id, 5, "a5" * 12, "пять"),
+            _vo_parent(project.id, 6, "a6" * 12, "шесть"),
+            _vo_parent(project.id, 41, "a9" * 12, "сорок один"),
+        ]
+    )
+    await session.flush()
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    keys = [by_n[n]["vo_scene_number"] for n in (5, 6, 41)]
+    assert keys[-1] == 41
+    distinct = list(dict.fromkeys(keys))
+    assert [by_n[n]["vo_scene_ordinal"] for n in (5, 6, 41)] == [distinct.index(k) + 1 for k in keys]
+    assert by_n[41]["vo_scene_ordinal"] == len(distinct)
+
+
+def test_scene_display_ordinals_follow_timeline_not_historical_number() -> None:
+    from app.services.montage_scene_editor import scene_display_ordinals
+
+    f5 = _vo_parent(1, 5, "a5" * 12, "пять")
+    f6 = _vo_parent(1, 6, "a6" * 12, "шесть")
+    f41 = _vo_parent(1, 41, "a9" * 12, "вставка")
+    f41.sort_key = 55.0
+    for i, fr in enumerate((f5, f6, f41), start=1):
+        fr.id = i
+    got = scene_display_ordinals([f6, f41, f5])
+    assert (got[f5.id], got[f41.id], got[f6.id]) == (1, 2, 3)
+
+
+def test_busy_project_refuses_scene_edits() -> None:
+    from fastapi import HTTPException
+
+    from app.models import ProjectStatus
+    from app.web.routers.project_ops import _refuse_if_project_busy
+
+    idle = Project(id=1, slug="x", topic="t", status=ProjectStatus.new)
+    _refuse_if_project_busy(idle)
+    busy = Project(id=2, slug="y", topic="t", status=ProjectStatus.generating_images)
+    with pytest.raises(HTTPException) as e:
+        _refuse_if_project_busy(busy)
+    assert e.value.status_code == 409
