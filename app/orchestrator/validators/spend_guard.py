@@ -30,8 +30,8 @@
 $50 запуск / $10 internal / $40 действия. Явный потолок ``<= 0`` не
 выключает проверку: это ``blocking`` с ``reason=invalid_amount``.
 Прогноз ``context["forecast_usd"]`` прибавляется к прочитанному до вызова
-и никуда не записывается. Если ключи ``run`` / ``project`` / ``daily``
-не переданы явно, в эти потолки входит сумма ``internal`` + ``actions``.
+и никуда не записывается. Агрегат ``run`` / ``project`` / ``daily`` равен
+``max(явное значение, internal + actions)``. Нет явного ключа — та же сумма.
 Нечисло, inf, NaN, отрицательное, явный ``None`` и любая строка в трате
 или потолке — не 0, а ``blocking`` с ``reason=invalid_amount``.
 Конечные числа ``>= 0`` в тратах остаются как были.
@@ -702,7 +702,7 @@ def _spend_source_missing() -> Any:
 
 
 def _forecast(raw: Any) -> dict[str, float]:
-    """Прогноз до вызова. Агрегаты без явного ключа = internal + actions."""
+    """Прогноз до вызова. Агрегат = max(явный, internal + actions)."""
 
     if raw is None:
         raw = {}
@@ -715,7 +715,8 @@ def _forecast(raw: Any) -> dict[str, float]:
     def aggregate(key: str) -> float:
         if key not in raw:
             return implied
-        return _require_amount(raw.get(key), field=f"forecast_usd.{key}")
+        explicit = _require_amount(raw.get(key), field=f"forecast_usd.{key}")
+        return max(explicit, implied)
 
     return {
         "internal": internal,

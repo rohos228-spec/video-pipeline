@@ -176,9 +176,43 @@ def test_forecast_counts_toward_aggregate_caps_before_call() -> None:
         {"forecast_usd": {"actions": 5, "run": 0, "project": 0, "daily": 0}, "run_id": "run-1"},
         _totals(run_spent_usd=48),
     )
-    assert explicit.passed is True
-    assert explicit.details["forecast_usd"]["run"] == 0.0
+    assert explicit.passed is False
+    assert explicit.blocking is True
+    assert explicit.details["reason"] == "spend_cap_run"
+    assert explicit.details["forecast_usd"]["run"] == 5.0
+    assert explicit.details["forecast_usd"]["project"] == 5.0
+    assert explicit.details["forecast_usd"]["daily"] == 5.0
     assert explicit.details["forecast_usd"]["actions"] == 5.0
+
+
+@pytest.mark.parametrize(
+    ("forecast", "run_spent", "blocked", "run_forecast"),
+    [
+        ({"internal": 1, "actions": 4, "run": 0}, 48, True, 5.0),
+        ({"actions": 1, "run": 20}, 20, False, 20.0),
+        ({"actions": 1, "run": 20}, 31, True, 20.0),
+    ],
+)
+def test_aggregate_forecast_is_max_of_explicit_and_sum(
+    forecast: dict[str, float],
+    run_spent: float,
+    blocked: bool,
+    run_forecast: float,
+) -> None:
+    """Явный агрегат меньше суммы не занижает её; больший явный берётся как есть."""
+
+    result = _run_reader(
+        1,
+        {"forecast_usd": forecast, "run_id": "run-1"},
+        _totals(run_spent_usd=run_spent),
+    )
+    assert result.passed is not blocked
+    assert result.blocking is blocked
+    assert result.details["forecast_usd"]["run"] == run_forecast
+    if blocked:
+        assert result.details["reason"] == "spend_cap_run"
+        hit = next(item for item in result.details["violations"] if item["reason"] == "spend_cap_run")
+        assert hit["forecast_usd"] == run_forecast
 
 
 def test_forecast_exhausts_internal_sub_budget() -> None:
