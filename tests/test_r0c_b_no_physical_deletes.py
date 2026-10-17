@@ -752,3 +752,46 @@ async def test_split_frames_ignores_marked_rows(session: AsyncSession, monkeypat
     assert exported["ids"] == [live.id, extra.id]
     assert project.status is ProjectStatus.frames_ready
 
+
+def test_park_does_not_reuse_a_held_number(caplog: pytest.LogCaptureFixture) -> None:
+    """Уже занятый 900000 не отдаётся следующему кадру, исходный номер цел."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import park_marked_frame_numbers
+
+    earlier = SimpleNamespace(
+        id=7,
+        number=900_000,
+        attrs={
+            "удалён": True,
+            "активен": False,
+            "исходный_номер": 7,
+            "пометка": "первая",
+        },
+    )
+    fresh = SimpleNamespace(
+        id=3,
+        number=3,
+        attrs={"удалён": True, "активен": False, "пометка": "сброс"},
+    )
+    live = SimpleNamespace(id=1, number=4, attrs={})
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        assert park_marked_frame_numbers([fresh, earlier, live]) == 2
+        assert fresh.number == 900_001
+        assert earlier.number == 900_000
+        assert live.number == 4
+        assert fresh.attrs["исходный_номер"] == 3
+        assert earlier.attrs["исходный_номер"] == 7
+        assert earlier.attrs["пометка"] == "первая"
+        assert "900000" in caplog.text
+        assert "занят" in caplog.text
+        park_marked_frame_numbers([fresh, earlier, live])
+        assert fresh.number == 900_001
+        assert earlier.number == 900_000
+        assert fresh.attrs["исходный_номер"] == 3
+        assert earlier.attrs["исходный_номер"] == 7
+        assert live.number == 4
+    finally:
+        logger.remove(sink)
+

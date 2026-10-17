@@ -267,26 +267,70 @@ def log_paid_frame_skip(frame: Any, *, where: str) -> str | None:
     return reason
 
 
+def _frame_number(frame) -> int | None:
+    try:
+        number = getattr(frame, "number", None)
+        if number is None:
+            return None
+        return int(number)
+    except (TypeError, ValueError):
+        return None
+
+
 def park_marked_frame_numbers(frames: list, project=None) -> int:
     """Увести помеченные кадры на номера 900000+, чтобы живые остались 1..K.
 
-    Вызывать после перенумерации. Оба номера (старый, уже в tombstone, и
-    новый) остаются запрещёнными для импорта.
+    Вызывать после перенумерации. Уже занятый номер (другой кадр всё ещё
+    держит 900000+) не перезаписывается: берётся следующий свободный.
+    Уникальный парковочный номер и ``исходный_номер`` повторный вызов не
+    меняет. Оба номера остаются запрещёнными для импорта.
     """
+    held: dict[int, int] = {}
+    for frame in frames:
+        current = _frame_number(frame)
+        if current is not None:
+            held[current] = held.get(current, 0) + 1
     parked = 0
+    cursor = 900_000
     for frame in frames:
         if not frame_marked_deleted(frame):
             continue
         attrs = dict(getattr(frame, "attrs", None) or {})
-        if "исходный_номер" not in attrs:
-            current = getattr(frame, "number", None)
+        current = _frame_number(frame)
+        if "исходный_номер" not in attrs and current is not None:
+            attrs["исходный_номер"] = current
+            frame.attrs = attrs
+            _flag_frame(frame)
+        already_parked = (
+            current is not None and current >= 900_000 and held.get(current) == 1
+        )
+        if already_parked:
+            new_number = current
+        else:
+            naive = 900_000 + parked
+            while held.get(cursor, 0) > 0:
+                cursor += 1
+            new_number = cursor
+            cursor += 1
             if current is not None:
-                attrs["исходный_номер"] = int(current)
-                frame.attrs = attrs
-                _flag_frame(frame)
-        frame.number = 900_000 + parked
-        if project is not None:
-            remember_deleted(project, int(frame.number))
+                held[current] = held.get(current, 0) - 1
+                if held[current] <= 0:
+                    held.pop(current, None)
+            held[new_number] = held.get(new_number, 0) + 1
+            if naive != new_number or (
+                current is not None and current >= 900_000
+            ):
+                blocked = naive if naive != new_number else current
+                logger.warning(
+                    "WARN park_marked_frame_numbers: номер {} занят, "
+                    "кадр #{} уходит на {}, исходный_номер сохранён",
+                    blocked,
+                    getattr(frame, "id", None),
+                    new_number,
+                )
+        frame.number = new_number
+        if project is not None and new_number is not None:
+            remember_deleted(project, int(new_number))
         parked += 1
     return parked
 
