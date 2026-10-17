@@ -59,11 +59,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+/**
+ * Только конечное число >= 0. NaN, ±Infinity, отрицательное, строка и отсутствие поля — null.
+ * К 0 не приводится.
+ */
 export function readPaidOutcomeForecast(body: unknown): number | null {
   const record = asRecord(body);
-  if (!record) return null;
+  if (!record || !Object.prototype.hasOwnProperty.call(record, PAID_OUTCOME_FORECAST_FIELD)) return null;
   const value = record[PAID_OUTCOME_FORECAST_FIELD];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
+/** Python `json.dumps` пишет NaN и Infinity как есть. Это не 0. */
+export function parsePaidOutcomeJson(text: string): unknown {
+  const marked = text
+    .replace(/:\s*NaN\b/g, ': "__NaN__"')
+    .replace(/:\s*-Infinity\b/g, ': "__-Infinity__"')
+    .replace(/:\s*Infinity\b/g, ': "__Infinity__"');
+  return JSON.parse(marked, (_key, value) => {
+    if (value === "__NaN__") return Number.NaN;
+    if (value === "__-Infinity__") return Number.NEGATIVE_INFINITY;
+    if (value === "__Infinity__") return Number.POSITIVE_INFINITY;
+    return value;
+  });
 }
 
 /** Кнопка «Перезапустить шаг» активна, только если сервер прислал это decision. */
@@ -101,7 +120,7 @@ export const PAID_OUTCOME_COPY = {
   deny: "Остановить задачу",
   confirmRetry: "Подтвердить перезапуск",
   retryUnsupported: "Сервер не поддерживает перезапуск этого шага.",
-  forecastMissing: "Сервер не прислал прогноз расхода.",
+  forecastMissing: "Прогноз расхода недоступен",
   grantMissing: "Сервер не выдал одноразовое подтверждение перезапуска.",
 } as const;
 

@@ -16,6 +16,7 @@ import {
   PAID_OUTCOME_RETRY_GRANT_FIELD,
   paidOutcomeApprovalPath,
   paidOutcomeRetryReady,
+  parsePaidOutcomeJson,
   readPaidOutcomeExecuted,
   readPaidOutcomeFailureReason,
   readPaidOutcomeForecast,
@@ -189,7 +190,13 @@ async function readError(res: Response): Promise<string> {
   return text.slice(0, 300);
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+async function postJsonParsed<T>(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal: AbortSignal | undefined,
+  parse: (text: string) => unknown,
+): Promise<T> {
   assertBearerTarget(cfg.apiBase);
   const headers = authHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -206,7 +213,21 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
     throw new OrchApiError(res.status, await readError(res));
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  try {
+    return parse(text) as T;
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return postJsonParsed(cfg, path, body, signal, (text) => JSON.parse(text) as unknown);
+}
+
+async function postPaidJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return postJsonParsed(cfg, path, body, signal, parsePaidOutcomeJson);
 }
 
 export function postOrchMessage(
@@ -262,7 +283,7 @@ export async function postPaidOutcomeDecision(
   body: { approval_id: string; task_id?: string | null; decision: PaidOutcomeDecision },
   signal?: AbortSignal,
 ): Promise<PaidOutcomeDecisionResult> {
-  const raw = await postJson<unknown>(cfg, paidOutcomeApprovalPath(body.approval_id), body, signal);
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovalPath(body.approval_id), body, signal);
   const reason = readPaidOutcomeFailureReason(raw);
   const accepted = readPaidAcceptance(raw);
   return {

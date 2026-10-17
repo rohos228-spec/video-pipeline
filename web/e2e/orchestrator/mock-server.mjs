@@ -8,6 +8,7 @@
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid409 | paidgrant409
+ *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
  * Сверено с #358 @ 08fb355f: forecast_usd, decisions, retry_grant (флаг, не токен).
@@ -68,10 +69,24 @@ function cors(res) {
 }
 
 function sendJson(res, status, body) {
+  sendRawJson(res, status, JSON.stringify(body));
+}
+
+function sendRawJson(res, status, raw) {
   cors(res);
-  const raw = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(raw);
+}
+
+/** Литерал forecast_usd в теле ответа. null — поля нет. Не сериализовать через JSON.stringify: NaN стал бы null. */
+function paidBadForecastLiteral(scenario) {
+  if (scenario === "paidbad-nan") return "NaN";
+  if (scenario === "paidbad-inf") return "Infinity";
+  if (scenario === "paidbad-ninf") return "-Infinity";
+  if (scenario === "paidbad-neg") return "-1.5";
+  if (scenario === "paidbad-str") return '"2.4"';
+  if (scenario === "paidzero") return "0";
+  return null;
 }
 
 function authorized(req) {
@@ -767,7 +782,14 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
-  if (scenario === "paidoutcome" || scenario === "paid404" || scenario === "paid409" || scenario === "paidgrant409") {
+  if (
+    scenario === "paidoutcome" ||
+    scenario === "paid404" ||
+    scenario === "paid409" ||
+    scenario === "paidgrant409" ||
+    scenario === "paidzero" ||
+    scenario.startsWith("paidbad-")
+  ) {
     void runPaidOutcome(session, id, true);
     return;
   }
@@ -1306,6 +1328,16 @@ const server = http.createServer(async (req, res) => {
     if (decision === "retry_step" && (scenario === "paidoutcome" || scenario === "paidgrant409")) {
       payload.executed = false;
       payload.forecast_usd = PAID_FORECAST_USD;
+    }
+    if (decision === "retry_step" && (scenario.startsWith("paidbad-") || scenario === "paidzero")) {
+      const literal = paidBadForecastLiteral(scenario);
+      const forecastField = literal == null ? "" : `,"forecast_usd":${literal}`;
+      sendRawJson(
+        res,
+        200,
+        `{"ok":true,"matched":true,"approval_id":${JSON.stringify(approvalId)},"decision":"retry_step","executed":false${forecastField}}`,
+      );
+      return;
     }
     sendJson(res, 200, payload);
     return;

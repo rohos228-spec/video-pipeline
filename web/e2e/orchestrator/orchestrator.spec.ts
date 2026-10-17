@@ -554,6 +554,28 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
+  test("paid_outcome_unknown: forecast_usd только конечное число >= 0", async ({ page }) => {
+    const rejected = ["paidbad-nan", "paidbad-inf", "paidbad-ninf", "paidbad-neg", "paidbad-str", "paidbad-miss"] as const;
+    for (const scenario of rejected) {
+      await openWithToken(page, scenario, scenario);
+      await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+      await page.getByTestId("orch-send").click();
+      await page.getByTestId("orch-paid-retry").click();
+      const panel = page.getByTestId("orch-paid-forecast");
+      await expect(panel).toContainText("Прогноз расхода недоступен");
+      await expect(panel).not.toContainText("~$0");
+      await expect(panel).not.toContainText("~$2.4");
+      await expect(page.getByTestId("orch-paid-retry-confirm")).toBeDisabled();
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+    }
+    await openWithToken(page, "paidzero", "paid-zero");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$0");
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+  });
+
   test("paid_outcome_unknown: без поддержки перезапуска кнопка неактивна", async ({ page }) => {
     const posts: string[] = [];
     page.on("request", (req) => {
