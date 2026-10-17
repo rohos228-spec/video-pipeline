@@ -47,26 +47,6 @@ SQL_TS = {
     "TEXT": "string",
 }
 
-# Финальное решение куратора: к модели NodeDef из contracts.py
-# добавляются только эти три поля. overridden_in_db и active_version не эмитим.
-NODEDEF_EXTRA: tuple[tuple[str, str, str], ...] = (
-    (
-        "db_version",
-        "number | null",
-        "Финальное решение куратора. В contracts.NodeDef нет.",
-    ),
-    (
-        "git_sha256",
-        "string",
-        "Финальное решение куратора. В contracts.NodeDef нет.",
-    ),
-    (
-        "stale_base",
-        "boolean",
-        "Финальное решение куратора. В contracts.NodeDef нет.",
-    ),
-)
-
 UI_TAIL = """
 /**
  * Полезные нагрузки событий и REST, которых нет отдельными моделями в contracts.py.
@@ -251,10 +231,6 @@ def _render_models(models: dict[str, dict[str, Any]]) -> list[str]:
         for prop, prop_schema in props.items():
             optional = "" if prop in required else "?"
             lines.append(f"  {prop}{optional}: {schema_to_ts(prop_schema)};")
-        if name == "NodeDef":
-            for field, ts_type, note in NODEDEF_EXTRA:
-                lines.append(f"  /** {note} */")
-                lines.append(f"  {field}?: {ts_type};")
         lines.append("}")
         lines.append("")
     return lines
@@ -297,10 +273,7 @@ def render_schema(schema: dict[str, Any], source_label: str) -> str:
         " * Не править руками.",
         f" * source: {source_label}",
         f" * contract: {version}",
-        " *",
-        " * Расхождение NodeDef с contracts.py (WS3 r1, PR #346):",
-        " * куратор добавил db_version, git_sha256, stale_base.",
-        " * overridden_in_db и active_version в тип ноды не входят.",
+        " * NodeDef, TaskStatus и ApprovalEvent — как в export_contract_schemas(), без ручных полей.",
         " */",
         "",
         f"export const ORCH_CONTRACT_VERSION = {json.dumps(version, ensure_ascii=False)};",
@@ -393,9 +366,7 @@ def _self_test() -> int:
         "export type TaskStatus",
         "export const ORCH_EVENT_TYPES",
         "export interface NodeDef",
-        "db_version?: number | null;",
-        "git_sha256?: string;",
-        "stale_base?: boolean;",
+        "node_key: string;",
         "task_id?: number | null;",
         "session_id?: string;",
         "export interface NodeDefsRow",
@@ -419,8 +390,12 @@ def _self_test() -> int:
         "prompt_template?: string;",
         "source?: NodeSource;",
         "db_version?: number | null;",
-        "git_sha256?: string;",
+        "git_sha256?: string | null;",
         "stale_base?: boolean;",
+        '"waiting_approval"',
+        "export const APPROVAL_REASON",
+        '"budget_exhausted"',
+        "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
         "export const ORCH_CONTRACT_VERSION = \"ws3-r1\"",
@@ -433,9 +408,9 @@ def _self_test() -> int:
     if missing_live:
         print("self-test failed on live contracts, missing:", ", ".join(missing_live), file=sys.stderr)
         return 1
-    forbidden = [item for item in ("overridden_in_db?:", "active_version?:") if item in live]
+    forbidden = [item for item in ("overridden_in_db", "Финальное решение куратора", "active_version?:") if item in live]
     if forbidden:
-        print("self-test failed, NodeDef must not include:", ", ".join(forbidden), file=sys.stderr)
+        print("self-test failed, unexpected manual NodeDef overlay:", ", ".join(forbidden), file=sys.stderr)
         return 1
     if LOCAL_CONTRACTS.is_file():
         print("self-test note: local contracts.py exists, git show path was not required")

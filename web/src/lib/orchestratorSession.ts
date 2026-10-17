@@ -48,10 +48,8 @@ export function readNodeDef(value: unknown): NodeDef | null {
     params,
     source: raw.source,
     version: optNum(raw.version) ?? 0,
-    group_key: typeof raw.group_key === "string" ? raw.group_key : "",
-    title: typeof raw.title === "string" ? raw.title : "",
     db_version: optNum(raw.db_version),
-    git_sha256: typeof raw.git_sha256 === "string" ? raw.git_sha256 : "",
+    git_sha256: typeof raw.git_sha256 === "string" ? raw.git_sha256 : null,
     stale_base: raw.stale_base === true,
   };
 }

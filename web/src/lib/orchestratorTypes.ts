@@ -3,10 +3,7 @@
  * Не править руками.
  * source: git show origin/cursor/ws3-agents-core-r1-3c7d:app/orchestrator/contracts.py
  * contract: ws3-r1
- *
- * Расхождение NodeDef с contracts.py (WS3 r1, PR #346):
- * куратор добавил db_version, git_sha256, stale_base.
- * overridden_in_db и active_version в тип ноды не входят.
+ * NodeDef, TaskStatus и ApprovalEvent — как в export_contract_schemas(), без ручных полей.
  */
 
 export const ORCH_CONTRACT_VERSION = "ws3-r1";
@@ -29,8 +26,14 @@ export type NodeStatus = (typeof NODE_STATUS)[number];
 export const NODE_SOURCES = ["git", "db"] as const;
 export type NodeSource = (typeof NODE_SOURCES)[number];
 
-export const PROMPT_VERSION_KIND = ["create", "edit_prompt", "edit_params", "rollback"] as const;
+export const PROMPT_VERSION_KIND = ["create", "edit_prompt", "edit_params", "rollback", "revert_to_git"] as const;
 export type PromptVersionKind = (typeof PROMPT_VERSION_KIND)[number];
+
+export const PROMPT_CREATED_VIA = ["orchestrator", "studio_ui"] as const;
+export type PromptCreatedVia = (typeof PROMPT_CREATED_VIA)[number];
+
+export const APPROVAL_REASON = ["budget_exhausted", "risk", "critic_escalation"] as const;
+export type ApprovalReason = (typeof APPROVAL_REASON)[number];
 
 export const REPORT_KIND = ["report", "nodes_snapshot"] as const;
 export type ReportKind = (typeof REPORT_KIND)[number];
@@ -134,7 +137,7 @@ export interface Chunk {
 }
 
 /**
- * Рантайм-определение ноды, которое вернёт ``node_store.resolve_node`` (WS2).
+ * Определение ноды, которое отдают ``resolve_node`` и ``get_node`` (WS2). ``version`` — версия, которую резолвер считает текущей (git или db). ``db_version`` — номер строки в ``node_prompt_versions``, если поверх git есть DB-версия; иначе ``None``. ``git_sha256`` — sha256 базового git-файла на момент резолва. ``stale_base`` — git-файл изменился после записи DB-версии (``base_git_sha256`` версии не совпал с текущим ``git_sha256``). Колонка ``node_defs.active_version`` в этот тип не копируется. Это единственный указатель активной DB-версии: ``NULL`` значит «сейчас как в git» (после ``revert_node_to_git``): ``source=git``, ``db_version=None``, ``stale_base=False``. В истории нет ``is_active``.
  */
 export interface NodeDef {
   node_key: string;
@@ -142,18 +145,13 @@ export interface NodeDef {
   params?: Record<string, unknown>;
   source?: NodeSource;
   version?: number;
-  group_key?: string;
-  title?: string;
-  /** Финальное решение куратора. В contracts.NodeDef нет. */
   db_version?: number | null;
-  /** Финальное решение куратора. В contracts.NodeDef нет. */
-  git_sha256?: string;
-  /** Финальное решение куратора. В contracts.NodeDef нет. */
+  git_sha256?: string | null;
   stale_base?: boolean;
 }
 
 /**
- * Событие approval, которое WS2 кладёт в SSE-шину.
+ * Событие approval в SSE-шине. Исчерпание суб-бюджета не заводит новый статус FSM: задача остаётся ``waiting_approval``, а причина лежит здесь и в payload события ``approval_required`` (``reason=budget_exhausted``).
  */
 export interface ApprovalEvent {
   task_id?: number | null;
@@ -215,7 +213,7 @@ export interface CheckpointData {
 /** Строки таблиц из TABLE_SPECS. */
 
 /**
- * Спецификация WS2. Одна строка на ноду, созданную или переопределённую оркестратором. active_version ссылается на node_prompt_versions.version этой ноды (логическая связь, без циклического FK).
+ * Спецификация WS2. Одна строка на ноду, созданную или переопределённую оркестратором. active_version — единственный источник активной версии (NULL = git-шаблон). Триггер проверяет, что не-NULL ссылается на существующую версию этой ноды и не на kind=revert_to_git. Циклический FK не ставим.
  */
 export interface NodeDefsRow {
   id: number;
@@ -231,7 +229,7 @@ export interface NodeDefsRow {
   after_node_key: string | null;
   /** active|disabled */
   status: string;
-  /** node_prompt_versions.version этой ноды */
+  /** Единственный указатель активной версии: node_prompt_versions.version этой ноды, не kind=revert_to_git. NULL — резолвер берёт git (revert_node_to_git). Статус reverted не вводим: active|disabled описывают включённость, а не источник промпта. */
   active_version: number | null;
   created_change_id: string | null;
   updated_change_id: string | null;
@@ -244,7 +242,7 @@ export interface NodeDefsRow {
 }
 
 /**
- * Спецификация WS2. Неизменяемая история: откат — новая строка kind=rollback, старые строки не удаляются и не правятся.
+ * Спецификация WS2. Неизменяемая история: откат — новая строка kind=rollback, возврат на git-шаблон — новая строка kind=revert_to_git (действие revert_node_to_git) и node_defs.active_version=NULL. Старые строки не удаляются и не правятся. Колонки is_active нет: какая версия активна, решает только node_defs.active_version. base_git_sha256 — sha256 git-файла на момент записи версии; по нему resolve_node считает NodeDef.stale_base. Правка из UI студии — created_via=studio_ui, не отдельный kind.
  */
 export interface NodePromptVersionsRow {
   id: number;
@@ -254,18 +252,20 @@ export interface NodePromptVersionsRow {
   prompt_template: string;
   /** model, reasoning_effort, parallel, stagger_sec, temperature, max_tokens */
   params_json: string;
-  /** create|edit_prompt|edit_params|rollback */
+  /** create|edit_prompt|edit_params|rollback|revert_to_git */
   kind: string;
   patch_mode: string | null;
   section_anchor: string | null;
   reason: string | null;
   parent_version: number | null;
-  /** BOOL, ≤1 активной на ноду */
-  is_active: number;
+  /** sha256 базового git-файла на момент записи версии; NULL если базы не было */
+  base_git_sha256: string | null;
   change_id: string;
   /** ISO UTC */
   created_at: string;
   created_by: string | null;
+  /** orchestrator | studio_ui */
+  created_via: string;
 }
 
 /**

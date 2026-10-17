@@ -129,8 +129,6 @@ const NODE_DB = {
   params: {},
   source: "db",
   version: 4,
-  group_key: "scenes",
-  title: "Сцены в кадры",
   db_version: 4,
   git_sha256: "a8b5a03f",
   stale_base: false,

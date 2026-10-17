@@ -22,7 +22,10 @@ import {
   type ApprovalView,
   type StepView,
 } from "@/lib/orchestratorSession";
-import type { NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
+import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
+
+/** Значение ApprovalReason из contracts.py. Статус задачи при этом — waiting_approval. */
+const BUDGET_EXHAUSTED = "budget_exhausted" satisfies ApprovalReason;
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
 
@@ -450,7 +453,7 @@ function ApprovalCard({
   onApprove: () => void;
   onReject: () => void;
 }) {
-  const budget = approval.reason === "budget_exhausted";
+  const budget = approval.reason === BUDGET_EXHAUSTED;
   return (
     <div
       data-testid="orch-approval"
