@@ -160,11 +160,15 @@ export interface ClassificationPayload {
 
 /**
  * POST /api/orchestrator/chat/{session}/message.
- * MessageIn в WS3 пока только ``text``. ``mode`` UI шлёт для MessageMode.task
- * (новая задача в очередь); мок его учитывает.
+ * MessageIn (#350 @ 19e803df): ``text`` и ``mode: MessageMode | None``.
+ * Допустимые mode: interrupt | steer | append | task. Иное значение — 422.
+ * Клиент шлёт ``mode`` только при включённом NEXT_PUBLIC_ORCH_TASK_MODE
+ * и только строкой из MessageMode (сейчас ``"task"``). Иначе поле не уходит,
+ * сервер читает его как None.
  */
 export interface OrchOutboundMessage {
   text: string;
+  /** MessageMode | None. Нет поля — то же, что null. */
   mode?: MessageMode;
 }
 
@@ -445,7 +449,7 @@ def _self_test() -> int:
         "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
-        "export const ORCH_CONTRACT_VERSION = \"ws3-r3\"",
+        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.1\"",
         "kill_switch?: boolean;",
         "parallel_group?: string | null;",
         "estimated_cost?: number;",
