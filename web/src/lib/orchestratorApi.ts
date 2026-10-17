@@ -23,16 +23,36 @@ import {
   readPaidOutcomeForecast,
   type PaidOutcomeApproveBody,
 } from "./orchestratorPaidOutcome";
-import type {
-  OrchApprovalDecision,
-  OrchEvent,
-  OrchKillRequest,
-  OrchKillResult,
-  OrchMessageAckHttp,
-  OrchOutboundMessage,
-  OrchReportsRow,
-  OrchReportVersionsRow,
+import {
+  ORCH_CONTRACT_VERSION,
+  type OrchApprovalDecision,
+  type OrchEvent,
+  type OrchKillRequest,
+  type OrchKillResult,
+  type OrchMessageAckHttp,
+  type OrchOutboundMessage,
+  type OrchReportsRow,
+  type OrchReportVersionsRow,
 } from "./orchestratorTypes";
+
+/** #358: ws3-r3.3.1 добавляет approval_decided и не ломает провод r3.3. */
+const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1"] as const;
+
+export function acceptsOrchContractVersion(version: string): boolean {
+  return (ACCEPTED_ORCH_CONTRACT_VERSIONS as readonly string[]).includes(version);
+}
+
+let contractVersionWarned = false;
+
+/** Чужая версия — один warn. r3.3 и r3.3.1 молчат. Пустая строка не версия. */
+export function noteOrchContractVersion(version: string): void {
+  if (!version || acceptsOrchContractVersion(version)) return;
+  if (contractVersionWarned) return;
+  contractVersionWarned = true;
+  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1: ${version}`);
+}
+
+noteOrchContractVersion(ORCH_CONTRACT_VERSION);
 
 export const ORCH_TOKEN_STORAGE_KEY = "vp-orch-api-token";
 

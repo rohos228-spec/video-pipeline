@@ -3,13 +3,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  acceptsOrchContractVersion,
   bearerTargetAllowed,
   envOrchApiBase,
   isSameOriginApiBase,
+  noteOrchContractVersion,
   orchAuthHeaders,
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
+import { ORCH_CONTRACT_VERSION, ORCH_EVENT_TYPES } from "../../src/lib/orchestratorTypes";
 import {
   PAID_OUTCOME_BODY_FIELDS,
   paidOutcomeDecisionBody,
@@ -28,6 +31,30 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупреждения", () => {
+  expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
+  expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);
+  expect(acceptsOrchContractVersion(ORCH_CONTRACT_VERSION)).toBe(true);
+  expect(acceptsOrchContractVersion("ws3-r3.4")).toBe(false);
+  expect(ORCH_EVENT_TYPES).toContain("approval_decided");
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    noteOrchContractVersion("ws3-r3.3");
+    noteOrchContractVersion("ws3-r3.3.1");
+    expect(warnings).toEqual([]);
+    noteOrchContractVersion("ws3-r9");
+    noteOrchContractVersion("ws3-r9");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("ws3-r9");
+  } finally {
+    console.warn = original;
+  }
+});
 
 test("первое approval_required несёт change_id, forecast_usd и retry_armed false", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
