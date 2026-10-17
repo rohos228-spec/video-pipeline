@@ -12,6 +12,7 @@ from app.orchestrator.validators.entities import (
     scene_kadry,
     scene_number,
 )
+from app.orchestrator.validators.frame_links import check_frame_links
 from app.orchestrator.validators.no_deletions import (
     check_characters,
     check_frames,
@@ -140,6 +141,7 @@ def collect_violations(before: Any, after: Any, ops: Any = None) -> list[Violati
     found.extend(check_scenes(before, after, ops))
     found.extend(check_frames(before, after, ops))
     found.extend(check_characters(before, after, ops))
+    found.extend(check_frame_links(before, after, ops))
     found.extend(check_active_shots(before, after, ops))
     found.extend(check_shot_dropped(before, after, ops))
     return sorted_violations(found)
