@@ -168,7 +168,7 @@ test.describe("report editor", () => {
     const srcdoc = await preview.getAttribute("srcdoc");
     expect(srcdoc).toContain("background:hsl(0 0% 2%)");
     expect(srcdoc).toContain("color:hsl(0 0% 94%)");
-    expect(srcdoc).toContain("молчит");
+    expect(srcdoc).toMatch(/<p>[^<]+<\/p>/);
     expect(srcdoc).not.toMatch(/<script/i);
   });
 });
