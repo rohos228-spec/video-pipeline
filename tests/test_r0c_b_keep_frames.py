@@ -206,6 +206,43 @@ def test_repair_shots_keeps_duplicate_and_unmatched_anchor(warn_log) -> None:
     assert any("WARN repair_shots" in line for line in warn_log)
 
 
+def test_repair_shots_keeps_anchor_order_when_input_is_scrambled() -> None:
+    """Хвост и чужой порядок GPT не возвращают кадры в исходный порядок."""
+    from app.services.montage_scene_improve import qc_reasons, repair_shots
+
+    units = [
+        {"n": 1, "бюджет": 2, "закадр": "Он идёт домой и открывает дверь."},
+        {"n": 2, "бюджет": 1, "закадр": "Девушка входит в комнату."},
+    ]
+
+    def row(sid: str, anchor: int, action: str, vo: str, *, plan: str) -> dict:
+        return {
+            "id": sid,
+            "якорь_n": anchor,
+            "действие": action,
+            "закадр": vo,
+            "роль": "действие",
+            "план": plan,
+            "ракурс": "3/4",
+            "объект": "тело",
+            "порядок": 1,
+        }
+
+    shots = [
+        row("late", 2, "девушка входит", "Девушка входит в комнату.", plan="СРЕДНИЙ"),
+        row("a", 1, "идёт домой", "Он идёт домой", plan="ОБЩИЙ"),
+        row("b", 1, "открывает дверь", "и открывает дверь.", plan="КРУПНЫЙ"),
+        row("lost", 9, "смотрит в окно", "смотрит", plan="ДЕТАЛЬ"),
+    ]
+    repair_shots(shots, units)
+    assert _ids(shots)[:3] == ["a", "b", "late"]
+    assert shots[-1]["id"] == "lost"
+    assert shots[-1]["карантин"] is True
+    hard, _soft = qc_reasons(shots, units)
+    assert not any("не разложены" in item for item in hard)
+    assert not any("повтор действия" in item for item in hard)
+
+
 def test_assign_scene_vo_keeps_shots_when_voiceover_empty(warn_log) -> None:
     from app.services.shot_templates import _assign_scene_vo, fill_kadry_from_catalog
 

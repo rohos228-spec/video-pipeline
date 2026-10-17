@@ -1221,8 +1221,13 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
-    seq = [s.get("якорь_n") for s in shots]
+    """Живые кадры идут по якорям подряд 1..k, у каждого якоря есть кадр.
+
+    Помеченные (карантин) в проверку не входят: они лежат в хвосте и не
+    ломают раскладку.
+    """
+    live = [s for s in shots if not s.get("карантин")]
+    seq = [s.get("якорь_n") for s in (live or shots)]
     if any(not isinstance(v, int) for v in seq):
         return False
     return seq == sorted(seq) and set(seq) == set(range(1, k + 1))
@@ -1541,11 +1546,17 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
 
 
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем."""
+    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем.
+
+    Бюджет считается по живым кадрам: уже помеченные в лимит не входят.
+    """
     out = list(shots)
-    if cap < 1 or len(out) <= cap:
+    if cap < 1:
         return out
-    sim = list(enumerate(out))
+    live_at = [i for i, shot in enumerate(out) if not shot.get("карантин")]
+    if len(live_at) <= cap:
+        return out
+    sim = [(i, out[i]) for i in live_at]
     drop_at: set[int] = set()
     for role in ("мост", "перебивка"):
         i = len(sim) - 1
@@ -1636,8 +1647,7 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
             _mark_shot_kept(shot, reason, where="repair_shots")
         fixed.append(reason)
         rebuilt.append(shot)
-    order = {id(s): i for i, s in enumerate(shots)}
-    rebuilt.sort(key=lambda s: order.get(id(s), 10**9))
+    # Порядок якорей (units), не исходный порядок GPT. Несовпавшие — в хвост.
     shots[:] = rebuilt
     fixed.extend(smooth_plan_sequence(shots))
     prev: dict[str, Any] | None = None
@@ -1687,6 +1697,8 @@ def qc_reasons(
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
     for shot in shots:
+        if shot.get("карантин"):
+            continue
         n = shot.get("порядок")
         step = str(shot.get("действие") or "")
         if _COGNITIVE_ONLY_RE.search(step):
