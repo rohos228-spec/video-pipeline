@@ -42,6 +42,21 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def shot_is_active(shot: Any) -> bool:
+    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
+
+    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
+    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
+    """
+    if not isinstance(shot, dict):
+        return False
+    if shot.get("удалён") or shot.get("карантин"):
+        return False
+    if shot.get("активен") is False:
+        return False
+    return True
+
+
 def parent_still_suppressed(frame: Any) -> bool:
     """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
     cs = _cs(frame)
@@ -2624,8 +2639,11 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
+        # На кадры — только живые шоты. Помеченный остаётся в лестнице
+        # родителя, но не занимает индекс и не подменяет зеркало ребёнка.
+        live_planned = [s for s in planned if shot_is_active(s)]
         for i, fr in enumerate(ordered):
-            shot = planned[i] if i < len(planned) else None
+            shot = live_planned[i] if i < len(live_planned) else None
             if not isinstance(shot, dict):
                 continue
             old_action = str(
