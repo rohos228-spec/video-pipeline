@@ -531,7 +531,8 @@ def exec_calls_in_source(source: str) -> list[str]:
     found: list[str] = []
 
     def walk(node: ast.AST, *, call_func: bool) -> None:
-        if isinstance(node, ast.Call) and not call_func:
+        # Call проверяется и в позиции функции: getattr(subprocess, "run")(cmd).
+        if isinstance(node, ast.Call):
             if _is_exec_call(node, bindings, stars):
                 found.append(_call_label(node.func))
             elif _getattr_is_exec(node, bindings):
@@ -1491,24 +1492,28 @@ def _dangerous_value_kind(
     shutil_modules: set[str],
     shutil_funcs: dict[str, str],
     path_names: set[str],
+    os_open_names: set[str] | None = None,
 ) -> str | None:
     """Ссылка на опасную функцию не в позиции вызова равна вызову."""
+    os_open_names = os_open_names or set()
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
         recv = node.value.id
         if recv in os_modules and node.attr in _DANGEROUS_OS:
             return f"os.{node.attr}"
         if recv in os_modules and node.attr == "open":
             return "os.open"
-        if recv in shutil_modules and node.attr == "rmtree":
-            return "shutil.rmtree"
+        if recv in shutil_modules and node.attr in {"rmtree", *_SHUTIL_WRITE}:
+            return f"shutil.{node.attr}"
         if recv in path_names and node.attr in _DANGEROUS_PATH:
             return f"Path.{node.attr}"
         return None
     if isinstance(node, ast.Name):
+        if node.id in os_open_names:
+            return "os.open"
         if node.id in os_funcs and os_funcs[node.id] in _DANGEROUS_OS:
             return f"os.{os_funcs[node.id]}"
-        if node.id in shutil_funcs and shutil_funcs[node.id] == "rmtree":
-            return "shutil.rmtree"
+        if node.id in shutil_funcs:
+            return f"shutil.{shutil_funcs[node.id]}"
     return None
 
 
@@ -1590,7 +1595,13 @@ def _scan_writes(
             return
         if not call_func:
             kind = _dangerous_value_kind(
-                node, os_modules, os_funcs, shutil_modules, shutil_funcs, path_names
+                node,
+                os_modules,
+                os_funcs,
+                shutil_modules,
+                shutil_funcs,
+                path_names,
+                os_open_names,
             )
             if kind is not None:
                 hits.append(_ref_hit(kind, function))
@@ -2757,6 +2768,50 @@ def test_fs_breach_new_kind_on_known_id_fails() -> None:
         "montage.delete_frame:shutil.rmtree есть у детектора, нет в fs_breach"
     ]
     assert _breach_mismatch(declared, declared) == []
+
+
+def test_getattr_call_and_shutil_values_are_denied() -> None:
+    """Вызов результата getattr и shutil.move/copy* как значение — отказ."""
+    source = (
+        "import subprocess, os\n"
+        "def sample(cmd):\n"
+        "    getattr(subprocess, 'run')(cmd)\n"
+        "    getattr(os, 'system')('x')\n"
+    )
+    assert exec_calls_in_source(source) == ["getattr", "getattr"]
+
+    writes = (
+        "import shutil, asyncio\n"
+        "from shutil import move as mv, copy, copy2, copyfile, copytree\n"
+        "from os import open as os_open\n"
+        "def save(src, dst):\n"
+        "    asyncio.to_thread(shutil.move, src, dst)\n"
+        "    asyncio.to_thread(shutil.copy, src, 'templates/x')\n"
+        "    asyncio.to_thread(shutil.copy2, src, dst)\n"
+        "    asyncio.to_thread(shutil.copyfile, src, dst)\n"
+        "    asyncio.to_thread(shutil.copytree, src, dst)\n"
+        "    asyncio.to_thread(mv, src, dst)\n"
+        "    asyncio.to_thread(copy, src, dst)\n"
+        "    asyncio.to_thread(copy2, src, dst)\n"
+        "    asyncio.to_thread(copyfile, src, dst)\n"
+        "    asyncio.to_thread(copytree, src, dst)\n"
+        "    asyncio.to_thread(os_open, src, 0)\n"
+    )
+    hits = analyze_module_source(writes, "prompt.save_master")
+    assert [hit.kind for hit in hits] == [
+        "shutil.move",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "os.open",
+    ]
+    assert all(hit.allowed is False for hit in hits)
 
 
 def test_whitelist_has_no_code_exec_tools() -> None:
