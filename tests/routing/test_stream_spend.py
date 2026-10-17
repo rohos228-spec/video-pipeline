@@ -148,7 +148,7 @@ async def test_empty_reply_and_retry_are_charged(config, sink, sleeper):
 
     retry = FakeTransport(
         [
-            ProviderError("empty chat completion", retryable=True),
+            ProviderError("empty chat completion", retryable=True, billable=True),
             ok("готово", prompt_tokens=1, completion_tokens=1),
         ]
     )
