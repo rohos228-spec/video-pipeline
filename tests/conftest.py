@@ -19,6 +19,15 @@ from pathlib import Path
 
 import pytest
 
+# xdist наследует SQLITE_PATH контроллера: воркеры писали в одну state.db
+# и падали на «table already exists». У каждого воркера своя временная база.
+_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER")
+if _xdist_worker:
+    _worker_root = Path(tempfile.mkdtemp(prefix=f"vp-pytest-{_xdist_worker}-"))
+    os.environ["DATA_DIR"] = str(_worker_root / "data")
+    os.environ["SQLITE_PATH"] = str(_worker_root / "state.db")
+    os.environ["API_TRACKER_DB"] = str(_worker_root / "tracker.db")
+
 os.environ.setdefault("API_TRACKER_CLOUD_ENABLED", "false")
 os.environ.setdefault("API_TRACKER_DB", str(Path(tempfile.mkdtemp(prefix="vp-tracker-")) / "tracker.db"))
 
