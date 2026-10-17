@@ -7,6 +7,8 @@ import {
   ACTION_CONTRACT_REF,
   ACTION_CONTRACT_VERSION,
   ACTION_SCHEMA_SHA256,
+  EXAMPLE_DELETE_OK,
+  EXAMPLE_FAILED,
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
   EXAMPLE_PARAMS_EDIT,
@@ -149,4 +151,27 @@ test("html-отчёт: sandbox без скриптов, правка шлёт о
     action: { name: "update_report", report_id: 7 },
   });
   await expect(page.getByTestId("orch-report-send")).toBeDisabled();
+});
+
+test("сбой и мягкое удаление рисуются карточками", async ({ page }) => {
+  await openWithToken(page, "act-fail");
+  await emit(page, "act-fail", "step_finished", EXAMPLE_FAILED);
+  const failed = page.getByTestId("orch-action-card").filter({ hasText: "Ошибка" });
+  await expect(failed.getByTestId("orch-action-error")).toContainText("нода n_scene_writer уже есть");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+
+  await emit(page, "act-fail", "step_finished", EXAMPLE_DELETE_OK);
+  const mark = page.getByTestId("orch-action-card").filter({ hasText: "Пометка" });
+  await expect(mark.getByTestId("orch-soft-delete")).toContainText("Помечено, файл на месте");
+  const posts: { text?: string; action?: { name?: string; change_id?: string } }[] = [];
+  page.on("request", (req) => {
+    if (req.method() !== "POST" || !req.url().includes("/message")) return;
+    posts.push(req.postDataJSON());
+  });
+  await mark.getByTestId("orch-restore").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toEqual({
+    text: "Восстановить",
+    action: { name: "history.rollback", change_id: "orch-appr-13-6" },
+  });
 });
