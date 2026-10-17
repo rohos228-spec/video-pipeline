@@ -358,6 +358,9 @@ export interface MontageImproveReport {
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
+  /** Помечен корзиной. Строка кадра на месте, лента его показывает. */
+  удалён?: boolean;
+  активен?: boolean;
   voiceover_text: string;
   voiceover_excel: string;
   characters: string;

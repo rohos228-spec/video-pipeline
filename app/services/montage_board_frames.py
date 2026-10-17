@@ -377,6 +377,40 @@ async def merge_montage_scenes(
     }
 
 
+async def restore_montage_frame(
+    session: AsyncSession,
+    project: Project,
+    frame_id: int,
+) -> dict[str, Any]:
+    """Снять пометку «удалён». Строка кадра и шоты в ``кадры[]`` остаются."""
+    from app.services.frame_tombstones import forget_deleted
+    from app.services.montage_coverage_ops import _unstamp_deleted_shot
+
+    frames = await _load_frames(session, int(project.id))
+    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
+    if frame is None:
+        raise RuntimeError(f"кадр {frame_id} не найден")
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    for key in ("удалён", "пометка", "карантин", "активен"):
+        attrs.pop(key, None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    _unstamp_deleted_shot(frames, frame)
+    forget_deleted(project, int(frame.number))
+    await session.flush()
+    logger.warning(
+        "WARN restore_montage_frame: кадр #{} id={} снова активен, строка на месте",
+        frame.number,
+        frame.id,
+    )
+    return {
+        "ok": True,
+        "frame_id": int(frame.id),
+        "number": int(frame.number),
+        "restored": 1,
+    }
+
+
 def _promote_to_vo_parent(frame: Frame) -> None:
     uid = str(getattr(frame, "uuid", "") or "").strip()
     if not uid:

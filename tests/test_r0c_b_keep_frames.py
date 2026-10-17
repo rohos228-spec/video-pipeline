@@ -1755,3 +1755,110 @@ async def test_drop_frame_rows_marks_and_keeps_related_rows(
     assert text.text == "не стирать"
     assert art.frame_id == frame_id
     assert any("_drop_frame_rows" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_delete_merge_and_restore_keep_frame_rows(
+    session: AsyncSession, project: Project, warn_log
+) -> None:
+    """Корзина и склейка сцен не стирают строки. Помеченный кадр возвращается."""
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.montage_board_frames import (
+        delete_montage_frame,
+        merge_montage_scenes,
+        restore_montage_frame,
+    )
+    from app.services.montage_coverage_ops import delete_coverage_child
+
+    session.add(project)
+    await session.flush()
+    parent_uid = "p1" * 12
+    child_uid = "c1" * 12
+    other_uid = "p2" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="левая сцена",
+        status=FrameStatus.planned,
+        sort_key=10.0,
+        attrs={
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+            "кадры": [{"id": "1-K1", "закадр": "левая сцена"}, {"id": "1-K2", "закадр": "шот"}],
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid=child_uid,
+        voiceover_text="шот",
+        status=FrameStatus.planned,
+        sort_key=20.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+            }
+        },
+    )
+    other = Frame(
+        project_id=project.id,
+        number=3,
+        uuid=other_uid,
+        voiceover_text="правая сцена",
+        status=FrameStatus.planned,
+        sort_key=30.0,
+        attrs={
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": other_uid},
+            "кадры": [{"id": "3-K1", "закадр": "правая сцена"}],
+        },
+    )
+    session.add_all([parent, child, other])
+    await session.flush()
+
+    frames = [parent, child, other]
+    await delete_coverage_child(session, project, child, frames)
+    await session.flush()
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
+    marked = next(fr for fr in rows if fr.uuid == child_uid)
+    assert marked.attrs.get("удалён") is True
+    assert frame_is_active(marked) is False
+    assert any("WARN delete_coverage_child" in line for line in warn_log)
+
+    restored = await restore_montage_frame(session, project, int(marked.id))
+    await session.refresh(marked)
+    assert restored["restored"] == 1
+    assert marked.attrs.get("удалён") is not True
+    assert frame_is_active(marked) is True
+    assert any("WARN restore_montage_frame" in line for line in warn_log)
+
+    result = await delete_montage_frame(session, project, int(parent.id))
+    assert result["deleted"] == 0 and result["marked"] == 1
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
+    head = next(fr for fr in rows if fr.uuid == parent_uid)
+    assert head.attrs.get("удалён") is True
+    assert frame_is_active(head) is False
+
+    await restore_montage_frame(session, project, int(head.id))
+    await session.refresh(head)
+    assert frame_is_active(head) is True
+
+    merged = await merge_montage_scenes(
+        session,
+        project,
+        left_frame_id=int(head.id),
+        right_frame_id=int(other.id),
+    )
+    assert merged["ok"] is True
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
+    assert sorted(fr.number for fr in rows) == [1, 2, 3]
