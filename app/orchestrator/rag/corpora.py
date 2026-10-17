@@ -17,6 +17,15 @@ CORPUS_ALIASES: dict[str, str] = {
 }
 
 
+class UnknownCorpus(ValueError):
+    """Имя набора нет ни в каноне, ни в алиасах. Это не пустая выдача."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.names = list(names)
+        allowed = ", ".join([*CANONICAL_CORPORA, *CORPUS_ALIASES])
+        super().__init__(f"неизвестный корпус: {', '.join(self.names)}; допустимо: {allowed}")
+
+
 def resolve_corpora(names: list[str] | tuple[str, ...] | None) -> list[str]:
     """Канонические имена индекса. ``None`` — все четыре корпуса.
 
@@ -40,6 +49,5 @@ def resolve_corpora(names: list[str] | tuple[str, ...] | None) -> list[str]:
             seen.add(canonical)
             resolved.append(canonical)
     if unknown:
-        allowed = ", ".join([*CANONICAL_CORPORA, *CORPUS_ALIASES])
-        raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {allowed}")
+        raise UnknownCorpus(unknown)
     return resolved
