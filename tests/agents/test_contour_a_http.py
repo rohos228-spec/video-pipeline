@@ -113,6 +113,8 @@ async def _settle(runtime, task_id: int) -> None:
 
 
 async def _read_sse_until(app: FastAPI, path: str, needle: bytes) -> bytes:
+    """Один кусок SSE. Глобальный event sse-starlette привязан к loop теста."""
+    AppStatus.should_exit_event = None
     body = bytearray()
     seen = asyncio.Event()
     first_request = True
