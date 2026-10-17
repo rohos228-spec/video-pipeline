@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.orchestrator.routing.transport import (
+    ProviderRequest,
+    build_body,
     parse_chat_payload,
     parse_chat_sse,
     parse_responses_payload,
@@ -114,3 +116,33 @@ def test_parse_responses_sse_reads_deltas():
     assert result.model == "gpt-5-6-sol"
     assert result.prompt_tokens == 2
     assert result.reasoning_tokens == 3
+
+
+def test_chat_sse_usage_chunk_with_empty_choices():
+    raw = "\n".join(
+        [
+            'data: {"choices":[{"delta":{"content":"ок"}}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":2,"completion_tokens_details":{"reasoning_tokens":4}}}',
+        ]
+    )
+    result = parse_chat_sse(raw)
+    assert result.text == "ок"
+    assert result.prompt_tokens == 11
+    assert result.completion_tokens == 2
+    assert result.reasoning_tokens == 4
+
+
+def test_kie_responses_body_has_no_stream_options():
+    request = ProviderRequest(
+        model="gpt-5-6-sol",
+        provider="kie",
+        messages=[{"role": "user", "content": "да"}],
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort="high",
+        timeout_s=30,
+        stream=True,
+    )
+    body = build_body(request, "openai-responses")
+    assert body["stream"] is True
+    assert "stream_options" not in body
