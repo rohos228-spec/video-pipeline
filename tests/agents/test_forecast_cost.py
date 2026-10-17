@@ -40,13 +40,28 @@ def _step(raw: object, slot: str) -> PlanStep:
 
 
 def test_negative_and_non_numeric_estimates_block_the_call() -> None:
-    for raw in (-100, "abc", None, ""):
-        step = PlanStep(action="charge", estimated_cost=raw)
+    for raw in (-100, "abc"):
+        step = PlanStep(action="charge", paid=True, estimated_cost=raw)
         with pytest.raises(UnknownForecast):
             forecast_cost([step])
-        param = PlanStep(action="charge", params={"estimated_cost": raw})
+        param = PlanStep(action="charge", paid=True, params={"estimated_cost": raw})
         with pytest.raises(UnknownForecast):
             forecast_cost([param])
+    for raw in (None, ""):
+        free = PlanStep(action="look", estimated_cost=raw)
+        assert free.estimated_cost == 0
+        assert not free.params.get("_cost_unknown")
+        assert forecast_cost([free]) == 0
+        free_param = PlanStep(action="look", params={"estimated_cost": raw})
+        assert free_param.estimated_cost == 0
+        assert not free_param.params.get("_cost_unknown")
+        assert forecast_cost([free_param]) == 0
+        paid = PlanStep(action="charge", paid=True, estimated_cost=raw)
+        with pytest.raises(UnknownForecast):
+            forecast_cost([paid])
+        mutating = PlanStep(action="edit", mutating=True, estimated_cost=raw)
+        with pytest.raises(UnknownForecast):
+            forecast_cost([mutating])
     honest = PlanStep(action="charge", estimated_cost=80)
     assert forecast_cost([honest]) == 80
     assert forecast_cost([honest]) > PIPELINE_FORECAST_LIMIT_USD
@@ -145,3 +160,25 @@ def test_forecast_ignores_client_spent_and_limit_and_takes_the_larger_estimate()
     assert "limit_usd" not in dumped[0]["params"]
     assert "budget_usd" not in dumped[0]["params"]
     assert dumped[0]["params"]["estimated_cost"] == 50
+
+
+@pytest.mark.asyncio
+async def test_blank_estimate_on_free_step_runs(token: str) -> None:
+    del token
+    step = PlanStep.model_validate({"action": "look", "paid": False, "estimated_cost": None})
+    assert step.estimated_cost == 0
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("free-blank", "смотри", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+        assert [call["name"] for call in actions.calls] == ["look"]
+    finally:
+        set_runtime(None)

@@ -541,6 +541,13 @@ class PlanStep(BaseModel):
         else:
             return data
         data = dict(data)
+        free = data.get("paid", False) is False and data.get("mutating", False) is False
+        if free:
+            if "estimated_cost" in data and _blank_cost(data.get("estimated_cost")):
+                data["estimated_cost"] = 0
+            if "estimated_cost" in params and _blank_cost(params.get("estimated_cost")):
+                params["estimated_cost"] = 0
+                data["params"] = params
         unknown = False
         if "estimated_cost" in data and cost_is_unknown(data.get("estimated_cost")):
             unknown = True
@@ -1161,6 +1168,11 @@ def plan_missing_verify(plan: list[PlanStep]) -> bool:
             continue
         return True
     return False
+
+
+def _blank_cost(value: Any) -> bool:
+    """Пустая оценка бесплатного шага. У платного и мутирующего это по-прежнему неизвестный расход."""
+    return value is None or value == ""
 
 
 class UnknownForecast(ValueError):
