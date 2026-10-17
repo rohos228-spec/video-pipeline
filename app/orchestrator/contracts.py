@@ -21,7 +21,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONTRACT_VERSION = "ws3-r3.3"
+CONTRACT_VERSION = "ws3-r3.3.1"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -66,6 +66,11 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "read_only и удаление — только реестр (metadata_of, иначе risk_of и "
         "таблица действий); флаги плана только ужесточают. Пока metadata_of "
         "нет, неизвестное имя — destructive. PlanCritic без роутера не approve.",
+    ),
+    (
+        "ws3-r3.3.1",
+        "Событие approval_decided входит в экспорт: EventType и retention "
+        "рядом с checkpoint и approval_required.",
     ),
 )
 

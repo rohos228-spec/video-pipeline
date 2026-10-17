@@ -18,7 +18,7 @@ from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, Script
 
 def test_r33_export_has_no_approval_decision_wire() -> None:
     schema = export_contract_schemas()
-    assert schema["version"] == CONTRACT_VERSION == "ws3-r3.3"
+    assert schema["version"] == CONTRACT_VERSION == "ws3-r3.3.1"
     assert "ApprovalDecisionBody" not in schema["models"]
     assert "ApprovalDecision" not in schema["enums"]
     assert "approval_decision_labels" not in schema["rules"]
