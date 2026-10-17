@@ -34,6 +34,30 @@ def _stored_version(target: Path) -> int:
     return version
 
 
+def _assert_allowlisted(dest: Path) -> Path:
+    """Путь только внутри data/reports или data/node_overrides, без symlink."""
+    logical = dest if dest.is_absolute() else Path.cwd() / dest
+    current = Path(logical.anchor)
+    parts = logical.parts[1:] if logical.is_absolute() else logical.parts
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("symlink в пути назначения: отказ allowlist")
+    real = Path(os.path.realpath(logical))
+    from app.settings import settings
+
+    base = Path(settings.data_dir)
+    for root in (base / "reports", base / "node_overrides"):
+        real_root = Path(os.path.realpath(root))
+        try:
+            shared = os.path.commonpath([str(real), str(real_root)])
+        except ValueError:
+            continue
+        if shared == str(real_root):
+            return dest
+    raise ValueError("путь вне allowlist reports/node_overrides")
+
+
 def _exclusive_lock(target: Path):
     """Держит flock на <name>.lock на всё время чтения версии и replace."""
     lock_path = target.with_name(target.name + ".lock")
@@ -44,7 +68,7 @@ def _exclusive_lock(target: Path):
 
 def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
     """Публикует text, если expected_version совпала с текущей версией файла."""
-    target = Path(dest)
+    target = _assert_allowlisted(Path(dest))
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = _exclusive_lock(target)
     try:

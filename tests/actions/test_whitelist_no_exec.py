@@ -2452,10 +2452,13 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     assert "mkstemp" in source
     assert 'name + ".tmp"' not in source
 
-    dest = tmp_path / "node_overrides" / "x.json"
+    from app.settings import settings
+
+    dest = Path(settings.data_dir) / "node_overrides" / f"version-{tmp_path.name}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(dest, "hello", expected_version=0)
     atomic_write_text(dest, "next", expected_version=1)
-    previous = dest.parent / "old" / "x.json.v1"
+    previous = dest.parent / "old" / f"{dest.name}.v1"
     assert previous.is_file()
     assert "hello" in previous.read_text(encoding="utf-8")
     with pytest.raises(VersionConflict) as exc:
@@ -2466,6 +2469,9 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     assert "race" not in body
     assert "hello" in previous.read_text(encoding="utf-8")
     assert not list(dest.parent.glob("*.tmp"))
+    dest.unlink(missing_ok=True)
+    dest.with_name(dest.name + ".lock").unlink(missing_ok=True)
+    previous.unlink(missing_ok=True)
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
