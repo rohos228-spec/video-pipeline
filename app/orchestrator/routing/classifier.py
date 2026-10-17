@@ -45,6 +45,16 @@ _INTERRUPT_RE = re.compile(
     r"хватит|прерви(?:те)?|cancel|stop|abort"
     r")(?![\w])"
 )
+# Аварийный стоп §3.3. Не обычный interrupt: те же слова «стоп»/«останови»
+# без этих фраз kill_switch не поднимают.
+_KILL_RE = re.compile(
+    r"(?iu)(?<![\w])(?:"
+    r"аварийн\w*\s+стоп|"
+    r"kill[\s-]*switch|"
+    r"стоп\s+вс[её]|"
+    r"останови(?:ть|те)?\s+вс[её]\s+немедленно"
+    r")(?![\w])"
+)
 _STEER_RE = re.compile(
     r"(?iu)(?<![\w])(?:измени|поправь|вместо|скорректируй|steer)(?![\w])|не\s+так"
 )
@@ -74,6 +84,7 @@ class RuleHit:
     mode: str
     mode_locked: bool
     reason: str
+    kill_switch: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,7 +101,9 @@ def classifier_messages(message: str) -> list[dict[str, str]]:
     ]
 
 
-def _mode(message: str) -> tuple[str, bool, str]:
+def _mode(message: str, *, kill_switch: bool = False) -> tuple[str, bool, str]:
+    if kill_switch:
+        return "interrupt", True, "kill-switch"
     if _INTERRUPT_RE.search(message):
         return "interrupt", True, "stop-word"
     if _STEER_RE.search(message):
@@ -108,24 +121,29 @@ def classify_rules(
     mutating: bool | None = None,
 ) -> RuleHit:
     text = message or ""
-    mode, mode_locked, mode_reason = _mode(text)
+    killed = bool(_KILL_RE.search(text))
+    mode, mode_locked, mode_reason = _mode(text, kill_switch=killed)
     role = (agent_role or "").strip().lower()
     rank = _RISK_RANK.get((risk or "").strip().lower(), 0)
+
+    def hit(tier: str | None, reason: str) -> RuleHit:
+        return RuleHit(tier, mode, mode_locked, reason, killed)
+
     if role in {"planner", "critic"}:
-        return RuleHit("strong", mode, mode_locked, f"role:{role}")
+        return hit("strong", f"role:{role}")
     if mutating or rank >= _RISK_RANK["medium"]:
-        return RuleHit("strong", mode, mode_locked, "mutating-or-risk")
+        return hit("strong", "mutating-or-risk")
     if len(text.strip()) > 800:
-        return RuleHit("strong", mode, mode_locked, "length")
+        return hit("strong", "length")
     if _STRONG_RE.search(text):
-        return RuleHit("strong", mode, mode_locked, "keyword")
+        return hit("strong", "keyword")
     if mode == "interrupt":
-        return RuleHit("fast", mode, mode_locked, mode_reason)
+        return hit("fast", mode_reason)
     if _CONFIRM_RE.match(text.strip()):
-        return RuleHit("fast", mode, mode_locked, "confirmation")
+        return hit("fast", "confirmation")
     if _FAST_RE.search(text):
-        return RuleHit("fast", mode, mode_locked, "fast-keyword")
-    return RuleHit(None, mode, mode_locked, "disputed")
+        return hit("fast", "fast-keyword")
+    return hit(None, "disputed")
 
 
 def parse_classifier_output(text: str) -> ParsedClassifier:

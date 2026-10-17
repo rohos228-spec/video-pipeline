@@ -1,4 +1,4 @@
-"""E6: точность маршрутизации на 40 размеченных запросах.
+"""E6: точность маршрутизации на размеченных запросах.
 
 Контур A: детерминированные правила считаются напрямую, спорные ходы
 классификатора читают Replay-фикстуры (живой вызов запрещён).
@@ -32,6 +32,7 @@ class E6RowResult:
     predicted_mode: str
     deterministic: bool
     expect_deterministic: bool
+    kill_switch: bool
     ok: bool
 
 
@@ -85,13 +86,13 @@ class E6Report:
             "Спорные строки закрыты replay-фикстурами классификатора (контур A), "
             "не живой моделью.",
             "",
-            "| id | expected | predicted | det | ok |",
-            "|---|---|---|---|---|",
+            "| id | expected | predicted | det | kill | ok |",
+            "|---|---|---|---|---|---|",
         ]
         for row in self.rows:
             lines.append(
                 f"| {row.id} | {row.expected_tier} | {row.predicted_tier} | "
-                f"{int(row.deterministic)} | {int(row.ok)} |"
+                f"{int(row.deterministic)} | {int(row.kill_switch)} | {int(row.ok)} |"
             )
         lines.append("")
         return "\n".join(lines)
@@ -171,10 +172,12 @@ async def evaluate(fixture_dir: Path, dataset: Path = DATASET) -> E6Report:
             risk=row.get("risk"),
             mutating=bool(row.get("mutating")),
         )
+        expect_kill = bool(row.get("expect_kill_switch", False))
         ok = (
             decision.tier == row["expected_tier"]
             and decision.mode == row["expected_mode"]
             and decision.deterministic is row["expect_deterministic"]
+            and decision.kill_switch is expect_kill
         )
         report.rows.append(
             E6RowResult(
@@ -185,6 +188,7 @@ async def evaluate(fixture_dir: Path, dataset: Path = DATASET) -> E6Report:
                 predicted_mode=decision.mode,
                 deterministic=decision.deterministic,
                 expect_deterministic=row["expect_deterministic"],
+                kill_switch=decision.kill_switch,
                 ok=ok,
             )
         )

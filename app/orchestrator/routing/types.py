@@ -118,6 +118,10 @@ class Classification:
 
     ``tier`` — логический (его меряет E6). ``effective_tier`` — после флага D6:
     пока D6 не подтверждён, fast исполняется как strong high.
+
+    ``kill_switch`` — поле WS3 ``ClassifyResult`` (ws3-r3). Его ставят
+    детерминированные фразы аварийного стопа до LLM. Обычный interrupt
+    оставляет ``False``. Локальный shim, пока contracts нет на ``main``.
     """
 
     tier: str
@@ -126,6 +130,7 @@ class Classification:
     confidence: float = 1.0
     reason: str = ""
     effective_tier: str = ""
+    kill_switch: bool = False
 
     def __getitem__(self, key: str):
         return getattr(self, key)

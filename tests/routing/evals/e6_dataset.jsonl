@@ -38,3 +38,7 @@
 {"id": "e6-38", "message": "ещё раз", "expected_tier": "strong", "expected_mode": "task", "expect_deterministic": false, "agent_role": null, "risk": null, "mutating": false, "note": "нет правила"}
 {"id": "e6-39", "message": "норм?", "expected_tier": "fast", "expected_mode": "append", "expect_deterministic": false, "agent_role": null, "risk": null, "mutating": false, "note": "вопрос без задачи"}
 {"id": "e6-40", "message": "давай следующий кусок", "expected_tier": "strong", "expected_mode": "task", "expect_deterministic": false, "agent_role": null, "risk": null, "mutating": false, "note": "нет правила"}
+{"id": "e6-41", "message": "аварийный стоп", "expected_tier": "fast", "expected_mode": "interrupt", "expect_deterministic": true, "expect_kill_switch": true, "agent_role": null, "risk": null, "mutating": false, "note": "kill switch, не обычный interrupt"}
+{"id": "e6-42", "message": "kill switch", "expected_tier": "fast", "expected_mode": "interrupt", "expect_deterministic": true, "expect_kill_switch": true, "agent_role": null, "risk": null, "mutating": false, "note": "kill switch"}
+{"id": "e6-43", "message": "стоп всё", "expected_tier": "fast", "expected_mode": "interrupt", "expect_deterministic": true, "expect_kill_switch": true, "agent_role": null, "risk": null, "mutating": false, "note": "kill switch"}
+{"id": "e6-44", "message": "останови всё немедленно", "expected_tier": "fast", "expected_mode": "interrupt", "expect_deterministic": true, "expect_kill_switch": true, "agent_role": null, "risk": null, "mutating": false, "note": "kill switch"}

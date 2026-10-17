@@ -1,7 +1,7 @@
 """In-memory spend ledger внутренних ходов (D4).
 
 Суб-бюджет $10 на ``run_id`` (scope=internal). Исчерпание не бросает исключение:
-роутер возвращает эскалацию и не делает следующий вызов.
+роутер ставит ``task_status=waiting_approval`` и ``ApprovalEvent.reason=budget_exhausted``.
 Scope ``pipeline`` в этот суб-бюджет не входит ($40 ведёт WS2/WS3).
 
 Память процесса. После рестарта WS3 гидрирует сумму из ``orch_llm_calls``.

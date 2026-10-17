@@ -8,7 +8,7 @@ from tests.routing.evals.run_e6 import REPORT, evaluate, write_report
 async def test_e6_accuracy_and_deterministic_share(tmp_path):
     report = await evaluate(tmp_path / "fixtures")
     write_report(report, REPORT)
-    assert report.n == 40
+    assert report.n == 44
     assert report.accuracy >= 0.90
     assert report.simple_on_fast >= 0.90
     assert report.plans_on_strong == 1.0

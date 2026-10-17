@@ -248,6 +248,7 @@ class ModelRouter:
                 confidence=1.0,
                 reason=hit.reason,
                 effective_tier=effective_tier(self.config, hit.tier),
+                kill_switch=hit.kill_switch,
             )
         response = await self.call(
             "fast",
@@ -271,6 +272,7 @@ class ModelRouter:
             confidence=parsed.confidence,
             reason="classifier",
             effective_tier=effective_tier(self.config, chosen),
+            kill_switch=hit.kill_switch,
         )
 
     async def call_batch(self, items: Sequence[dict]) -> list[LLMResponse]:

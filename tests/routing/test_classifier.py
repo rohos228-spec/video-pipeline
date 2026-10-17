@@ -61,6 +61,62 @@ async def test_deterministic_rules(config, text, kwargs, tier, mode):
         assert transport.calls == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "аварийный стоп",
+        "Аварийный стоп сейчас",
+        "kill switch",
+        "please hit the kill-switch",
+        "стоп всё",
+        "Стоп всё.",
+        "останови всё немедленно",
+        "Остановите всё немедленно",
+    ],
+)
+async def test_kill_switch_is_deterministic_interrupt(config, text):
+    transport = FakeTransport([ok("should-not-run")])
+    router = LiveRouter(config, transport=transport)
+    decision = await router.classify(text)
+    assert decision.kill_switch is True
+    assert decision.mode == "interrupt"
+    assert decision.deterministic is True
+    assert decision.tier == "fast"
+    assert decision.confidence == 1.0
+    assert transport.calls == []
+
+
+async def test_plain_stop_is_not_kill_switch(config):
+    router = LiveRouter(config, transport=FakeTransport([]))
+    for text in ("стой", "стоп", "отмена", "остановись", "cancel"):
+        decision = await router.classify(text)
+        assert decision.mode == "interrupt"
+        assert decision.kill_switch is False
+        assert decision.deterministic is True
+
+
+async def test_kill_switch_keeps_strong_when_plan_keyword(config):
+    transport = FakeTransport([ok("should-not-run")])
+    router = LiveRouter(config, transport=transport)
+    decision = await router.classify("аварийный стоп, переделай план")
+    assert decision.kill_switch is True
+    assert decision.mode == "interrupt"
+    assert decision.tier == "strong"
+    assert decision.deterministic is True
+    assert transport.calls == []
+
+
+async def test_classifier_does_not_set_kill_switch(config):
+    transport = FakeTransport(
+        [ok('{"tier":"fast","mode":"task","confidence":0.95,"kill_switch":true}')]
+    )
+    router = LiveRouter(config, transport=transport)
+    decision = await router.classify("продолжи")
+    assert decision.deterministic is False
+    assert decision.kill_switch is False
+    assert transport.calls
+
+
 async def test_length_boundary_is_800(config):
     transport = FakeTransport([ok('{"tier":"fast","mode":"task","confidence":0.99}')])
     router = LiveRouter(config, transport=transport)

@@ -31,14 +31,24 @@ router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 | `confidence` | 1.0 у правил; иначе уверенность классификатора |
 | `effective_tier` | tier после D6. Пока D6 выключен, fast → strong |
 | `reason` | короткая метка правила |
+| `kill_switch` | bool, дефолт false. Поле `ClassifyResult` из ws3-r3 |
 
-`mode=task` — обычный ход, не interrupt/steer/append. Режим всегда
-считают правила (стоп-слова, steer, вопрос без упоминания задачи).
-Модель может подсказать mode только если правило режима не сработало.
+`mode=task` — обычный ход, не interrupt/steer/append. В `MessageMode` WS3
+этого значения нет (`interrupt|steer|append`). Режим всегда считают
+правила (стоп-слова, steer, вопрос без упоминания задачи). Модель может
+подсказать mode только если правило режима не сработало. `kill_switch`
+модель не ставит.
+
+`kill_switch=true` — аварийный стоп, отдельный случай от обычного
+interrupt. Фразы до LLM: «аварийный стоп», «kill switch», «стоп всё»,
+«останови всё немедленно». Режим при этом `interrupt`, tier считается
+теми же правилами (без других strong-сигналов это fast). «стой» / «стоп» /
+«отмена» остаются обычным interrupt с `kill_switch=false`. Классификатор
+для этих фраз не вызывается.
 
 ## LLMResponse
 
-Согласованный черновик, плюс одно поле.
+Поля черновика WS3, плюс `task_status` и `approval` (их в `LLMResponse` ws3-r3 ещё нет).
 
 | поле | тип |
 |---|---|
@@ -57,10 +67,34 @@ router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 | `task_status` | `waiting_approval` или None. Имя из `TaskStatus` (WS3) |
 | `approval` | `ApprovalEvent` или None. См. ниже |
 
-Исчерпание суб-бюджета $10 **не бросает** исключение и **не** заводит
-отдельный статус задачи. Супервизор WS3 переводит задачу в
-`TaskStatus.waiting_approval` (`"waiting_approval"`). Причина лежит на
-`ApprovalEvent`, поля как в `contracts.py` WS3:
+## Как супервизор узнаёт про $10
+
+Роутер WS5 **списывает** внутренний суб-бюджет. Это расходится с фразой
+мини-RFC #350 («суб-бюджет $10 внутренних LLM не списывается роутером»):
+там лимит смотрит валидатор по `estimated_cost`, а `SpendSnapshot` — снимок.
+Здесь учёт уже в `SpendLedger`, чтобы следующий ход не ушёл в модель.
+
+Механизм — **поля ответа, не исключение**. `RouterExhausted` и
+`RouterError` при исчерпании не бросаются.
+
+1. Каждый успешный `router.call` с `budget_scope=internal` прибавляет
+   `cost_usd` в ledger прогона (`run_id`, иначе `"_anonymous"`). Лимит —
+   `internal_sub_budget_usd` (дефолт 10). `budget_scope=pipeline` в этот
+   счётчик не входит.
+2. Ход, после которого `spent >= 10`, всё равно возвращает текст модели.
+   На том же объекте `LLMResponse`:
+   - `task_status == "waiting_approval"` (`TaskStatus.waiting_approval`);
+   - `approval` — `ApprovalEvent` с `reason == "budget_exhausted"`
+     (`ApprovalReason.budget_exhausted` в ws3-r3).
+   В `orch_llm_calls` у этой попытки `status=ok`.
+3. Следующий internal-вызов того же `run_id` транспорт не трогает:
+   `text == ""`, те же `task_status` и `approval`. Строку вызова не пишем.
+4. Супервизор WS3, увидев эти два поля, ставит задаче
+   `waiting_approval` и кладёт событие `approval_required` с тем же
+   `reason`. Пока в `LLMResponse` ws3-r3 полей нет, они живут на локальном
+   dataclass (shim, как `ClassifyResult.kill_switch`).
+
+Исчерпание **не** заводит отдельный статус задачи. Поля `ApprovalEvent`:
 
 | поле | значение при бюджете |
 |---|---|
@@ -71,14 +105,8 @@ router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 | `change_id` | None |
 | `payload` | `spent_usd`, `budget_usd`, `run_id` |
 
-Ход, который пересёк лимит, возвращает текст модели и `finish_reason`
-модели, плюс `task_status="waiting_approval"` и этот `ApprovalEvent`.
-В `orch_llm_calls` у него `status=ok`. Следующий internal-вызов того же
-`run_id` в модель не идёт: `text=""`, тот же `task_status` и
-`ApprovalEvent`. Строку вызова не пишем — попытки провайдера не было,
-а в `LLMCallStatus` нет отдельного значения (`ok|timeout|error|fixture_miss`).
-
-`budget_scope=pipeline` в суб-бюджет $10 не входит.
+`budget_scope=pipeline` в суб-бюджет $10 не входит. Enum статуса вызова
+остаётся `ok|timeout|error|fixture_miss`.
 
 ## Фикстура (совместно с WS6)
 
