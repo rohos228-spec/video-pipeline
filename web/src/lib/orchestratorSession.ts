@@ -397,13 +397,16 @@ function approvalDecidedResolution(
 
 function closeServerApproval(
   state: OrchScreenState,
-  key: string,
+  body: Record<string, unknown>,
   decision: "approved" | "rejected" | "closed",
 ): void {
+  const changeId = approvalChangeId(body);
+  const legacyId = approvalLegacyId(body);
   const item = state.approvals.find((entry) => {
     if (!entry.serverId || entry.resolved) return false;
-    if (entry.changeId) return entry.changeId === key;
-    return entry.id === key;
+    if (entry.changeId) return changeId != null && entry.changeId === changeId;
+    // Карточка хранит только approval_id. change_id в том же событии её не прячет.
+    return legacyId != null && entry.id === legacyId;
   });
   if (!item) return;
   item.resolved = decision;
@@ -650,15 +653,13 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
   if (event.type === "approval_decided") {
-    const key = approvalDecisionKey(payload);
     const resolution = approvalDecidedResolution(payload);
-    if (key && resolution) closeServerApproval(next, key, resolution);
+    if (approvalDecisionKey(payload) && resolution) closeServerApproval(next, payload, resolution);
     return next;
   }
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const key = approvalDecisionKey(payload);
-    if (decided && key) closeServerApproval(next, key, decided);
+    if (decided && approvalDecisionKey(payload)) closeServerApproval(next, payload, decided);
   }
 
   if (event.type === "ack") {

@@ -89,6 +89,37 @@ test("approval_decided без decision закрывает карточку ка�
   expect(granted.approvals[0]?.resolved).toBe("closed");
 });
 
+test("approval_decided с change_id и approval_id закрывает карточку только с approval_id", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "both-ids",
+      payload: { approval_id: "appr-legacy", reason: "risk", action: "note" },
+    },
+  });
+  expect(opened.approvals[0]?.changeId).toBeNull();
+  expect(opened.approvals[0]?.id).toBe("appr-legacy");
+  expect(opened.approvals[0]?.serverId).toBe(true);
+  const decided = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "both-ids",
+      payload: {
+        approval_id: "appr-legacy",
+        change_id: "orch-appr-1-9",
+        decision: "approve",
+      },
+    },
+  });
+  expect(decided.approvals[0]?.resolved).toBe("approved");
+});
+
 test("approval_decided закрывает карточку по своему change_id", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
