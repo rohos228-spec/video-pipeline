@@ -129,6 +129,7 @@ def _router_visible_cost(owner: Any) -> float:
     """
     pending: list[Any] = [owner]
     seen: set[int] = set()
+    best = 0.0
     while pending:
         item = pending.pop(0)
         if item is None or id(item) in seen:
@@ -140,15 +141,15 @@ def _router_visible_cost(owner: Any) -> float:
                 value = float(raw or 0)
             except (TypeError, ValueError):
                 value = 0.0
-            if value > 0:
-                return value
+            if value > best:
+                best = value
         response = getattr(item, "last_response", None)
         if response is not None and response is not item:
             pending.append(response)
         inner = getattr(item, "inner", None)
         if inner is not None and inner is not item:
             pending.append(inner)
-    return 0.0
+    return best
 
 
 _APPROVED_MARK = "\n\x1eorchfp:"
@@ -247,6 +248,8 @@ class Supervisor:
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
+        self._grant_locks: dict[int, asyncio.Lock] = {}
+        self._inflight_write: dict[int, asyncio.Task[Any]] = {}
         self._mutating_result: dict[int, str] = {}
         self._partial_announced: set[tuple[int, int]] = set()
         self._stop_holders: dict[int, set[int]] = {}
@@ -425,10 +428,32 @@ class Supervisor:
         ``retry_grant`` — отдельный одноразовый перезапуск после прогноза.
         ``change_id`` клиент может прислать, но идентификатор одобрения
         выбирает только сервер (``orch-appr-<task>-<n>``).
+
+        Один замок на задачу: второй approve/deny того же ``change_id``
+        ждёт, пока первый запишет решение, и получает 409 без второго execute.
         """
         task_id = self._session_task.get(session_id)
         if task_id is None:
             raise LookupError(session_id)
+        lock = self._grant_locks.setdefault(int(task_id), asyncio.Lock())
+        async with lock:
+            return await self._grant_approval_locked(
+                session_id,
+                decision,
+                retry_grant=retry_grant,
+                change_id=change_id,
+                task_id=task_id,
+            )
+
+    async def _grant_approval_locked(
+        self,
+        session_id: str,
+        decision: ApprovalDecision | str | None,
+        *,
+        retry_grant: bool,
+        change_id: str | None,
+        task_id: int,
+    ) -> dict[str, Any] | None:
         await self._load_appr_state(session_id, task_id)
         self._guard_change_id(
             task_id,
@@ -791,6 +816,7 @@ class Supervisor:
         Платный шаг с ``orch_steps.status=running`` доходит до ``_execute_plan``
         и там останавливается: ``waiting_approval`` / ``paid_outcome_unknown``.
         ``execute`` не вызывается, пока человек не выберет кнопку.
+        Задача с выставленным stop-ключом проекта не стартует.
         """
         rows = await asyncio.to_thread(self.tasks.list_open)
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -814,6 +840,9 @@ class Supervisor:
             primary = interrupted[0]
             task_id = int(primary["id"])
             self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            if self._stop_key_blocks_recover(primary):
+                self._session_task[session_id] = task_id
+                return []
             if await self._spawn_from_checkpoint(task_id, primary):
                 return [task_id]
             self._session_task[session_id] = task_id
@@ -830,8 +859,24 @@ class Supervisor:
         rest_pairs = [(int(row["id"]), str(row.get("goal") or "")) for row in rest]
         self._queued[session_id] = self._merge_queued(session_id, rest_pairs)
         task_id = int(first["id"])
+        if self._stop_key_blocks_recover(first):
+            self._session_task[session_id] = task_id
+            return []
         self._spawn_drive(task_id, session_id, str(first.get("goal") or ""))
         return [task_id]
+
+    def _stop_key_blocks_recover(self, row: dict[str, Any]) -> bool:
+        """Stop-файл проекта запрещает resume и старт очереди после рестарта."""
+        raw = row.get("project_id")
+        try:
+            project_id = int(raw)
+        except (TypeError, ValueError):
+            return False
+        if project_id <= 0:
+            return False
+        from app.services.step_cancel import is_stop_requested
+
+        return is_stop_requested(project_id)
 
     async def _spawn_from_checkpoint(self, task_id: int, row: dict[str, Any]) -> bool:
         running = self._runs.get(task_id)
@@ -1045,7 +1090,18 @@ class Supervisor:
         return stamped
 
     async def _accept_partial_write(self, task_id: int, session_id: str) -> None:
-        """Принять partial: строка done с тем же change_id, execute этого шага нет."""
+        """Принять partial: строка done с тем же change_id, execute этого шага нет.
+
+        Пока inner write ещё идёт, продолжение плана ждёт его конца.
+        """
+        inflight = self._inflight_write.get(int(task_id))
+        if inflight is not None and not inflight.done():
+            try:
+                await inflight
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("orch partial accept: запись задачи {} завершилась ошибкой", task_id)
         data, step = await self._checkpoint_step(task_id)
         row = self._open_partial_row(task_id, step, list(data.plan), int(data.position))
         if row is not None:
@@ -1274,10 +1330,11 @@ class Supervisor:
                 result = await original(*args, **kwargs)
             except asyncio.CancelledError:
                 self._take_partial_cost(owner)
-                if task_key is not None and task_key not in self._partial_llm_cost:
-                    extra = _router_visible_cost(owner)
-                    if extra > 0:
-                        self._partial_llm_cost[task_key] = extra
+                if task_key is not None:
+                    visible = _router_visible_cost(owner)
+                    current = self._partial_llm_cost.get(task_key, 0.0)
+                    if visible > current:
+                        self._partial_llm_cost[task_key] = visible
                 raise
             else:
                 if task_key is not None and slot["credit"]:
@@ -2071,6 +2128,7 @@ class Supervisor:
 
         if step.paid or step.mutating:
             inner: asyncio.Task[Any] = asyncio.create_task(_call())
+            self._remember_inflight_write(task_id, inner)
             if step.paid:
                 self._paid_open.add(task_id)
                 inner.add_done_callback(
@@ -2107,6 +2165,17 @@ class Supervisor:
                 else:
                     self._mutating_open.pop(task_id, None)
         return await self._cancellable(session_id, _call())
+
+    def _remember_inflight_write(self, task_id: int, inner: asyncio.Task[Any]) -> None:
+        """Держать inner, пока approve partial не дождётся конца записи."""
+        key = int(task_id)
+        self._inflight_write[key] = inner
+
+        def _drop(done: asyncio.Task[Any], stored: int = key, job: asyncio.Task[Any] = inner) -> None:
+            if self._inflight_write.get(stored) is job and done.done():
+                self._inflight_write.pop(stored, None)
+
+        inner.add_done_callback(_drop)
 
     def _on_shield_done(
         self,
