@@ -627,3 +627,70 @@ async def test_run_op_image_ai_change_passes_instruction(
     assert rewrite.await_args.kwargs["action"] == "рука выводит строки"
     assert rewrite.await_args.kwargs.get("camera") == {}
     assert rewrite.await_args.kwargs.get("coverage_role") == ""
+
+
+def test_ai_change_prompt_skips_inactive_shot() -> None:
+    """Живой шот остаётся первым. Хранилище кадры[] не переписывается."""
+    from types import SimpleNamespace
+
+    from app.services.montage_ai_change import _pin_ai_change_shot_action
+
+    stored = [
+        {"id": "dead", "действие": "МЁРТВЫЙ ШАГ", "активен": False},
+        {"id": "live", "действие": "живой шаг"},
+    ]
+    frame = SimpleNamespace(
+        number=1,
+        attrs={
+            "camera_subdivide": {"shot_id": "live"},
+            "кадры": stored,
+        },
+    )
+    ctx = {"frames": [{"кадры": [dict(item) for item in stored]}]}
+    _pin_ai_change_shot_action(ctx, frame)
+    sent = ctx["frames"][0]["кадры"]
+    assert sent[0]["id"] == "live"
+    assert sent[0].get("активен") is not False
+    dead = next(item for item in sent if item["id"] == "dead")
+    assert dead["активен"] is False
+    assert len(stored) == 2
+    assert stored[0]["активен"] is False
+    assert stored[0]["действие"] == "МЁРТВЫЙ ШАГ"
+
+
+def test_pin_ai_change_keeps_unmatched_shot_ids() -> None:
+    """Чужие K не выкидываются: хвост карточки с тем же id и активен: False."""
+    from types import SimpleNamespace
+
+    from app.services.montage_ai_change import _pin_ai_change_shot_action
+
+    stored = [
+        {"id": "1-K1", "действие": "сидит", "сцена": "scene_01"},
+        {"id": "1-K2", "действие": "пишет", "сцена": "scene_01"},
+        {"id": "1-K3", "действие": "встал", "сцена": "scene_01"},
+        {"id": "extra", "действие": "чужой кадр", "сцена": "scene_01"},
+    ]
+    frame = SimpleNamespace(
+        number=1,
+        attrs={
+            "camera_subdivide": {"shot_id": "1-K2"},
+            "кадры": [dict(item) for item in stored],
+        },
+    )
+    ctx = {"frames": [{"кадры": [dict(item) for item in stored]}]}
+    _pin_ai_change_shot_action(ctx, frame)
+    sent = ctx["frames"][0]["кадры"]
+    by_id = {item["id"]: item for item in sent}
+    assert [item["id"] for item in sent] == ["1-K2", "1-K1", "1-K3", "extra"]
+    assert by_id["1-K2"].get("активен") is not False
+    assert by_id["1-K2"]["действие"] == "пишет"
+    for sid in ("1-K1", "1-K3", "extra"):
+        assert by_id[sid]["id"] == sid
+        assert by_id[sid]["активен"] is False
+    assert [item["id"] for item in frame.attrs["кадры"]] == [
+        "1-K1",
+        "1-K2",
+        "1-K3",
+        "extra",
+    ]
+    assert all(item.get("активен") is not False for item in frame.attrs["кадры"])

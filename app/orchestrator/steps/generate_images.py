@@ -1156,6 +1156,14 @@ async def _claim_shot1_batch(
         for fr in frames:
             if fr in claimed:
                 continue
+            from app.orchestrator.validators.activity_flags import frame_is_active
+
+            if not frame_is_active(getattr(fr, "attrs", None) or {}):
+                logger.warning(
+                    "WARN generate_images: кадр #{} неактивен — платная генерация пропущена",
+                    fr.number,
+                )
+                continue
             if project is not None:
                 allow = scene_regen_allows(project, fr.number, 1)
                 if allow is False:
@@ -1737,6 +1745,14 @@ async def _generate_and_send(
     shot1_reference: Path | None = None,
 ) -> None:
     """Один прогон outsee → сохранение артефакта → HITL-карточка."""
+    from app.orchestrator.validators.activity_flags import frame_is_active
+
+    if not frame_is_active(getattr(frame, "attrs", None) or {}):
+        logger.warning(
+            "WARN generate_images: кадр #{} неактивен — платная генерация пропущена",
+            frame.number,
+        )
+        return
     raise_if_cancelled(project.id)
     is_shot2 = shot == 2
     attrs = dict(frame.attrs or {})

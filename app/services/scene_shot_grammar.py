@@ -1776,13 +1776,23 @@ def merge_trivial_shots(shots):
     реплики, POV после «заметил», установочный перед диалогом. Закадр не теряется."""
     if not isinstance(shots, list) or len(shots) < 2:
         return []
+    from app.orchestrator.validators.activity_flags import shot_is_active
+
+    inactive_ids = {
+        str(shot.get("id"))
+        for shot in shots
+        if isinstance(shot, dict) and shot.get("id") and not shot_is_active(shot)
+    }
+    live = [shot for shot in shots if isinstance(shot, dict) and shot_is_active(shot)]
+    if len(live) < 2:
+        return []
     notes = []
-    out = [shots[0]]
+    out = [live[0]]
     merged_into = {}
     chain = 1
-    for i in range(1, len(shots)):
-        a, b = out[-1], shots[i]
-        nxt = shots[i + 1] if i + 1 < len(shots) else None
+    for i in range(1, len(live)):
+        a, b = out[-1], live[i]
+        nxt = live[i + 1] if i + 1 < len(live) else None
         if chain < 2 and _can_merge_trivial(a, b, nxt):
             act = _shot_s(a, "действие").rstrip(".")
             a["действие"] = (act + "; " + _shot_s(b, "действие")).strip()
@@ -1813,7 +1823,12 @@ def merge_trivial_shots(shots):
             pid = str(s.get("parent_id") or "")
             if pid in merged_into:
                 s["parent_id"] = merged_into[pid]
-    shots[:] = out
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    shots[:] = merge_kadry_keep_missing(list(shots), out)
+    for row in shots:
+        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+            row["активен"] = False
     return notes
 
 

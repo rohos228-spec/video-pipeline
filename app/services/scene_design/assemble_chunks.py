@@ -84,43 +84,58 @@ def filter_assembly_input_for_frames(
     include_characters: bool,
 ) -> dict[str, Any]:
     """Срез assembly_input под чанк: только пересекающиеся сцены/шоты."""
+    from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
+
+    # Неактивный кадр чанка не расширяет окно и не тащит свои шоты в LLM.
+    live_chunk = [
+        fr
+        for fr in chunk_frames
+        if frame_is_active(getattr(fr, "attrs", None) or {})
+    ]
     offsets = frame_offsets(all_frames, full_vo)
-    span = _frame_span(chunk_frames, offsets)
+    span = _frame_span(live_chunk, offsets) if live_chunk else None
     vo_norm = _norm(full_vo)
     lo, hi = span if span else (0, len(vo_norm) or 1)
+    chunk_uuids = {fr.uuid for fr in live_chunk if fr.uuid}
 
     scenes_in = list(assembly_input.get("scenes_chrono") or [])
     shots_in = list(assembly_input.get("shot_plan_chrono") or [])
 
     scenes_out: list[dict[str, Any]] = []
-    for sc in scenes_in:
-        if not isinstance(sc, dict):
-            continue
-        sc_span = _scene_span_tuple(sc, vo_norm)
-        if _overlaps(sc_span, lo, hi):
+    if live_chunk:
+        for sc in scenes_in:
+            if not isinstance(sc, dict) or not shot_is_active(sc):
+                continue
+            sc_span = _scene_span_tuple(sc, vo_norm)
+            if not _overlaps(sc_span, lo, hi):
+                continue
             row = copy.deepcopy(sc)
-            # Оставляем только кадры этого чанка внутри сцены.
-            chunk_uuids = {f.uuid for f in chunk_frames if f.uuid}
+            # В запрос — только живые кадры этого чанка. Хвост остаётся в хранилище.
+            original = list(row.get("кадры") or [])
             kids = [
                 k
-                for k in (row.get("кадры") or [])
-                if isinstance(k, dict) and k.get("uuid") in chunk_uuids
+                for k in original
+                if isinstance(k, dict)
+                and k.get("uuid") in chunk_uuids
+                and shot_is_active(k)
             ]
-            if kids:
-                row["кадры"] = kids
-                row["кадров"] = len(kids)
-                row["время_сек"] = round(
-                    sum(float(k.get("время_сек") or 0.0) for k in kids), 1
-                )
+            if not kids:
+                continue
+            row["кадры"] = kids
+            row["кадров"] = len(kids)
+            row["время_сек"] = round(
+                sum(float(k.get("время_сек") or 0.0) for k in kids), 1
+            )
             scenes_out.append(row)
 
     shots_out: list[dict[str, Any]] = []
-    for sh in shots_in:
-        if not isinstance(sh, dict):
-            continue
-        off = _shot_offset(sh, vo_norm)
-        if off is None or (lo <= off < hi):
-            shots_out.append(copy.deepcopy(sh))
+    if live_chunk:
+        for sh in shots_in:
+            if not isinstance(sh, dict) or not shot_is_active(sh):
+                continue
+            off = _shot_offset(sh, vo_norm)
+            if off is None or (lo <= off < hi):
+                shots_out.append(copy.deepcopy(sh))
 
     # Если фильтр сцен пуст — не оставляем сборщик без ориентира: отдай пустой
     # scenes и полный shot overlap; GPT соберёт границы по camera.

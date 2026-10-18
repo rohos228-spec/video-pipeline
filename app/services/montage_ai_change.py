@@ -209,27 +209,41 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
         kadry = row.get("кадры")
         if not isinstance(kadry, list) or not kadry:
             continue
-        match = [
+        from app.orchestrator.validators.activity_flags import shot_is_active
+        from app.services.frame_tombstones import merge_kadry_keep_missing
+
+        live = [
             item
             for item in kadry
-            if isinstance(item, dict) and str(item.get("id") or "").strip() == sid
+            if isinstance(item, dict) and shot_is_active(item)
         ]
+        match = [
+            item
+            for item in live
+            if str(item.get("id") or "").strip() == sid
+        ]
+        pinned: list | None = None
         if match:
-            row["кадры"] = match
-            continue
-        if action:
+            pinned = match
+        elif action:
             same = [
                 item
-                for item in kadry
-                if isinstance(item, dict)
-                and str(item.get("действие") or item.get("action") or "").strip()
+                for item in live
+                if str(item.get("действие") or item.get("action") or "").strip()
                 == action
             ]
             if same:
-                row["кадры"] = same
-                continue
-        if len(kadry) > 1:
-            row["кадры"] = [kadry[0]] if isinstance(kadry[0], dict) else kadry[:1]
+                pinned = same
+        if pinned is None and live and (
+            len(kadry) > 1 or not shot_is_active(kadry[0])
+        ):
+            pinned = [live[0]]
+        elif pinned is None and not live:
+            pinned = []
+        if pinned is None:
+            continue
+        # Карточка сужается до шота кадра, но чужие id остаются в хвосте.
+        row["кадры"] = merge_kadry_keep_missing(kadry, pinned)
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:

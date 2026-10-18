@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.project_root import find_project_root
 from app.services.db_v2 import insert_frame_after
+from app.orchestrator.validators.activity_flags import frame_is_active
 from app.services.scene_design.chronology import _norm, frame_offsets
 from app.services.scene_design.context_builder import frame_seconds
 
@@ -331,25 +332,69 @@ def _is_shot_child(fr: Frame) -> bool:
     return int(meta.get("shot_index") or 1) > 1
 
 
+def _archive_parent_shot(frames: list[Frame], child: Frame) -> None:
+    """Шот ребёнка в кадры родителя остаётся, но не живым."""
+    from app.orchestrator.validators.activity_flags import shot_is_active
+
+    meta = _subdivide_attr(child)
+    shot_id = str(meta.get("shot_id") or "").strip()
+    parent_uuid = str(meta.get("parent_uuid") or "").strip()
+    if not shot_id or not parent_uuid:
+        return
+    parent = next((fr for fr in frames if fr.uuid == parent_uuid), None)
+    if parent is None:
+        return
+    attrs = dict(parent.attrs or {})
+    kadry = attrs.get("кадры")
+    if not isinstance(kadry, list):
+        return
+    changed = False
+    rows: list[Any] = []
+    for shot in kadry:
+        if (
+            isinstance(shot, dict)
+            and str(shot.get("id") or "") == shot_id
+            and shot_is_active(shot)
+        ):
+            item = dict(shot)
+            item["активен"] = False
+            rows.append(item)
+            changed = True
+        else:
+            rows.append(shot)
+    if changed:
+        attrs["кадры"] = rows
+        parent.attrs = attrs
+
+
 def already_subdivided(frames: list[Frame]) -> bool:
-    """True только если уже есть дочерние шоты (shot_index>1)."""
-    return any(_is_shot_child(f) for f in frames)
+    """True только если уже есть живые дочерние шоты (shot_index>1).
+
+    Помеченный ``удалён`` ребёнок строку не занимает в живой дроблёнке:
+    повторный camera_subdivide не должен пропускаться из-за архива.
+    """
+    return any(_is_shot_child(f) and frame_is_active(getattr(f, "attrs", None) or {}) for f in frames)
 
 
 async def collapse_shot_children(
     session: AsyncSession, project: Project
 ) -> dict[str, Any]:
-    """Удалить SET-детей, оставить VO-родителей.
+    """Пометить SET-детей, оставить VO-родителей живыми.
 
-    Перед удалением склеиваем фрагменты закадра группы обратно на родителя
+    Перед пометкой склеиваем фрагменты закадра группы обратно на родителя
     (после дроби родитель несёт только свой кусок текста ячейки).
 
-    Нужно перед повторным scene_design: иначе camera_subdivide skip
-    («already has shot children») и кадры размножаются.
-    """
-    from sqlalchemy import delete, or_
+    Было: ``delete(FrameText)`` / ``delete(PromptVersion)`` /
+    ``delete(Artifact)`` / ``delete(FrameEdge)`` / ``delete(Frame)``
+    по ``child_ids``. Строки остаются: ``удалён`` + ``активен: False``.
 
-    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
+    Нужно перед повторным scene_design: живых детей больше нет, поэтому
+    camera_subdivide не пропускается («already has shot children»).
+    """
+    from app.services.frame_tombstones import (
+        mark_frame_deleted,
+        park_marked_frame_numbers,
+    )
 
     frames = list(
         (
@@ -360,11 +405,16 @@ async def collapse_shot_children(
             )
         ).scalars()
     )
-    child_ids = [fr.id for fr in frames if _is_shot_child(fr)]
-    # Восстановить полный текст ячейки на родителе ДО удаления детей:
+    child_ids = [
+        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(getattr(fr, "attrs", None) or {})
+    ]
+    # Восстановить полный текст ячейки на родителе ДО пометки детей:
     # после дроби родитель несёт только свой фрагмент — склеиваем группу.
+    # Уже помеченные дети в склейку не входят, чтобы не задвоить текст.
     by_parent: dict[str, list[Frame]] = {}
     for fr in frames:
+        if _is_shot_child(fr) and not frame_is_active(getattr(fr, "attrs", None) or {}):
+            continue
         meta = _subdivide_attr(fr)
         pu = str(meta.get("parent_uuid") or "").strip()
         if pu:
@@ -394,36 +444,41 @@ async def collapse_shot_children(
         if fr.start_ts is not None and fr.end_ts is not None:
             fr.duration_seconds = round(float(fr.end_ts) - float(fr.start_ts), 2)
         parents_cleared += 1
+    marked = 0
     if child_ids:
-        await session.execute(
-            delete(FrameText).where(FrameText.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(PromptVersion).where(PromptVersion.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(Artifact).where(Artifact.frame_id.in_(child_ids))
-        )
-        await session.execute(
-            delete(FrameEdge).where(
-                FrameEdge.project_id == project.id,
-                or_(
-                    FrameEdge.from_frame_id.in_(child_ids),
-                    FrameEdge.to_frame_id.in_(child_ids),
-                ),
+        id_set = set(child_ids)
+        for i, fr in enumerate(frames):
+            if fr.id not in id_set:
+                continue
+            mark_frame_deleted(
+                fr,
+                project,
+                "collapse_shot_children: SET-ребёнок помечен, строка сохранена",
             )
-        )
-        await session.execute(delete(Frame).where(Frame.id.in_(child_ids)))
+            _archive_parent_shot(frames, fr)
+            fr.sort_key = 1_000_000_000_000.0 + i
+            marked += 1
         await session.flush()
-        await renumber_frames_by_sort_key(session, project)
-    logger.info(
-        "[#{}] camera_subdivide collapse: deleted={} parents_cleared={}",
-        project.id,
-        len(child_ids),
-        parents_cleared,
-    )
+        ordered = await renumber_frames_by_sort_key(session, project)
+        park_marked_frame_numbers(ordered, project)
+        await session.flush()
+    if marked:
+        logger.warning(
+            "WARN [#{}] camera_subdivide collapse: помечено={} parents_cleared={} "
+            "строки сохранены",
+            project.id,
+            marked,
+            parents_cleared,
+        )
+    else:
+        logger.info(
+            "[#{}] camera_subdivide collapse: marked=0 parents_cleared={}",
+            project.id,
+            parents_cleared,
+        )
     return {
-        "deleted_shots": len(child_ids),
+        "deleted_shots": 0,
+        "marked_shots": marked,
         "parents_cleared": parents_cleared,
         "voiceover_untouched": True,
     }
@@ -823,7 +878,9 @@ def _group_frames_into_scenes(
     # chrono_dyn: сцена = id_scene из shot_plan (не parent_uuid после «1 шота»).
     # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
     if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
-        frames_sorted = [f for f in sorted(frames, key=_sort_key) if f.uuid]
+        frames_sorted = [
+            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(getattr(f, "attrs", None) or {})
+        ]
         by_scene: dict[str, list[Frame]] = {}
         scene_order: list[str] = []
         scene_beat: dict[str, dict[str, Any]] = {}
@@ -853,7 +910,7 @@ def _group_frames_into_scenes(
     by_parent: dict[str, list[Frame]] = {}
     singles: list[Frame] = []
     for fr in frames:
-        if not fr.uuid:
+        if not fr.uuid or not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         meta = _subdivide_attr(fr)
         parent_u = str(meta.get("parent_uuid") or "").strip()
@@ -895,9 +952,90 @@ def _group_frames_into_scenes(
     # Если групп нет — fallback: каждый кадр = сцена.
     if not groups:
         for fr in sorted(frames, key=_sort_key):
-            if fr.uuid:
+            if fr.uuid and frame_is_active(getattr(fr, "attrs", None) or {}):
                 groups.append(([fr], {}, 1))
     return groups
+
+
+_KADRY_ID_KEYS = ("id", "uuid", "frame_id", "shot_id", "id_shot")
+
+
+def _kadry_identity(item: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in _KADRY_ID_KEYS:
+        val = str(item.get(key) or "").strip()
+        if val and val not in found:
+            found.append(val)
+    return found
+
+
+def _scene_key(scene: dict[str, Any]) -> str:
+    return str(scene.get("id_scene") or scene.get("id") or scene.get("uuid") or "").strip()
+
+
+def _retain_missing_scenes(
+    scenes: list[dict[str, Any]],
+    previous: Any,
+) -> None:
+    """Сцены и шоты, которых нет в новой сборке, остаются с активен: False."""
+    if not isinstance(previous, list):
+        return
+    present_scenes = {_scene_key(scene) for scene in scenes if _scene_key(scene)}
+    present_ids: set[str] = set()
+    for scene in scenes:
+        for kid in scene.get("кадры") or []:
+            if isinstance(kid, dict):
+                present_ids.update(_kadry_identity(kid))
+    for old in previous:
+        if not isinstance(old, dict):
+            continue
+        sid = _scene_key(old)
+        if sid and sid not in present_scenes:
+            marked = copy.deepcopy(old)
+            marked["активен"] = False
+            kadry = marked.get("кадры")
+            if isinstance(kadry, list):
+                marked_kids: list[Any] = []
+                for kid in kadry:
+                    if isinstance(kid, dict):
+                        item = dict(kid)
+                        item["активен"] = False
+                        marked_kids.append(item)
+                        present_ids.update(_kadry_identity(item))
+                    else:
+                        marked_kids.append(kid)
+                marked["кадры"] = marked_kids
+            if "кадров" not in marked:
+                marked["кадров"] = len(marked.get("кадры") or [])
+            scenes.append(marked)
+            present_scenes.add(sid)
+            continue
+        missing: list[dict[str, Any]] = []
+        for kid in old.get("кадры") or []:
+            if not isinstance(kid, dict):
+                continue
+            ident = _kadry_identity(kid)
+            if not ident or all(token in present_ids for token in ident):
+                continue
+            item = copy.deepcopy(kid)
+            item["активен"] = False
+            missing.append(item)
+            present_ids.update(ident)
+        if not missing:
+            continue
+        target = next((scene for scene in scenes if sid and _scene_key(scene) == sid), None)
+        if target is None:
+            tail = copy.deepcopy(old)
+            tail["активен"] = False
+            tail["кадры"] = missing
+            tail["кадров"] = len(missing)
+            scenes.append(tail)
+            continue
+        target_kids = target.get("кадры")
+        if not isinstance(target_kids, list):
+            target_kids = []
+            target["кадры"] = target_kids
+        target_kids.extend(missing)
 
 
 def rebuild_scenes_from_camera(
@@ -1012,6 +1150,8 @@ def rebuild_scenes_from_camera(
                     "смысл_сцены": str(beat.get("мотив") or "")[:200],
                 }
             )
+
+    _retain_missing_scenes(scenes, assembly_input.get("scenes_chrono"))
 
     out = copy.deepcopy(assembly_input)
     out["scenes_chrono"] = scenes

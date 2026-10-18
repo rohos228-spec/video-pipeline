@@ -1369,3 +1369,190 @@ async def test_apply_vo_span_writes_edited_full_text(
     group_parent, members = scene_group([parent], parent)
     assert cell_scene_text(group_parent, members) == "Новый закадр."
 
+
+
+@pytest.mark.asyncio
+async def test_scene_action_keeps_missing_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Новая цепь не затирает лестницу: отсутствующие шоты остаются неактивными."""
+    from loguru import logger
+
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent = Frame(
+        project_id=project.id,
+        number=8,
+        uuid="ee" * 12,
+        voiceover_text="раз два",
+        status="planned",
+        sort_key=8.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ee" * 12,
+            },
+            "кадры": [
+                {"id": "8-K1", "действие": "старое один", "план": "СРЕДНИЙ", "закадр": "раз"},
+                {"id": "8-K2", "действие": "старое два", "план": "КРУПНЫЙ", "закадр": "два"},
+                {"id": "8-GONE", "действие": "пропавший шаг", "план": "ДЕТАЛЬ", "закадр": "три"},
+            ],
+        },
+    )
+    session.add(parent)
+    await session.flush()
+    before = len(parent.attrs["кадры"])
+    incoming = [
+        {"id": "8-K1", "действие": "новый один", "план": "СРЕДНИЙ", "закадр": "раз"},
+        {"id": "8-K2", "действие": "новый два", "план": "КРУПНЫЙ", "закадр": "два"},
+    ]
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent],
+            "1. двор — новый один\n2. двор — новый два",
+            kadry=incoming,
+            lock_parent_plan=False,
+        )
+    finally:
+        logger.remove(sink)
+
+    stored = parent.attrs["кадры"]
+    assert len(stored) == before
+    by_id = {shot["id"]: shot for shot in stored}
+    assert by_id["8-K1"].get("активен") is not False
+    assert by_id["8-K1"]["действие"] == "новый один"
+    assert by_id["8-K2"].get("активен") is not False
+    assert by_id["8-GONE"]["активен"] is False
+    assert by_id["8-GONE"]["действие"] == "пропавший шаг"
+    assert any("8-GONE" in line and "активен: False" in line for line in lines)
+
+    dead = Frame(
+        project_id=project.id,
+        number=9,
+        uuid="ff" * 12,
+        voiceover_text="пусто",
+        status="planned",
+        sort_key=9.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ff" * 12,
+            },
+            "кадры": [
+                {"id": "9-KEEP", "действие": "спит", "активен": False},
+                {"id": "9-GONE", "действие": "тоже пропал"},
+            ],
+        },
+    )
+    session.add(dead)
+    await session.flush()
+    dead_before = len(dead.attrs["кадры"])
+    report = await apply_coverage_scene_action(
+        session,
+        project,
+        dead,
+        [dead],
+        "стоит",
+        kadry=[{"id": "9-KEEP", "действие": "спит", "активен": False, "закадр": "пусто"}],
+        lock_parent_plan=False,
+    )
+    assert report["shots"] == 0
+    dead_stored = dead.attrs["кадры"]
+    assert len(dead_stored) == dead_before
+    dead_by = {shot["id"]: shot for shot in dead_stored}
+    assert dead_by["9-KEEP"]["активен"] is False
+    assert dead_by["9-GONE"]["активен"] is False
+
+
+@pytest.mark.asyncio
+async def test_clear_shot_action_marks_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Лишний шот ячейки не теряет кадры[]: шоты остаются с активен False."""
+    from loguru import logger
+
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="голова",
+        status="planned",
+        sort_key=1.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="хвост",
+        status="planned",
+        sort_key=2.0,
+        attrs={
+            "shot01_action": "старый уход",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+            },
+            "кадры": [
+                {"id": "extra-1", "действие": "первый лишний"},
+                {"id": "extra-2", "действие": "второй лишний", "активен": False},
+            ],
+            "shots": [{"id": "extra-1", "действие": "первый лишний"}],
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    before = len(child.attrs["кадры"])
+    shots_before = len(child.attrs["shots"])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent, child],
+            "1. двор — только голова",
+            kadry=[
+                {
+                    "id": "1-K1",
+                    "действие": "только голова",
+                    "план": "СРЕДНИЙ",
+                    "закадр": "голова",
+                }
+            ],
+            lock_parent_plan=False,
+        )
+    finally:
+        logger.remove(sink)
+
+    kadry = child.attrs["кадры"]
+    shots = child.attrs["shots"]
+    assert len(kadry) == before
+    assert len(shots) == shots_before
+    assert all(shot["активен"] is False for shot in kadry)
+    assert all(shot["активен"] is False for shot in shots)
+    assert kadry[0]["действие"] == "первый лишний"
+    assert any("extra-1" in line and "активен: False" in line for line in lines)
+
+
+def test_remove_kadry_id_is_gone() -> None:
+    """Снос шота по id убран: список кадры[] больше нечем вырезать."""
+    import app.services.montage_coverage_ops as ops
+
+    assert not hasattr(ops, "_remove_kadry_id")

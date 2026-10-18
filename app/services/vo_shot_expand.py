@@ -1070,19 +1070,48 @@ def _norm_vo_key(text: str) -> str:
 def _write_frame_shot_id(
     frame: Any, sid: str, *, parent_sid: str | None
 ) -> None:
-    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым."""
+    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым.
+
+    Прежний id не переписывается: живой шот получает новый id, старый
+    остаётся в хвосте с активен: False.
+    """
     extra: dict[str, Any] = {"shot_id": sid}
     if parent_sid is not None:
         extra["coverage_parent_id"] = parent_sid
     _set_cs(frame, **extra)
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    raw = attrs.get("кадры")
     planned = planned_shots_from_attrs(frame)
     if not planned:
         return
-    planned[0]["id"] = sid
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    old_rows = (
+        [dict(item) if isinstance(item, dict) else item for item in raw]
+        if isinstance(raw, list)
+        else [dict(shot) for shot in planned]
+    )
+    inactive_ids = {
+        str(shot.get("id"))
+        for shot in planned
+        if shot.get("id") and not shot_is_active(shot)
+    }
+    active = [shot for shot in planned if shot_is_active(shot)]
+    if not active:
+        frame.attrs = attrs
+        _flag_attrs(frame)
+        return
+    live = dict(active[0])
+    live.pop("активен", None)
+    live["id"] = sid
     if parent_sid is not None:
-        planned[0]["parent_id"] = parent_sid or None
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs["кадры"] = planned
+        live["parent_id"] = parent_sid or None
+    rest = [dict(shot) for shot in active[1:]]
+    merged = merge_kadry_keep_missing(old_rows, [live, *rest])
+    for row in merged:
+        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+            row["активен"] = False
+    attrs["кадры"] = merged
     frame.attrs = attrs
     _flag_attrs(frame)
 
@@ -1093,8 +1122,14 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
     У VO-родителя без явной роли child сбрасывает leftover coverage_parent_id.
     """
     changed = 0
+
     for members in _group_by_parent(frames).values():
-        live = [m for m in members if not is_coverage_leftover(m)]
+        live = [
+            m
+            for m in members
+            if not is_coverage_leftover(m)
+            and frame_is_active(getattr(m, "attrs", None) or {})
+        ]
         if not live:
             continue
         parent = next((m for m in live if not is_shot_child(m)), live[0])
@@ -1125,6 +1160,14 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
         parent_sid = f"{pno}-S{int(scene)}-K1"
         keep_x1 = str(_cs(parent).get("coverage_kind") or "").strip().lower() == "child"
         planned = planned_shots_from_attrs(parent)
+        old_planned = [dict(shot) for shot in planned]
+
+        inactive_ids = {
+            str(shot.get("id"))
+            for shot in old_planned
+            if shot.get("id") and not shot_is_active(shot)
+        }
+        live_planned = [shot for shot in planned if shot_is_active(shot)]
         for i, fr in enumerate(ordered, start=1):
             sid = f"{pno}-S{int(scene)}-K{i}"
             if i == 1:
@@ -1147,9 +1190,9 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
                 shot_index=i,
                 shots_in_beat=len(ordered),
             )
-            if i - 1 < len(planned):
-                planned[i - 1]["id"] = sid
-                planned[i - 1]["parent_id"] = None if i == 1 else parent_sid
+            if i - 1 < len(live_planned):
+                live_planned[i - 1]["id"] = sid
+                live_planned[i - 1]["parent_id"] = None if i == 1 else parent_sid
             after = (
                 coverage_shot_id(fr),
                 str(_cs(fr).get("coverage_parent_id") or ""),
@@ -1159,8 +1202,14 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
             if before != after:
                 changed += 1
         if planned:
+            from app.services.frame_tombstones import merge_kadry_keep_missing
+
             attrs = dict(getattr(parent, "attrs", None) or {})
-            attrs["кадры"] = planned
+            merged = merge_kadry_keep_missing(old_planned, live_planned)
+            for row in merged:
+                if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+                    row["активен"] = False
+            attrs["кадры"] = merged
             parent.attrs = attrs
             _flag_attrs(parent)
     return changed

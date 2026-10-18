@@ -1580,6 +1580,49 @@ def test_shots_vo_rejects_dangling_preposition() -> None:
     assert "обрубок" in reason or "закадр" in reason
 
 
+def test_shots_coverage_ignores_inactive_dangling_chunk() -> None:
+    """Обрубок неактивного шота не валит проверку. Шот остаётся в списке."""
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Его записывали как «душу»."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                        "действие": "читает имена",
+                        "закадр": vo,
+                    },
+                    {
+                        "id": "1-K0",
+                        "действие": "старый шаг",
+                        "закадр": "продавали вместе с",
+                        "активен": False,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert "обрубок" not in (reason or "")
+    assert "1-K0" not in (reason or "")
+    stored = ops[0]["fields"]["кадры"]
+    dead = next(s for s in stored if s.get("id") == "1-K0")
+    assert dead["активен"] is False
+    assert dead["закадр"] == "продавали вместе с"
+    assert len(stored) == 2
+
+
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
@@ -2330,4 +2373,95 @@ async def test_shots_network_error_retried_three_times(tmp_path, monkeypatch) ->
     assert n["calls"] == 1 + mod.SHOTS_NET_RETRIES
     skipped = res.apply_ops.get("skipped_packs") or []
     assert len(skipped) == 1 and len(skipped[0]["uuids"]) == 3
+
+
+def test_repair_vo_skips_inactive_shots() -> None:
+    """Закадр ячейки раскладывается только по живым шотам."""
+    from copy import deepcopy
+
+    from app.services.apply_ops_batches import repair_shot_vo_ops
+
+    cell = "Он вошёл в кабинет следователя. Затем он сел к столу и открыл папку."
+    inactive = {
+        "id": "1-K0",
+        "действие": "старый шаг",
+        "закадр": "СТАРЫЙ ХВОСТ",
+        "план": "ДЕТАЛЬ",
+        "активен": False,
+    }
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    inactive,
+                    {
+                        "id": "1-K1",
+                        "действие": "входит в кабинет",
+                        "закадр": "",
+                        "план": "СРЕДНИЙ",
+                    },
+                    {
+                        "id": "1-K2",
+                        "действие": "садится к столу",
+                        "закадр": "",
+                        "план": "КРУПНЫЙ",
+                    },
+                ]
+            },
+        }
+    ]
+    frames = [{"uuid": "aa" * 4, "voiceover_text": cell, "закадр": cell}]
+    before = deepcopy(inactive)
+    repair_shot_vo_ops(ops, frames)
+    shots = ops[0]["fields"]["кадры"]
+    assert shots[0] == before
+    assert "СТАРЫЙ" not in shots[1]["закадр"]
+    assert "СТАРЫЙ" not in shots[2]["закадр"]
+    got = " ".join(s["закадр"] for s in shots[1:] if s["закадр"])
+    assert got == cell
+    assert shots[1]["закадр"]
+    assert shots[2]["закадр"]
+    assert frames[0]["voiceover_text"] == cell
+    assert frames[0]["закадр"] == cell
+
+
+def test_repair_vo_zero_active_keeps_cell_text() -> None:
+    """Нет живых шотов: закадр ячейки на месте, шоты не меняются, WARN."""
+    from copy import deepcopy
+
+    from loguru import logger
+
+    from app.services.apply_ops_batches import repair_shot_vo_ops
+
+    cell = "Он вошёл в кабинет следователя и сел к столу."
+    shots = [
+        {
+            "id": "1-K1",
+            "действие": "старый шаг",
+            "закадр": "хвост один",
+            "план": "СРЕДНИЙ",
+            "активен": False,
+        },
+        {
+            "id": "1-K2",
+            "действие": "другой шаг",
+            "закадр": "хвост два",
+            "карантин": True,
+        },
+    ]
+    ops = [{"frame_uuid": "bb" * 4, "fields": {"кадры": shots}}]
+    frames = [{"uuid": "bb" * 4, "voiceover_text": cell, "закадр": cell}]
+    before_shots = deepcopy(shots)
+    before_frame = deepcopy(frames[0])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        fixed = repair_shot_vo_ops(ops, frames)
+    finally:
+        logger.remove(sink)
+    assert fixed == 0
+    assert ops[0]["fields"]["кадры"] == before_shots
+    assert frames[0] == before_frame
+    assert any("нет живых шотов" in line for line in lines)
 

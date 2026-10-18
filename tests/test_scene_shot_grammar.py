@@ -19,6 +19,95 @@ from app.services.scene_shot_grammar import (
 )
 
 
+def test_merge_trivial_shots_does_not_revive_inactive_head() -> None:
+    """Неактивный шот не становится первым живым кадром после склейки соседей."""
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.scene_shot_grammar import merge_trivial_shots
+
+    dead = {
+        "id": "dead",
+        "место": "кухня",
+        "кто": "c01",
+        "действие": "c01 продолжает архивный шаг",
+        "план": "средний",
+        "ракурс": "фронт",
+        "объект": "стол",
+        "закадр": "Архив.",
+        "активен": False,
+        "карантин": True,
+    }
+    shots = [
+        dead,
+        {
+            "id": "s1",
+            "место": "кухня",
+            "кто": "c01",
+            "действие": "c01 сидит за столом",
+            "план": "средний",
+            "ракурс": "фронт",
+            "объект": "стол",
+            "закадр": "Он сидит молча.",
+        },
+        {
+            "id": "s2",
+            "место": "кухня",
+            "кто": "c01",
+            "действие": "c01 продолжая держать чашку",
+            "план": "средний",
+            "ракурс": "фронт",
+            "объект": "стол",
+            "закадр": "",
+        },
+    ]
+    notes = merge_trivial_shots(shots)
+    assert notes
+    assert shot_is_active(shots[0])
+    assert shots[0]["id"] == "s1"
+    by_id = {shot["id"]: shot for shot in shots}
+    assert by_id["dead"]["id"] == "dead"
+    assert by_id["dead"]["активен"] is False
+    assert by_id["dead"]["закадр"] == "Архив."
+    assert "архивный" not in by_id["s1"]["действие"]
+    assert shot_is_active(by_id["dead"]) is False
+
+
+def test_merge_trivial_shots_keeps_absorbed_id_inactive() -> None:
+    """Склеенный кадр не выпадает: его id остаётся в хвосте с активен: False."""
+    from app.services.scene_shot_grammar import merge_trivial_shots
+
+    shots = [
+        {
+            "id": "s1",
+            "место": "кухня",
+            "кто": "c01",
+            "действие": "c01 сидит за столом",
+            "план": "средний",
+            "ракурс": "фронт",
+            "объект": "стол",
+            "закадр": "Он сидит молча.",
+        },
+        {
+            "id": "s2",
+            "место": "кухня",
+            "кто": "c01",
+            "действие": "c01 продолжая держать чашку",
+            "план": "средний",
+            "ракурс": "фронт",
+            "объект": "стол",
+            "закадр": "",
+        },
+    ]
+    notes = merge_trivial_shots(shots)
+    assert notes
+    by_id = {shot["id"]: shot for shot in shots}
+    assert "s1" in by_id and "s2" in by_id
+    assert by_id["s1"].get("активен") is not False
+    assert "чашку" in by_id["s1"]["действие"]
+    assert "Он сидит молча." in by_id["s1"]["закадр"]
+    assert by_id["s2"]["активен"] is False
+    assert by_id["s2"]["id"] == "s2"
+
+
 def test_split_and_classify() -> None:
     steps = split_scene_action("вошёл → сел к столу → открыл папку")
     assert steps == ["вошёл", "сел к столу", "открыл папку"]

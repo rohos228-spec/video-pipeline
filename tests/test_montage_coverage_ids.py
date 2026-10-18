@@ -90,6 +90,88 @@ def test_sync_rewrites_stale_shot_id_to_live_parent_number() -> None:
     assert child.attrs["кадры"][0]["parent_id"] == "13-S3-K1"
 
 
+def test_sync_live_coverage_ids_does_not_revive_inactive_shot() -> None:
+    """Перепись coverage-id не делает неактивный шот живым K1."""
+    from app.services.frame_tombstones import shot_is_active
+
+    pu = "p" * 24
+    parent = _fr(
+        13,
+        uuid=pu,
+        role="vo_parent",
+        shot_id="12-S3-K1",
+        coverage_parent_id="1-S1-K1",
+        shot_index=1,
+        kadry=[
+            {
+                "id": "12-S3-K1",
+                "parent_id": None,
+                "действие": "архив",
+                "активен": False,
+                "карантин": True,
+            },
+            {"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "сидит"},
+        ],
+    )
+    child = _fr(
+        14,
+        uuid="c" * 24,
+        role="shot",
+        shot_id="12-S3-K2",
+        parent_uuid=pu,
+        coverage_parent_id="12-S3-K1",
+        shot_index=2,
+        kadry=[{"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "сидит"}],
+    )
+    sync_live_coverage_ids([parent, child])
+    rows = parent.attrs["кадры"]
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["12-S3-K1"]["активен"] is False
+    assert by_id["12-S3-K1"]["действие"] == "архив"
+    assert shot_is_active(by_id["12-S3-K1"]) is False
+    cov = coverage_shot_id(parent)
+    live = by_id[cov]
+    assert shot_is_active(live)
+    assert live["действие"] == "сидит"
+
+
+def test_sync_live_coverage_ids_keeps_old_shot_ids_inactive() -> None:
+    """Старые 12-S3-K1 и 12-S3-K2 остаются в хвосте с активен: False."""
+    pu = "p" * 24
+    parent = _fr(
+        13,
+        uuid=pu,
+        role="vo_parent",
+        shot_id="12-S3-K1",
+        coverage_parent_id="1-S1-K1",
+        shot_index=1,
+        kadry=[
+            {"id": "12-S3-K1", "parent_id": None, "действие": "сидит"},
+            {"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "встал"},
+        ],
+    )
+    child = _fr(
+        14,
+        uuid="c" * 24,
+        role="shot",
+        shot_id="12-S3-K2",
+        parent_uuid=pu,
+        coverage_parent_id="12-S3-K1",
+        shot_index=2,
+        kadry=[{"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "встал"}],
+    )
+    sync_live_coverage_ids([parent, child])
+    parent_ids = {row["id"]: row for row in parent.attrs["кадры"]}
+    child_ids = {row["id"]: row for row in child.attrs["кадры"]}
+    assert parent_ids["13-S3-K1"].get("активен") is not False
+    assert parent_ids["13-S3-K2"].get("активен") is not False
+    assert parent_ids["12-S3-K1"]["активен"] is False
+    assert parent_ids["12-S3-K2"]["активен"] is False
+    assert parent_ids["12-S3-K1"]["действие"] == "сидит"
+    assert child_ids["13-S3-K2"].get("активен") is not False
+    assert child_ids["12-S3-K2"]["активен"] is False
+
+
 def test_vo_parent_leftover_id_is_not_still_parent() -> None:
     k1 = _fr(1, uuid="a" * 24, role="vo_parent", shot_id="1-S1-K1")
     later = _fr(
@@ -198,6 +280,161 @@ def test_detach_skips_short_cell_that_is_not_film_opening() -> None:
     n = detach_duplicate_vo_replica_cells([a, b, later, later_c])
     assert n == 0
     assert not is_coverage_leftover(later)
+
+
+def test_detach_replica_keeps_ids_cut_from_ladder(caplog) -> None:
+    """Срез planned[:1] не выбрасывает id, которого нет в других ячейках."""
+    from loguru import logger
+
+    p1 = "1" * 24
+    p2 = "2" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "early-k1", "закадр": "открытие ролика"},
+            {"id": "early-k2", "закадр": "второй кусок"},
+        ],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "early-k1", "закадр": "открытие ролика"},
+            {"id": "early-k2", "закадр": "второй кусок"},
+            {
+                "id": "replica-only",
+                "закадр": "только на реплике",
+                "действие": "ждёт",
+            },
+        ],
+    )
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        n = detach_duplicate_vo_replica_cells([early, replica])
+    finally:
+        logger.remove(sink)
+    assert n == 1
+    assert is_coverage_leftover(replica)
+    assert not is_coverage_leftover(early)
+    early_ids = {s["id"]: s for s in early.attrs["кадры"]}
+    assert early_ids["early-k1"].get("активен") is not False
+    assert early_ids["early-k2"].get("активен") is not False
+    replica_ids = {s["id"]: s for s in replica.attrs["кадры"]}
+    assert replica_ids["early-k1"]["активен"] is False
+    assert replica_ids["replica-only"]["активен"] is False
+    assert replica_ids["replica-only"]["закадр"] == "только на реплике"
+    assert replica_ids["early-k2"]["активен"] is False
+    assert "detach_duplicate_vo_replica_cells" in caplog.text
+
+
+def test_detach_replica_marks_all_shots_inactive_or_consumers_skip_leftover() -> None:
+    """Реплика не оставляет живой шот: e1 тоже неактивен, ранняя ячейка жива.
+
+    Повторный прогон не удлиняет лестницу.
+    """
+    import copy
+
+    from app.services.frame_tombstones import shot_is_active
+
+    p1 = "3" * 24
+    p2 = "4" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "закадр": "открытие ролика", "действие": "стоит"},
+            {"id": "e2", "закадр": "второй кусок", "действие": "шаг"},
+        ],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "закадр": "открытие ролика", "действие": "стоит"},
+            {"id": "e2", "закадр": "второй кусок", "действие": "шаг"},
+        ],
+    )
+    early_before = copy.deepcopy(early.attrs["кадры"])
+    replica_before_ids = [s["id"] for s in replica.attrs["кадры"]]
+    n1 = detach_duplicate_vo_replica_cells([early, replica])
+    assert n1 == 1
+    assert is_coverage_leftover(replica)
+    assert not is_coverage_leftover(early)
+    assert [s["id"] for s in replica.attrs["кадры"]] == replica_before_ids
+    assert replica.attrs["кадры"]
+    assert not any(shot_is_active(s) for s in replica.attrs["кадры"])
+    assert all(s.get("активен") is False for s in replica.attrs["кадры"])
+    assert early.attrs["кадры"] == early_before
+    assert all(shot_is_active(s) for s in early.attrs["кадры"])
+    after_first = copy.deepcopy(replica.attrs["кадры"])
+    n2 = detach_duplicate_vo_replica_cells([early, replica])
+    assert n2 == 0
+    assert replica.attrs["кадры"] == after_first
+    assert len(replica.attrs["кадры"]) == len(replica_before_ids)
+    assert early.attrs["кадры"] == early_before
+
+
+def test_detach_replica_keeps_inactive_shot() -> None:
+    """Неактивный шот и шот без сцены берутся из сырого кадры[], не из planned."""
+    p1 = "5" * 24
+    p2 = "6" * 24
+    early = _fr(
+        1,
+        uuid=p1,
+        role="vo_parent",
+        shot_id="1-S1-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[{"id": "e1", "сцена": 1, "закадр": "открытие ролика"}],
+    )
+    replica = _fr(
+        10,
+        uuid=p2,
+        role="vo_parent",
+        shot_id="9-S9-K1",
+        vo="открытие ролика",
+        shot_index=1,
+        kadry=[
+            {"id": "e1", "сцена": 1, "закадр": "открытие ролика", "активен": True},
+            {
+                "id": "tomb",
+                "активен": False,
+                "закадр": "уже могила",
+                "действие": "молчит",
+            },
+            {"id": "loose", "закадр": "без номера сцены", "действие": "ждёт"},
+            "marker",
+        ],
+    )
+    n = detach_duplicate_vo_replica_cells([early, replica])
+    assert n == 1
+    rows = replica.attrs["кадры"]
+    assert "marker" in rows
+    by_id = {s["id"]: s for s in rows if isinstance(s, dict)}
+    assert by_id["tomb"]["активен"] is False
+    assert by_id["tomb"]["закадр"] == "уже могила"
+    assert "сцена" not in by_id["loose"]
+    assert by_id["loose"]["активен"] is False
+    assert by_id["loose"]["закадр"] == "без номера сцены"
+    assert by_id["e1"]["активен"] is False
+    assert early.attrs["кадры"][0].get("активен") is not False
 
 
 def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> None:

@@ -434,6 +434,38 @@ def test_shot_sequence_text_ignores_stale_extra_shots() -> None:
     assert "следователь перелистывает" not in seq
 
 
+def test_editor_output_skips_inactive_shots() -> None:
+    """Неактивный шот не попадает в строку сцены и в shots API. кадры[] на месте."""
+    from app.services.montage_scene_editor import _shots_payload, frame_action
+
+    parent = Frame(
+        project_id=41,
+        number=7,
+        uuid="aa" * 12,
+        sort_key=7.0,
+        voiceover_text="живой закадр",
+        status="planned",
+        attrs={
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12},
+            "кадры": [
+                {"id": "7-K1", "действие": "МЁРТВЫЙ ШАГ", "активен": False},
+                {"id": "7-K2", "действие": "живой шаг", "закадр": "живой закадр"},
+            ],
+        },
+    )
+    stored = parent.attrs["кадры"]
+    seq = shot_sequence_text(parent, [parent])
+    payload = _shots_payload(parent, [parent])
+    assert "МЁРТВЫЙ" not in seq
+    assert "живой шаг" in seq
+    assert [row["id"] for row in payload] == ["7-K2"]
+    assert frame_action(parent) == "живой шаг"
+    assert len(stored) == 2
+    assert stored[0]["активен"] is False
+    assert stored[0]["действие"] == "МЁРТВЫЙ ШАГ"
+    assert parent.attrs["кадры"] is stored
+
+
 # --- формат сцены -------------------------------------------------------
 
 

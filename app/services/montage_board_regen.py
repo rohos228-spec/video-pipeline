@@ -170,6 +170,28 @@ async def _frame_by_number(
     ).scalar_one_or_none()
 
 
+async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str) -> bool:
+    """Помеченный кадр не уходит в API. Нет строки в БД — не блокируем чужой вызов."""
+    try:
+        from app.orchestrator.validators.activity_flags import frame_is_active
+        from app.services.montage_board_apply import session_scope
+
+        async with session_scope(project_id) as session:
+            fr = await _frame_by_number(session, project_id, frame_number)
+    except Exception:  # noqa: BLE001
+        return False
+    if fr is None:
+        return False
+    if frame_is_active(getattr(fr, "attrs", None) or {}):
+        return False
+    logger.warning(
+        "WARN {}: кадр #{} неактивен — платная генерация пропущена",
+        where,
+        fr.number,
+    )
+    return True
+
+
 async def _active_prompt_text(
     session: AsyncSession,
     frame_id: int,
@@ -397,6 +419,17 @@ async def prepare_image_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
+    from app.orchestrator.validators.activity_flags import frame_is_active
+    from app.services.frame_tombstones import PaidFrameSkipped
+
+    if not frame_is_active(getattr(fr, "attrs", None) or {}):
+        logger.warning(
+            "WARN prepare_image_regen: кадр #{} неактивен — платная генерация пропущена",
+            frame_number,
+        )
+        raise PaidFrameSkipped(
+            f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
+        )
 
     scenes_dir = project.data_dir / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
@@ -540,6 +573,14 @@ async def prepare_image_regen(
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     """Только HTTP API (Outsee). Chrome CDP для монтажа отключён."""
+    if await _regen_paid_blocked(
+        prep.project_id, prep.frame_number, where="execute_image_regen"
+    ):
+        from app.services.frame_tombstones import PaidFrameSkipped
+
+        raise PaidFrameSkipped(
+            f"кадр #{prep.frame_number} помечен «удалён» — платная генерация пропущена"
+        )
     if not _image_api_enabled():
         raise RuntimeError(
             "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY. "
@@ -651,6 +692,17 @@ async def prepare_video_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
+    from app.orchestrator.validators.activity_flags import frame_is_active
+    from app.services.frame_tombstones import PaidFrameSkipped
+
+    if not frame_is_active(getattr(fr, "attrs", None) or {}):
+        logger.warning(
+            "WARN prepare_video_regen: кадр #{} неактивен — платная генерация пропущена",
+            frame_number,
+        )
+        raise PaidFrameSkipped(
+            f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
+        )
 
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
@@ -708,6 +760,14 @@ async def prepare_video_regen(
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     """Только HTTP API (Outsee/Kie). Chrome CDP для монтажа отключён."""
+    if await _regen_paid_blocked(
+        prep.project_id, prep.frame_number, where="execute_video_regen"
+    ):
+        from app.services.frame_tombstones import PaidFrameSkipped
+
+        raise PaidFrameSkipped(
+            f"кадр #{prep.frame_number} помечен «удалён» — платная генерация пропущена"
+        )
     if not _video_api_enabled():
         raise RuntimeError(
             "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY или KIE_API_KEY. "
