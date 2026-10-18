@@ -653,6 +653,8 @@ async def undo_montage_split(
         raise RuntimeError("отмена деления не должна менять номера кадров")
     set_montage_meta(project, {SPLIT_UNDO_KEY: stack[:-1] or None})
     scene_ids = [int(x) for x in entry.get("scene_frame_ids") or []] or [int(x) for x in by_id]
+    from app.models import ArtifactKind
+
     kinds = (ArtifactKind.scene_image, ArtifactKind.scene_video)
     media = (
         await session.execute(

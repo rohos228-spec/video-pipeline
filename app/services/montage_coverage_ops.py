@@ -1085,28 +1085,52 @@ async def delete_coverage_child(
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     quarantine_frame_media(project, int(frame.number))
+    drop_id = int(frame.id)
     sid = coverage_shot_id(frame)
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs["активен"] = False
-    attrs["удалён"] = True
-    attrs["карантин"] = True
-    attrs["пометка"] = "delete_coverage_child: кадр помечен, не удалён"
-    frame.attrs = attrs
-    _flag_attrs(frame)
-    _set_cs(frame, leftover=True)
-    logger.warning(
-        "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
-        frame.number,
-        frame.id,
-    )
-    await session.flush()
-    if parent is not None and int(parent.number) != int(frame.number):
-        _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
-        _refresh_shots_in_beat(frames, parent)
-
+    await purge_frame_row(session, project, frame)
     from app.services.frame_tombstones import remember_deleted
 
     remember_deleted(project, int(frame.number))
+    logger.info(
+        "delete_coverage_child: кадр #{} id={} удалён пользователем, номер в надгробиях",
+        frame.number,
+        drop_id,
+    )
+    if parent is not None and int(parent.number) != int(frame.number):
+        remaining = [fr for fr in frames if int(fr.id) != drop_id]
+        _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
+        _refresh_shots_in_beat(remaining, parent)
+
+
+async def purge_frame_row(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+) -> None:
+    """Физическое удаление строки кадра — только по прямому действию
+    пользователя (R0b): медиа уже в карантине, номер записан в надгробия.
+    Автоматика этот путь вызывать не должна."""
+    from sqlalchemy import delete, or_, update
+
+    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
+
+    drop_id = int(frame.id)
+    await session.execute(
+        update(Artifact).where(Artifact.frame_id == drop_id).values(frame_id=None)
+    )
+    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id == drop_id))
+    await session.execute(delete(FrameText).where(FrameText.frame_id == drop_id))
+    await session.execute(
+        delete(FrameEdge).where(
+            FrameEdge.project_id == project.id,
+            or_(
+                FrameEdge.from_frame_id == drop_id,
+                FrameEdge.to_frame_id == drop_id,
+            ),
+        )
+    )
+    await session.delete(frame)
+    await session.flush()
 
 
 def _clear_child_scene_chain(frame: Frame) -> None:
