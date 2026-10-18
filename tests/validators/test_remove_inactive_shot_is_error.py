@@ -82,3 +82,29 @@ def test_move_marked_shot_keeps_mark_passes(mode: str) -> None:
         ]
     }
     assert run_preservation_validators(before, stayed, mode=mode) == []
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("активен", False), ("карантин", "да"), ("удалён", "да")],
+)
+def test_edit_text_of_marked_idless_shot_passes(mode: str, flag: str, value: object) -> None:
+    """Текст помеченного шота без id на том же месте — не удаление.
+
+    Метка остаётся. Соседний живой шот не двигается.
+    """
+
+    before = _scene(
+        [
+            {flag: value, "закадр": "тихо"},
+            {"id": "live", "закадр": "живой"},
+        ]
+    )
+    after = _scene(
+        [
+            {flag: value, "закадр": "громко"},
+            {"id": "live", "закадр": "живой"},
+        ]
+    )
+    assert run_preservation_validators(before, after, mode=mode) == []

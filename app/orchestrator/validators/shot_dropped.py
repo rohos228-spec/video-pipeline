@@ -46,44 +46,66 @@ def check_marked_shot_removed(before: Any, after: Any, ops: Any = None) -> list[
     ``shot_dropped`` / ``frame_deleted`` / ``frames_cleared`` пропускают
     уже неактивный шот. Здесь активность только ``shot_is_active``.
     Перенос и шот на месте не ошибка: id или текст ещё есть в «после».
+    Безымянный помеченный шот на том же индексе того же кадра тоже на месте,
+    даже если у него другой текст. Id по-прежнему сверяется по всему снимку.
     """
 
     del ops
     if before is None or after is None:
         return []
-    after_shots = _listed_shots(after)
+    after_cells = _kadry_cells(after)
+    after_shots = _listed_shots(after_cells)
     after_ids = {fid for shot in after_shots if (fid := frame_id(shot))}
     after_anon = {_anon_text(shot) for shot in after_shots if frame_id(shot) is None}
+    after_by_key = _cells_by_key(after_cells)
     violations: list[Violation] = []
     seen: set[str] = set()
-    for shot in _listed_shots(before):
-        if shot_is_active(shot):
+    used: dict[tuple[str, str | int], int] = {}
+    for index, cell in enumerate(_kadry_cells(before)):
+        key = _cell_key(cell, index)
+        slot = used.get(key, 0)
+        used[key] = slot + 1
+        group = after_by_key.get(key) or []
+        after_list = group[slot].get("кадры") if slot < len(group) else None
+        if not isinstance(after_list, list):
+            after_list = []
+        shots = cell.get("кадры")
+        if not isinstance(shots, list):
             continue
-        fid = frame_id(shot)
-        if fid:
-            if fid in after_ids or fid in seen:
+        for shot_index, shot in enumerate(shots):
+            if not isinstance(shot, dict) or shot_is_active(shot):
                 continue
-            seen.add(fid)
-            token = fid
-        else:
-            token = _anon_text(shot)
-            if not token or token in after_anon or token in seen:
-                continue
-            seen.add(token)
-        violations.append(
-            Violation(
-                code="marked_shot_removed",
-                severity="error",
-                path=f"кадры/{token}",
-                id=token,
+            fid = frame_id(shot)
+            if fid:
+                if fid in after_ids or fid in seen:
+                    continue
+                seen.add(fid)
+                token = fid
+            else:
+                if _same_slot_still_marked(after_list, shot_index):
+                    continue
+                token = _anon_text(shot)
+                if not token or token in after_anon or token in seen:
+                    continue
+                seen.add(token)
+            violations.append(
+                Violation(
+                    code="marked_shot_removed",
+                    severity="error",
+                    path=f"кадры/{token}",
+                    id=token,
+                )
             )
-        )
     return sorted_violations(violations)
 
 
-def _listed_shots(side: Any) -> list[dict[str, Any]]:
+def _kadry_cells(side: Any) -> list[dict[str, Any]]:
+    return [cell for cell in collect_cells(side) if isinstance(cell.get("кадры"), list)]
+
+
+def _listed_shots(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    for cell in collect_cells(side):
+    for cell in cells:
         shots = cell.get("кадры")
         if not isinstance(shots, list):
             continue
@@ -91,6 +113,36 @@ def _listed_shots(side: Any) -> list[dict[str, Any]]:
             if isinstance(shot, dict):
                 found.append(shot)
     return found
+
+
+def _cells_by_key(
+    cells: list[dict[str, Any]],
+) -> dict[tuple[str, str | int], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str | int], list[dict[str, Any]]] = {}
+    for index, cell in enumerate(cells):
+        grouped.setdefault(_cell_key(cell, index), []).append(cell)
+    return grouped
+
+
+def _cell_key(cell: dict[str, Any], index: int) -> tuple[str, str | int]:
+    ident = frame_id(cell)
+    if ident:
+        return ("id", ident)
+    number = cell.get("номер", cell.get("number"))
+    if number not in (None, ""):
+        return ("num", str(number))
+    return ("idx", index)
+
+
+def _same_slot_still_marked(after_shots: list[Any], shot_index: int) -> bool:
+    """Тот же индекс кадра: шота без id всё ещё нет среди живых."""
+
+    if shot_index >= len(after_shots):
+        return False
+    other = after_shots[shot_index]
+    if not isinstance(other, dict) or frame_id(other) is not None:
+        return False
+    return not shot_is_active(other)
 
 
 def _anon_text(shot: dict[str, Any]) -> str:
