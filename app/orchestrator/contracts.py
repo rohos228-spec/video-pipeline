@@ -1393,8 +1393,9 @@ def r21_result_problem(result: Any) -> str | None:
     Правка без ``version`` либо без ``before``/непустого ``snapshot_id``
     (и ``snapshot_ref``, если исполнитель прислал его) — ``unversioned_edit``.
     ``marked is not True`` — ``soft_delete_unmarked``. Нет ссылки на снимок —
-    ``missing_snapshot_ref``. ``partial: true`` без ``skipped`` —
-    ``partial_without_skipped``.
+    ``missing_snapshot_ref``.     ``partial: true`` без ``skipped`` —
+    ``partial_without_skipped``. Непустой ``skipped`` при ``partial``
+    не ``true`` — ``skipped_without_partial``.
     """
     if envelope_status(result) != "ok":
         return None
@@ -1408,9 +1409,11 @@ def r21_result_problem(result: Any) -> str | None:
 
 
 def _r21_partial_problem(body: Any, result: Any) -> str | None:
-    if not _has_field(body, "partial"):
-        return None
-    if _envelope_field(body, "partial", False) is True and not envelope_skipped(result):
+    skipped = envelope_skipped(result)
+    partial = _envelope_field(body, "partial", None) if _has_field(body, "partial") else None
+    if skipped and partial is not True:
+        return "skipped_without_partial"
+    if partial is True and not skipped:
         return "partial_without_skipped"
     return None
 
