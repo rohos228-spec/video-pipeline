@@ -17,6 +17,9 @@ class _Inner:
     def metadata_of(self, name: str) -> dict[str, object]:
         return {"name": name, "risk": "none", "read_only": True, "destructive": False, "paid": False}
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {"look": self.metadata_of("look")}
+
     async def execute(self, name: str, params: dict, task_ctx: dict) -> dict:
         del name, params, task_ctx
         return self.payload
@@ -76,6 +79,9 @@ async def test_action_result_change_id_moves_to_cc_change_id() -> None:
     class _Result:
         def metadata_of(self, name: str) -> dict[str, object]:
             return {"name": name, "risk": "none", "read_only": True, "destructive": False, "paid": False}
+
+        def metadata_registry(self) -> dict[str, dict[str, object]]:
+            return {"look": self.metadata_of("look")}
 
         async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
             del name, params, task_ctx
@@ -151,6 +157,9 @@ class _ObjectAdapter:
             "destructive": False,
             "paid": False,
         }
+
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {"look": self.metadata_of("look")}
 
     async def execute(self, name: str, params: dict, task_ctx: dict) -> _Envelope:
         del params, task_ctx

@@ -17,6 +17,9 @@ class _Frames:
         self.calls: list[str] = []
         self.contexts: list[dict] = []
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {name: self.metadata_of(name) for name in _NAMES}
+
     def metadata_of(self, name: str) -> dict[str, object]:
         if name not in _NAMES:
             raise KeyError(name)

@@ -13,6 +13,7 @@ from app.orchestrator.agents.wiring import ActionsBridge, load_actions
 class _Inner:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
+        self.allow_unlisted = True
 
     def metadata_of(self, name: str) -> dict:
         del name
@@ -70,6 +71,7 @@ async def test_load_actions_bridge_strips_orch_appr() -> None:
 
     module.execute = execute
     module.metadata_of = metadata_of
+    module.allow_unlisted = True
     previous = sys.modules.get("app.orchestrator.actions")
     sys.modules["app.orchestrator.actions"] = module
     try:

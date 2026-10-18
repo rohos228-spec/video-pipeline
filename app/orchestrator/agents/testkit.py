@@ -195,6 +195,18 @@ class R6Actions:
     def risk_of(self, action_name: str) -> Risk:
         return registry_risk(action_name, self.risks)
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {
+            name: {
+                "name": name,
+                "risk": risk,
+                "read_only": True,
+                "destructive": False,
+                "paid": False,
+            }
+            for name, risk in self.risks.items()
+        }
+
     def metadata_of(self, action_name: str) -> dict[str, object]:
         """Карточка приёмки. Нет ключа — ``KeyError``, как закрытый реестр.
 

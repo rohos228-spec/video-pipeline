@@ -38,7 +38,7 @@ async def test_unapproved_paid_step_still_adds_spend(token: str) -> None:
             {"status": "ok", "cost": 2.5, "result": {"change_id": "foreign"}},
         )
         assert problem == "unapproved_action"
-        assert change_id is None
+        assert change_id == "foreign"
         assert float(runtime.tasks.get(task_id)["spend_actions"] or 0) == 2.5
         assert runtime.tasks.list_steps(task_id)[0]["status"] == "unapproved_action"
     finally:

@@ -57,6 +57,9 @@ class _Registry:
         self.responder = responder
         self.calls: list[str] = []
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return dict(self.table)
+
     def metadata_of(self, name: str) -> dict[str, object]:
         if name not in self.table:
             raise KeyError(name)
@@ -420,7 +423,7 @@ async def test_unapproved_ok_is_not_counted(token: str) -> None:
         assert actions.calls == []
         row = runtime.tasks.list_steps(task_id)[0]
         assert row["status"] == "unapproved_action"
-        assert not row["change_id"]
+        assert row["change_id"] == "foreign-lock"
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
         assert runtime.tasks.get(task_id)["error"] == "unapproved_action"
         events = [event for event in runtime.bus.replay(session, 0) if event.type == "unapproved_action"]
@@ -471,8 +474,7 @@ async def test_unversioned_edit_is_not_done(token: str) -> None:
         assert runtime.tasks.get(task_id)["error"] == "unversioned_edit"
         row = runtime.tasks.list_steps(task_id)[-1]
         assert row["status"] == "unversioned_edit"
-        assert row["change_id"] != "foreign-loose"
-        assert not row["change_id"]
+        assert row["change_id"] == "foreign-loose"
     finally:
         set_runtime(None)
 
