@@ -134,6 +134,7 @@ _DELETE_KINDS = frozenset(
         "http.delete",
         "http.unknown",
         "orm.delete",
+        "atomic_private",
         "os.symlink",
         "os.link",
         "Path.symlink_to",
@@ -1512,6 +1513,15 @@ def _http_method_expr(call: ast.Call) -> ast.AST | None:
 
 
 _HTTP_DELETE_RECEIVERS = frozenset({"client", "requests", "httpx", "ctx"})
+_PRIVATE_ATOMIC = frozenset(
+    {
+        "_copy_nofollow",
+        "_write_tmp",
+        "_write_at",
+        "_write_without_dir_fd",
+        "_open_dir",
+    }
+)
 
 
 def _http_kind(call: ast.Call, env: dict[str, str]) -> str | None:
@@ -1593,6 +1603,8 @@ def _write_hit(
     src: ast.AST | None = None
     if _call_name(func) == "getattr":
         kind = "getattr"
+    elif _call_name(func) in _PRIVATE_ATOMIC:
+        kind = "atomic_private"
     elif _call_name(func) == "__import__":
         kind = "__import__"
     elif _call_name(func) == "import_module":
