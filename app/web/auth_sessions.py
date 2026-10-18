@@ -194,12 +194,14 @@ def forget_memory_sessions() -> None:
         _MEM.clear()
 
 
-def validate_session_token(token: str | None) -> bool:
-    if not settings.web_auth_enabled:
-        return True
+def is_studio_session(token: str | None) -> bool:
+    """Студийная сессия: поиск по хэшу + TTL, без учёта web_auth_enabled.
+
+    Для проверок прав: отключённая аутентификация не делает
+    произвольный токен студийным.
+    """
     if not token:
         return False
-    # Сессия users.db не подменяет WEB_AUTH_USER/PASSWORD.
     issued = _lookup(_hash_token(token))
     if issued is None:
         return False
@@ -207,6 +209,13 @@ def validate_session_token(token: str | None) -> bool:
         revoke_session_token(token)
         return False
     return True
+
+
+def validate_session_token(token: str | None) -> bool:
+    if not settings.web_auth_enabled:
+        return True
+    # Сессия users.db не подменяет WEB_AUTH_USER/PASSWORD.
+    return is_studio_session(token)
 
 
 def _extract_bearer(request: Request) -> str | None:

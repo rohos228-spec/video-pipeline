@@ -251,12 +251,12 @@ def _mask(v: str) -> str:
 
 def _caller_is_studio_admin(token: str | None) -> bool:
     """Legacy-токен студии — админ. Сессия users.db — только role=admin."""
-    from app.web.auth_sessions import validate_session_token
+    from app.web.auth_sessions import is_studio_session
 
-    if token and validate_session_token(token):
-        return True
     if not token:
         return False
+    if is_studio_session(token):
+        return True
     try:
         from app.web import user_accounts
 
