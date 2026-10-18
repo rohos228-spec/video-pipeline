@@ -213,3 +213,29 @@ def test_archive_failure_does_not_delete_previous_tree(
     assert (previous / "kept.txt").read_bytes() == b"OLD-ARCHIVE"
     assert (src / "new.txt").read_bytes() == b"NEW-FILE"
     assert "каталог сохранён" in caplog.text
+
+
+def test_archive_source_rmtree_failure_keeps_verified_dest(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Проверенный архив не сносится, если снять исходник не удалось."""
+    monkeypatch.setattr("app.services.reset_step.datetime", _FrozenDateTime)
+    project = SimpleNamespace(id=7, data_dir=tmp_path)
+    src = tmp_path / "sfx"
+    src.mkdir()
+    payload = b"VERIFIED-WAV"
+    (src / "hit.wav").write_bytes(payload)
+
+    def _boom_src(path, *args, **kwargs):
+        raise OSError("src busy")
+
+    monkeypatch.setattr("app.services.reset_step.shutil.rmtree", _boom_src)
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        dest = _archive_dir_to_old(project, src, "sfx")
+    finally:
+        logger.remove(sink)
+    assert dest is not None
+    assert (dest / "hit.wav").read_bytes() == payload
+    assert (src / "hit.wav").read_bytes() == payload
+    assert "исходник" in caplog.text and "не снят" in caplog.text

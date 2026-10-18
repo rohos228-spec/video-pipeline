@@ -958,8 +958,9 @@ async def _wipe_sfx_plan(session: AsyncSession, project: Project) -> dict[str, A
 def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
     """Перенос каталога в old/<sub>/<ts> после проверки размера каждого файла.
 
-    Если каталог с этой секундой уже есть, пишем в соседнее имя. Чужой
-    архив при ошибке не удаляется.
+    Если каталог с этой секундой уже есть, пишем в соседнее имя.
+    Ошибка копии не удаляет dest: проверенный архив остаётся на диске.
+    Снятие исходника идёт отдельно; его ошибка — WARN, архив не трогаем.
     """
     if not src.is_dir():
         return None
@@ -978,7 +979,6 @@ def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
             first.name,
             dest.name,
         )
-    existed_before = dest.exists()
     try:
         shutil.copytree(src, dest)
         for path in src.rglob("*"):
@@ -987,7 +987,6 @@ def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
             copied = dest / path.relative_to(src)
             if not copied.is_file() or copied.stat().st_size != path.stat().st_size:
                 raise OSError(f"копия {path.name} не совпала по размеру")
-        shutil.rmtree(src)
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "WARN [#{}] reset_step: перенос {} в old/ не удался, каталог сохранён: {}",
@@ -995,9 +994,18 @@ def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
             src,
             e,
         )
-        if dest.exists() and not existed_before:
-            shutil.rmtree(dest, ignore_errors=True)
         return None
+    try:
+        shutil.rmtree(src)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} готов, исходник {} не снят: {}",
+            project.id,
+            dest,
+            src,
+            e,
+        )
+        return dest
     logger.info("[#{}] reset_step: {} → {}", project.id, src, dest)
     return dest
 
