@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from app.orchestrator.validators.entities import (
@@ -60,7 +61,9 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
     operations = [op for op in list(ops or []) if isinstance(op, dict)]
     violations: list[Violation] = []
     seen: set[tuple[str, str, str]] = set()
-    before_inactive = _inactive_ids(_scene_nodes(before))
+    before_scenes = _scene_nodes(before)
+    before_inactive = _inactive_ids(before_scenes)
+    before_by_id, before_by_number = _index_scenes(before_scenes)
     activated = {fid for op in operations if (fid := _targeted(op, True))}
     deactivated = [fid for op in operations if (fid := _targeted(op, False))]
 
@@ -91,16 +94,20 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
                     fid,
                 )
         scene_text = _scene_text(scene)
-        # Закадр ячейки остаётся на неактивном шоте, поэтому склейка — все шоты.
-        joined = text_of(
-            " ".join(
-                _shot_text(shot)
-                for shot in raw
-                if isinstance(shot, dict) and _shot_text(shot)
-            )
-        )
-        if scene_text and joined != scene_text:
-            _add(violations, seen, "vo_on_inactive", f"scenes/{entity}/закадр" if entity else "закадр", entity)
+        # Покрытие, не равенство склейки: живые фрагменты обязательны и
+        # собираются в любом порядке, неактивные закрывают пропуски без
+        # порядка, их повторы можно не использовать. То же расхождение,
+        # что уже было на before, не блокирует.
+        if scene_text and not _scene_voiceover_covered(scene):
+            prior = _prior_scene(scene, before_by_id, before_by_number)
+            if prior is None or _scene_voiceover_covered(prior) or _vo_layout(prior) != _vo_layout(scene):
+                _add(
+                    violations,
+                    seen,
+                    "vo_on_inactive",
+                    f"scenes/{entity}/закадр" if entity else "закадр",
+                    entity,
+                )
         if deactivated and scene_text and not active:
             ids = {frame_id(shot) for shot in raw if isinstance(shot, dict)}
             for fid in deactivated:
@@ -160,6 +167,172 @@ def _shot_text(shot: Any) -> str:
     if not isinstance(shot, dict):
         return ""
     return text_of(shot.get("закадр") or shot.get("voiceover") or shot.get("vo"))
+
+
+def _index_scenes(
+    scenes: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_number: dict[str, dict[str, Any]] = {}
+    for scene in scenes:
+        sid = scene_id(scene) or ""
+        number = scene_number(scene) or ""
+        if sid and sid not in by_id:
+            by_id[sid] = scene
+        if number and number not in by_number:
+            by_number[number] = scene
+    return by_id, by_number
+
+
+def _prior_scene(
+    scene: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    by_number: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    sid = scene_id(scene) or ""
+    if sid and sid in by_id:
+        return by_id[sid]
+    number = scene_number(scene) or ""
+    if number and number in by_number:
+        return by_number[number]
+    return None
+
+
+def _shot_voice_parts(scene: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Непустые закадры живых шотов и неактивных, в порядке списка."""
+
+    raw = scene.get("кадры")
+    if not isinstance(raw, list):
+        return [], []
+    active = list(shots_of({"shots": raw}) or [])
+    active_mark = {id(item) for item in active}
+    live: list[str] = []
+    parked: list[str] = []
+    for shot in raw:
+        if not isinstance(shot, dict):
+            continue
+        text = _shot_text(shot)
+        if not text:
+            continue
+        if id(shot) in active_mark:
+            live.append(text)
+        else:
+            parked.append(text)
+    return live, parked
+
+
+def _vo_layout(scene: dict[str, Any]) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    live, parked = _shot_voice_parts(scene)
+    return (_scene_text(scene), tuple(sorted(live)), tuple(sorted(parked)))
+
+
+def _scene_voiceover_covered(scene: dict[str, Any]) -> bool:
+    """Закадр сцены собирается из живых фрагментов и любых неактивных.
+
+    Живые фрагменты используются все. Неактивные — только те, что нужны,
+    чтобы закрыть пропуски: повтор текста с неактивного шота не обязателен.
+    Порядок шотов не важен.
+    """
+
+    scene_text = _scene_text(scene)
+    if not scene_text:
+        return True
+    live, parked = _shot_voice_parts(scene)
+    return _parts_cover(scene_text, live, parked)
+
+
+def _parts_cover(scene_text: str, required: list[str], optional: list[str]) -> bool:
+    scene = tuple(scene_text.split())
+    req = [tuple(part.split()) for part in required if part.split()]
+    opt = [tuple(part.split()) for part in optional if part.split()]
+    if not req and not opt:
+        return False
+    if len(req) + len(opt) > 18:
+        return _bag_cover(scene, req, opt)
+    return _assemble(scene, req, opt)
+
+
+def _bag_cover(
+    scene: tuple[str, ...],
+    required: list[tuple[str, ...]],
+    optional: list[tuple[str, ...]],
+) -> bool:
+    """Запасной путь для длинных списков: покрытие по словам, без склейки фраз."""
+
+    have = Counter(scene)
+    need: Counter[str] = Counter()
+    for piece in required:
+        need.update(piece)
+    if any(need[token] > have[token] for token in need):
+        return False
+    left = have - need
+    if not left:
+        return True
+    pieces = optional
+    mask_limit = 1 << len(pieces)
+    if len(pieces) > 18:
+        spare: Counter[str] = Counter()
+        for piece in pieces:
+            spare.update(piece)
+        return all(left[token] <= spare[token] for token in left)
+    for mask in range(mask_limit):
+        got: Counter[str] = Counter()
+        for index, piece in enumerate(pieces):
+            if mask & (1 << index):
+                got.update(piece)
+        if got == left:
+            return True
+    return False
+
+
+def _assemble(
+    scene: tuple[str, ...],
+    required: list[tuple[str, ...]],
+    optional: list[tuple[str, ...]],
+) -> bool:
+    """Собрать закадр из всех живых фраз и подмножества неактивных."""
+
+    have = Counter(scene)
+    need: Counter[str] = Counter()
+    for piece in required:
+        need.update(piece)
+    if any(need[token] > have[token] for token in need):
+        return False
+    n_req = len(required)
+    full_req = (1 << n_req) - 1
+    memo: dict[tuple[int, int, int], bool] = {}
+
+    def rec(pos: int, req_mask: int, opt_mask: int) -> bool:
+        key = (pos, req_mask, opt_mask)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+        if pos == len(scene):
+            found = req_mask == full_req
+            memo[key] = found
+            return found
+        found = False
+        for index, piece in enumerate(required):
+            bit = 1 << index
+            if req_mask & bit:
+                continue
+            end = pos + len(piece)
+            if scene[pos:end] == piece and rec(end, req_mask | bit, opt_mask):
+                found = True
+                break
+        if not found:
+            for index, piece in enumerate(optional):
+                bit = 1 << index
+                if opt_mask & bit:
+                    continue
+                end = pos + len(piece)
+                if scene[pos:end] == piece and rec(end, req_mask, opt_mask | bit):
+                    found = True
+                    break
+        memo[key] = found
+        return found
+
+    return rec(0, 0, 0)
 
 
 def _shot_path(entity: str, fid: str) -> str:
