@@ -451,6 +451,22 @@ class Supervisor:
                 await self._emit_decision(task_id, session_id, decided)
                 return await self._arm_paid_retry_forecast(task_id, session_id)
             raise InvalidTransition(f"неизвестное decision {decided.value}")
+        if reason == "partial_write" and decided is ApprovalDecision.approve:
+            await self._emit_decision(task_id, session_id, decided)
+            await self._accept_partial_write(task_id, session_id)
+            return {
+                "executed": False,
+                "decision": ApprovalDecision.approve.value,
+                "retry_armed": False,
+            }
+        if reason == "partial_write" and decided is ApprovalDecision.deny:
+            await self._emit_decision(task_id, session_id, decided)
+            await self._deny_partial_write(task_id, session_id)
+            return {
+                "executed": False,
+                "decision": ApprovalDecision.deny.value,
+                "retry_armed": False,
+            }
         if decided in {ApprovalDecision.retry_step, ApprovalDecision.deny}:
             raise InvalidTransition("retry_step и deny только для paid_outcome_unknown")
         await self._emit_decision(task_id, session_id, decided)
@@ -990,6 +1006,29 @@ class Supervisor:
         self.tasks.mirror_progress(task_id, list(stamped.plan), int(stamped.position), stamped.spend)
         await asyncio.to_thread(self.checkpoints.save, task_id, session_id, stamped)
         return stamped
+
+    async def _accept_partial_write(self, task_id: int, session_id: str) -> None:
+        """Принять partial: строка done с тем же change_id, execute этого шага нет."""
+        data, step = await self._checkpoint_step(task_id)
+        row = self._open_partial_row(task_id, step, list(data.plan), int(data.position))
+        if row is not None:
+            raw = row.get("change_id")
+            change_id = str(raw) if raw else None
+            self.tasks.finish_step(int(row["id"]), "done", change_id, float(row.get("cost") or 0))
+        self._block_reason.pop(task_id, None)
+        await self._continue_from_checkpoint(task_id, session_id, data)
+
+    async def _deny_partial_write(self, task_id: int, session_id: str) -> None:
+        """Отказ partial: задача failed, строка и change_id остаются."""
+        _data, step = await self._checkpoint_step(task_id)
+        self._block_reason.pop(task_id, None)
+        await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="partial_write")
+        await self.bus.publish(
+            session_id,
+            "task_failed",
+            {"error": "partial_write", "action": step.action},
+            task_id=task_id,
+        )
 
     async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""

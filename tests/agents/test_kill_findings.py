@@ -13,7 +13,13 @@ from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.checkpoints import CheckpointStore
-from app.orchestrator.contracts import ActionResult, CheckpointData, PlanStep, TaskStatus
+from app.orchestrator.contracts import (
+    ActionResult,
+    ApprovalDecision,
+    CheckpointData,
+    PlanStep,
+    TaskStatus,
+)
 from app.services.step_cancel import abort_if_cancelled, clear_stop, is_stop_requested, request_stop
 from app.web.routers.orchestrator_chat import router as chat_router
 from tests.agents.conftest import TEST_TOKEN
@@ -448,6 +454,85 @@ async def test_kill_then_resume_is_not_rejected(token: str) -> None:
         assert [call["name"] for call in actions.calls] == ["write"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert runtime.supervisor._block_reason.get(task_id) == "partial_write"
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_approve_partial_closes_step_and_runs_the_next(token: str) -> None:
+    """approve принимает partial: write один раз, следующий шаг идёт, задача done."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False),
+                PlanStep(action="later", mutating=True, paid=False),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session = "partial-accept"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
+        assert saved["change_id"] == "chg-write-1"
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["write", "later"]
+        rows = runtime.tasks.list_steps(task_id)
+        write_row = next(row for row in rows if row["action_name"] == "write")
+        assert write_row["status"] == "done"
+        assert write_row["change_id"] == "chg-write-1"
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_deny_partial_fails_task_and_keeps_the_row(token: str) -> None:
+    """deny на partial_write валиден и не стирает change_id."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "partial-deny"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
+        assert saved["change_id"] == "chg-write-1"
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.deny)
+        assert [call["name"] for call in actions.calls] == ["write"]
+        rows = runtime.tasks.list_steps(task_id)
+        assert rows[0]["status"] == "partial"
+        assert rows[0]["change_id"] == "chg-write-1"
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
     finally:
         actions.release.set()
         set_runtime(None)
