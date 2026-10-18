@@ -818,6 +818,10 @@ async def import_v8_xlsx(
 
         # Номер кадра — колонка (шапка или col−2), не позиция среди непустых.
         frame_fields = _read_frame_fields(wb)
+        # Надгробия: номера, удалённые пользователем, при импорте
+        # не создаются заново и не оживляются (скрытые строки не трогаем).
+        tomb = _deleted_numbers(project)
+        frame_fields = [spec for spec in frame_fields if int(spec["number"]) not in tomb]
         t = 0.0
         prompts_synced: list[int] = []
         for fields in frame_fields:

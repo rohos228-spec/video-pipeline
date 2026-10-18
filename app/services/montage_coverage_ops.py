@@ -1104,6 +1104,10 @@ async def delete_coverage_child(
         _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
         _refresh_shots_in_beat(frames, parent)
 
+    from app.services.frame_tombstones import remember_deleted
+
+    remember_deleted(project, int(frame.number))
+
 
 def _clear_child_scene_chain(frame: Frame) -> None:
     attrs = dict(getattr(frame, "attrs", None) or {})
