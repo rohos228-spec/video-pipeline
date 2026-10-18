@@ -32,7 +32,7 @@ ACTIONS: dict[str, str] = {
     "run": "запустил", "save": "сохранил", "save-and-activate": "сохранил и включил", "save-template": "сохранил шаблон",
     "save-to-project": "сохранил в проект", "save-voiceover": "сохранил озвучку", "scene-action-generate": "сгенерировал действие сцены",
     "scene-generate-with-images": "сгенерировал сцену с картинками", "scene-improve": "улучшил сцену",
-    "scene-variants": "запросил варианты сцены", "split": "разделил", "split-undo": "отменил деление сцены", "revoke": "отозвал разрешение", "start": "запустил", "stop": "остановил",
+    "scene-variants": "запросил варианты сцены", "spend-approval": "одобрил продолжение трат", "split": "разделил", "split-undo": "отменил деление сцены", "revoke": "отозвал разрешение", "start": "запустил", "stop": "остановил",
     "swap-shots": "поменял шоты местами", "swap-slots": "поменял слоты местами", "sync": "синхронизировал",
     "to-outputs": "отправил в выходы", "toggle": "переключил", "upload": "загрузил файл", "upload-image": "загрузил картинку",
     "upload-music": "загрузил музыку", "upload-video": "загрузил видео", "upload-voice": "загрузил озвучку",
