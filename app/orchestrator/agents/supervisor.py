@@ -190,6 +190,7 @@ class Supervisor:
         self._queued: dict[str, list[tuple[int, str]]] = {}
         self._budget_stop: set[int] = set()
         self._shield_orphaned: set[int] = set()
+        self._mutating_open: dict[int, int] = {}
         self._paid_open: set[int] = set()
         self._paid_outcome_hold: set[int] = set()
         self._paid_unknown_marking: set[int] = set()
@@ -556,6 +557,7 @@ class Supervisor:
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
+        self._cancel_open_mutating(session_id)
         queued = list(self._queued.pop(session_id, []))
         task_id = self._session_task.get(session_id)
         try:
@@ -568,6 +570,21 @@ class Supervisor:
         for queued_id, _goal in queued:
             self._spawn(self._cancel_queued(session_id, queued_id))
         return self._spawn(self._publish_kill(session_id, task_id))
+
+    def _cancel_open_mutating(self, session_id: str) -> None:
+        """Kill гасит внешний прогон mutating-шага, но не сам inner.
+
+        Новые шаги не стартуют. Запись, которая уже идёт, дописывается,
+        и её ``change_id`` садится на строку ``partial`` в done-callback.
+        Платный шаг сюда не попадает: его держит ``_paid_open``.
+        """
+        task_id = self._session_task.get(session_id)
+        if task_id is None or task_id in self._paid_open or task_id not in self._mutating_open:
+            return
+        self._shield_orphaned.add(task_id)
+        run = self._runs.get(task_id)
+        if run is not None and not run.done():
+            run.cancel()
 
     async def _cancel_queued(self, session_id: str, task_id: int) -> None:
         """Задача, стоявшая в очереди на момент kill, не должна стартовать позже."""
@@ -1823,11 +1840,26 @@ class Supervisor:
                         )
                     )
                 )
+            else:
+                self._mutating_open[task_id] = step_id
+                inner.add_done_callback(
+                    lambda done, _task=task_id, _session=session_id, _sid=step_id, _index=index: (
+                        self._on_mutating_done(
+                            done,
+                            task_id=_task,
+                            session_id=_session,
+                            step_id=_sid,
+                            index=_index,
+                        )
+                    )
+                )
             try:
                 return await asyncio.shield(inner)
             finally:
                 if step.paid:
                     self._paid_open.discard(task_id)
+                else:
+                    self._mutating_open.pop(task_id, None)
         return await self._cancellable(session_id, _call())
 
     def _on_shield_done(
@@ -1867,6 +1899,59 @@ class Supervisor:
         job = loop.create_task(
             self._pause_after_shield(task_id, session_id, plan, index + 1),
             name=f"orch-shield-{task_id}",
+        )
+        self._shield_jobs.add(job)
+        job.add_done_callback(self._shield_jobs.discard)
+
+    def _on_mutating_done(
+        self,
+        done: asyncio.Task[Any],
+        *,
+        task_id: int,
+        session_id: str,
+        step_id: int,
+        index: int,
+    ) -> None:
+        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``."""
+        if done.cancelled() or task_id not in self._shield_orphaned:
+            return
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            return
+        change_id = envelope_change_id(done.result())
+        if not change_id or self._stored_change_id(task_id, step_id):
+            return
+        row = next(
+            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
+            None,
+        )
+        status = str(row.get("status")) if row is not None else "running"
+        if status == "done":
+            return
+        if status == "running":
+            self.tasks.note_running_outcome(step_id, change_id, 0.0)
+        else:
+            self.tasks.finish_step(step_id, "partial", change_id, 0.0)
+        bucket = self._change_ids.setdefault(task_id, [])
+        if change_id not in bucket:
+            bucket.append(change_id)
+        loop = asyncio.get_running_loop()
+        job = loop.create_task(
+            self.bus.publish(
+                session_id,
+                "partial_write",
+                {
+                    "level": "WARN",
+                    "change_ids": [change_id],
+                    "position": index,
+                    "task_id": task_id,
+                },
+                task_id=task_id,
+            ),
+            name=f"orch-partial-{task_id}",
         )
         self._shield_jobs.add(job)
         job.add_done_callback(self._shield_jobs.discard)
