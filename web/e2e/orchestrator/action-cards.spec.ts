@@ -168,7 +168,7 @@ test("версия, снимок и marked обязательны", () => {
   const prompt = readActionEnvelope(EXAMPLE_PROMPT_EDIT, 1);
   expect(prompt?.version).toBe(2);
   expect(prompt?.baseVersion).toBe(1);
-  expect(prompt?.metadata.destructive).toBe(true);
+  expect(prompt?.metadata).toBeNull();
   expect(metadataOf("revert_node_to_git").destructive).toBe(true);
   expect(metadataOf("resume_node")).toMatchObject({ risk: "high", destructive: true, paid: true });
 
@@ -654,4 +654,16 @@ test("новая версия отчёта заменяет карточку", (
   state = reduceOrchScreen(state, event(3, stale));
   expect(state.actionResults).toHaveLength(1);
   expect(state.actionResults[0]?.html).toContain("новый");
+});
+
+test("ok-карточки edit, delete и report не содержат риск", async ({ page }) => {
+  await openWithToken(page, "act-norisk");
+  await emit(page, "act-norisk", "step_finished", EXAMPLE_PROMPT_EDIT);
+  await emit(page, "act-norisk", "step_finished", EXAMPLE_DELETE_OK);
+  await emit(page, "act-norisk", "step_finished", EXAMPLE_REPORT);
+  const cards = page.getByTestId("orch-action-card");
+  await expect(cards).toHaveCount(3);
+  await expect(cards.filter({ hasText: "риск" })).toHaveCount(0);
+  await expect(cards.filter({ hasText: "платно" })).toHaveCount(0);
+  await expect(cards.filter({ hasText: "деструктивно" })).toHaveCount(0);
 });

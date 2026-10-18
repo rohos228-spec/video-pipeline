@@ -73,6 +73,7 @@ function Fields({ rows, hideBefore }: { rows: FieldDiffRow[]; hideBefore: boolea
 }
 
 function RiskLine({ result }: { result: ActionResultView }) {
+  if (!result.metadata) return null;
   return (
     <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
       {result.action}

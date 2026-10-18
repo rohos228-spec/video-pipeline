@@ -78,7 +78,8 @@ export interface ActionResultView {
   action: string;
   /** Change_id конверта правки или пометки. У ApprovalRequired всегда null. */
   changeId: string | null;
-  metadata: ActionMetadata;
+  /** null — в конверте нет metadata, строка риска не рисуется. */
+  metadata: ActionMetadata | null;
   kind: ActionCardKind;
   unified: TextDiffLine[] | null;
   fields: FieldDiffRow[] | null;
@@ -335,7 +336,7 @@ function cardKind(action: string, nodeKind: ActionNodeRef["kind"] | null): Actio
 
 const QUIET: ActionMetadata = { name: "", risk: "low", read_only: true, destructive: false, paid: false };
 
-function blankView(id: string, metadata: ActionMetadata, kind: ActionCardKind): ActionResultView {
+function blankView(id: string, metadata: ActionMetadata | null, kind: ActionCardKind): ActionResultView {
   return {
     id,
     action: metadata.name,
@@ -521,7 +522,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   if (reportId != null && html != null && editAction === REPORT_EDIT_ACTION) {
     const reportVersion = intGe1(result.version);
     if (reportVersion == null || !html.trim()) return null;
-    const view = blankView(`report-${reportId}-v${reportVersion}`, metadataOf("create_report"), "report");
+    const view = blankView(`report-${reportId}-v${reportVersion}`, resultMetadata(result), "report");
     view.action = "create_report";
     view.html = html;
     view.reportId = reportId;
@@ -538,7 +539,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
     if (!softDeleteSatisfied(result)) return null;
     const changeId = validChangeId(result.change_id);
     const restore = str(result.restore_action).trim();
-    const view = blankView(changeId || `mark-${seq}`, metadataOf(deleteAction), "mark");
+    const view = blankView(changeId || `mark-${seq}`, resultMetadata(result), "mark");
     view.action = deleteAction;
     view.changeId = changeId;
     view.marked = true;
@@ -554,9 +555,14 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   return view;
 }
 
+/** Риск ok-карточки только из metadata конверта. Таблица имён сюда не входит. */
+function resultMetadata(result: Record<string, unknown>): ActionMetadata | null {
+  return metadataFrom(plainObject(result.metadata));
+}
+
 function readEdit(result: Record<string, unknown>, seq: number): ActionResultView {
   const action = str(result.action).trim();
-  const metadata = action ? metadataOf(action) : QUIET;
+  const metadata = resultMetadata(result);
   const nodeRef = readNodeRef(result.node_ref);
   const diff = plainObject(result.diff);
   const unified = diff && typeof diff.unified === "string" ? unifiedLines(diff.unified) : null;
@@ -567,7 +573,7 @@ function readEdit(result: Record<string, unknown>, seq: number): ActionResultVie
       : null;
   const changeId = str(result.change_id).trim() || null;
   const view = blankView(changeId || `action-${seq}`, metadata, action ? cardKind(action, nodeRef?.kind ?? null) : "neutral");
-  view.action = action || metadata.name;
+  view.action = action || metadata?.name || "";
   view.changeId = changeId;
   view.unified = unified ?? fallback;
   view.fields = fields;
