@@ -481,6 +481,8 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
   });
 }
 
+const ACTION_RESULT_LIMIT = 40;
+
 function rememberActionResult(state: OrchScreenState, payload: Record<string, unknown>, seq: number): void {
   const view = readActionEnvelope(payload, seq);
   if (!view) return;
@@ -494,6 +496,9 @@ function rememberActionResult(state: OrchScreenState, payload: Record<string, un
   }
   if (state.actionResults.some((item) => item.id === view.id)) return;
   state.actionResults.push(view);
+  if (state.actionResults.length > ACTION_RESULT_LIMIT) {
+    state.actionResults.splice(0, state.actionResults.length - ACTION_RESULT_LIMIT);
+  }
 }
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {

@@ -468,6 +468,21 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   });
 });
 
+test("лента карточек держит предел", () => {
+  let state = initialOrchScreen();
+  for (let seq = 1; seq <= 41; seq += 1) {
+    const payload = structuredClone(EXAMPLE_FAILED);
+    payload.error = `сбой ${seq}`;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: { type: "message", seq, task_id: 1, payload },
+    });
+  }
+  expect(state.actionResults).toHaveLength(40);
+  expect(state.actionResults[0]?.error).toBe("сбой 2");
+  expect(state.actionResults[39]?.error).toBe("сбой 41");
+});
+
 test("повторы предупреждений не делят один key", () => {
   const source = readFileSync(
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/components/orchestrator/action-result-card.tsx"),
