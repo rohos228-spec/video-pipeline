@@ -201,7 +201,8 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     остаются в хвосте с ``активен: False``. Входящий флаг не снимается.
     Тот же id не снимает «удалён», «карантин» и ложный «активен»: другой
     текст и ``активен: True`` на новой строке — не restore. Совпадение без
-    id по тому же тексту оживает только от явного ``активен: True``.
+    id по тому же тексту переносит те же пометки скрытия и оживает только
+    от явного ``активен: True``.
     """
     if not isinstance(new, list):
         logger.warning(
@@ -256,10 +257,12 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 and old_content_counts.get(ident) == 1
                 and new_content_counts.get(ident) == 1
             ):
-                if shot.get(ACTIVE_MARK) is False:
+                if not shot_is_active(shot):
                     matched = incoming_by_content.get(ident) or []
                     if len(matched) == 1 and not _incoming_revives(shot, matched[0]):
-                        matched[0][ACTIVE_MARK] = False
+                        _overlay_hide_marks(shot, matched[0])
+                        if shot_is_active(matched[0]):
+                            matched[0][ACTIVE_MARK] = False
                 continue
             if ident is None and any(
                 isinstance(item, dict) and _shot_id(item) is None and item == shot
