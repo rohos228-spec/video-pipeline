@@ -124,7 +124,9 @@ def _record_is_active(record: object) -> bool:
     if flag_is_false(value):
         return False
     if isinstance(value, str):
-        _warn_once(ACTIVE_MARK, value)
+        token = value.strip().casefold()
+        if token not in _HIDE_TRUE_TOKENS:
+            _warn_once(ACTIVE_MARK, value)
     return True
 
 
