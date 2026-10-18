@@ -50,6 +50,7 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
         reason,
     )
 
+
 SHOT_VO_MIN = 26
 SHOT_VO_MAX = 80
 SHOT_VO_IDEAL = 45
@@ -696,26 +697,6 @@ def _prefer_full_action_text(*candidates: str) -> str:
     return best
 
 
-def _append_unmatched_gpt_shots(
-    out: list[dict[str, Any]],
-    cleaned: list[dict[str, Any]],
-    matched_sources: set[int],
-) -> None:
-    """Шоты GPT, не попавшие в склейку, остаются в хвосте."""
-    seen_ids = {str(row.get("id") or "") for row in out if str(row.get("id") or "")}
-    for shot in cleaned:
-        if id(shot) in matched_sources:
-            continue
-        sid = str(shot.get("id") or "")
-        if sid and sid in seen_ids:
-            continue
-        if any(shot is row for row in out):
-            continue
-        out.append(shot)
-        if sid:
-            seen_ids.add(sid)
-
-
 def merge_gpt_shots_with_action(
     gpt_shots: list[Any],
     action: str,
@@ -734,16 +715,14 @@ def merge_gpt_shots_with_action(
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # Наследие авто-«общий вид …» помечаем, но не выкидываем.
-    cleaned: list[dict[str, Any]] = []
-    for shot in dict_shots:
-        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
-            _mark_shot_kept(
-                shot,
-                "наследие авто-«общий вид» — кадр сохранён",
-                where="merge_gpt_shots_with_action",
-            )
-        cleaned.append(shot)
+    # убрать наследие авто-«общий вид …»
+    cleaned = [
+        s
+        for s in dict_shots
+        if not str(s.get("действие") or "").casefold().startswith("общий вид")
+    ]
+    if not cleaned:
+        cleaned = dict_shots
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
@@ -780,7 +759,6 @@ def merge_gpt_shots_with_action(
             by_stem[stem] = s
     out: list[dict[str, Any]] = []
     missing: list[str] = []
-    matched_sources: set[int] = set()
     for i, can in enumerate(canonical):
         stem = action_stem(str(can.get("действие") or ""))
         gpt = by_stem.get(stem)
@@ -817,11 +795,7 @@ def merge_gpt_shots_with_action(
         for key in ("id", "parent_id", "порядок", "сцена", "место"):
             if gpt.get(key) not in (None, ""):
                 row[key] = gpt[key]
-        for key in ("реплика", "говорит", "select_fix"):
-            if gpt.get(key) not in (None, ""):
-                row[key] = gpt[key]
         out.append(row)
-        matched_sources.add(id(gpt))
     if missing:
         # Mild: почти все шаги покрыты (≤2 дырки и ≥70% canonical) → WARN.
         # Severe → PassStop на retry, без silent invent и без принятия 1/N.
@@ -835,14 +809,12 @@ def merge_gpt_shots_with_action(
             and covered >= 1
         )
         if mild:
-            keep = out if out else list(cleaned)
-            if out:
-                _append_unmatched_gpt_shots(keep, cleaned, matched_sources)
             soft = (
                 f"WARN underproduction: GPT не покрыл {len(missing)} шагов действия "
                 f"({'; '.join(missing[:5])}) — пишем покрытие "
-                f"(кадров {len(keep)}), repair VO, без invent шагов"
+                f"(кадров {len(out or cleaned)}), repair VO, без invent шагов"
             )
+            keep = out if out else cleaned
             return keep, soft
         return None, (
             "GPT не покрыл шаги действия: "
@@ -899,7 +871,6 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 ).strip()
         if action and isinstance(shots, list) and shots:
             num = int(fr.get("number") or 1)
-            before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
             merged, err = merge_gpt_shots_with_action(
                 shots, action, cell_number=num, prev_place=prev_place, vo=vo
             )
@@ -908,7 +879,6 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 op["_shots_under_warn"] = err
                 fields.pop("_shots_under_warn", None)
                 if merged is not None:
-                    merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                     fields["кадры"] = merged
                     shots = merged
                 # soft underproduction: не incomplete, не invent шагов
@@ -916,7 +886,6 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 fields["_shots_incomplete"] = err
                 # оставляем GPT как есть — вызывающий код обязан упасть/добрать
             elif merged is not None:
-                merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                 fields["кадры"] = merged
                 shots = merged
         elif action and (not isinstance(shots, list) or len(shots) < 1):
@@ -926,16 +895,16 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
             )
         if isinstance(shots, list) and shots:
             # Пустой закадр у части кадров — норма (пауза/перебивка, промт §4).
-            # Раскладываем VO по живым кадрам, только если GPT не дал закадр
-            # ни одному живому; неактивные остаются в списке без куска.
-            from app.services.frame_tombstones import shot_is_active
-
-            live = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
-            missing_vo = not any(str(s.get("закадр") or "").strip() for s in live)
-            if vo and missing_vo and live:
-                pieces = _split_vo_for_steps(vo, len(live))
-                for shot, piece in zip(live, pieces, strict=False):
-                    if not str(shot.get("закадр") or "").strip():
+            # Раскладываем VO по кадрам, только если GPT не дал закадр ни одному
+            # кадру; иначе куски ложились поверх уже разложенных — дубли.
+            missing_vo = not any(
+                isinstance(s, dict) and str(s.get("закадр") or "").strip()
+                for s in shots
+            )
+            if vo and missing_vo:
+                pieces = _split_vo_for_steps(vo, len(shots))
+                for shot, piece in zip(shots, pieces, strict=False):
+                    if isinstance(shot, dict) and not str(shot.get("закадр") or "").strip():
                         shot["закадр"] = piece
             _fill_missing_camera(shots, prev_place=prev_place)
             fill_kadry_scene_numbers(shots)
@@ -1076,7 +1045,6 @@ def align_shots_to_action_chain(
         shots = fields.get("кадры")
         if not isinstance(shots, list) or not shots:
             continue
-        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         uid = str(op.get("frame_uuid") or "").strip()
         chain = parse_scene_chain(_frame_action(op, by_uid.get(uid) or {}))
         places: dict[int, str] = {}
@@ -1112,18 +1080,9 @@ def align_shots_to_action_chain(
                 kept.append(shot)
                 continue
             kept.append(shot)
-        frame = by_uid.get(uid) or {}
-        number = frame.get("number") or frame.get("номер") or 0
-        kept = _keep_grammar_kadry(before_rows, kept, uid=uid, number=number)
         if len(kept) != len(shots):
             fields["кадры"] = kept
     return removed
-
-
-def _keep_grammar_kadry(before_rows, after_rows, *, uid: str, number: Any):
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
-
-    return keep_soft_kadry(before_rows, after_rows, scene_id=uid or "cell", number=number)
 
 
 def scene_script_text(place: str, action: str) -> str:
@@ -1158,8 +1117,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
 
     if not isinstance(shots, list) or not shots:
         return []
-    from app.services.frame_tombstones import shot_is_active
-
     warnings: list[str] = []
     norm_vo = " ".join((vo or "").split())
 
@@ -1173,14 +1130,10 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         # guard: закадр никогда не кладём на кадр с непустой «реплика»
         return isinstance(s, dict) and bool(str(s.get("реплика") or "").strip())
 
-    # 1) длиннее 80 — разрезать; куски в следующие пустые живые кадры
-    # до первого непустого живого. Неактивный источник не режем и не пишем в него хвост.
+    # 1) длиннее 80 — разрезать; куски в следующие пустые кадры до первого непустого
     idx = 0
     while idx < len(shots):
         shot = shots[idx]
-        if not isinstance(shot, dict) or not shot_is_active(shot):
-            idx += 1
-            continue
         chunk = _vo(shot)
         n = visible_len(chunk)
         if not chunk or n <= SHOT_VO_MAX:
@@ -1189,7 +1142,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         empties: list[int] = []
         j = idx + 1
         while j < len(shots):
-            if not isinstance(shots[j], dict) or not shot_is_active(shots[j]):
+            if not isinstance(shots[j], dict):
                 j += 1
                 continue
             if _vo(shots[j]):
@@ -1199,14 +1152,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
                 continue
             empties.append(j)
             j += 1
-        nxt_i = (
-            j
-            if j < len(shots)
-            and isinstance(shots[j], dict)
-            and shot_is_active(shots[j])
-            and not _reply(shots[j])
-            else None
-        )
+        nxt_i = j if j < len(shots) and not _reply(shots[j]) else None
         target = max(2, (n + SHOT_VO_IDEAL - 1) // SHOT_VO_IDEAL)
         target = min(target, 1 + len(empties)) if empties else target
         parts = [" ".join(p.split()) for p in split_text_into_parts(chunk, target)]
@@ -1238,24 +1184,17 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         warnings.append(f"кадр[{idx}] закадр {n} разрезан на {1 + len(slots)}")
         idx = (slots[-1] if slots else idx) + 1
 
-    # 2) короткие (<26, не перебивка) → в ближайший непустой живой кусок.
-    # Неактивный источник не переносим: его закадр остаётся на месте.
+    # 2) короткие (<26, не перебивка) → в ближайший непустой кусок, кадр оставляем
     i = 0
     while i < len(shots):
         shot = shots[i]
-        if not isinstance(shot, dict) or not shot_is_active(shot):
-            i += 1
-            continue
         chunk = _vo(shot)
         n = visible_len(chunk)
         if not chunk or n >= SHOT_VO_MIN or is_cutaway_shot(shot):
             i += 1
             continue
-        def _live_vo(j: int) -> bool:
-            return _vo(shots[j]) and shot_is_active(shots[j])
-
-        nxt = next((j for j in range(i + 1, len(shots)) if _live_vo(j)), None)
-        prv = next((j for j in range(i - 1, -1, -1) if _live_vo(j)), None)
+        nxt = next((j for j in range(i + 1, len(shots)) if _vo(shots[j])), None)
+        prv = next((j for j in range(i - 1, -1, -1) if _vo(shots[j])), None)
         if nxt is not None and _reply(shots[nxt]):
             nxt = None
         if prv is not None and _reply(shots[prv]):
@@ -1286,7 +1225,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
     )
     empty_n = 0
     for s in shots:
-        if not isinstance(s, dict) or not shot_is_active(s):
+        if not isinstance(s, dict):
             continue
         if (
             not _vo(s)
@@ -1305,9 +1244,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
     if empty_n:
         warnings.append(f"помечены пустые оболочки без шага {empty_n} шт")
 
-    glued = " ".join(
-        _vo(s) for s in shots if isinstance(s, dict) and shot_is_active(s) and _vo(s)
-    )
+    glued = " ".join(_vo(s) for s in shots if _vo(s))
     if norm_vo and glued and " ".join(glued.split()) != norm_vo:
         warnings.append("после перерезки склейка != VO — флаг")
     # R-VO-SENTENCE: закадр режется ТОЛЬКО по концу предложения (.!?…);
@@ -1318,22 +1255,21 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
 
 
 def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None:
-    from app.services.frame_tombstones import shot_is_active
-
     prefix = f"uuid {uid[:8]}: " if uid else ""
     if not shots:
         return f"{prefix}пустые кадры"
-    live = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
-    if not live:
-        return None
-    if not any(str(s.get("закадр") or "").strip() for s in live):
+    if not any(
+        isinstance(s, dict) and str(s.get("закадр") or "").strip() for s in shots
+    ):
         return (
             f"{prefix}кадр пустой закадр "
             "— у каждого кадра свой кусок"
         )
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
-    for shot in live:
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
         step = str(shot.get("действие") or "")
         if not has_visible_verb(step) and step:
             return f"{prefix}шаг без видимого глагола «{step[:40]}»"
@@ -1355,7 +1291,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         chunk = str(shot.get("закадр") or "").strip()
         if chunk:
             n = visible_len(chunk)
-            cell_short = len(live) == 1 and visible_len(vo) < SHOT_VO_MIN
+            cell_short = len(shots) == 1 and visible_len(vo) < SHOT_VO_MIN
             cutaway = is_cutaway_shot(shot)
             # Точка в конце не отменяет норму длины: целая фраза длиннее 80
             # или короче 26 (не перебивка) — всё ещё «симв».
@@ -1402,8 +1338,8 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         prev = shot
     glued = " ".join(
         str(s.get("закадр") or "").strip()
-        for s in live
-        if str(s.get("закадр") or "").strip()
+        for s in shots
+        if isinstance(s, dict) and str(s.get("закадр") or "").strip()
     )
     cell = " ".join((vo or "").split())
     if cell and glued and " ".join(glued.split()) != cell:
@@ -1413,7 +1349,6 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
 
 # ---- R-VO-SENTENCE (c61): закадр режется ТОЛЬКО по концу предложения ----
 import re as _re
-
 _SENT_END = _re.compile(r'(?<=[.!?…])["»)]*\s+(?=["«(]?[A-ZА-ЯЁ0-9—–-])')
 _END_OK = _re.compile(r'[.!?…]["»)]*\s*$')
 
@@ -1436,13 +1371,10 @@ def vo_piece_ends_sentence(piece):
 
 
 def reflow_vo_by_sentences(shots, vo):
-    """Детерминированно: каждое предложение VO целиком — в живой кадр, где оно началось
+    """Детерминированно: каждое предложение VO целиком — в кадр, где оно началось
     (по текущей раскладке), на кадрах с репликой закадра нет (предложение уходит на
-    ближайший предыдущий кадр без реплики, иначе — следующий). Склейка = VO.
-    Неактивные кадры не слоты: их закадр не переписывается."""
-    from app.services.frame_tombstones import shot_is_active
-
-    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+    ближайший предыдущий кадр без реплики, иначе — следующий). Склейка = VO."""
+    rows = [s for s in shots if isinstance(s, dict)]
     sents = split_vo_sentences(vo)
     if not rows or not sents:
         return []
@@ -1496,12 +1428,9 @@ def reflow_vo_by_sentences(shots, vo):
 
 def vo_sentence_problems(shots, vo):
     """Гейт: кусок закадра = целые предложения; нет закадра на кадре реплики;
-    реплика не стоит внутри предложения (гарантируется первым).
-    Неактивные кадры в гейт не входят."""
-    from app.services.frame_tombstones import shot_is_active
-
+    реплика не стоит внутри предложения (гарантируется первым)."""
     out = []
-    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+    rows = [s for s in shots if isinstance(s, dict)]
     pieces = [(s, " ".join(str(s.get("закадр") or "").split())) for s in rows]
     nonempty = [(s, t) for s, t in pieces if t]
     cell = " ".join(str(vo or "").split())
@@ -1747,9 +1676,7 @@ def _prompts_text(s):
 
 
 def shots_continuity_problems(shots):
-    from app.services.frame_tombstones import shot_is_active
-
-    rows = [s for s in shots or [] if isinstance(s, dict) and shot_is_active(s)]
+    rows = [s for s in shots or [] if isinstance(s, dict)]
     out = []
     exited = False
     for i, s in enumerate(rows):
@@ -1904,36 +1831,31 @@ def spread_vo_sentences(shots):
     rows = [s for s in shots if isinstance(s, dict)] if isinstance(shots, list) else []
     if len(rows) < 2:
         return []
-    from app.services.frame_tombstones import shot_is_active
-
-    live = [i for i, s in enumerate(rows) if shot_is_active(s)]
-    if len(live) < 2:
-        return []
-    pieces = [_shot_s(rows[i], "закадр") for i in live]
+    pieces = [_shot_s(s, "закадр") for s in rows]
     full = " ".join(p for p in pieces if p)
     sents = split_vo_sentences(full)
-    nonempty = [k for k, p in enumerate(pieces) if p]
+    nonempty = [i for i, p in enumerate(pieces) if p]
     if len(sents) <= len(nonempty):
         return []
-    free = [k for k, i in enumerate(live) if not _is_reply(rows[i])]
+    free = [i for i, s in enumerate(rows) if not _is_reply(s)]
     if len(free) < 2:
         return []
     start = nonempty[0] if nonempty else free[0]
-    free = [k for k in free if k >= start] or free
+    free = [i for i in free if i >= start] or free
     n, m = len(sents), len(free)
     owner = []
     for k in range(n):
         owner.append(free[min(m - 1, (k * m) // n)])
-    new = {k: "" for k in range(len(live))}
+    new = {i: "" for i in range(len(rows))}
     for k, sent in enumerate(sents):
         new[owner[k]] = (new[owner[k]] + " " + sent).strip()
-    if " ".join(new[k] for k in range(len(live)) if new[k]) != full:
+    if " ".join(new[i] for i in range(len(rows)) if new[i]) != full:
         return []
     notes = []
-    for k, i in enumerate(live):
-        if pieces[k] != new[k]:
-            rows[i]["закадр"] = new[k]
-            notes.append(f"{rows[i].get('id')}: закадр разнесён по предложениям")
+    for i, s in enumerate(rows):
+        if pieces[i] != new[i]:
+            s["закадр"] = new[i]
+            notes.append(f"{s.get('id')}: закадр разнесён по предложениям")
     return notes
 
 
@@ -1949,24 +1871,16 @@ def ensure_wide_before_dialogue(shots):
 
     if not isinstance(shots, list) or not shots:
         return []
-    from app.services.frame_tombstones import shot_is_active
-
     notes = []
     i = 0
     while i < len(shots):
         s = shots[i]
-        if isinstance(s, dict) and not shot_is_active(s):
-            i += 1
-            continue
-        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1]) and shot_is_active(shots[i - 1])):
+        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])):
             i += 1
             continue
         j = i
         speakers = set()
         while j < len(shots) and isinstance(shots[j], dict) and _is_reply(shots[j]):
-            if not shot_is_active(shots[j]):
-                j += 1
-                continue
             speakers.add(_shot_s(shots[j], "говорит").casefold())
             j += 1
         prev = shots[i - 1] if i > 0 and isinstance(shots[i - 1], dict) else None

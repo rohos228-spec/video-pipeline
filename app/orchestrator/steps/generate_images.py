@@ -23,10 +23,9 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from aiogram import Bot
 from loguru import logger
@@ -34,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import (
     OutseeBot,
     OutseeContentRejectedError,
@@ -59,15 +59,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.frame_tombstones import log_paid_frame_skip
-from app.services.gpt_client import get_gpt_client
 from app.services.hitl import send_hitl_photo
-from app.services.img_streams import (
-    INFLIGHT_ATTR,
-    acquire_image_slot,
-    get_img_streams,
-)
-from app.services.outsee_retry import generate_image_with_retries
 from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_STATUS_ATTR,
@@ -83,6 +75,12 @@ from app.services.scan_frames import (
     is_valid_scene_image,
     newest_frame_image_path,
 )
+from app.services.img_streams import (
+    INFLIGHT_ATTR,
+    acquire_image_slot,
+    get_img_streams,
+)
+from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import (
     StepCancelledError,
     consume_stop,
@@ -91,7 +89,6 @@ from app.services.step_cancel import (
 )
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
-
 
 def is_transient_network_error(exc: BaseException) -> bool:
     """Проверяет, является ли ошибка временным сетевым/DNS сбоем."""
@@ -624,8 +621,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     missing_prompts = [
         fr.number
         for fr in frames
-        if log_paid_frame_skip(fr, where="generate_images") is None
-        and not is_shot_child(fr)
+        if not is_shot_child(fr)
         and is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
     ]
 
@@ -700,8 +696,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         with_prompt = sum(
             1
             for fr in frames
-            if log_paid_frame_skip(fr, where="generate_images") is None
-            and not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
         )
         missing = await scan_missing_frames(session, project)
         on_disk = sum(
@@ -752,8 +747,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         missing_png = [
             fr.number
             for fr in frames
-            if log_paid_frame_skip(fr, where="generate_images") is None
-            and not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
             and not disk_has_valid_frame_image(out_dir, fr.number)
             and fr.status is not FrameStatus.failed
         ]
@@ -833,9 +827,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                     if disk_has_shot2_image(out_dir, num):
                                         continue
                                     fr = by_num.get(num)
-                                    if fr is None or log_paid_frame_skip(
-                                        fr, where="generate_images"
-                                    ):
+                                    if fr is None:
                                         continue
                                     attrs = dict(fr.attrs or {})
                                     if not (attrs.get(SHOT2_PROMPT_ATTR) or "").strip():
@@ -1094,8 +1086,6 @@ async def _pending_shot1_numbers(
     ).scalars().all()
     out: list[int] = []
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
-            continue
         if project is not None:
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
@@ -1163,8 +1153,6 @@ async def _claim_shot1_batch(
             break
         for fr in frames:
             if fr in claimed:
-                continue
-            if log_paid_frame_skip(fr, where="generate_images"):
                 continue
             if project is not None:
                 allow = scene_regen_allows(project, fr.number, 1)
@@ -1300,8 +1288,6 @@ async def _claim_shot2_batch(
     ).scalars().all()
     claimed: list[Frame] = []
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
-            continue
         if project is not None:
             allow = scene_regen_allows(project, fr.number, 2)
             if allow is False:
@@ -1511,8 +1497,6 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-            if log_paid_frame_skip(fr, where="generate_images"):
-                continue
             if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
                 continue
             if fr.status is FrameStatus.failed:
@@ -1534,8 +1518,6 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-        if log_paid_frame_skip(fr, where="generate_images"):
-            continue
         if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         if fr.status is FrameStatus.failed:
@@ -1577,8 +1559,6 @@ async def _init_shot2_queue(
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
-            continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
             continue
@@ -1622,8 +1602,6 @@ async def _queue_freeze_end_stills(
 
     queued = 0
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
-            continue
         seed_end_still_prompt(fr)
         if not frame_needs_end_still(fr):
             continue
@@ -1757,8 +1735,6 @@ async def _generate_and_send(
     shot1_reference: Path | None = None,
 ) -> None:
     """Один прогон outsee → сохранение артефакта → HITL-карточка."""
-    if log_paid_frame_skip(frame, where="generate_images"):
-        return
     raise_if_cancelled(project.id)
     is_shot2 = shot == 2
     attrs = dict(frame.attrs or {})

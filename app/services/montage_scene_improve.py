@@ -56,7 +56,7 @@ from app.services.scene_shot_grammar import (
     is_threshold_step,
 )
 from app.services.shot_templates import format_scene_chain, parse_scene_chain
-from app.services.vo_shot_expand import _flag_attrs, main_action_text
+from app.services.vo_shot_expand import _flag_attrs, bits_from_attrs, main_action_text
 
 GROUP_NODES: tuple[tuple[str, str], ...] = (
     ("fw_action", "Действие сцены"),
@@ -1224,13 +1224,8 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Живые кадры идут по якорям подряд 1..k, у каждого якоря есть кадр.
-
-    Помеченные (карантин) в проверку не входят: они лежат в хвосте и не
-    ломают раскладку.
-    """
-    live = [s for s in shots if not s.get("карантин")]
-    seq = [s.get("якорь_n") for s in (live or shots)]
+    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
+    seq = [s.get("якорь_n") for s in shots]
     if any(not isinstance(v, int) for v in seq):
         return False
     return seq == sorted(seq) and set(seq) == set(range(1, k + 1))
@@ -1692,8 +1687,6 @@ def qc_reasons(
     shots: list[dict[str, Any]], units: list[dict[str, Any]]
 ) -> tuple[list[str], list[str]]:
     """(брак, замечания) по разделу режиссуры и shots_qc_ru."""
-    from app.services.frame_tombstones import shot_is_active
-
     hard: list[str] = []
     soft: list[str] = []
     live_shots = [shot for shot in shots if isinstance(shot, dict) and _shot_live(shot)]
@@ -1750,20 +1743,6 @@ def qc_reasons(
     return hard, soft
 
 
-def _keep_qc_kadry(parent: Any, shots: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Перед подменой списка QC: живой кадр не выпадает, закадр остаётся на месте."""
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
-
-    before = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
-    kept = keep_soft_kadry(
-        before,
-        candidate,
-        scene_id=getattr(parent, "uuid", "") or "qc",
-        number=getattr(parent, "number", 0),
-    )
-    return kept if isinstance(kept, list) else candidate
-
-
 def build_improve_qc_prompt(
     *,
     parent: Frame,
@@ -1779,12 +1758,10 @@ def build_improve_qc_prompt(
         "Кадры не добавляй и не убирай. Сюжет и число кадров не меняй. "
         "Якорей и закадра как сюжета нет."
     )
-    from app.services.frame_tombstones import shot_is_active
-
     payload = {
         "frame_uuid": str(parent.uuid or ""),
         "frame_number": int(parent.number),
-        "кадры": [s for s in shots if isinstance(s, dict) and shot_is_active(s)],
+        "кадры": shots,
     }
     _ = vo, units
     return _compose(load_group_prompt("shots_qc_ru"), "", task, payload)
@@ -1824,10 +1801,9 @@ async def stage_qc(
             )
             if candidate and len(candidate) == len(shots):
                 for i, shot in enumerate(candidate):
-                    src = shots[i] if i < len(shots) and isinstance(shots[i], dict) else None
-                    if src and src.get("якорь_n") is not None and shot.get("якорь_n") is None:
-                        shot["якорь_n"] = src.get("якорь_n")
-                candidate = _keep_qc_kadry(parent, shots, candidate)
+                    src_anchor = shots[i].get("якорь_n") if isinstance(shots[i], dict) else None
+                    if src_anchor is not None:
+                        shot["якорь_n"] = src_anchor
                 extra = repair_shots(candidate, units)
                 c_hard, c_soft = qc_reasons(candidate, units)
                 if len(c_hard) < len(hard):
@@ -2011,7 +1987,7 @@ async def improve_cell_scene(
         load_character_registry,
         match_registry_characters,
     )
-    from app.services.vo_shot_expand import _set_cs
+    from app.services.vo_shot_expand import _flag_attrs, _set_cs
 
     _ = anchors, passport
     frames = await _load_frames(session, int(project.id))

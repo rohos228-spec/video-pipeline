@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, SceneDesignCell
@@ -387,7 +387,6 @@ async def backfill_from_checkpoints(
                     select(SceneDesignCell.id).where(
                         SceneDesignCell.project_id == project.id,
                         SceneDesignCell.agent == agent,
-                        SceneDesignCell.status == "ok",
                     )
                 )
             ).scalars()
@@ -418,42 +417,13 @@ async def store_cells(
     *,
     chunk_size: int = _CHUNK,
 ) -> dict[str, int]:
-    """Перезаписать ячейки агента частями (короткие транзакции, коммит на чанк).
-
-    Было: ``delete(SceneDesignCell)`` по проекту и агенту. Теперь прежние
-    строки остаются со ``status="archived"`` и в ``load_cells(only_ok=True)``
-    не попадают.
-    """
-    stale_ids = list(
-        (
-            await session.execute(
-                select(SceneDesignCell.id).where(
-                    SceneDesignCell.project_id == project.id,
-                    SceneDesignCell.agent == agent,
-                    SceneDesignCell.status != "archived",
-                )
-            )
-        ).scalars()
+    """Перезаписать ячейки агента частями (короткие транзакции, коммит на чанк)."""
+    await session.execute(
+        delete(SceneDesignCell).where(
+            SceneDesignCell.project_id == project.id,
+            SceneDesignCell.agent == agent,
+        )
     )
-    n_archived = len(stale_ids)
-    if stale_ids:
-        await session.execute(
-            update(SceneDesignCell)
-            .where(SceneDesignCell.id.in_(stale_ids))
-            .values(
-                status="archived",
-                error="store_cells: предыдущая ячейка сохранена",
-            )
-            .execution_options(synchronize_session="fetch")
-        )
-    if n_archived:
-        logger.warning(
-            "WARN [#{}] scene_design/{}: {} ячеек archived, строки сохранены "
-            "(было delete SceneDesignCell)",
-            project.id,
-            agent,
-            n_archived,
-        )
     await session.commit()
     stored = rejected = 0
     for i in range(0, len(cells), chunk_size):
@@ -484,31 +454,9 @@ async def load_cells(
 async def wipe_cells(
     session: AsyncSession, project: Project, *, agent: str | None = None
 ) -> int:
-    """Пометить staging-ячейки archived (reset шага); ``agent`` — только одного.
-
-    Было: ``delete(SceneDesignCell)`` по всему проекту (или агенту) — сносило
-    все ячейки. Строки остаются, ``load_cells`` их не показывает.
-    """
-    id_stmt = select(SceneDesignCell.id).where(
-        SceneDesignCell.project_id == project.id,
-        SceneDesignCell.status != "archived",
-    )
+    """Удалить staging-ячейки проекта (reset шага); ``agent`` — только одного."""
+    stmt = delete(SceneDesignCell).where(SceneDesignCell.project_id == project.id)
     if agent:
-        id_stmt = id_stmt.where(SceneDesignCell.agent == agent)
-    stale_ids = list((await session.execute(id_stmt)).scalars())
-    n = len(stale_ids)
-    if stale_ids:
-        await session.execute(
-            update(SceneDesignCell)
-            .where(SceneDesignCell.id.in_(stale_ids))
-            .values(status="archived", error="wipe_cells: строка сохранена")
-            .execution_options(synchronize_session="fetch")
-        )
-    if n:
-        logger.warning(
-            "WARN [#{}] scene_design wipe_cells: {} ячеек archived, строки сохранены{}",
-            project.id,
-            n,
-            f" agent={agent}" if agent else "",
-        )
-    return n
+        stmt = stmt.where(SceneDesignCell.agent == agent)
+    res = await session.execute(stmt)
+    return int(res.rowcount or 0)

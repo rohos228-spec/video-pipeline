@@ -41,8 +41,6 @@ def _is_user_voice_file(path: Path) -> bool:
     ext = path.suffix.lower()
     if ext not in _VOICE_EXTENSIONS:
         return False
-    if path.parent.name == "_live" or ".live-" in path.stem.lower():
-        return False
     stem = path.stem.lower()
     if stem.startswith(FRAME_AUDIO_PREFIX) or stem.startswith("words_"):
         return False
@@ -289,177 +287,6 @@ def frame_clips_from_whisper(
     return _to_clips(timings)
 
 
-async def materialize_closed_timeline_audio(
-    clips: list[FrameAudioClip],
-    source: Path,
-) -> Path | None:
-    """Склеить оставшиеся клипы в новый файл. source и frame_*.mp3 не трогает.
-
-    Per-frame: у клипов разные path — склейка этих mp3.
-    Whisper: все клипы смотрят в один voice_full — вырезаем [start, start+duration).
-    Новый файл лежит в ``audio/_live/``, чтобы не попасть под маску ``voice_full*.mp3``.
-    """
-    if not clips:
-        return None
-    paths = [Path(clip.path) for clip in clips]
-    try:
-        same = {path.resolve() for path in paths}
-        source_key = source.resolve()
-    except OSError:
-        same = set(paths)
-        source_key = source
-    live_dir = source.parent / "_live"
-    live_dir.mkdir(parents=True, exist_ok=True)
-    dest = live_dir / f"{source.stem}.live-{uuid.uuid4().hex[:8]}.mp3"
-    if dest.resolve() == source_key:
-        dest = live_dir / f"voice_live_{uuid.uuid4().hex[:8]}.mp3"
-    one_file = len(same) == 1 and paths[0].resolve() == source_key
-    if one_file:
-        if not source.is_file():
-            logger.warning(
-                "WARN assemble audio: нет {}, дорожку без помеченных кусков не собрал",
-                source,
-            )
-            return None
-        await _export_source_segments(clips, source, dest)
-    else:
-        missing = [path for path in paths if not path.is_file()]
-        if missing:
-            logger.warning(
-                "WARN assemble audio: нет {} — дорожку без помеченных кусков не собрал",
-                missing[0].name,
-            )
-            return None
-        await _concat_distinct_audio(paths, dest)
-    logger.warning(
-        "WARN assemble audio: дорожка без помеченных кадров → {}, исходник {} не тронут",
-        dest.name,
-        source.name,
-    )
-    return dest
-
-
-async def _export_source_segments(
-    clips: list[FrameAudioClip],
-    source: Path,
-    dest: Path,
-) -> None:
-    parts: list[str] = []
-    for i, clip in enumerate(clips):
-        start = max(0.0, float(clip.start_ts))
-        end = start + max(0.0, float(clip.duration))
-        parts.append(
-            f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{i}]"
-        )
-    if len(clips) == 1:
-        graph = parts[0]
-        out_label = "[a0]"
-    else:
-        labels = "".join(f"[a{i}]" for i in range(len(clips)))
-        graph = ";".join(parts) + ";" + labels + f"concat=n={len(clips)}:v=0:a=1[out]"
-        out_label = "[out]"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    await _run_ffmpeg([
-        "ffmpeg", "-y", "-i", str(source),
-        "-filter_complex", graph,
-        "-map", out_label,
-        "-c:a", "libmp3lame", "-q:a", "5",
-        str(dest),
-    ])
-
-
-async def _concat_distinct_audio(paths: list[Path], dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if len(paths) == 1:
-        await _run_ffmpeg([
-            "ffmpeg", "-y", "-i", str(paths[0]),
-            "-c:a", "libmp3lame", "-q:a", "5",
-            str(dest),
-        ])
-        return
-    cmd = ["ffmpeg", "-y"]
-    for path in paths:
-        cmd.extend(["-i", str(path)])
-    labels = "".join(f"[{i}:a]" for i in range(len(paths)))
-    graph = labels + f"concat=n={len(paths)}:v=0:a=1[out]"
-    cmd.extend([
-        "-filter_complex", graph,
-        "-map", "[out]",
-        "-c:a", "libmp3lame", "-q:a", "5",
-        str(dest),
-    ])
-    await _run_ffmpeg(cmd)
-
-
-async def _mux_audio_without_marked(
-    clips: list[FrameAudioClip],
-    source: Path,
-    omit: set[int] | None,
-) -> Path:
-    """Файл для mux: исходный voice_full либо новая дорожка без помеченных кусков."""
-    if not omit:
-        return source
-    omit_ids = {int(n) for n in omit}
-    kept = [clip for clip in clips if int(clip.frame_number) not in omit_ids]
-    if len(kept) == len(clips):
-        return source
-    built = await materialize_closed_timeline_audio(kept, source)
-    if built is None:
-        raise RuntimeError(
-            "assemble: не собрал дорожку без речи помеченных кадров, "
-            "исходный voice_full не микширую"
-        )
-    return built
-
-
-def close_marked_timeline(
-    clips: list[FrameAudioClip],
-    master: float,
-    omit: set[int] | None,
-) -> tuple[list[FrameAudioClip], float]:
-    """Помеченный кадр выпадает из середины: соседи сдвигаются, длина = сумма клипов."""
-    if not omit:
-        return clips, master
-    omit_ids = {int(n) for n in omit}
-    kept: list[FrameAudioClip] = []
-    removed = False
-    for clip in clips:
-        if int(clip.frame_number) in omit_ids:
-            removed = True
-            logger.warning(
-                "WARN assemble timeline: кадр #{} помечен — слот звука закрыт, клип сохранён в списке источника",
-                clip.frame_number,
-            )
-            continue
-        kept.append(clip)
-    total = round(sum(c.duration for c in kept), 3)
-    if not kept:
-        return kept, 0.0
-    if not removed and abs(total - master) <= 0.15:
-        return kept, master
-    pos = 0.0
-    relaid: list[FrameAudioClip] = []
-    for clip in kept:
-        dur = round(float(clip.duration), 3)
-        relaid.append(
-            FrameAudioClip(
-                frame_number=clip.frame_number,
-                path=clip.path,
-                text=clip.text,
-                start_ts=round(pos, 3),
-                end_ts=round(pos + dur, 3),
-                duration=dur,
-            )
-        )
-        pos += dur
-    logger.warning(
-        "WARN assemble timeline: помеченные кадры {} вынуты из таймлайна, длина звука {:.2f}s = сумма клипов",
-        sorted(omit_ids),
-        pos,
-    )
-    return relaid, round(pos, 3)
-
-
 async def build_assembly_timeline(
     audio_dir: Path,
     voice_full_path: Path,
@@ -469,8 +296,7 @@ async def build_assembly_timeline(
     align_cells: list[tuple[int, str]] | None = None,
     words: list[WordTS] | None = None,
     per_frame_tts: bool = False,
-    omit_numbers: set[int] | None = None,
-) -> tuple[list[FrameAudioClip], float, float, bool, Path]:
+) -> tuple[list[FrameAudioClip], float, float, bool]:
     """Озвучка — единственное мерило: voice_full задаёт конец ролика.
 
     Per-frame: границы кадров = ffprobe(frame_NNN.mp3), без rescale.
@@ -479,10 +305,7 @@ async def build_assembly_timeline(
     align_cells — все ячейки R49 для map_frames (полный текст озвучки).
     cells — то же или подмножество; если align_cells задан, cells только для фильтра выхода.
 
-    Returns (clips, master_duration, time_scale, uses_per_frame_clips, mux_audio).
-
-    mux_audio — файл для склейки со видео. Если из таймлайна вынуты помеченные
-    кадры, это новый файл без их речи; voice_full и frame_*.mp3 остаются.
+    Returns (clips, master_duration, time_scale, uses_per_frame_clips).
     """
     master = await probe_duration(voice_full_path)
 
@@ -498,7 +321,7 @@ async def build_assembly_timeline(
         if raw_sum <= 0:
             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
 
-        if abs(raw_sum - master) > 0.05 and not omit_numbers:
+        if abs(raw_sum - master) > 0.05:
             logger.info(
                 "voice_full {:.2f}s != clips {:.2f}s — пересборка из frame_*.mp3",
                 master,
@@ -516,15 +339,11 @@ async def build_assembly_timeline(
             )
             master = raw_sum
 
-        if clips and abs(clips[-1].end_ts - master) > 0.01 and not omit_numbers:
+        if clips and abs(clips[-1].end_ts - master) > 0.01:
             clips[-1].end_ts = round(master, 3)
             clips[-1].duration = round(clips[-1].end_ts - clips[-1].start_ts, 3)
 
-        mux_audio = await _mux_audio_without_marked(clips, voice_full_path, omit_numbers)
-        clips, master = close_marked_timeline(clips, master, omit_numbers)
-        if mux_audio != voice_full_path and mux_audio.is_file():
-            master = await probe_duration(mux_audio)
-        return clips, master, 1.0, True, mux_audio
+        return clips, master, 1.0, True
 
     if has_all_frame_audio(audio_dir, frame_numbers) and not per_frame_tts:
         logger.warning(
@@ -554,11 +373,7 @@ async def build_assembly_timeline(
             len(mapping_cells),
             len(all_clips),
         )
-    mux_audio = await _mux_audio_without_marked(clips, voice_full_path, omit_numbers)
-    clips, master = close_marked_timeline(clips, master, omit_numbers)
-    if mux_audio != voice_full_path and mux_audio.is_file():
-        master = await probe_duration(mux_audio)
-    return clips, master, 1.0, False, mux_audio
+    return clips, master, 1.0, False
 
 
 def resolve_full_voiceover_text(project: Project) -> str:

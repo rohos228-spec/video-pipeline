@@ -695,11 +695,7 @@ def _first_text(*vals: Any) -> str:
 
 
 def _matching_kadry_item(frame: Any) -> dict[str, Any] | None:
-    from app.services.frame_tombstones import shot_is_active
-
-    planned = [
-        item for item in planned_shots_from_attrs(frame) if shot_is_active(item)
-    ]
+    planned = planned_shots_from_attrs(frame)
     if not planned:
         return None
     shot_id = coverage_shot_id(frame)
@@ -1163,8 +1159,6 @@ async def build_montage_board(
         durations = [None] * len(all_vid_paths)
     dur_iter = iter(durations)
 
-    from app.services.frame_tombstones import frame_is_active, frame_marked_deleted
-
     rows: list[dict[str, Any]] = []
     for fr, vid1, vid2, ex, has_shot2, has_shot2_video in frame_videos:
         img1 = find_shot1_image(scenes_dir, fr.number)
@@ -1222,9 +1216,6 @@ async def build_montage_board(
             {
                 "frame_id": fr.id,
                 "number": fr.number,
-                "удалён": frame_marked_deleted(fr),
-                "активен": frame_is_active(fr),
-                "карантин": bool((fr.attrs or {}).get("карантин")),
                 "voiceover_text": fr.voiceover_text,
                 "voiceover_excel": ex.get("voiceover_excel") or "",
                 "characters": characters,

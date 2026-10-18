@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 from loguru import logger
@@ -11,18 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, FrameText, Project
 from app.services.db_v2 import insert_frame_after
-from app.services.montage_board_meta import (
-    drop_pending_ops_for_frames,
-    montage_meta,
-    set_montage_meta,
-)
 from app.services.montage_coverage_ops import (
     _children_of,
     _clear_child_scene_chain,
     _load_frames,
     _refresh_shots_in_beat,
-    _stamp_deleted_shot,
     delete_coverage_child,
+)
+from app.services.montage_board_meta import (
+    drop_pending_ops_for_frames,
+    montage_meta,
+    set_montage_meta,
 )
 from app.services.vo_shot_expand import _cs, _flag_attrs, _set_cs, is_shot_child
 
@@ -249,72 +247,46 @@ async def delete_montage_frame(
     project: Project,
     frame_id: int,
 ) -> dict[str, Any]:
-    """Пометить кадр удалённым. Строка и дети сцены остаются на месте."""
+    """Удалить только этот кадр. Детей сцены не трогаем — повышаем первого."""
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     frames = await _load_frames(session, int(project.id))
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден")
-    from app.services.frame_tombstones import mark_frame_deleted
-
     number = int(frame.number)
     if is_shot_child(frame):
         await delete_coverage_child(session, project, frame, frames)
         board = montage_meta(project)
         drop_pending_ops_for_frames(board, {number})
         set_montage_meta(project, board)
-        logger.warning(
-            "WARN delete_montage_frame: дочерний кадр #{} id={} помечен, не удалён",
-            number,
-            frame_id,
-        )
-        return {
-            "ok": True,
-            "frame_id": frame_id,
-            "number": number,
-            "deleted": 0,
-            "marked": 1,
-        }
+        logger.info("montage delete child #{} frame {}", project.id, number)
+        return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
-    from app.services.frame_tombstones import frame_is_active
-
-    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
-    if kids:
-        _store_head_rollback(frame, kids)
-    reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
+    kids = _children_of(frames, frame)
+    new_head = _promote_first_child(frame, kids)
     quarantine_frame_media(project, number)
-    mark_frame_deleted(frame, project, reason)
-    _stamp_deleted_shot(frames, frame, reason)
-    promoted = _promote_first_child(frame, kids)
-    promoted_number: int | None = None
-    if promoted is not None:
-        src_vo = (frame.voiceover_text or "").strip()
-        dst = dict(getattr(promoted, "attrs", None) or {})
-        if src_vo and not str(dst.get("vo_cell_full") or "").strip():
-            dst["vo_cell_full"] = src_vo
-            promoted.attrs = dst
-            _flag_attrs(promoted)
-        if src_vo and not (promoted.voiceover_text or "").strip():
-            promoted.voiceover_text = frame.voiceover_text
-        _refresh_shots_in_beat(frames, promoted)
-        promoted_number = int(promoted.number)
-    await session.flush()
+    await _drop_frame_rows(session, project, [frame])
+    if new_head is not None:
+        leftover = await _load_frames(session, int(project.id))
+        live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
+        _refresh_shots_in_beat(leftover, live)
+        await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
-    logger.warning(
-        "WARN delete_montage_frame: кадр #{} id={} помечен, сцена и шоты на месте",
+    logger.info(
+        "montage delete frame #{} number {} (сцена жива, шотов {})",
+        project.id,
         number,
-        frame_id,
+        len(kids),
     )
     return {
         "ok": True,
         "frame_id": frame_id,
         "number": number,
-        "deleted": 0,
-        "marked": 1,
-        "promoted": promoted_number,
+        "deleted": 1,
+        "promoted": int(new_head.number) if new_head is not None else None,
     }
 
 
@@ -422,42 +394,6 @@ async def merge_montage_scenes(
         "parent_number": int(live_left.number),
         "merged_frames": len(right_members),
         "vo_scene_size": len(members),
-    }
-
-
-async def restore_montage_frame(
-    session: AsyncSession,
-    project: Project,
-    frame_id: int,
-) -> dict[str, Any]:
-    """Снять пометку «удалён». Строка кадра и шоты в ``кадры[]`` остаются."""
-    from app.services.frame_tombstones import forget_deleted
-    from app.services.montage_coverage_ops import _unstamp_deleted_shot
-
-    frames = await _load_frames(session, int(project.id))
-    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
-    if frame is None:
-        raise RuntimeError(f"кадр {frame_id} не найден")
-    rolled = _apply_head_rollback(frames, frame)
-    if not rolled:
-        attrs = dict(getattr(frame, "attrs", None) or {})
-        for key in ("удалён", "пометка", "карантин", "активен"):
-            attrs.pop(key, None)
-        frame.attrs = attrs
-        _flag_attrs(frame)
-    _unstamp_deleted_shot(frames, frame)
-    forget_deleted(project, int(frame.number))
-    await session.flush()
-    logger.warning(
-        "WARN restore_montage_frame: кадр #{} id={} снова активен, строка на месте",
-        frame.number,
-        frame.id,
-    )
-    return {
-        "ok": True,
-        "frame_id": int(frame.id),
-        "number": int(frame.number),
-        "restored": 1,
     }
 
 

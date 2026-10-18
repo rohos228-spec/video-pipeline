@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
 from app.models import (
     Artifact,
@@ -354,17 +354,9 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     has_script = bool((project.script_text or "").strip())
     has_hero_descr = bool(project.hero_description)
 
-    # Помеченный кадр не держит пайплайн на frames_ready: сброс split
-    # оставляет строку, но для статуса это как раньше — кадров нет.
-    deleted_flag = Frame.attrs["удалён"].as_integer()
-    active_flag = Frame.attrs["активен"].as_integer()
     fr_total = (
         await session.execute(
-            select(func.count(Frame.id)).where(
-                Frame.project_id == pid,
-                or_(deleted_flag.is_(None), deleted_flag == 0),
-                or_(active_flag.is_(None), active_flag != 0),
-            )
+            select(func.count(Frame.id)).where(Frame.project_id == pid)
         )
     ).scalar_one()
     (

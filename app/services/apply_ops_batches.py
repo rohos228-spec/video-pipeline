@@ -37,20 +37,20 @@ from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
-    carry_pose,
-    character_id_problems,
-    ensure_character_ids,
-    ensure_wide_before_dialogue,
     fill_bit_spans,
     is_cutaway_shot,
     merge_same_place_scenes,
-    merge_trivial_shots,
+    carry_pose,
+    character_id_problems,
+    ensure_character_ids,
     normalize_reply_cameras,
     reflow_vo_by_sentences,
+    merge_trivial_shots,
+    ensure_wide_before_dialogue,
+    spread_vo_sentences,
     repair_shot_vo_lengths,
     shots_continuity_problems,
     shots_grammar_reason,
-    spread_vo_sentences,
     vo_piece_ends_sentence,
     vo_sentence_problems,
 )
@@ -796,14 +796,10 @@ def _shot_vo_len_reason(
     cell_vo: str,
     uid: str,
 ) -> str | None:
-    from app.services.frame_tombstones import shot_is_active
-
     cell_n = _vo_visible_len(cell_vo)
     if cell_n <= SHOT_VO_MIN_CHARS and len(shots) <= 1:
         return None
     for shot in shots:
-        if not shot_is_active(shot):
-            continue
         chunk = _shot_vo_chunk(shot)
         if not chunk:
             continue  # пустая перебивка — норма
@@ -993,7 +989,10 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 bit["изменение"] = "смысл из закадра"
                 fixed += 1
             snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
-            if snapped and snapped != str(bit.get("якорь") or "").strip() or not str(bit.get("якорь") or "").strip() and snapped:
+            if snapped and snapped != str(bit.get("якорь") or "").strip():
+                bit["якорь"] = snapped
+                fixed += 1
+            elif not str(bit.get("якорь") or "").strip() and snapped:
                 bit["якорь"] = snapped
                 fixed += 1
         fields["биты"] = raw
@@ -1029,12 +1028,7 @@ def repair_action_ops(ops: list[Any]) -> int:
 
 
 def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Пустой закадр перебивки — норма. Хвост ячейки кладём на живые кадры.
-
-    Неактивный шот текст не получает: его поля остаются как были.
-    Живых шотов нет — закадр остаётся на ячейке, список не трогаем.
-    """
-    from app.services.frame_tombstones import shot_is_active
+    """Пустой закадр перебивки — норма. Хвост ячейки кладём на покрывающий кадр."""
     from app.services.scene_shot_grammar import _assign_vo_by_steps
 
     by_uid = _frames_by_uuid(frames)
@@ -1049,41 +1043,21 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
         if not isinstance(shots, list):
             continue
         uid = str(op.get("frame_uuid") or "").strip()
-        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         cell_vo = _frame_vo(by_uid.get(uid))
+        dict_shots = [s for s in shots if isinstance(s, dict)]
+        glued = " ".join(_shot_vo_chunk(s) for s in dict_shots if _shot_vo_chunk(s))
         cell = " ".join((cell_vo or "").split())
         if not cell:
             continue
-        active = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
-        if not active:
-            logger.warning(
-                "WARN repair_shot_vo_ops: нет живых шотов (uuid {}) — "
-                "закадр ячейки остаётся на ячейке, шоты не меняются",
-                uid[:8] or "?",
-            )
-            continue
-        glued = " ".join(_shot_vo_chunk(s) for s in active if _shot_vo_chunk(s))
         if glued and " ".join(glued.split()) == cell:
             continue
         pieces = _assign_vo_by_steps(
-            cell_vo, [str(s.get("действие") or "") for s in active]
+            cell_vo, [str(s.get("действие") or "") for s in dict_shots]
         )
-        for shot, piece in zip(active, pieces, strict=False):
+        for shot, piece in zip(dict_shots, pieces, strict=False):
             if _shot_vo_chunk(shot) != (piece or "").strip():
                 shot["закадр"] = piece
                 fixed += 1
-        from app.pipeline.no_deletions_guard import run_preservation_validators
-
-        frame = by_uid.get(uid) or {}
-        number = frame.get("number")
-        if number is None:
-            number = frame.get("номер") or 0
-        run_preservation_validators(
-            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": before_rows}]},
-            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": shots}]},
-            ops,
-            mode="soft",
-        )
         if "кадры" in fields:
             fields["кадры"] = shots
         elif "shots" in fields:
@@ -1469,10 +1443,8 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
-        from app.services.frame_tombstones import shot_is_active
-
         for shot in shots:
-            if not isinstance(shot, dict) or not shot_is_active(shot):
+            if not isinstance(shot, dict):
                 continue
             chunk = _shot_vo_chunk(shot)
             if vo_chunk_is_dangling(chunk):
@@ -1904,7 +1876,7 @@ def shots_reply_gate_problems(
 import contextvars as _cv
 
 # база персонажей для гейта/фикса id (ставит нода Кадры перед пачками)
-_GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_CHARACTERS", default=[])
+_GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE_CHARACTERS", default=[])
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
@@ -2008,9 +1980,7 @@ def rebalance_shot_vo(shots: list[Any]) -> list[str]:
     (2) кусок >80 — режем по границе слова, хвост/голову на соседний кадр. Только если склейка
     непустых кусков не меняется (между донором и приёмником нет непустого закадра) и кусок ≤80.
     Иначе оставляем как есть (неизбежно) — гейт сообщит."""
-    from app.services.frame_tombstones import shot_is_active
-
-    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+    rows = [s for s in shots if isinstance(s, dict)]
     notes: list[str] = []
 
     def vo(s: dict[str, Any]) -> str:
@@ -2137,49 +2107,6 @@ def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(s) if isinstance(s, dict) else {"значение": s} for s in raw]
 
 
-def _preserve_pack_ops(ops: list[Any], chunk: list[dict[str, Any]]) -> None:
-    """Перед коммитом пачки: живой кадр из снимка не выпадает из кадры[]."""
-    from app.pipeline.no_deletions_guard import run_preservation_validators
-
-    by_uid = {
-        str(fr.get("uuid") or "").strip(): fr
-        for fr in chunk or []
-        if isinstance(fr, dict) and str(fr.get("uuid") or "").strip()
-    }
-    last: dict[str, dict[str, Any]] = {}
-    for op in ops or []:
-        if not isinstance(op, dict):
-            continue
-        fields = op.get("fields")
-        if not isinstance(fields, dict):
-            continue
-        uid = str(op.get("frame_uuid") or "").strip()
-        if not uid:
-            continue
-        if "кадры" in fields or "shots" in fields:
-            last[uid] = op
-    if not last:
-        return
-    before_scenes: list[dict[str, Any]] = []
-    after_scenes: list[dict[str, Any]] = []
-    for uid, op in last.items():
-        frame = by_uid.get(uid) or {}
-        fields = op["fields"]
-        key = "кадры" if "кадры" in fields else "shots"
-        new = fields.get(key)
-        number = frame.get("number")
-        if number is None:
-            number = frame.get("номер") or 0
-        before_scenes.append({"id": uid, "номер": number, "кадры": _frame_shot_rows(frame)})
-        after_scenes.append({"id": uid, "номер": number, "кадры": new})
-    run_preservation_validators(
-        {"сцены": before_scenes},
-        {"сцены": after_scenes},
-        ops,
-        mode="soft",
-    )
-
-
 def _frame_shot_rows(frame: dict[str, Any]) -> list[dict[str, Any]]:
     raw = frame.get("кадры")
     if not isinstance(raw, list):
@@ -2285,19 +2212,7 @@ def coalesce_cell_shot_ops(
         slot = merged[uid]
         fields = dict(slot["fields"])
         if slot["shots"]:
-            from app.pipeline.no_deletions_guard import keep_soft_kadry
-
-            number = 0
-            for fr in frames or []:
-                if str(fr.get("uuid") or "").strip() == uid:
-                    number = fr.get("number") if fr.get("number") is not None else fr.get("номер") or 0
-                    break
-            fields["кадры"] = keep_soft_kadry(
-                existing.get(uid) or [],
-                slot["shots"],
-                scene_id=uid,
-                number=number,
-            )
+            fields["кадры"] = slot["shots"]
         out.append({"frame_uuid": uid, "fields": fields})
     return out
 
@@ -3159,7 +3074,6 @@ async def run_apply_ops_batched(
             payload = dict(res.apply_ops or {})
             payload["ops"] = ops
             payload["export_xlsx"] = False
-            _preserve_pack_ops(payload["ops"], chunk)
             async with apply_lock:
                 await apply_fn(payload)
         if (footer_kind or "").strip().lower() in {

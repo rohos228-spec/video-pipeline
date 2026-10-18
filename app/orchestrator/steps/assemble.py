@@ -33,7 +33,7 @@ from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline, has_all_frame_audio
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
-from app.services.media_probe import probe_video_size
+from app.services.media_probe import probe_duration, probe_video_size
 from app.services.montage.variant2 import MONTAGE_ENGINE_V2, run_variant2
 from app.services.montage_board_meta import montage_meta
 from app.services.montage_asr import ensure_montage_words
@@ -158,21 +158,6 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
     if not frames_all:
         raise RuntimeError(
             "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
-        )
-
-    from app.services.frame_tombstones import frame_is_active
-
-    marked_numbers = [int(fr.number) for fr in frames_all if not frame_is_active(fr)]
-    if marked_numbers:
-        logger.warning(
-            "WARN [#{}] assemble: кадры {} помечены «удалён» — не входят в ролик, строки сохранены",
-            project.id,
-            marked_numbers,
-        )
-    frames_all = [fr for fr in frames_all if frame_is_active(fr)]
-    if not frames_all:
-        raise RuntimeError(
-            "нет активных кадров — помеченные «удалён» не входят в ролик, строки сохранены"
         )
 
     frames: list[Frame] = []
@@ -355,7 +340,6 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             bot,
             frames=frames,
             frames_all=frames_all,
-            marked_numbers=marked_numbers,
             skipped_no_video=skipped_no_video,
             audio=audio,
             audio_path=audio_path,
@@ -387,7 +371,6 @@ async def _assemble_body(
     *,
     frames: list[Frame],
     frames_all: list[Frame],
-    marked_numbers: list[int],
     skipped_no_video: list[int],
     audio,
     audio_path: Path,
@@ -404,57 +387,26 @@ async def _assemble_body(
     timeline_mode = "excel-r15"
 
     if per_frame_tts:
-        (
-            audio_clips,
-            audio_duration,
-            time_scale,
-            per_frame_audio,
-            mux_audio,
-        ) = await build_assembly_timeline(
+        audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
             audio_dir,
             audio_path,
             frame_numbers,
             cells=cells,
             words=words,
             per_frame_tts=True,
-            omit_numbers=set(marked_numbers),
         )
         timeline_mode = "per-frame"
     else:
         from app.services.frame_audio import FrameAudioClip
         from app.services.montage.r15 import load_r15_markers, resolve_montage_frame_numbers
-        from app.services.montage.variant2 import prepare_r15_live_voice, shift_words_past_cuts
 
         frame_numbers = resolve_montage_frame_numbers(project, frame_numbers)
-        marked_set = {int(n) for n in marked_numbers}
-        marked_in_sheet = [n for n in frame_numbers if int(n) in marked_set]
-        kept_numbers = [n for n in frame_numbers if int(n) not in marked_set]
-        if not kept_numbers:
-            raise RuntimeError(
-                "нет активных меток R15 — помеченные «удалён» не входят в ролик"
-            )
-        markers, ts_row = load_r15_markers(project, kept_numbers)
-        if marked_in_sheet:
-            marked_markers, _marked_row = load_r15_markers(project, marked_in_sheet)
-            markers = [*markers, *marked_markers]
-        markers, mux_audio, audio_duration, r15_cuts = await prepare_r15_live_voice(
-            markers, audio_path, marked_set
-        )
-        if r15_cuts:
-            words = shift_words_past_cuts(words, r15_cuts)
-        frame_numbers = [m.frame_number for m in markers]
-        if mux_audio.resolve() != audio_path.resolve():
-            logger.warning(
-                "WARN [#{}] assemble R15: mux {} ({:.2f}s), исходный {} не тронут",
-                project.id,
-                mux_audio.name,
-                audio_duration,
-                audio_path.name,
-            )
+        markers, ts_row = load_r15_markers(project, frame_numbers)
+        audio_duration = await probe_duration(audio_path)
         audio_clips = [
             FrameAudioClip(
                 m.frame_number,
-                mux_audio,
+                audio_path,
                 "",
                 m.start_s,
                 m.end_s,
@@ -564,7 +516,7 @@ async def _assemble_body(
             logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
             clips,
-            mux_audio,
+            audio_path,
             out_path,
             subtitles_ass=subs_path,
             max_duration=audio_duration,
@@ -582,12 +534,10 @@ async def _assemble_body(
         await run_variant2(
             project,
             frame_numbers,
-            mux_audio,
+            audio_path,
             out_path,
             bgm=bgm,
             sfx=sfx_inputs,
-            markers=markers,
-            ts_row=ts_row,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.

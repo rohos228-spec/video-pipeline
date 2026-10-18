@@ -1344,32 +1344,8 @@ def export_project_xlsx(
         except Exception:  # noqa: BLE001
             snap = None
         cells = 0
-        from app.services.frame_tombstones import frame_is_active
-
-        plan_rows = {
-            ROW_IMAGE_PROMPT_V8,
-            ROW_IMAGE_PROMPT_2_V8,
-            ROW_VIDEO_PROMPT_V8,
-            ROW_VIDEO_PROMPT_2_V8,
-            ROW_VOICEOVER_V8,
-            ROW_DURATION_V8,
-            ROW_TIMECODE_V8,
-            ROW_PERSONS_PRIMARY,
-            *(_ATTR_EXCEL_ROWS.values()),
-        }
         for fr in frames:
             col = fr.number + 2
-            if not frame_is_active(fr):
-                from loguru import logger
-
-                logger.warning(
-                    "WARN export_project_xlsx: кадр #{} помечен — колонка плана очищена, строка БД на месте",
-                    fr.number,
-                )
-                for row in plan_rows:
-                    ws.cell(row=row, column=col).value = None
-                    cells += 1
-                continue
             attrs = fr.attrs or {}
             writes = {
                 ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",

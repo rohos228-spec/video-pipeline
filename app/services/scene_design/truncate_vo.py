@@ -6,15 +6,10 @@ import math
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project
-from app.services.frame_tombstones import (
-    frame_is_active,
-    mark_frame_deleted,
-    park_marked_frame_numbers,
-)
+from app.models import Artifact, Frame, FrameEdge, FrameText, Project, PromptVersion
 from app.services.scene_design.camera_expand import (
     _subdivide_attr,
     renumber_frames_by_sort_key as _renumber,
@@ -31,11 +26,7 @@ async def truncate_vo_to_ratio(
 
     Текст в ячейках **не трогаем и не склеиваем**. Если кадры уже
     subdivided — оставляем все шоты выбранных родительских диапазонов.
-    Хвост помечается ``удалён`` / ``активен: False``. Строки Frame,
-    FrameText, PromptVersion, Artifact и FrameEdge не удаляются.
-
-    Было: ``delete(FrameText)`` / ``delete(FrameEdge)`` / ``delete(Frame)``
-    по ``delete_ids``. ``script_text`` = склейка живых VO через ``\\n``.
+    Удаляем только хвост. ``script_text`` = склейка оставшихся VO через ``\\n``.
     """
     keep_ratio = min(1.0, max(0.05, float(keep_ratio)))
     frames = list(
@@ -76,29 +67,33 @@ async def truncate_vo_to_ratio(
             kept_ids.add(f.id)
 
     delete_ids = [f.id for f in frames if f.id not in kept_ids]
-    drop_set = set(delete_ids)
-    marked = 0
-    for i, fr in enumerate(frames):
-        if fr.id not in drop_set:
-            continue
-        mark_frame_deleted(
-            fr,
-            project,
-            "truncate_vo: хвост за keep_ratio помечен, строка сохранена",
+
+    if delete_ids:
+        await session.execute(
+            delete(FrameText).where(FrameText.frame_id.in_(delete_ids))
         )
-        fr.sort_key = 1_000_000_000_000.0 + i
-        marked += 1
-    if marked:
+        await session.execute(
+            delete(PromptVersion).where(PromptVersion.frame_id.in_(delete_ids))
+        )
+        await session.execute(
+            delete(Artifact).where(Artifact.frame_id.in_(delete_ids))
+        )
+        await session.execute(
+            delete(FrameEdge).where(
+                FrameEdge.project_id == project.id,
+                or_(
+                    FrameEdge.from_frame_id.in_(delete_ids),
+                    FrameEdge.to_frame_id.in_(delete_ids),
+                ),
+            )
+        )
+        await session.execute(delete(Frame).where(Frame.id.in_(delete_ids)))
         await session.flush()
 
     ordered = await _renumber(session, project)
-    if marked:
-        park_marked_frame_numbers(ordered, project)
-        await session.flush()
-    live = [f for f in ordered if frame_is_active(f)]
     vo_parts = [
         (f.voiceover_text or "").strip()
-        for f in live
+        for f in ordered
         if (f.voiceover_text or "").strip()
     ]
     if vo_parts:
@@ -108,19 +103,10 @@ async def truncate_vo_to_ratio(
         "parents_total": len(parent_order),
         "parents_kept": keep_n,
         "parents_dropped": len(drop_parents),
-        "kept_frames": len(live),
-        "deleted_frames": 0,
-        "marked_frames": marked,
+        "kept_frames": len(ordered),
+        "deleted_frames": len(delete_ids),
         "script_len": len(project.script_text or ""),
         "keep_ratio": keep_ratio,
     }
-    if marked:
-        logger.warning(
-            "WARN [#{}] truncate_vo: помечено {} кадров, строки сохранены {}",
-            project.id,
-            marked,
-            report,
-        )
-    else:
-        logger.info("[#{}] truncate_vo: {}", project.id, report)
+    logger.info("[#{}] truncate_vo: {}", project.id, report)
     return report

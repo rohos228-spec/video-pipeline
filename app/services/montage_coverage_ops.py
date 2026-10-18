@@ -6,13 +6,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Artifact,
     Frame,
+    FrameEdge,
     FrameStatus,
+    FrameText,
     Project,
+    PromptVersion,
 )
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
@@ -323,6 +327,33 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
     _flag_attrs(frame)
 
 
+def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
+    """Совместимость вызовов: шот не вырезается, только помечается неактивным."""
+    _mark_kadry_id_inactive(frame, shot_id, where="_remove_kadry_id")
+
+
+def _mark_kadry_id_inactive(frame: Frame, shot_id: str, *, where: str) -> None:
+    sid = (shot_id or "").strip()
+    if not sid:
+        return
+    planned = [dict(item) for item in planned_shots_from_attrs(frame)]
+    hit = False
+    for item in planned:
+        if str(item.get("id") or "").strip() != sid:
+            continue
+        item["активен"] = False
+        item["карантин"] = True
+        item["пометка"] = "шот помечен, не вырезан"
+        hit = True
+    if not hit:
+        return
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["кадры"] = planned
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    logger.warning("WARN {}: шот {} помечен, лестница не сокращена", where, sid)
+
+
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")
@@ -388,15 +419,7 @@ def _detach_from_coverage_ancestor(
 
 
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
-    from app.services.frame_tombstones import frame_is_active
-
-    if not frame_is_active(parent):
-        logger.warning(
-            "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
-            getattr(parent, "number", None),
-        )
-        return
-    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
+    kids = _children_of(frames, parent)
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -773,21 +796,14 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
+    """Живые шоты ячейки: leftover-клей не маппим и не вставляем после него.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
-    а помеченный шот возвращается новым активным кадром.
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
     """
-    from app.services.frame_tombstones import frame_is_active
-
-    live = [
-        m
-        for m in members
-        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
-    ]
+    live = [m for m in members if not bool(_cs(m).get("leftover"))]
     if not live:
         live = [parent]
-    elif parent not in live and frame_is_active(parent):
+    elif parent not in live:
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1049,140 +1065,37 @@ def apply_coverage_kind(
     _refresh_shots_in_beat(frames, vo_head)
 
 
-def _stamp_matching_shot(host: Frame, shot_id: str, fields: dict[str, Any]) -> bool:
-    """Пометить элемент ``кадры[]`` с этим id. Список не укорачивается."""
-    sid = (shot_id or "").strip()
-    if not sid:
-        return False
-    planned = planned_shots_from_attrs(host)
-    hit = False
-    for item in planned:
-        if str(item.get("id") or "").strip() == sid:
-            item.update(fields)
-            hit = True
-    if not hit:
-        return False
-    attrs = dict(getattr(host, "attrs", None) or {})
-    attrs["кадры"] = planned
-    host.attrs = attrs
-    _flag_attrs(host)
-    return True
-
-
-def _stamp_deleted_shot(frames: list[Frame], frame: Frame, reason: str) -> None:
-    """Пометить шот в собственных «кадрах» и в лестнице родителя.
-
-    Совпадение только по id шота: индексный fallback не используется,
-    чтобы не пометить чужой K1. Элементы из списка не выкидываются.
-    """
-    fields: dict[str, Any] = {
-        "карантин": True,
-        "пометка": reason,
-        "удалён": True,
-        "активен": False,
-    }
-    sid = coverage_shot_id(frame)
-    if not sid:
-        return
-    own = planned_shots_from_attrs(frame)
-    if own:
-        for item in own:
-            item_id = str(item.get("id") or "").strip()
-            if item_id == sid:
-                item.update(fields)
-        attrs = dict(getattr(frame, "attrs", None) or {})
-        attrs["кадры"] = own
-        frame.attrs = attrs
-        _flag_attrs(frame)
-    parent = _vo_parent_frame(frames, frame)
-    if parent is None:
-        return
-    seen: set[int] = set()
-    for host in _vo_members(frames, parent):
-        if host is frame:
-            continue
-        key = int(getattr(host, "id", 0) or 0) or int(host.number)
-        if key in seen:
-            continue
-        seen.add(key)
-        _stamp_matching_shot(host, sid, fields)
-
-
-def _unstamp_deleted_shot(frames: list[Frame], frame: Frame) -> None:
-    """Снять пометку удаления с шота. Список ``кадры[]`` не укорачивается."""
-    clear = ("карантин", "пометка", "удалён", "активен")
-
-    def _clear(item: dict[str, Any]) -> None:
-        for key in clear:
-            item.pop(key, None)
-
-    sid = coverage_shot_id(frame)
-    if not sid:
-        return
-    own = planned_shots_from_attrs(frame)
-    if own:
-        for item in own:
-            item_id = str(item.get("id") or "").strip()
-            if item_id == sid:
-                _clear(item)
-        attrs = dict(getattr(frame, "attrs", None) or {})
-        attrs["кадры"] = own
-        frame.attrs = attrs
-        _flag_attrs(frame)
-    parent = _vo_parent_frame(frames, frame)
-    if parent is None:
-        return
-    seen: set[int] = set()
-    for host in _vo_members(frames, parent):
-        if host is frame:
-            continue
-        key = int(getattr(host, "id", 0) or 0) or int(host.number)
-        if key in seen:
-            continue
-        seen.add(key)
-        planned = planned_shots_from_attrs(host)
-        hit = False
-        for item in planned:
-            if str(item.get("id") or "").strip() == sid:
-                _clear(item)
-                hit = True
-        if not hit:
-            continue
-        attrs = dict(getattr(host, "attrs", None) or {})
-        attrs["кадры"] = planned
-        host.attrs = attrs
-        _flag_attrs(host)
-
-
 async def delete_coverage_child(
     session: AsyncSession,
     project: Project,
     frame: Frame,
     frames: list[Frame],
 ) -> None:
-    """Мягкая пометка дочернего кадра. Строка Frame и тексты остаются."""
     parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):
         raise RuntimeError("удалять можно только дочерний кадр")
     from app.services.ensure_frames_from_disk import quarantine_frame_media
-    from app.services.frame_tombstones import mark_frame_deleted
 
-    reason = "delete_coverage_child: дочерний кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, int(frame.number))
-    mark_frame_deleted(frame, project, reason)
-    _stamp_deleted_shot(frames, frame, reason)
-    if parent is not None and int(parent.number) != int(frame.number):
-        from app.services.frame_tombstones import frame_is_active
-
-        if frame_is_active(parent):
-            _refresh_shots_in_beat(frames, parent)
-    await session.flush()
+    sid = coverage_shot_id(frame)
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["активен"] = False
+    attrs["удалён"] = True
+    attrs["карантин"] = True
+    attrs["пометка"] = "delete_coverage_child: кадр помечен, не удалён"
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    _set_cs(frame, leftover=True)
     logger.warning(
-        "WARN delete_coverage_child: кадр #{} id={} помечен, PromptVersion/FrameText на месте",
+        "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
         frame.number,
         frame.id,
     )
+    await session.flush()
+    if parent is not None and int(parent.number) != int(frame.number):
+        _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
+        _refresh_shots_in_beat(frames, parent)
 
 
 def _clear_child_scene_chain(frame: Frame) -> None:
@@ -1237,25 +1150,6 @@ def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]
         _patch_kadry_item(member, **{k: v for k, v in (("роль", role), ("объект", obj)) if v})
 
 
-def _preserve_parent_kadry(parent: Any, before_rows: list[Any], kadry: Any) -> Any:
-    """Перед заменой зеркала кадры[]: пропавший живой кадр остаётся неактивным."""
-    from app.pipeline.no_deletions_guard import run_preservation_validators
-
-    if not isinstance(kadry, list):
-        return kadry
-    uid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
-    number = getattr(parent, "number", None)
-    if number is None:
-        number = 0
-    run_preservation_validators(
-        {"сцены": [{"id": uid, "номер": number, "кадры": before_rows}]},
-        {"сцены": [{"id": uid, "номер": number, "кадры": kadry}]},
-        None,
-        mode="soft",
-    )
-    return kadry
-
-
 async def apply_coverage_scene_action(
     session: AsyncSession,
     project: Project,
@@ -1305,45 +1199,25 @@ async def apply_coverage_scene_action(
         )
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
+    from app.services.vo_shot_expand import shot_is_active
 
-    old_kadry = (getattr(parent, "attrs", None) or {}).get("кадры")
-    before_rows = [
-        dict(shot) if isinstance(shot, dict) else shot
-        for shot in old_kadry
-    ] if isinstance(old_kadry, list) else []
-    kadry = merge_kadry_keep_missing(old_kadry, kadry)
-    live_kadry = [shot for shot in kadry if shot_is_active(shot)]
-    layout = live_kadry
-    if not layout:
-        logger.warning(
-            "WARN montage scene_action #{} ячейка {}: нет живых шотов, "
-            "раскладка пустая, неактивные сохранены",
-            project.id,
-            getattr(parent, "number", "?"),
-        )
-        attrs = dict(getattr(parent, "attrs", None) or {})
-        attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
-        parent.attrs = attrs
-        _flag_attrs(parent)
-        return {
-            "shots": 0,
-            "frames": 0,
-            "inserted_frames": 0,
-            "skipped_shots": 0,
-            "renumber": {},
-            "chain": "",
-        }
-    if lock_parent_plan:
-        parent_plan = parent_establishing_plan(layout[0].get("план"))
-    else:
-        parent_plan = str(layout[0].get("план") or "").strip() or "СРЕДНИЙ"
-    layout[0]["план"] = parent_plan
-    layout[0]["parent_id"] = None
-    master_id = str(layout[0].get("id") or f"{int(parent.number)}-K1")
-    layout[0]["id"] = master_id
-    for shot in layout[1:]:
-        shot["parent_id"] = master_id
+    # attrs["кадры"] хранит полный список, включая помеченные и хвост
+    # длиннее MAX_IMPROVE_SHOTS. На кадры идёт только layout живых шотов.
+    # Свёртка MAX_IMPROVE_SHOTS в «кадры» не пишется: fold режет список.
+    layout = [shot for shot in kadry if shot_is_active(shot)]
+    parent_plan = "СРЕДНИЙ"
+    master_id = f"{int(parent.number)}-K1"
+    if layout:
+        if lock_parent_plan:
+            parent_plan = parent_establishing_plan(layout[0].get("план"))
+        else:
+            parent_plan = str(layout[0].get("план") or "").strip() or "СРЕДНИЙ"
+        layout[0]["план"] = parent_plan
+        layout[0]["parent_id"] = None
+        master_id = str(layout[0].get("id") or master_id)
+        layout[0]["id"] = master_id
+        for shot in layout[1:]:
+            shot["parent_id"] = master_id
     if with_coverage and parse_scene_chain(raw):
         chain_text = raw
     else:
@@ -1355,7 +1229,7 @@ async def apply_coverage_scene_action(
                     "action": str(shot.get("действие") or ""),
                     "vo": str(shot.get("закадр") or ""),
                 }
-                for i, shot in enumerate(layout)
+                for i, shot in enumerate(kadry)
             ]
         )
     if not chain_text:
@@ -1370,7 +1244,7 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
+    attrs["кадры"] = kadry
     parent.attrs = attrs
     _flag_attrs(parent)
 
@@ -1404,35 +1278,26 @@ async def apply_coverage_scene_action(
             len(group),
         )
 
+    shot_total = len(kadry)
     used = min(len(layout), len(group))
-    parent_sid = str(layout[0].get("id") or f"{int(parent.number)}-K1")
+    # Хвост закадра живых шотов клеится на последний кадр. Помеченный
+    # в layout не входит — его закадр не садится на живой кадр.
+    voiced = (
+        fold_excess_shot_voiceover(layout, used)
+        if used and len(layout) > used
+        else layout
+    )
+    parent_sid = str((layout[0].get("id") if layout else "") or master_id)
     for i, member in enumerate(group[:used]):
-        shot = layout[i]
+        shot = voiced[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 
         seed_end_still_prompt(member)
         piece = " ".join(str(shot.get("закадр") or "").split())
-        existing_vo = " ".join(str(getattr(member, "voiceover_text", "") or "").split())
-        live_pieces = [
-            " ".join(str(row.get("закадр") or "").split())
-            for row in layout
-            if isinstance(row, dict) and str(row.get("закадр") or "").strip()
-        ]
-        # Ячейка уже держит закадр всех живых шотов — не сужаем её до одного куска.
-        # Чужой кусок помеченного шота в этот текст не входит и не дописывается.
-        keep_cell_vo = bool(
-            piece
-            and existing_vo
-            and used < len(layout)
-            and all(part in existing_vo for part in live_pieces)
-            and len(existing_vo) >= len(piece)
-        )
-        if piece and not keep_cell_vo:
+        if piece:
             member.voiceover_text = piece
             _set_cs(member, vo_shot=piece)
-        elif piece:
-            _set_cs(member, vo_shot=existing_vo)
         extra: dict[str, Any] = {
             "shot_id": str(shot.get("id") or ""),
             "shot_index": i + 1,
@@ -1502,7 +1367,7 @@ async def apply_coverage_scene_action(
         "shots": used,
         "frames": len(group),
         "inserted_frames": len(inserted),
-        "skipped_shots": max(0, len(kadry) - used),
+        "skipped_shots": max(0, shot_total - used),
         "renumber": remap,
         "chain": chain_text,
     }
@@ -1573,36 +1438,7 @@ async def apply_coverage_op(
             parent_number=parent_number,
         )
     elif op_type == "coverage_delete":
-        from app.services.ensure_frames_from_disk import quarantine_frame_media
-        from app.services.frame_tombstones import frame_is_active, mark_frame_deleted
-
-        parent = _vo_parent_frame(frames, frame)
-        is_child = parent is not None and int(parent.number) != int(frame.number)
-        if not (is_shot_child(frame) or is_child):
-            logger.warning(
-                "WARN coverage_delete: кадр #{} не дочерний — отказ, без пометки и без отвязки",
-                frame.number,
-            )
-            return {
-                "ok": False,
-                "refused": "not_child",
-                "highlight": slot_key_from_op(op),
-                "frame_number": frame_number,
-                "op": op,
-                "regen_image": False,
-            }
-        reason = (
-            "coverage_delete в авто-очереди: кадр помечен, не удалён; медиа в карантине"
-        )
-        logger.warning(
-            "WARN coverage_delete: кадр #{} помечен «удалён», не удалён; медиа в карантине",
-            frame.number,
-        )
-        quarantine_frame_media(project, int(frame.number))
-        mark_frame_deleted(frame, project, reason)
-        _stamp_deleted_shot(frames, frame, reason)
-        if parent is not None and frame_is_active(parent):
-            _refresh_shots_in_beat(frames, parent)
+        await delete_coverage_child(session, project, frame, frames)
 
     await session.flush()
     highlight = slot_key_from_op(op)

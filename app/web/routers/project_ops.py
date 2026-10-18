@@ -956,29 +956,6 @@ async def montage_board_delete_frame(
     return result
 
 
-@router.post("/{project_id}/montage-board/frames/{frame_id}/restore")
-async def montage_board_restore_frame(
-    project_id: int,
-    frame_id: int,
-    session: AsyncSession = Depends(get_project_session),
-) -> dict:
-    """Вернуть помеченный кадр в ленту. Строка не создаётся заново."""
-    from app.services.montage_board_frames import restore_montage_frame
-
-    p = _project_or_404(await session.get(Project, project_id))
-    try:
-        result = await restore_montage_frame(session, p, frame_id)
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    await session.commit()
-    await publish_project_event(
-        project_id,
-        event_type="project_updated",
-        payload={"montage_frame_restored": True, "frame_id": frame_id},
-    )
-    return result
-
-
 async def _scene_editor_state(session: AsyncSession, project: Project, frame_id: int) -> dict:
     from sqlalchemy import select as _select
 

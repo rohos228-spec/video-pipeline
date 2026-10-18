@@ -19,7 +19,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -792,162 +791,6 @@ async def _mux(
     await _run(cmd, context="mux")
 
 
-def _merge_time_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    ordered = sorted((float(a), float(b)) for a, b in ranges if b > a + 0.001)
-    if not ordered:
-        return []
-    merged: list[tuple[float, float]] = [ordered[0]]
-    for start, end in ordered[1:]:
-        last_start, last_end = merged[-1]
-        if start <= last_end + 0.001:
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    return merged
-
-
-def _shift_time(moment: float, cuts: list[tuple[float, float]]) -> float:
-    """Сдвинуть точку влево на сумму вырезанных интервалов, которые уже прошли."""
-    removed = 0.0
-    for start, end in cuts:
-        if end <= moment + 1e-6:
-            removed += end - start
-        elif start < moment:
-            removed += moment - start
-            break
-        else:
-            break
-    return round(max(0.0, moment - removed), 3)
-
-
-def _kept_voice_spans(
-    cuts: list[tuple[float, float]],
-    voice_s: float,
-) -> list[tuple[float, float]]:
-    spans: list[tuple[float, float]] = []
-    cursor = 0.0
-    for start, end in cuts:
-        start = max(0.0, start)
-        end = min(voice_s, end)
-        if start > cursor + 0.01:
-            spans.append((round(cursor, 3), round(start, 3)))
-        cursor = max(cursor, end)
-    if voice_s > cursor + 0.01:
-        spans.append((round(cursor, 3), round(voice_s, 3)))
-    return [(a, b) for a, b in spans if b > a + 0.01]
-
-
-def shift_words_past_cuts(words: list[Any], cuts: list[tuple[float, float]]) -> list[Any]:
-    """Слова вне вырезов в шкале live-дорожки. Слова внутри выреза выпадают."""
-    from app.services.whisper import WordTS
-
-    if not cuts:
-        return list(words)
-    shifted: list[WordTS] = []
-    for word in words:
-        start = float(word.start)
-        end = float(word.end)
-        if any(start < b - 1e-6 and end > a + 1e-6 for a, b in cuts):
-            continue
-        new_start = _shift_time(start, cuts)
-        new_end = _shift_time(end, cuts)
-        if new_end <= new_start + 1e-6:
-            continue
-        shifted.append(
-            WordTS(
-                word=str(word.word),
-                start=new_start,
-                end=new_end,
-                prob=float(getattr(word, "prob", 0.0) or 0.0),
-            )
-        )
-    return shifted
-
-
-async def prepare_r15_live_voice(
-    markers: list[R15Marker],
-    voice: Path,
-    omit_numbers: set[int] | None,
-) -> tuple[list[R15Marker], Path, float, list[tuple[float, float]]]:
-    """Дорожка R15 без речи помеченных кадров и метки, сдвинутые под эту дорожку.
-
-    Исходный ``voice`` не перезаписывается: куски пишутся в ``audio/_live/*.live-*.mp3``
-    тем же сборщиком, что и per-frame mux. Паузы между метками и хвост после
-    последней метки остаются. Если помеченных меток нет — возвращается исходный файл.
-    Четвёртый элемент — интервалы выреза в шкале исходника (для сдвига ``words``).
-    """
-    voice_s = await probe_duration(voice)
-    omit = {int(n) for n in (omit_numbers or set())}
-    marked = [m for m in markers if int(m.frame_number) in omit]
-    kept = [m for m in markers if int(m.frame_number) not in omit]
-    if not marked:
-        return kept, voice, voice_s, []
-    if not kept:
-        raise RuntimeError("R15: после пометки кадров не осталось меток для монтажа")
-
-    cuts = _merge_time_ranges([(m.start_s, m.end_s) for m in marked])
-    cuts = _merge_time_ranges(
-        [(max(0.0, a), min(voice_s, b)) for a, b in cuts if min(voice_s, b) > max(0.0, a)]
-    )
-    if not cuts:
-        return kept, voice, voice_s, []
-
-    from app.services.frame_audio import FrameAudioClip, materialize_closed_timeline_audio
-
-    spans = _kept_voice_spans(cuts, voice_s)
-    if not spans:
-        raise RuntimeError(
-            "R15: не собрал дорожку без речи помеченных кадров, исходный voice_full не микширую"
-        )
-    clips = [
-        FrameAudioClip(
-            frame_number=index + 1,
-            path=voice,
-            text="",
-            start_ts=start,
-            end_ts=end,
-            duration=round(end - start, 3),
-        )
-        for index, (start, end) in enumerate(spans)
-    ]
-    built = await materialize_closed_timeline_audio(clips, voice)
-    if built is None or not built.is_file():
-        raise RuntimeError(
-            "R15: не собрал дорожку без речи помеченных кадров, исходный voice_full не микширую"
-        )
-
-    shifted: list[R15Marker] = []
-    for marker in sorted(kept, key=lambda m: (m.start_s, m.frame_number)):
-        start = _shift_time(marker.start_s, cuts)
-        end = _shift_time(marker.end_s, cuts)
-        if end <= start + 0.01:
-            logger.warning(
-                "WARN R15: кадр {} схлопнулся после выреза помеченных — метка не идёт в ролик",
-                marker.frame_number,
-            )
-            continue
-        shifted.append(
-            R15Marker(
-                frame_number=marker.frame_number,
-                label=marker.label,
-                start_s=start,
-                end_s=end,
-            )
-        )
-    if not shifted:
-        raise RuntimeError("R15: после сдвига меток не осталось кадров для монтажа")
-    new_dur = await probe_duration(built)
-    logger.warning(
-        "WARN R15: речь помеченных кадров {} вырезана → {}, {:.2f}s → {:.2f}s, исходник {} не тронут",
-        sorted(omit),
-        built.name,
-        voice_s,
-        new_dur,
-        voice.name,
-    )
-    return shifted, built, new_dur, cuts
-
-
 async def run_variant2(
     project: Project,
     frame_numbers: list[int],
@@ -956,9 +799,6 @@ async def run_variant2(
     *,
     bgm: BgmConfig | None = None,
     sfx: list[Any] | None = None,
-    markers: list[R15Marker] | None = None,
-    ts_row: int | None = None,
-    omit_numbers: set[int] | None = None,
 ) -> Path:
     if not voice.is_file():
         raise RuntimeError(f"нет озвучки: {voice}")
@@ -967,15 +807,7 @@ async def run_variant2(
     final_dir = project.data_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
 
-    if markers is None:
-        markers, ts_row = load_r15_markers(project, frame_numbers)
-    elif ts_row is None:
-        ts_row = 15
-    if omit_numbers:
-        # Помеченный кадр ещё в списке меток: вырезаем его речь и сдвигаем соседей.
-        markers, voice, _live_s, _cuts = await prepare_r15_live_voice(
-            markers, voice, omit_numbers
-        )
+    markers, ts_row = load_r15_markers(project, frame_numbers)
     voice_s = await probe_duration(voice)
     marker_end = markers[-1].end_s
     gap = voice_s - marker_end
