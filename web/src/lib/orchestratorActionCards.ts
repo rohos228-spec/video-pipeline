@@ -1,15 +1,17 @@
 /**
  * Карточки результатов действий по контракту WS2.
  *
- * ws2-r2.2 — PR #378 @ a17ff283.
- * Схема: web/src/lib/orchestratorActionResults.schema.json
- * sha256 26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013
+ * ws2-r2.3 — PR #378 @ fdd8591499004d8c3c8c6f0b6f788ef708aec370.
+ * Схема: app/orchestrator/action_contracts
+ * Копия для моков: web/src/lib/orchestratorActionResults.schema.json
+ * sha256 d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10
  *
- * r2.2: version строго больше base_version; пустой snapshot_id и archive_ref
- * недействительны; непустой skipped включает partial. Иначе карточка
- * «Некорректный ответ действия», интерфейс не падает.
+ * Формат результатов тот же, что у r2.2. version строго больше base_version;
+ * пустой snapshot_id и archive_ref недействительны; непустой skipped включает
+ * partial. Иначе карточка «Некорректный ответ действия», интерфейс не падает.
+ * create_node@new_group — риск high, destructive, нужно подтверждение.
  *
- * Моки — JSON из docs/fable/action_results_contract.md этой версии.
+ * Моки — JSON этой версии (#378).
  * Обязательны: version и base_version у правки, before или snapshot_id,
  * у мягкого удаления ссылка на снимок (snapshot_id или archive_ref) и
  * marked=true при ok, warnings у конверта, skipped вместе с partial.
@@ -24,9 +26,10 @@
  * Тело POST «Править» и «Восстановить» моделью не задано.
  */
 
-export const ACTION_CONTRACT_VERSION = "ws2-r2.2";
-export const ACTION_CONTRACT_REF = "a17ff283153cc1dd51fec23a99ed38e178f4ebb6";
-export const ACTION_SCHEMA_SHA256 = "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013";
+export const ACTION_CONTRACT_VERSION = "ws2-r2.3";
+export const ACTION_CONTRACT_REF = "fdd8591499004d8c3c8c6f0b6f788ef708aec370";
+export const ACTION_SCHEMA_PATH = "app/orchestrator/action_contracts";
+export const ACTION_SCHEMA_SHA256 = "d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10";
 export const INVALID_ACTION_TEXT = "Некорректный ответ действия";
 export const REPORT_EDIT_ACTION = "update_report";
 const CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
@@ -132,6 +135,13 @@ const R2_METADATA: Record<string, ActionMetadata> = {
   stop_node: { name: "stop_node", risk: "medium", read_only: false, destructive: false, paid: false },
   resume_node: { name: "resume_node", risk: "high", read_only: false, destructive: true, paid: true },
   create_node: { name: "create_node", risk: "medium", read_only: false, destructive: false, paid: false },
+  "create_node@new_group": {
+    name: "create_node@new_group",
+    risk: "high",
+    read_only: false,
+    destructive: true,
+    paid: false,
+  },
   edit_node_prompt: { name: "edit_node_prompt", risk: "medium", read_only: false, destructive: true, paid: false },
   edit_node_params: { name: "edit_node_params", risk: "medium", read_only: false, destructive: true, paid: false },
   create_report: { name: "create_report", risk: "low", read_only: false, destructive: false, paid: false },
@@ -158,6 +168,11 @@ const R2_METADATA: Record<string, ActionMetadata> = {
 
 export function isKnownActionName(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(R2_METADATA, name);
+}
+
+/** Платное или деструктивное действие ждёт подтверждения. Имя вне таблицы — оба флага. */
+export function needsApproval(metadata: ActionMetadata): boolean {
+  return metadata.paid || metadata.destructive;
 }
 
 /** Имя вне таблицы — платное и деструктивное. Сырые флаги конверта не доверяем. */

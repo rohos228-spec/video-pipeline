@@ -7,6 +7,7 @@ import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorS
 import {
   ACTION_CONTRACT_REF,
   ACTION_CONTRACT_VERSION,
+  ACTION_SCHEMA_PATH,
   ACTION_SCHEMA_SHA256,
   EXAMPLE_CORE_APPROVAL,
   EXAMPLE_DELETE_OK,
@@ -26,6 +27,7 @@ import {
   EXAMPLE_REPORT,
   EXAMPLE_UNKNOWN_APPROVAL,
   metadataOf,
+  needsApproval,
   readActionEnvelope,
   reportEditBody,
   unifiedLines,
@@ -58,13 +60,31 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
   expect(res.ok()).toBeTruthy();
 }
 
-test("схема ws2-r2.2 закреплена sha256", () => {
-  const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorActionResults.schema.json");
-  const hash = createHash("sha256").update(readFileSync(file)).digest("hex");
+test("схема ws2-r2.3 закреплена sha256", () => {
+  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib");
+  const file = path.join(dir, "orchestratorActionResults.schema.json");
+  const raw = readFileSync(file);
+  const hash = createHash("sha256").update(raw).digest("hex");
   expect(hash).toBe(ACTION_SCHEMA_SHA256);
-  expect(hash).toBe("26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013");
-  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.2");
-  expect(ACTION_CONTRACT_REF).toBe("a17ff283153cc1dd51fec23a99ed38e178f4ebb6");
+  expect(hash).toBe("d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10");
+  expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.3");
+  expect(ACTION_CONTRACT_REF).toBe("fdd8591499004d8c3c8c6f0b6f788ef708aec370");
+  expect(ACTION_SCHEMA_PATH).toBe("app/orchestrator/action_contracts");
+  expect(JSON.parse(raw.toString("utf8")).version).toBe("ws2-r2.3");
+  const source = readFileSync(path.join(dir, "orchestratorActionCards.ts"), "utf8");
+  expect(source).toContain("app/orchestrator/action_contracts");
+  expect(source).toContain("#378");
+  expect(source).toContain("fdd8591499004d8c3c8c6f0b6f788ef708aec370");
+
+  const fresh = metadataOf("create_node@new_group");
+  expect(fresh).toMatchObject({ risk: "high", read_only: false, destructive: true, paid: false });
+  expect(needsApproval(fresh)).toBe(true);
+  const sameGroup = metadataOf("create_node");
+  expect(sameGroup).toMatchObject({ risk: "medium", destructive: false, paid: false });
+  expect(needsApproval(sameGroup)).toBe(false);
+
+  expect(readActionEnvelope(EXAMPLE_PROMPT_EDIT, 1)?.version).toBe(2);
+  expect(readActionEnvelope(EXAMPLE_REPORT, 2)?.kind).toBe("report");
 });
 
 test("версия, снимок и marked обязательны", () => {
