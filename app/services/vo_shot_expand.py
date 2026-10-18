@@ -714,9 +714,14 @@ def merge_flattened_coverage_members(
         parent.voiceover_text = full
         parent.duration_seconds = vo_duration_sec(full, shots=1)
     attrs = dict(getattr(parent, "attrs", None) or {})
-    from app.services.db_apply import merge_kadry_keep_missing
+    before_rows = _kadry_copies(attrs.get("кадры"))
+    from app.services.frame_tombstones import merge_kadry_keep_missing
 
-    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), shots)
+    attrs["кадры"] = _keep_assigned_kadry(
+        parent,
+        before_rows,
+        merge_kadry_keep_missing(attrs.get("кадры"), shots),
+    )
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
@@ -1975,9 +1980,10 @@ def relink_shot_roles_by_scene(
             existing = planned_shots_from_attrs(parent)
             if len(existing) > len(shots):
                 shots = existing
-        from app.services.db_apply import merge_kadry_keep_missing
+        from app.services.frame_tombstones import merge_kadry_keep_missing
 
         shots = merge_kadry_keep_missing(pattrs.get("кадры"), shots)
+        shots = _keep_assigned_kadry(parent, before_parent, shots)
         pattrs["кадры"] = shots
         if full:
             pattrs["vo_cell_full"] = full
@@ -2292,6 +2298,10 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         full = _cell_full_text(parent, members)
         if not full:
             continue
+        raw_attrs = getattr(parent, "attrs", None)
+        before_rows = _kadry_copies(
+            raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
+        )
         stored = planned_shots_from_attrs(parent)
         planned = active_planned_shots(parent)
         live_members = [fr for fr in members if not _frame_row_hidden(fr)] or list(members)
@@ -2324,7 +2334,7 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = list(stored)
+            attrs["кадры"] = _keep_assigned_kadry(parent, before_rows, list(stored))
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(live_members):
@@ -2386,7 +2396,16 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = active_planned_shots(parent)
+        planned_all = planned_shots_from_attrs(parent)
+        from app.services.frame_tombstones import shot_is_active as _shot_active
+
+        active_planned = [s for s in planned_all if _shot_active(s)]
+        # Хвост длиннее ячейки не должен срывать разбиение по сценам.
+        # Если неактивный шот занимает уже существующий кадр — он остаётся в раскладке.
+        if planned_all and len(planned_all) > len(members) and active_planned:
+            planned = active_planned
+        else:
+            planned = planned_all
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2510,9 +2529,10 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                             shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
                         ).strip()
                     if shot and shot_id:
-                        from app.services.db_apply import merge_kadry_keep_missing
-
-                        attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), [shot])
+                        attrs["кадры"] = merge_kadry_keep_missing(
+                            attrs.get("кадры"),
+                            [shot],
+                        )
                     else:
                         logger.warning(
                             "WARN promote_shots_to_vo_cells: у кадра {} нет шота, кадры[] оставлены",
@@ -2614,20 +2634,45 @@ async def rebuild_vo_cells_from_shots(
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     work = [f for f in ordered if _is_pipeline_frame(f)]
-    existing_next = {
-        (int(edge.from_frame_id), int(edge.to_frame_id))
-        for edge in (
-            await session.execute(
-                select(FrameEdge).where(
-                    FrameEdge.project_id == project.id,
-                    FrameEdge.type == "next",
-                )
-            )
-        ).scalars().all()
+    desired = {
+        (int(a.id), int(b.id))
+        for a, b in zip(work, work[1:])
+        if getattr(a, "id", None) and getattr(b, "id", None)
     }
+    existing_edges = list(
+        (
+            await session.execute(
+                select(FrameEdge).where(FrameEdge.project_id == project.id)
+            )
+        ).scalars()
+    )
+    have: set[tuple[int, int]] = set()
+    for edge in existing_edges:
+        pair = (int(edge.from_frame_id), int(edge.to_frame_id))
+        typ = (edge.type or "next").strip()
+        if typ == "next" and pair in desired and pair not in have:
+            have.add(pair)
+            continue
+        if typ == "archived:next" and pair in desired and pair not in have:
+            edge.type = "next"
+            have.add(pair)
+            continue
+        if typ != "next":
+            continue
+        edge.type = "archived:next"
+        logger.warning(
+            "WARN [#{}] rebuild VO cells: FrameEdge id={} {}→{} был "
+            "delete(type=='next'); помечен archived:next, строка сохранена",
+            project.id,
+            edge.id,
+            edge.from_frame_id,
+            edge.to_frame_id,
+        )
     for a, b in zip(work, work[1:]):
+        if getattr(a, "id", None) is None or getattr(b, "id", None) is None:
+            continue
         pair = (int(a.id), int(b.id))
-        if pair in existing_next:
+        if pair in have:
             continue
         session.add(
             FrameEdge(
@@ -2637,7 +2682,7 @@ async def rebuild_vo_cells_from_shots(
                 type="next",
             )
         )
-        existing_next.add(pair)
+        have.add(pair)
     await session.flush()
     work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
     existing_vo: dict[int, Any] = {}

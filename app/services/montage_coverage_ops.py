@@ -481,28 +481,16 @@ def _clear_shot_action(frame: Frame) -> None:
         attrs["главное_действие"] = ""
         attrs["main_action"] = ""
 
-        def _hide_rows(rows: Any) -> Any:
-            if not isinstance(rows, list):
-                return rows
-            hidden: list[Any] = []
-            for shot in rows:
-                if not isinstance(shot, dict):
-                    hidden.append(shot)
-                    continue
-                item = dict(shot)
-                item["активен"] = False
-                item["карантин"] = True
-                hidden.append(item)
-            return hidden
+        from app.services.frame_tombstones import mark_shots_inactive
 
         if "кадры" in attrs:
-            attrs["кадры"] = _hide_rows(attrs.get("кадры"))
+            attrs["кадры"] = mark_shots_inactive(
+                attrs.get("кадры"), where="_clear_shot_action"
+            )
         if "shots" in attrs:
-            attrs["shots"] = _hide_rows(attrs.get("shots"))
-        logger.warning(
-            "WARN _clear_shot_action: кадры кадра {} помечены, не удалены",
-            getattr(frame, "number", "?"),
-        )
+            attrs["shots"] = mark_shots_inactive(
+                attrs.get("shots"), where="_clear_shot_action"
+            )
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(
