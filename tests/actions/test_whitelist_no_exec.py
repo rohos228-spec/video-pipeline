@@ -81,11 +81,13 @@ _SHUTIL_WRITE = {
 }
 _OS_RENAME = frozenset({"rename", "replace"})
 _OS_DELETE = frozenset({"remove", "unlink", "rmdir", "removedirs"})
+_OS_LINK = frozenset({"symlink", "link"})
 _PATH_DELETE = frozenset({"unlink", "rmdir"})
 _PATH_CREATE = frozenset({"touch", "mkdir"})
 _PATH_MOVE = frozenset({"rename", "replace"})
-_DANGEROUS_OS = _OS_DELETE | _OS_RENAME | frozenset({"truncate"})
-_DANGEROUS_PATH = _PATH_DELETE | _PATH_MOVE | frozenset({"truncate"})
+_PATH_LINK = frozenset({"symlink_to", "hardlink_to"})
+_DANGEROUS_OS = _OS_DELETE | _OS_RENAME | _OS_LINK | frozenset({"truncate"})
+_DANGEROUS_PATH = _PATH_DELETE | _PATH_MOVE | _PATH_LINK | frozenset({"truncate"})
 _OS_WRITE_FLAGS = frozenset({"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"})
 _OS_READ_FLAGS = frozenset({"O_RDONLY"})
 _OS_NEUTRAL_FLAGS = frozenset(
@@ -131,6 +133,10 @@ _DELETE_KINDS = frozenset(
         "sql.unknown",
         "http.delete",
         "http.unknown",
+        "os.symlink",
+        "os.link",
+        "Path.symlink_to",
+        "Path.hardlink_to",
     }
 )
 _SQL_NAMES = frozenset({"execute", "executescript", "executemany", "text"})
@@ -1269,7 +1275,7 @@ def _live_calls(
 def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     modules: set[str] = set()
     funcs: dict[str, str] = {}
-    watched = _OS_RENAME | _OS_DELETE | frozenset({"truncate"})
+    watched = _OS_RENAME | _OS_DELETE | _OS_LINK | frozenset({"truncate"})
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1616,6 +1622,9 @@ def _write_hit(
         kind = f"os.{attr}"
         if attr in _OS_DELETE:
             dest = _call_arg(call, 0, "path")
+        elif attr in _OS_LINK:
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
         else:
             src = _call_arg(call, 0, "src")
             dest = _call_arg(call, 1, "dst")
@@ -1667,6 +1676,17 @@ def _write_hit(
         ):
             kind = f"os.{attr}"
             dest = _call_arg(call, 0, "path")
+        elif (
+            attr in _OS_LINK
+            and isinstance(func.value, ast.Name)
+            and func.value.id in os_modules
+        ):
+            kind = f"os.{attr}"
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
+        elif attr in _PATH_LINK:
+            kind = f"Path.{attr}"
+            dest = func.value
         elif attr in _PATH_DELETE or attr == "truncate":
             kind = f"Path.{attr}" if attr != "truncate" else "Path.truncate"
             dest = func.value
@@ -2506,10 +2526,12 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     assert [hit.kind for hit in compared_hits] == ["open", "os.replace"]
     assert [hit.allowed for hit in compared_hits] == [False, False]
 
+    from app.orchestrator.node_store import atomic_write as atomic_mod
     from app.orchestrator.node_store.atomic_write import VersionConflict, atomic_write_text
 
-    source = inspect.getsource(atomic_write_text)
-    assert "mkstemp" in source
+    source = inspect.getsource(atomic_mod)
+    assert "O_NOFOLLOW" in source
+    assert "dir_fd" in source
     assert 'name + ".tmp"' not in source
 
     from app.settings import settings
