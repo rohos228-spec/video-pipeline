@@ -8,6 +8,7 @@ import pytest
 
 from app.orchestrator.node_store.atomic_write import atomic_write_text
 from app.settings import settings
+from tests.actions.fs_helpers import _symlink_or_skip
 
 
 def _cleanup(path: Path) -> None:
@@ -35,7 +36,7 @@ def test_atomic_write_rejects_outside_allowlist(tmp_path: Path, monkeypatch) -> 
     link = root / f"link-{tmp_path.name}.json"
     secret = tmp_path / "secret.json"
     _cleanup(link)
-    link.symlink_to(secret)
+    _symlink_or_skip(link, secret)
     try:
         with pytest.raises(ValueError, match="allowlist|symlink"):
             atomic_write_text(link, "no", expected_version=0)

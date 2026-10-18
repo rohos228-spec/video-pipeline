@@ -9,16 +9,8 @@ import pytest
 
 from app.orchestrator.node_store.atomic_write import atomic_write_text
 from app.settings import settings
+from tests.actions.fs_helpers import _symlink_or_skip
 from tests.actions.test_whitelist_no_exec import analyze_module_source
-
-
-def _symlink_or_skip(link: Path, target: Path, **kwargs) -> None:
-    try:
-        link.symlink_to(target, **kwargs)
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 1314:
-            pytest.skip("WinError 1314: нет привилегии на symlink")
-        raise
 
 
 def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path, monkeypatch) -> None:

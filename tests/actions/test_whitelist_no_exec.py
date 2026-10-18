@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.actions.fs_helpers import _symlink_or_skip
+
 FORBIDDEN_IDS = frozenset(
     {
         "edit_files",
@@ -3017,7 +3019,7 @@ def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> No
     reports.mkdir(parents=True)
     outside.mkdir()
     link = reports / "escape"
-    link.symlink_to(outside, target_is_directory=True)
+    _symlink_or_skip(link, outside, target_is_directory=True)
     escaped = link / "secret.txt"
     assert not paths_share_root(str(escaped), str(reports))
     source = f"def save():\n    open({str(escaped)!r}, 'w')\n"
