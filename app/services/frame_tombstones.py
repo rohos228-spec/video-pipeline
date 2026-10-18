@@ -156,31 +156,29 @@ def frame_marked_deleted(frame: Any) -> bool:
     return bool(is_true(attrs.get(DELETED_MARK)))
 
 
-def _frame_attrs(frame: Any) -> object:
-    """``frame_is_active`` принимает кадр, матрица WS1 — словарь ``attrs``."""
-    attrs = getattr(frame, "attrs", None)
-    if attrs is None:
-        return {}
-    return attrs
+def _fallback_shot_is_active(shot: Any) -> bool:
+    """Живой элемент ``кадры[]``, пока модуля WS1 нет в дереве."""
+    return _record_is_active(shot)
 
 
-def frame_is_active(frame: Any) -> bool:
-    """Живой кадр. Нет ключа ``активен`` — активен. Карантин гасит кадр так же, как шот."""
+def _fallback_frame_is_active(frame: Any) -> bool:
+    """Живой кадр. Вызывающие передают кадр, матрица смотрит на ``attrs``."""
     if frame is None:
         return False
-    attrs = _frame_attrs(frame)
-    flags = _activity_flags()
-    if flags is not None:
-        return flags.frame_is_active(attrs)
+    attrs = getattr(frame, "attrs", None)
+    if attrs is None:
+        attrs = {}
     return _record_is_active(attrs)
 
 
-def shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
-    flags = _activity_flags()
-    if flags is not None:
-        return flags.shot_is_active(shot)
-    return _record_is_active(shot)
+try:
+    from app.orchestrator.validators.activity_flags import (
+        frame_is_active,
+        shot_is_active,
+    )
+except ImportError:
+    shot_is_active = _fallback_shot_is_active
+    frame_is_active = _fallback_frame_is_active
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")

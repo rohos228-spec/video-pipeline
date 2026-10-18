@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import types
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +34,6 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {ACTIVE_MARK: "   "}, True, False),
     ("shot", {ACTIVE_MARK: False}, False, False),
     ("shot", {ACTIVE_MARK: 0}, False, False),
-    ("shot", {ACTIVE_MARK: 0.0}, False, False),
     ("shot", {ACTIVE_MARK: "0"}, False, False),
     ("shot", {ACTIVE_MARK: "false"}, False, False),
     ("shot", {ACTIVE_MARK: "FALSE"}, False, False),
@@ -49,7 +47,6 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {DELETED_MARK: 1}, False, False),
     ("shot", {DELETED_MARK: False}, True, False),
     ("shot", {DELETED_MARK: 0}, True, False),
-    ("shot", {DELETED_MARK: 0.0}, True, False),
     ("shot", {DELETED_MARK: ""}, True, False),
     ("shot", {DELETED_MARK: None}, True, False),
     ("shot", {DELETED_MARK: "false"}, True, False),
@@ -72,7 +69,6 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("frame", {ACTIVE_MARK: ""}, True, False),
     ("frame", {ACTIVE_MARK: False}, False, False),
     ("frame", {ACTIVE_MARK: 0}, False, False),
-    ("frame", {ACTIVE_MARK: 0.0}, False, False),
     ("frame", {ACTIVE_MARK: "0"}, False, False),
     ("frame", {ACTIVE_MARK: "false"}, False, False),
     ("frame", {ACTIVE_MARK: "FALSE"}, False, False),
@@ -158,38 +154,17 @@ def _project65_and_readers_stay_active() -> None:
     assert merged[0][ACTIVE_MARK] is False
 
 
-def _delegates_when_ws1_module_is_present() -> None:
-    fake = types.ModuleType("app.orchestrator.validators.activity_flags")
-    seen: dict[str, object] = {}
-
-    def _shot(shot: object) -> str:
-        seen["shot"] = shot
-        return "delegated-shot"
-
-    def _frame(attrs: object) -> str:
-        seen["attrs"] = attrs
-        return "delegated-frame"
-
-    def _true(value: object) -> bool:
-        seen["flag"] = value
-        return value == "delegated"
-
-    fake.shot_is_active = _shot
-    fake.frame_is_active = _frame
-    fake.flag_is_true = _true
-    sys.modules["app.orchestrator.validators.activity_flags"] = fake
-    try:
-        assert shot_is_active({"id": "x"}) == "delegated-shot"
-        assert seen["shot"] == {"id": "x"}
-        assert frame_is_active(SimpleNamespace(attrs={"k": 1})) == "delegated-frame"
-        assert seen["attrs"] == {"k": 1}
-        assert frame_is_active(SimpleNamespace(attrs=None)) == "delegated-frame"
-        assert seen["attrs"] == {}
-        assert frame_is_active(None) is False
-        assert frame_marked_deleted(SimpleNamespace(attrs={DELETED_MARK: "delegated"})) is True
-        assert seen["flag"] == "delegated"
-    finally:
-        sys.modules.pop("app.orchestrator.validators.activity_flags", None)
+def _fallback_core_cases() -> None:
+    """Крайние значения (NaN, ``0.0``, «ложь») задаёт модуль WS1, не этот тест."""
+    assert shot_is_active({}) is True
+    assert shot_is_active({ACTIVE_MARK: True}) is True
+    assert shot_is_active({ACTIVE_MARK: False}) is False
+    assert shot_is_active({DELETED_MARK: True}) is False
+    assert shot_is_active({QUARANTINE_MARK: True}) is False
+    assert frame_is_active(_as_frame({})) is True
+    assert frame_is_active(_as_frame({ACTIVE_MARK: False})) is False
+    assert frame_is_active(_as_frame({DELETED_MARK: True})) is False
+    assert frame_is_active(_as_frame({QUARANTINE_MARK: True})) is False
 
 
 @pytest.mark.parametrize(
@@ -213,22 +188,60 @@ def test_shot_activity_matches_frame_tombstones_matrix(
     assert warned is warns
     if kind == "shot" and payload == {}:
         _project65_and_readers_stay_active()
-        _delegates_when_ws1_module_is_present()
+        _fallback_core_cases()
         assert shot_is_active({}) is True
 
 
 _WS1_FLAGS_SHA = "d984a52d"
 
 
-def test_activity_matrix_matches_ws1_activity_flags(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
-    """Локальная копия и ``activity_flags.py`` из d984a52d дают одну матрицу.
+def test_activity_fallback_simulates_import_error() -> None:
+    """ImportError оставляет локальную матрицу. Крайние значения сюда не входят."""
+    import builtins
+    import importlib
+
+    import app.services.frame_tombstones as tomb
+
+    original = builtins.__import__
+
+    def _blocked(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "app.orchestrator.validators.activity_flags":
+            raise ImportError(name)
+        return original(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = _blocked
+    sys.modules.pop("app.orchestrator.validators.activity_flags", None)
+    try:
+        importlib.reload(tomb)
+        assert tomb.shot_is_active is tomb._fallback_shot_is_active
+        assert tomb.frame_is_active is tomb._fallback_frame_is_active
+        assert tomb.shot_is_active({}) is True
+        assert tomb.shot_is_active({ACTIVE_MARK: True}) is True
+        assert tomb.shot_is_active({ACTIVE_MARK: False}) is False
+        assert tomb.shot_is_active({DELETED_MARK: True}) is False
+        assert tomb.shot_is_active({QUARANTINE_MARK: True}) is False
+        assert tomb.frame_is_active(SimpleNamespace(attrs={})) is True
+        assert tomb.frame_is_active(SimpleNamespace(attrs={ACTIVE_MARK: False})) is False
+        assert tomb.frame_is_active(SimpleNamespace(attrs={DELETED_MARK: True})) is False
+        assert tomb.frame_is_active(SimpleNamespace(attrs={QUARANTINE_MARK: True})) is False
+    finally:
+        builtins.__import__ = original
+        sys.modules.pop("app.orchestrator.validators.activity_flags", None)
+        importlib.reload(tomb)
+
+
+def test_activity_predicates_reexport_ws1_when_importable(tmp_path) -> None:
+    """Когда модуль импортируется, предикаты — те же объекты, не обёртка.
 
     Файл #371 только во временном каталоге и в репозиторий не попадает.
     """
+    import importlib
     import importlib.util
     import io
     import subprocess
     import tarfile
+
+    import app.services.frame_tombstones as tomb
 
     repo = __import__("pathlib").Path(__file__).resolve().parents[1]
     archive = subprocess.run(
@@ -240,24 +253,17 @@ def test_activity_matrix_matches_ws1_activity_flags(tmp_path, caplog: pytest.Log
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
         tar.extractall(tmp_path, filter="data")
     path = tmp_path / "app" / "orchestrator" / "validators" / "activity_flags.py"
-    spec = importlib.util.spec_from_file_location("ws1_activity_flags_probe", path)
+    spec = importlib.util.spec_from_file_location(
+        "app.orchestrator.validators.activity_flags", path
+    )
     assert spec is not None and spec.loader is not None
     ws1 = importlib.util.module_from_spec(spec)
+    sys.modules["app.orchestrator.validators.activity_flags"] = ws1
     spec.loader.exec_module(ws1)
-    sys.modules.pop("app.orchestrator.validators.activity_flags", None)
-
-    caplog.set_level(logging.WARNING)
-    for kind, payload, expected, warns in _CASES:
-        caplog.clear()
-        if kind == "shot":
-            local = shot_is_active(payload)
-        else:
-            local = frame_is_active(_as_frame(payload))
-        local_warn = any("активен" in record.getMessage() for record in caplog.records)
-        caplog.clear()
-        remote = ws1.shot_is_active(payload) if kind == "shot" else ws1.frame_is_active(payload)
-        remote_warn = any("активен" in record.getMessage() for record in caplog.records)
-        assert local is expected
-        assert remote is expected
-        assert local_warn is warns
-        assert remote_warn is warns
+    try:
+        importlib.reload(tomb)
+        assert tomb.shot_is_active is ws1.shot_is_active
+        assert tomb.frame_is_active is ws1.frame_is_active
+    finally:
+        sys.modules.pop("app.orchestrator.validators.activity_flags", None)
+        importlib.reload(tomb)

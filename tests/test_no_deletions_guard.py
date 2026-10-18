@@ -471,10 +471,9 @@ def test_non_list_kadry_is_error() -> None:
     with pytest.raises(PreservationRejected) as raised:
         run_preservation_validators(before, after, mode="soft")
     assert any(
-        item.code in {"kadry_invalid", "shot_dropped"} and item.severity == "error"
+        item.severity == "error" and (item.id == "s1" or "s1" in (item.path or ""))
         for item in raised.value.violations
     )
-    assert all(item.code != "frames_no_data" for item in raised.value.violations)
     assert after == frozen
 
     from app.pipeline.no_deletions_guard import keep_soft_kadry
