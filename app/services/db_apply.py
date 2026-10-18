@@ -37,6 +37,7 @@ from app.services.xlsx_v8_import import (
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
     SHEET_GENERAL_V8,
+    hidden_frame_marker,
     _normalize_sheet_name,
     _resolve_plan_sheet,
 )
@@ -1420,12 +1421,18 @@ def export_project_xlsx(
             raw_attrs = getattr(fr, "attrs", None)
             if not frame_is_active(raw_attrs if isinstance(raw_attrs, dict) else {}):
                 logger.warning(
-                    "WARN export_project_xlsx: кадр #{} неактивен — колонка плана очищена, строка БД на месте",
+                    "WARN export_project_xlsx: кадр #{} неактивен — в колонке маркер, промты очищены, строка БД на месте",
                     fr.number,
                 )
                 for row in plan_rows:
                     ws.cell(row=row, column=col).value = None
                     cells += 1
+                ws.cell(
+                    row=ROW_VOICEOVER_V8,
+                    column=col,
+                    value=hidden_frame_marker(fr.number),
+                )
+                cells += 1
                 continue
             attrs = fr.attrs or {}
             writes = {

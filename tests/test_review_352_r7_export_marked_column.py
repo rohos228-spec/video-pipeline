@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from openpyxl import Workbook, load_workbook
 
 from app.services.db_apply import export_project_xlsx
-from app.services.xlsx_v8_import import ROW_VOICEOVER_V8
+from app.services.xlsx_v8_import import (
+    ROW_DURATION_V8,
+    ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_V8,
+    ROW_VOICEOVER_V8,
+    hidden_frame_marker,
+)
 
 
 def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
@@ -44,7 +50,11 @@ def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
     wb2 = load_workbook(path)
     sheet = wb2["план"]
     assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
-    assert sheet.cell(ROW_VOICEOVER_V8, 4).value is None
+    # Колонка остаётся на месте: маркер, не озвучка кадра и не пустота.
+    assert sheet.cell(ROW_VOICEOVER_V8, 4).value == hidden_frame_marker(2)
+    assert sheet.cell(ROW_IMAGE_PROMPT_V8, 4).value is None
+    assert sheet.cell(ROW_VIDEO_PROMPT_V8, 4).value is None
+    assert sheet.cell(ROW_DURATION_V8, 4).value is None
     wb2.close()
     assert marked.voiceover_text == "секретный закадр"
     assert marked.attrs["удалён"] is True

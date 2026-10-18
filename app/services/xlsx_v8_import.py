@@ -20,6 +20,7 @@ v8-шаблон отличается от старого (v7):
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.generation_options import is_skippable_empty_prompt
 from app.models import Frame, FrameStatus, Project
+from app.orchestrator.validators.activity_flags import frame_is_active
 from app.services.content_locks import is_ui_locked
 from app.services.plan_validation import is_meaningful_general_plan
 
@@ -55,6 +57,20 @@ _PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
     "image prompt 1",
     "image prompt",
 )
+
+_HIDDEN_FRAME_MARKER_RE = re.compile(r"\[кадр \d+ скрыт\]")
+
+
+def hidden_frame_marker(number: int) -> str:
+    """Метка колонки неактивного кадра: колонка остаётся на своём месте."""
+    return f"[кадр {int(number)} скрыт]"
+
+
+def is_hidden_frame_marker(text: str | None) -> bool:
+    if not text:
+        return False
+    return _HIDDEN_FRAME_MARKER_RE.fullmatch(" ".join(str(text).split())) is not None
+
 
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).
 CHARS_PER_SEC = 14.0
@@ -255,13 +271,13 @@ def _plan_scene_columns_ordered(ws) -> list[tuple[int, int]]:
         if _cell_text(ws, ROW_VOICEOVER_V8, c)
     ]
     if vo_cols:
-        return list(enumerate(vo_cols, start=1))
+        return [(_frame_number_for_plan_column(ws, col), col) for col in vo_cols]
     seen: list[int] = []
     for row in (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8):
         for col in _plan_prompt_columns(ws, row):
             if col not in seen:
                 seen.append(col)
-    return list(enumerate(seen, start=1))
+    return [(_frame_number_for_plan_column(ws, col), col) for col in seen]
 
 
 def _read_plan_image_prompts_ws(ws, *, prompt_row: int | None = None) -> dict[int, str]:
@@ -458,7 +474,7 @@ def _read_voiceover_blocks(wb) -> list[str]:
     out: list[str] = []
     for col in range(3, ws.max_column + 1):
         s = _cell_text(ws, ROW_VOICEOVER_V8, col)
-        if s is None:
+        if s is None or is_hidden_frame_marker(s):
             continue
         out.append(s)
     return out
@@ -496,7 +512,7 @@ def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
         out: dict[int, str] = {}
         for col in range(3, ws.max_column + 1):
             voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
-            if voice:
+            if voice and not is_hidden_frame_marker(voice):
                 out[col - 2] = voice
         return out
     finally:
@@ -664,28 +680,30 @@ async def apply_v8_image_prompts_from_xlsx(
 
 
 def _read_frame_fields(wb) -> list[dict[str, Any]]:
-    """Читает поля кадров с листа «план» v8: image_prompt (R45),
-    animation_prompt (R48), voiceover (R49), duration (R50). Возвращает
-    список по фреймам (порядок = порядок колонок 3..N, в которых есть
-    voiceover). Каждый элемент — dict с ключами
-    {image_prompt, animation_prompt, voiceover_text, duration_seconds}.
+    """Поля кадров с листа «план». Номер — из шапки или col−2, не из позиции.
 
-    Кадр считается «существующим», если в колонке непустой voiceover —
-    остальное опционально. Это согласовано с _read_voiceover_blocks.
+    Пустая колонка в список не попадает и ничего в БД не затирает.
+    Маркер «[кадр N скрыт]» остаётся в списке с hidden_marker, но без озвучки.
     """
     ws = _resolve_plan_sheet(wb)
     if ws is None:
         return []
     out: list[dict[str, Any]] = []
-    for col in range(3, ws.max_column + 1):
+    for col in range(3, int(ws.max_column or 2) + 1):
         voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
-        if voice is None:
+        image = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+        anim = _cell_text(ws, ROW_VIDEO_PROMPT_V8, col)
+        dur = _cell_float(ws, ROW_DURATION_V8, col)
+        marker = is_hidden_frame_marker(voice)
+        if voice is None and image is None and anim is None and dur is None:
             continue
         out.append({
-            "voiceover_text": voice,
-            "image_prompt": _cell_text(ws, ROW_IMAGE_PROMPT_V8, col),
-            "animation_prompt": _cell_text(ws, ROW_VIDEO_PROMPT_V8, col),
-            "duration_seconds": _cell_float(ws, ROW_DURATION_V8, col),
+            "number": _frame_number_for_plan_column(ws, col),
+            "hidden_marker": marker,
+            "voiceover_text": None if marker else voice,
+            "image_prompt": None if marker else image,
+            "animation_prompt": None if marker else anim,
+            "duration_seconds": None if marker else dur,
         })
     return out
 
@@ -789,33 +807,41 @@ async def import_v8_xlsx(
         ).scalars().all()
         by_number = {f.number: f for f in existing}
 
-        # Поля по кадрам — image_prompt, animation_prompt, voiceover, duration.
-        # Длины списков совпадают: оба фильтруют по непустому voiceover в
-        # колонке (см. _read_frame_fields / _read_voiceover_blocks).
+        # Номер кадра — колонка (шапка или col−2), не позиция среди непустых.
         frame_fields = _read_frame_fields(wb)
-        fallback_durations = _distribute_durations(blocks)
         t = 0.0
         prompts_synced: list[int] = []
-        for i, (cell, fields) in enumerate(
-            zip(blocks, frame_fields, strict=True), start=1
-        ):
-            dur = fields.get("duration_seconds") or fallback_durations[i - 1]
+        for fields in frame_fields:
+            number = int(fields["number"])
+            cell = fields.get("voiceover_text")
+            dur = fields.get("duration_seconds")
+            if dur is None and cell:
+                dur = _distribute_durations([cell])[0]
+            step = float(dur or 0.0)
             start_ts = t
-            end_ts = t + dur
-            fr = by_number.get(i)
+            end_ts = t + step
+            fr = by_number.get(number)
+            if fr is not None:
+                raw_attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
+                if not frame_is_active(raw_attrs) or fields.get("hidden_marker"):
+                    t = end_ts
+                    continue
+            elif fields.get("hidden_marker"):
+                t = end_ts
+                continue
             if fr is None and existing:
                 # FIX 2026-10-15: у проекта уже есть кадры (DB SoT) — устаревший
                 # project.xlsx не должен дописывать строки по номеру колонки
                 # (так появлялись дубли хвоста сценария при старте ноды).
-                summary.setdefault("frames_create_skipped", []).append(i)
+                summary.setdefault("frames_create_skipped", []).append(number)
                 t = end_ts
                 continue
             if fr is None:
                 session.add(
                     Frame(
                         project_id=project.id,
-                        number=i,
-                        voiceover_text=cell,
+                        number=number,
+                        voiceover_text=cell or "",
                         image_prompt=fields.get("image_prompt"),
                         animation_prompt=fields.get("animation_prompt"),
                         start_ts=start_ts,
@@ -823,23 +849,24 @@ async def import_v8_xlsx(
                         duration_seconds=dur,
                     )
                 )
-                summary["frames_created"].append(i)
+                summary["frames_created"].append(number)
                 if fields.get("image_prompt") or fields.get("animation_prompt"):
-                    prompts_synced.append(i)
+                    prompts_synced.append(number)
             else:
                 changed = False
-                if update_frames_voiceover and fr.voiceover_text != cell:
+                if (
+                    update_frames_voiceover
+                    and cell
+                    and fr.voiceover_text != cell
+                ):
                     fr.voiceover_text = cell
                     changed = True
-                # ROOT FIX: подтягиваем image_prompt / animation_prompt из v8.
-                # Перезаписываем только когда в xlsx есть непустое значение и
-                # оно отличается от текущего — чтобы случайно очищенная ячейка
-                # не стёрла GPT-промт в БД.
+                # Пустая ячейка не стирает промт: пишем только непустое значение.
                 new_imgp = fields.get("image_prompt")
                 if new_imgp and new_imgp != fr.image_prompt:
                     fr.image_prompt = new_imgp
                     changed = True
-                    prompts_synced.append(i)
+                    prompts_synced.append(number)
                 new_animp = fields.get("animation_prompt")
                 if new_animp and new_animp != fr.animation_prompt:
                     fr.animation_prompt = new_animp
@@ -848,8 +875,8 @@ async def import_v8_xlsx(
                 if new_dur is not None and abs((fr.duration_seconds or 0.0) - new_dur) > 0.01:
                     fr.duration_seconds = new_dur
                     changed = True
-                if changed and i not in summary["frames_updated"]:
-                    summary["frames_updated"].append(i)
+                if changed and number not in summary["frames_updated"]:
+                    summary["frames_updated"].append(number)
             t = end_ts
 
         if prompts_synced:
