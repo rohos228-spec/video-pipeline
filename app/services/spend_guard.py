@@ -780,7 +780,8 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
             f"Платный вызов {provider} заблокирован аварийным рубильником. Запрос не отправлялся.",
             provider=provider, what=what) from exc
     _disk_verdict(provider, what)
-    if _seam.get() == provider:
+    # Уже внутри paid_call: вложенный seam того же вызова не резервирует второй раз.
+    if _seam.get():
         return PaidTicket(None, 0.0)
     usd = _default_estimate(estimate_usd)
     c = caps()

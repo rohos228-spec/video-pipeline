@@ -127,6 +127,55 @@ async def test_one_live_call_reserves_once(
 
 
 @pytest.mark.asyncio
+async def test_direct_stream_http_is_blocked_without_an_outer_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Прямой _chat_completions_stream_http без внешнего paid_call не шлёт HTTP."""
+    import httpx
+
+    from app.services import gpt_api
+
+    estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
+    _quiet_gate(monkeypatch, run_cap=0.0)
+
+    def _caps() -> dict[str, float]:
+        return {"daily": estimate * 0.5, "project": 0.0, "run": 0.0}
+
+    async def _sums(_session: object, **_k: object) -> dict[str, float]:
+        return {"run": 0.0, "project": 0.0, "daily": 0.0}
+
+    monkeypatch.setattr(spend_guard, "caps", _caps)
+    monkeypatch.setattr(spend_guard, "conservative_sums", _sums)
+    hits = {"n": 0}
+
+    class _BlockedClient:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            hits["n"] += 1
+
+        async def __aenter__(self) -> _BlockedClient:
+            hits["n"] += 1
+            return self
+
+        async def __aexit__(self, *_e: object) -> bool:
+            return False
+
+        def stream(self, *_a: object, **_k: object) -> _BlockedClient:
+            hits["n"] += 1
+            return self
+
+    monkeypatch.setattr(httpx, "AsyncClient", _BlockedClient)
+    with pytest.raises(spend_guard.PaidCallBlocked):
+        await gpt_api._chat_completions_stream_http(
+            url="http://llm.invalid/v1/chat/completions",
+            headers={"Authorization": "Bearer vk-test"},
+            body={"model": "gpt-5.6-sol", "messages": []},
+            timeout=5,
+            use_model="gpt-5.6-sol",
+        )
+    assert hits["n"] == 0
+
+
+@pytest.mark.asyncio
 async def test_concurrent_calls_cannot_both_pass_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

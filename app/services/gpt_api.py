@@ -2688,6 +2688,11 @@ async def _chat_completions_nostream(
     )
 
 
+@spend_guard.paid_seam(
+    "gpt",
+    "chat completions stream",
+    estimate=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+)
 @observe_model
 async def _chat_completions_stream_http(
     *,
