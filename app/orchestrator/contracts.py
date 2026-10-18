@@ -91,10 +91,14 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
     ),
     (
         "ws3-r3.5",
-        "Событие partial_write (WARN, change_ids) защищено колпаком orch_events. "
+        "Поверх ws3-r3.4. Событие partial_write (WARN, change_ids) в EventType и retention. "
         "stop_key — имя файла project_{id}.stop, не pending. "
+        "GET /api/orchestrator/chat/{session}/status отдаёт resume_allowed. "
         "GET /api/orchestrator/chat/{session}/partial-changes отдаёт change_id шагов partial. "
+        "resume_allowed истинен только для paused, waiting_approval или critic_review, "
+        "если чекпоинт есть и прогон не живой. "
         "partial_write → waiting_approval. "
+        "skipped_without_partial хранит change_id и не повторяет execute. "
         "deletion_forbidden: кадр без soft_delete не исполняется даже после grant.",
     ),
 )
