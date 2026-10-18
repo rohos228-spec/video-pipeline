@@ -263,6 +263,50 @@ def test_assign_scene_vo_keeps_shots_when_voiceover_empty(warn_log) -> None:
     assert len(filled) >= 1
 
 
+def test_fill_kadry_keeps_unmatched_shots_and_source_fields(warn_log) -> None:
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    filled = fill_kadry_from_catalog(
+        [
+            {
+                "id": "keep-me",
+                "сцена": 1,
+                "действие": "Герой долго стоит у стола и смотрит в окно.",
+                "реплика": "алло",
+                "говорит": "герой",
+                "select_fix": "x",
+                "закадр": "стоит",
+            },
+            {
+                "id": "no-scene",
+                "действие": "без номера",
+                "реплика": "эхо",
+                "закадр": "хвост",
+            },
+            {
+                "id": "other-scene",
+                "сцена": 9,
+                "действие": "чужая сцена",
+                "закадр": "там",
+            },
+        ],
+        "1. комната — герой стоит у стола",
+        cell_number=1,
+    )
+    ids = [str(s.get("id")) for s in filled]
+    assert "no-scene" in ids
+    assert "other-scene" in ids
+    assert any(
+        s.get("реплика") == "алло"
+        and s.get("говорит") == "герой"
+        and s.get("select_fix") == "x"
+        for s in filled
+    )
+    assert any(s.get("id") == "no-scene" and s.get("карантин") for s in filled)
+    assert any(s.get("id") == "other-scene" and s.get("карантин") for s in filled)
+    assert any("WARN fill_kadry_from_catalog" in line for line in warn_log)
+
+
 def test_drop_extra_stops_at_required_and_keeps_ids(warn_log) -> None:
     from app.services.shot_templates import _drop_extra_shots
 
