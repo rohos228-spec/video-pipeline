@@ -285,10 +285,13 @@ async function runStreamHold(session, taskId) {
     await sleep(50);
   }
   if (session.killed || session.interrupted) return;
-  await new Promise((resolve) => {
-    session.releaseStream = resolve;
-  });
+  if (!session.releaseRequested) {
+    await new Promise((resolve) => {
+      session.releaseStream = resolve;
+    });
+  }
   session.releaseStream = null;
+  session.releaseRequested = false;
   if (session.killed || session.interrupted) return;
   emit(session, "token", taskId, { text: "КОНЕЦ-ПОТОКА" });
   emit(session, "task_done", taskId, { summary: "поток закончен" });
@@ -1179,6 +1182,7 @@ const server = http.createServer(async (req, res) => {
     const session = sessionOf(String(body.session_id || "studio"));
     const release = session.releaseStream;
     session.releaseStream = null;
+    session.releaseRequested = true;
     if (typeof release === "function") release();
     sendJson(res, 200, { ok: true });
     return;
