@@ -15,6 +15,7 @@ from typing import Any
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
 from app.orchestrator.rag.family_boost import boost_scores
+from app.orchestrator.rag.family_synonyms import expand_family_query
 from app.orchestrator.rag.lexical import LEXICAL_ANALYZER, fts_or_query
 from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
 from app.orchestrator.rag.node_store import NodeStore
@@ -180,6 +181,8 @@ class RagEngine:
         чтобы остаться первым. 0 выключает защиту.
         ``family_boost`` умножает оценку чанков семейства, которое запрос
         назвал. 1 оставляет порядок как есть.
+        BM25 и вектор запроса видят синоним семейства, если лемма
+        закреплена за одним семейством. Реранкер и буст считают исходный текст.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -215,8 +218,9 @@ class RagEngine:
         pool = max(top_k * 4, 20)
         if use_rerank:
             pool = max(pool, rerank_pool)
+        expanded = expand_family_query(query)
         lexical = (
-            self.store.bm25(fts_match_query(query), selected, limit=pool, scope=bm25_scope)
+            self.store.bm25(fts_match_query(expanded), selected, limit=pool, scope=bm25_scope)
             if channel != "vector"
             else []
         )
@@ -229,7 +233,7 @@ class RagEngine:
                 vector_scored.append((0.0, chunk))
             query_vector_ids: list[str] = []
         else:
-            query_vector = self._cached_query_vector(query)
+            query_vector = self._cached_query_vector(expanded)
             for chunk in stored:
                 score = cosine(query_vector, vectors.get(chunk.chunk_id) or [])
                 vector_scored.append((score, chunk))
