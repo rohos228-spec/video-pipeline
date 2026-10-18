@@ -340,6 +340,9 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
     import shutil
     import tempfile
 
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider="outsee", model="generate")
     curl = shutil.which("curl")
     if not curl:
         return None

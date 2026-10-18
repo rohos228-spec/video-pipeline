@@ -2582,6 +2582,9 @@ async def _chat_completions_nostream(
     use_model: str,
 ) -> GptChatResult:
     """Один non-stream POST — когда SSE пришёл пустым или без ``data:``."""
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider="gpt", model=use_model)
     nostream = {**body, "stream": False}
     async with _async_client(timeout=_http_timeout(timeout)) as client:
         resp = await client.post(url, headers=headers, json=nostream)
@@ -3397,6 +3400,7 @@ async def chat(
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
+        check_api_allowed(provider=provider_label, model=use_model)
         t0 = time.perf_counter()
         try:
             await _ensure_url_host_resolves(url)

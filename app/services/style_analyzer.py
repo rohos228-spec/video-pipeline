@@ -25,18 +25,26 @@ async def _paid_ask(
     system: str,
     timeout: float,
     label: str,
+    project_id: int | None = None,
 ) -> str:
-    """Платный разбор стиля идёт через бюджет агента, не мимо него."""
+    """Платный разбор стиля: kill switch, маршрут 52pay, бюджет агента."""
+    from app.services.api_tracker_hook import check_api_allowed
+    from app.services.llm_override import use_override
+    from app.services.style_agent.job import _pipeline_text_override
     from app.services.style_agent.llm import ask
 
-    return await ask(
-        text,
-        files=list(files or []),
-        system=system,
-        budget=budget,
-        label=label,
-        timeout=timeout,
-    )
+    check_api_allowed(provider="52pay", model="gpt-5.6-sol")
+    route = _pipeline_text_override({"id": "gpt-5.6-sol"})
+    with use_override(route):
+        return await ask(
+            text,
+            files=list(files or []),
+            system=system,
+            budget=budget,
+            label=label,
+            timeout=timeout,
+            project_id=project_id,
+        )
 
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
