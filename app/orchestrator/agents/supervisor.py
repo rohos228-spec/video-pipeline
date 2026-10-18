@@ -1928,6 +1928,7 @@ class Supervisor:
             problem = r21_result_problem(result)
         if problem:
             self.tasks.finish_step(step_id, problem, None, cost)
+            self._charge_step_cost(task_id, step, cost)
             return problem, None
         change_id = (core_id or envelope_change_id(result)) if ok else None
         self.tasks.finish_step(step_id, "done" if ok else "failed", change_id, cost)
@@ -1935,12 +1936,17 @@ class Supervisor:
             self._change_ids.setdefault(task_id, []).append(str(change_id))
         if ok and step.paid:
             self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
-        if cost:
-            if step.paid:
-                self.tasks.add_spend(task_id, actions=cost)
-            else:
-                self.tasks.add_spend(task_id, internal=cost)
+        self._charge_step_cost(task_id, step, cost)
         return None, change_id
+
+    def _charge_step_cost(self, task_id: int, step: PlanStep, cost: float) -> None:
+        """Деньги шага пишутся и когда шаг не ``done``: лимит считает факт."""
+        if not cost:
+            return
+        if step.paid:
+            self.tasks.add_spend(task_id, actions=cost)
+            return
+        self.tasks.add_spend(task_id, internal=cost)
 
     async def _run_parallel(self, session_id: str, steps: list[PlanStep], ctx: dict[str, Any]) -> list[Any]:
         return await self._cancellable(session_id, run_many(self.executor, steps, ctx))
