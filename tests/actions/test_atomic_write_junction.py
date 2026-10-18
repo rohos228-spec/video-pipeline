@@ -75,6 +75,29 @@ def test_create_junction_is_denied() -> None:
     assert all(hit.allowed is False for hit in hits)
 
 
+def test_dangling_old_junction_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    """Висячий junction: exists() ложен, lstat/isjunction всё равно видит reparse."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _force_windows_writer(monkeypatch)
+    root = tmp_path / "node_overrides"
+    root.mkdir()
+    dest = root / "a.json"
+    dest.write_text('{"version": 0, "text": "seed"}', encoding="utf-8")
+    original = getattr(os.path, "isjunction", None)
+
+    def fake(path) -> bool:
+        if Path(path).name == "old":
+            return True
+        if original is None:
+            return False
+        return original(path)
+
+    monkeypatch.setattr(os.path, "isjunction", fake, raising=False)
+    with pytest.raises(ValueError, match="junction|reparse|allowlist"):
+        mod.atomic_write_text(dest, "leaked", expected_version=0)
+    assert "leaked" not in dest.read_text(encoding="utf-8")
+
+
 def test_old_junction_cannot_escape_windows(tmp_path: Path, monkeypatch) -> None:
     windows = sys.platform == "win32"
     monkeypatch.setattr(settings, "data_dir", tmp_path)

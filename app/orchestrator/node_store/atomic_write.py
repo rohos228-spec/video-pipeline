@@ -455,7 +455,7 @@ def _reject_reparse(target: Path) -> None:
             raise ValueError("reparse point в пути: отказ allowlist")
     parent = root.joinpath(*parts[:-1]) if parts[:-1] else root
     old = parent / "old"
-    if old.exists() and _is_reparse_point(old):
+    if _is_reparse_point(old):
         raise ValueError("junction old/: отказ allowlist")
 
 
@@ -506,7 +506,7 @@ def _write_without_dir_fd(
             )
         if target.is_file():
             backup_dir = target.parent / "old"
-            if backup_dir.exists() and _is_reparse_point(backup_dir):
+            if _is_reparse_point(backup_dir):
                 raise ValueError("junction old/: отказ allowlist")
             backup_dir.mkdir(parents=True, exist_ok=True)
             backup = backup_dir / f"{target.name}.v{current}"
