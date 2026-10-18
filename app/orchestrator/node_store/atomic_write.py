@@ -412,6 +412,15 @@ def _reject_reparse(target: Path) -> None:
         raise ValueError("junction old/: отказ allowlist")
 
 
+def _fsync_file(path: Path) -> None:
+    """Сброс файла на диск. Каталог здесь не трогаем: это только POSIX."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _write_without_dir_fd(
     target: Path, text: str, expected_version: int, lock_timeout: float
 ) -> None:
@@ -444,12 +453,14 @@ def _write_without_dir_fd(
                 backup = backup_dir / f"{target.name}.v{current}.{suffix}"
             _assert_realpath_inside(backup, root)
             backup.write_bytes(target.read_bytes())
+            _fsync_file(backup)
         payload = json.dumps(
             {"version": current + 1, "text": text},
             ensure_ascii=False,
         ).encode("utf-8")
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
         tmp_path.write_bytes(payload)
+        _fsync_file(tmp_path)
         _assert_realpath_inside(tmp_path, root)
         os.replace(tmp_path, target)
         tmp_path = None
