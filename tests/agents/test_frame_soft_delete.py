@@ -155,7 +155,7 @@ async def test_grant_does_not_run_frame_delete_without_soft_delete(token: str) -
 
 
 class _RestoreCard:
-    """frame.restore нет в whitelist(), карточка high/destructive есть."""
+    """Карточка high/destructive есть, но whitelist() имя не содержит."""
 
     def whitelist(self) -> list[str]:
         return ["montage.delete_frame"]
@@ -172,9 +172,12 @@ class _RestoreCard:
         }
 
 
-def test_frame_restore_is_grantable_outside_the_whitelist() -> None:
+def test_frame_restore_outside_the_whitelist_is_refused() -> None:
+    """Исключение b72ae2c9 снято: карточка мимо whitelist() грант не открывает."""
+    from app.orchestrator import contracts
     from app.orchestrator.contracts import not_in_whitelist, step_is_deletion
 
+    assert not hasattr(contracts, "frame_restore_grant")
     card = _RestoreCard()
-    assert not_in_whitelist("frame.restore", card) is False
+    assert not_in_whitelist("frame.restore", card) is True
     assert step_is_deletion(PlanStep(action="frame.restore", mutating=True, risk="high"), card) is False

@@ -60,7 +60,7 @@ def _grant(
 
 
 def test_e2e_unknown_metadata_is_high_card_not_keyerror() -> None:
-    """WS2 #385 @ 2c6cf6e0: неизвестное имя — карточка high, не KeyError."""
+    """WS2 #385 @ e2af5b4c: неизвестное имя — карточка high, не KeyError."""
     from app.orchestrator.actions import metadata_of, whitelist
 
     card = metadata_of("frobnicate")
@@ -267,7 +267,15 @@ def _raw_bridge(monkeypatch):
     return ActionsBridge(ModuleActions(actions)), calls, contexts, raw
 
 
-async def _run_granted(bridge, session_id: str, goal: str, step: PlanStep, *, project_id: int):
+async def _run_granted(
+    bridge,
+    session_id: str,
+    goal: str,
+    step: PlanStep,
+    *,
+    project_id: int,
+    cc_change_id: str | None = None,
+):
     runtime = build_runtime(
         actions=bridge,
         validators=MockValidators(),
@@ -283,6 +291,8 @@ async def _run_granted(bridge, session_id: str, goal: str, step: PlanStep, *, pr
     assert opened
     change_id = opened[-1].payload["change_id"]
     assert _CHANGE_ID.fullmatch(change_id)
+    if cc_change_id is not None:
+        runtime.supervisor._cc_change_id[(task_id, step.action)] = cc_change_id
     await runtime.supervisor.grant_approval(session_id)
     await runtime.supervisor.wait(task_id, timeout=5)
     return runtime, task_id, change_id
@@ -299,6 +309,15 @@ async def test_e2e_frame_restore_roundtrip(env, monkeypatch, action: str, lookup
 
     original = [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]
     bridge, calls, contexts, raw = _raw_bridge(monkeypatch)
+    mapped: list[dict] = []
+    real_bridge = bridge.execute
+
+    async def _track(name, params, ctx):
+        out = await real_bridge(name, params, ctx)
+        mapped.append(out)
+        return out
+
+    bridge.execute = _track
     pid = await env.add_project(frames=1)
     ids = await env.frame_ids(pid)
     async with env.factory() as session:
@@ -320,14 +339,24 @@ async def test_e2e_frame_restore_roundtrip(env, monkeypatch, action: str, lookup
         )
         assert runtime_status(task_id, _runtime) == TaskStatus.done.value
         assert calls == [action]
-        body = raw[-1].result
-        assert body.marked is True
-        assert body.restore_action == "frame.restore"
+        payload = raw[-1]
+        assert isinstance(payload, dict)
+        body = payload["result"]
+        assert body["marked"] is True
+        assert body["restore_action"] == "frame.restore"
         async with env.factory() as session:
             frame = await session.get(Frame, ids[1])
             assert frame is not None
-            assert frame.attrs["кадры"][0]["активен"] is False
-        restore_params = {"project_id": pid, lookup: body.snapshot_id if lookup == "snapshot_id" else body.change_id}
+            shots = [dict(shot) for shot in frame.attrs["кадры"]]
+            assert shots[0]["активен"] is False
+            shots[0]["текст"] = "после удаления"
+            frame.attrs = {"кадры": shots}
+            await session.commit()
+        edited = [{"id": "s1", "номер": 1, "активен": True, "текст": "после удаления"}]
+        restore_params = {
+            "project_id": pid,
+            lookup: body["snapshot_id"] if lookup == "snapshot_id" else body["change_id"],
+        }
         calls.clear()
         _runtime, task_id, _card = await _run_granted(
             bridge,
@@ -335,15 +364,21 @@ async def test_e2e_frame_restore_roundtrip(env, monkeypatch, action: str, lookup
             "верни",
             PlanStep(action="frame.restore", params=restore_params, mutating=True, risk="high"),
             project_id=pid,
+            cc_change_id="cc-keep",
         )
         assert runtime_status(task_id, _runtime) == TaskStatus.done.value
         assert calls == ["frame.restore"]
         assert contexts[-1]["approval"]["action"] == "frame.restore"
+        assert contexts[-1]["approval"]["cc_change_id"] == "cc-keep"
         assert _CHANGE_ID.fullmatch(contexts[-1]["approval"]["change_id"])
+        restored = raw[-1]
+        assert isinstance(restored, dict)
+        assert restored["cc_change_id"] == "cc-keep"
+        assert mapped[-1]["cc_change_id"] == "cc-keep"
         async with env.factory() as session:
             frame = await session.get(Frame, ids[1])
             assert frame is not None
-            assert frame.attrs["кадры"] == original
+            assert frame.attrs["кадры"] == edited
             total = await session.scalar(select(func.count()).select_from(Frame).where(Frame.project_id == pid))
             assert total == 1
         calls.clear()
@@ -362,7 +397,7 @@ async def test_e2e_frame_restore_roundtrip(env, monkeypatch, action: str, lookup
         assert all(item["status"] != "done" for item in steps)
         async with env.factory() as session:
             frame = await session.get(Frame, ids[1])
-            assert frame.attrs["кадры"] == original
+            assert frame.attrs["кадры"] == edited
     finally:
         set_runtime(None)
 
@@ -420,3 +455,37 @@ async def test_e2e_unknown_name_is_refused(env, monkeypatch) -> None:
     assert out.ok is False
     assert out.data["error"] == "not_in_whitelist"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_e2e_restore_follows_whitelist_and_unlisted_is_refused(monkeypatch) -> None:
+    """WS2 #385 @ e2af5b4c: frame.restore только из whitelist(), чужое имя — отказ.
+
+    group.delete и prompt.delete_master до R2 отвечают failed, не успех.
+    """
+    import app.orchestrator.actions as actions
+    import app.orchestrator.contracts as contracts
+    from app.orchestrator.actions import execute, whitelist
+    from app.orchestrator.contracts import PlanStep, not_in_whitelist, step_is_deletion
+
+    assert not hasattr(contracts, "frame_restore_grant")
+    listed = whitelist()
+    assert "frame.restore" in listed
+    assert "group.delete" not in listed
+    assert "prompt.delete_master" not in listed
+    bridge, calls, _contexts = _bridge(monkeypatch)
+    assert not_in_whitelist("frame.restore", bridge) is False
+    assert step_is_deletion(PlanStep(action="frame.restore", mutating=True, risk="high"), bridge) is False
+    held = await bridge.execute("frame.restore", {"project_id": 1}, {"operator": "e2e"})
+    assert held["status"] == "approval_required"
+    assert held["ok"] is False
+    assert calls == ["frame.restore"]
+    refused = await bridge.execute("not.a.real.action", {}, {"operator": "e2e"})
+    assert refused.ok is False
+    assert refused.data["error"] == "not_in_whitelist"
+    assert calls == ["frame.restore"]
+    for name in ("group.delete", "prompt.delete_master"):
+        denied = await execute(name, {}, {"operator": "e2e"})
+        assert isinstance(denied, dict)
+        assert denied["status"] == "failed"
+        assert denied["error"] == "до R2 недоступно"
