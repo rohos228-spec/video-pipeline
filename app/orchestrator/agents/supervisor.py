@@ -2201,8 +2201,15 @@ class Supervisor:
     def _restore_retry_armed(self, task_id: int, packed: dict[str, Any] | None) -> None:
         if not isinstance(packed, dict):
             return
+        spent = packed.get("retry_spent")
+        if isinstance(spent, list):
+            for item in spent:
+                if isinstance(item, str) and item:
+                    self._retry_spent.add((int(task_id), item))
         armed = packed.get("retry_armed")
         if not isinstance(armed, str) or not armed:
+            return
+        if (int(task_id), armed) in self._retry_spent:
             return
         if any(stored == task_id for stored, _key in self._retry_spent):
             return
@@ -2289,7 +2296,8 @@ class Supervisor:
 
     def _appr_pack_dict(self, key: int) -> dict[str, Any] | None:
         issued = [change_id for change_id, owner in self._appr_owner.items() if owner[0] == key]
-        if not issued and not self._appr_seq.get(key, 0):
+        spent_keys = sorted(item for stored, item in self._retry_spent if stored == key)
+        if not issued and not self._appr_seq.get(key, 0) and not spent_keys:
             return None
         state = {
             "seq": self._appr_seq.get(key, 0),
@@ -2305,6 +2313,8 @@ class Supervisor:
         armed = self._retry_armed.get(key)
         if isinstance(armed, str) and armed:
             state["retry_armed"] = armed
+        if spent_keys:
+            state["retry_spent"] = spent_keys
         return state
 
     def _checkpoint_context(self, task_id: int) -> str:
