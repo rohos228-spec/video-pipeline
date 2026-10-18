@@ -1947,7 +1947,13 @@ class Supervisor:
         button = _coerce_decision(decision) is not None
         if not change_id:
             open_id = self._appr_open.get(key)
-            if button and not retry_grant and open_id is not None and open_id in self._appr_decided:
+            if (
+                button
+                and not retry_grant
+                and open_id is not None
+                and open_id in self._appr_decided
+                and not self._retry_choice_open(key, open_id, decision)
+            ):
                 raise ApprovalGrantError(409, "change_id already decided")
             return
         owner = self._appr_owner.get(change_id)
@@ -1959,9 +1965,24 @@ class Supervisor:
             label = self._appr_decided[change_id]
             if retry_grant and label == ApprovalDecision.retry_step.value:
                 return
+            if self._retry_choice_open(key, change_id, decision):
+                return
             raise ApprovalGrantError(409, "change_id already decided")
         if self._appr_open.get(key) != change_id:
             raise ApprovalGrantError(409, "change_id is not current")
+
+    def _retry_choice_open(
+        self,
+        task_id: int,
+        change_id: str,
+        decision: ApprovalDecision | str | None,
+    ) -> bool:
+        """approve/deny поверх retry_step, пока одноразовый ключ не потрачен."""
+        if self._appr_decided.get(change_id) != ApprovalDecision.retry_step.value:
+            return False
+        if self._retry_grant_is_spent(int(task_id)):
+            return False
+        return _coerce_decision(decision) in {ApprovalDecision.approve, ApprovalDecision.deny}
 
     async def publish_approval_required(
         self,
@@ -2047,7 +2068,20 @@ class Supervisor:
         if not found and data is not None:
             _visible, packed = _split_appr_context(data.context)
             self._merge_appr_pack(key, session_id, packed)
+        if data is not None and task_id:
+            _visible, packed = _split_appr_context(data.context or "")
+            self._restore_retry_armed(int(task_id), packed)
         self._appr_loaded.add(key)
+
+    def _restore_retry_armed(self, task_id: int, packed: dict[str, Any] | None) -> None:
+        if not isinstance(packed, dict):
+            return
+        armed = packed.get("retry_armed")
+        if not isinstance(armed, str) or not armed:
+            return
+        if any(stored == task_id for stored, _key in self._retry_spent):
+            return
+        self._retry_armed[task_id] = armed
 
     def _absorb_appr_events(self, key: int, session_id: str, events: list[Any]) -> bool:
         found = False
@@ -2068,6 +2102,9 @@ class Supervisor:
                 self._appr_owner[change_id] = (key, session_id)
                 self._appr_open[key] = change_id
                 self._note_appr_seq(key, change_id)
+                reason = payload.get("reason")
+                if key and reason == "paid_outcome_unknown" and key not in self._block_reason:
+                    self._block_reason[key] = "paid_outcome_unknown"
                 continue
             if change_id is None:
                 continue
@@ -2129,7 +2166,7 @@ class Supervisor:
         issued = [change_id for change_id, owner in self._appr_owner.items() if owner[0] == key]
         if not issued and not self._appr_seq.get(key, 0):
             return None
-        return {
+        state = {
             "seq": self._appr_seq.get(key, 0),
             "open": self._appr_open.get(key),
             "issued": sorted(issued),
@@ -2140,6 +2177,10 @@ class Supervisor:
             },
             "sessions": {change_id: self._appr_owner[change_id][1] for change_id in issued},
         }
+        armed = self._retry_armed.get(key)
+        if isinstance(armed, str) and armed:
+            state["retry_armed"] = armed
+        return state
 
     def _checkpoint_context(self, task_id: int) -> str:
         visible, _packed = _split_appr_context(self._context.get(task_id, ""))
