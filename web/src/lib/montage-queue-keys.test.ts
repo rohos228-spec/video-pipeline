@@ -27,5 +27,17 @@ test("shorter server queue replaces local only when it is the remaining suffix",
   const local = [{ id: "done" }, { id: "left" }];
   assert.equal(serverQueueReplacesLocal(local, [{ id: "left" }], key), true);
   assert.equal(serverQueueReplacesLocal(local, [{ id: "stale" }], key), false);
-  assert.equal(serverQueueReplacesLocal(local, [], key), true);
+  assert.equal(serverQueueReplacesLocal(local, [], key), false);
+});
+
+test("empty server snapshot does not wipe a local queue or its data", () => {
+  const key = (op: { id: string; instruction: string }) =>
+    `${op.id}:${op.instruction}`;
+  const local = [
+    { id: "keep", instruction: "светлее фон" },
+    { id: "also", instruction: "темнее лицо" },
+  ];
+  const snapshot = local.map((op) => ({ ...op }));
+  assert.equal(serverQueueReplacesLocal(local, [], key), false);
+  assert.deepEqual(local, snapshot);
 });

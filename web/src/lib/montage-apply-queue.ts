@@ -48,13 +48,15 @@ export function montageOpSelectKey(op: {
 /**
  * Короткий серверный список принимаем, только если это хвост локальной очереди
  * (сделанные ops сняты). Чужой короткий снимок локальную очередь не затирает.
- * Пустой серверный список — все локальные ops уже сняты.
+ * Пустой серверный снимок локальную очередь и её данные не затирает:
+ * без сигнала sentKeys это не «все ops уже сняты».
  */
 export function serverQueueReplacesLocal<T>(
   local: readonly T[],
   restored: readonly T[],
   keyOf: (op: T) => string,
 ): boolean {
+  if (local.length > 0 && restored.length === 0) return false;
   if (restored.length >= local.length) return true;
   const localKeys = local.map(keyOf);
   const restoredKeys = restored.map(keyOf);
