@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.orchestrator.agents.wiring import ActionsBridge
-from app.orchestrator.contracts import envelope_warnings
+from app.orchestrator.contracts import ActionResult, envelope_warnings
 
 
 class _Inner:
@@ -45,6 +45,39 @@ async def test_r23_error_becomes_failed_with_code() -> None:
     assert out["ok"] is False
     assert out["status"] == "failed"
     assert out["error"] == "disk_full"
+
+
+@pytest.mark.asyncio
+async def test_r23_change_control_id_is_cc_change_id() -> None:
+    out = await ActionsBridge(
+        _Inner(
+            {
+                "status": "ok",
+                "result": {"change_id": "cc-42", "snapshot_id": "snap"},
+                "cost": 0,
+                "warnings": [],
+                "error": None,
+            }
+        )
+    ).execute("look", {}, {})
+    assert out["change_id"] is None
+    assert out["cc_change_id"] == "cc-42"
+    assert "change_id" not in out["data"]
+    assert out["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_action_result_change_id_moves_to_cc_change_id() -> None:
+    class _Result:
+        async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
+            del name, params, task_ctx
+            return ActionResult(ok=True, data={"n": 1}, change_id="cc-9", cost=1.0)
+
+    out = await ActionsBridge(_Result()).execute("look", {}, {})
+    assert out["change_id"] is None
+    assert out["cc_change_id"] == "cc-9"
+    assert out["ok"] is True
+    assert out["cost"] == 1.0
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,9 @@ async def test_bridge_keeps_envelope_and_strips_nested_approval_id() -> None:
     assert out["result"]["snapshot_id"] == "snap-13-6"
     assert out["result"]["skipped"] == ["n_other"]
     assert out["result"]["partial"] is True
-    assert out["result"]["change_id"] is None
+    assert "change_id" not in out["result"]
+    assert out["change_id"] is None
+    assert out["cc_change_id"] is None
 
     failed = await ActionsBridge(_Inner({"status": "failed", "error": "no", "result": {}})).execute("x", {}, {})
     assert failed["ok"] is False
@@ -69,7 +71,8 @@ async def test_load_actions_bridge_strips_orch_appr() -> None:
         assert out["status"] == "ok"
         assert out["data"]["snapshot_id"] == "snap"
         assert out["result"]["snapshot_id"] == "snap"
-        assert out["result"]["change_id"] is None
+        assert "change_id" not in out["result"]
+        assert out["cc_change_id"] is None
     finally:
         if previous is None:
             sys.modules.pop("app.orchestrator.actions", None)

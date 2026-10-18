@@ -291,16 +291,21 @@ class ActionsBridge:
             return _map_r23(result)
         if not isinstance(result, ActionResult):
             result = ActionResult.model_validate(result)
-        change_id = result.change_id
-        if isinstance(change_id, str) and _APPROVAL_CHANGE_ID.match(change_id):
+        _core_id, cc_change_id = _split_change_id(result.change_id)
+        if cc_change_id is not None:
+            return {
+                "ok": result.ok,
+                "status": "ok" if result.ok else "failed",
+                "data": dict(result.data),
+                "cost": float(result.cost or 0),
+                "change_id": None,
+                "cc_change_id": cc_change_id,
+                "warnings": [],
+                "error": None,
+            }
+        if isinstance(result.change_id, str) and _APPROVAL_CHANGE_ID.match(result.change_id):
             return result.model_copy(update={"change_id": None})
         return result
-
-
-def _strip_approval_id(value: Any) -> Any:
-    if isinstance(value, str) and _APPROVAL_CHANGE_ID.match(value):
-        return None
-    return value
 
 
 def _error_code(error: Any) -> str | None:
@@ -319,13 +324,16 @@ def _map_r23(payload: dict[str, Any]) -> dict[str, Any]:
     ``warnings`` остаются на результате: супервизор кладёт их в событие шага.
     ``error`` — код, статус ``failed``. ``partial: true`` при уже включённом
     partial kill-fixes даёт статус ``partial``, не успех.
-    ``orch-appr-*`` в этом слое ещё срезается: ядро само выдаёт id.
+    Чужой ``change_id`` уходит в ``cc_change_id`` и не подменяет id ядра.
+    ``orch-appr-*`` здесь не принимается: его выдаёт только ядро.
     """
     status = str(payload.get("status") or "")
     raw_result = payload.get("result")
     data = dict(raw_result) if isinstance(raw_result, dict) else {}
-    if "change_id" in data:
-        data["change_id"] = _strip_approval_id(data.get("change_id"))
+    raw_id = data.pop("change_id", None)
+    if not isinstance(raw_id, str):
+        raw_id = payload.get("change_id")
+    _core_id, cc_change_id = _split_change_id(raw_id)
     partial = payload.get("partial") is True or data.get("partial") is True
     if status == "ok" and partial:
         status = "partial"
@@ -340,11 +348,6 @@ def _map_r23(payload: dict[str, Any]) -> dict[str, Any]:
     warnings = payload.get("warnings")
     if not isinstance(warnings, list):
         warnings = []
-    change_id = data.get("change_id")
-    if not isinstance(change_id, str):
-        change_id = _strip_approval_id(payload.get("change_id"))
-        if not isinstance(change_id, str):
-            change_id = None
     return {
         "ok": status == "ok",
         "status": status,
@@ -353,5 +356,16 @@ def _map_r23(payload: dict[str, Any]) -> dict[str, Any]:
         "cost": cost,
         "warnings": [str(item) for item in warnings],
         "error": error,
-        "change_id": change_id,
+        "change_id": None,
+        "cc_change_id": cc_change_id,
     }
+
+
+def _split_change_id(raw: Any) -> tuple[None, str | None]:
+    """Id ядра этот слой не подставляет. Change-control id живёт в ``cc_change_id``."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    text = raw.strip()
+    if _APPROVAL_CHANGE_ID.match(text):
+        return None, None
+    return None, text
