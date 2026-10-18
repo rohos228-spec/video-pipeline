@@ -63,8 +63,9 @@ async function emit(page: Page, session: string, type: string, payload: Record<s
 }
 
 test("схема ws2-r2.3 закреплена sha256", () => {
-  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib");
-  const file = path.join(dir, "orchestratorActionResults.schema.json");
+  const specDir = path.dirname(fileURLToPath(import.meta.url));
+  const dir = path.resolve(specDir, "../../src/lib");
+  const file = path.join(specDir, "orchestratorActionResults.schema.json");
   const raw = readFileSync(file);
   const hash = createHash("sha256").update(raw).digest("hex");
   expect(hash).toBe(ACTION_SCHEMA_SHA256);

@@ -3,7 +3,7 @@
  *
  * ws2-r2.3 — PR #378 @ 2216f10e27eef6117e31e81d915824140135a145.
  * Схема: app/orchestrator/action_contracts
- * Копия для моков: web/src/lib/orchestratorActionResults.schema.json
+ * Копия для моков: web/e2e/orchestrator/orchestratorActionResults.schema.json
  * sha256 76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123
  *
  * Формат результатов тот же, что у r2.2. version строго больше base_version;
