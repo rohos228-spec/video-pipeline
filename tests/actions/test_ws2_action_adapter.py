@@ -328,13 +328,16 @@ def test_whitelist_built_from_registry_matches_audit() -> None:
     assert "prompt.restore_master" not in names
 
 
-def test_whitelist_names_match_action_pattern() -> None:
-    """Каждое имя whitelist() подходит под pattern контракта, без @."""
+async def test_whitelist_names_match_action_pattern() -> None:
+    """Каждое имя whitelist() подходит под pattern контракта, без @.
+
+    frame.restore в списке как high и идёт только через approval.
+    """
 
     import re
 
     from app.orchestrator.action_contracts.contracts import AUDIT_ACTION_IDS
-    from app.orchestrator.actions.executor import metadata_of, whitelist
+    from app.orchestrator.actions.executor import execute, metadata_of, whitelist
 
     pattern = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
     names = whitelist()
@@ -345,6 +348,8 @@ def test_whitelist_names_match_action_pattern() -> None:
     meta = metadata_of("frame.restore")
     assert meta.risk == "high"
     assert meta.needs_approval is True
+    held = await execute("frame.restore", {}, {})
+    assert held.status == "approval_required"
 
 
 async def test_delete_frame_via_adapter_is_soft(env) -> None:
