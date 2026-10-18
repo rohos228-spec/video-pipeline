@@ -328,22 +328,30 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
 
 
 def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
+    """Совместимость вызовов: шот не вырезается, только помечается неактивным."""
+    _mark_kadry_id_inactive(frame, shot_id, where="_remove_kadry_id")
+
+
+def _mark_kadry_id_inactive(frame: Frame, shot_id: str, *, where: str) -> None:
     sid = (shot_id or "").strip()
     if not sid:
         return
-    planned = [
-        item
-        for item in planned_shots_from_attrs(frame)
-        if str(item.get("id") or "").strip() != sid
-    ]
+    planned = [dict(item) for item in planned_shots_from_attrs(frame)]
+    hit = False
+    for item in planned:
+        if str(item.get("id") or "").strip() != sid:
+            continue
+        item["активен"] = False
+        item["карантин"] = True
+        item["пометка"] = "шот помечен, не вырезан"
+        hit = True
+    if not hit:
+        return
     attrs = dict(getattr(frame, "attrs", None) or {})
-    if planned:
-        attrs["кадры"] = planned
-    else:
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
+    attrs["кадры"] = planned
     frame.attrs = attrs
     _flag_attrs(frame)
+    logger.warning("WARN {}: шот {} помечен, лестница не сокращена", where, sid)
 
 
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
@@ -1049,28 +1057,24 @@ async def delete_coverage_child(
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     quarantine_frame_media(project, int(frame.number))
-    drop_id = int(frame.id)
     sid = coverage_shot_id(frame)
-    await session.execute(
-        update(Artifact).where(Artifact.frame_id == drop_id).values(frame_id=None)
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["активен"] = False
+    attrs["удалён"] = True
+    attrs["карантин"] = True
+    attrs["пометка"] = "delete_coverage_child: кадр помечен, не удалён"
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    _set_cs(frame, leftover=True)
+    logger.warning(
+        "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
+        frame.number,
+        frame.id,
     )
-    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id == drop_id))
-    await session.execute(delete(FrameText).where(FrameText.frame_id == drop_id))
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            or_(
-                FrameEdge.from_frame_id == drop_id,
-                FrameEdge.to_frame_id == drop_id,
-            ),
-        )
-    )
-    await session.delete(frame)
     await session.flush()
-    if parent is not None:
-        remaining = [fr for fr in frames if int(fr.id) != drop_id]
-        _remove_kadry_id(parent, sid)
-        _refresh_shots_in_beat(remaining, parent)
+    if parent is not None and int(parent.number) != int(frame.number):
+        _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
+        _refresh_shots_in_beat(frames, parent)
 
 
 def _clear_child_scene_chain(frame: Frame) -> None:
