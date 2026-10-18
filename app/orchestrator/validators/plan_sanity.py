@@ -11,7 +11,8 @@
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
 ``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе:
 ``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
-``context["approval"]`` с ``risk == "high"`` и ``destructive is True``.
+``context["approval"]`` с ``risk == "high"``, ``destructive is True``,
+``granted is True`` и ``action``, равным имени шага.
 Нет поля ``soft_delete`` — это false. Адаптера ``cursor/ws2-action-adapter``
 в origin ещё нет, поэтому ``metadata_of`` берётся у реестра.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
@@ -234,7 +235,7 @@ def _soft_delete_granted(action: str, context: dict[str, Any], registry: Any) ->
         return False
     if not _metadata_soft_delete(token, registry, context):
         return False
-    return _core_approved_high_destructive(context)
+    return _core_approved_high_destructive(context, action)
 
 
 def _metadata_soft_delete(action: str, registry: Any, context: dict[str, Any]) -> bool:
@@ -255,24 +256,33 @@ def _metadata_soft_delete(action: str, registry: Any, context: dict[str, Any]) -
     return False
 
 
-def _core_approved_high_destructive(context: dict[str, Any]) -> bool:
-    """Ядро уже получило одобрение risk=high и destructive.
+def _core_approved_high_destructive(context: dict[str, Any], action: str) -> bool:
+    """Ядро выдало одобрение именно этому действию.
 
-    Читается ``context["approval"]``: dict или объект с полями ``risk`` и
-    ``destructive``. Оба условия обязательны. ``destructive is True``,
-    ``risk`` сравнивается без регистра.
+    ``context["approval"]`` — форма WS3: ``change_id``, ``action``, ``risk``,
+    ``destructive``, ``granted``, ``cc_change_id``. Обязательны ``risk == "high"``,
+    ``destructive is True``, ``granted is True`` и ``action``, равный имени шага.
     """
 
     approval = context.get("approval")
     if isinstance(approval, dict):
         risk = approval.get("risk")
         destructive = approval.get("destructive")
+        granted = approval.get("granted")
+        approved_action = approval.get("action")
     elif approval is not None:
         risk = getattr(approval, "risk", None)
         destructive = getattr(approval, "destructive", None)
+        granted = getattr(approval, "granted", None)
+        approved_action = getattr(approval, "action", None)
     else:
         return False
-    return str(risk or "").strip().lower() == "high" and destructive is True
+    return (
+        str(risk or "").strip().lower() == "high"
+        and destructive is True
+        and granted is True
+        and approved_action == action
+    )
 
 
 def _action_deletes(action: str) -> bool:
