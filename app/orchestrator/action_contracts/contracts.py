@@ -20,6 +20,9 @@ CONTRACT_VERSION = "ws2-r2.3"
 
 # Форма id как у WS3 #358: выдаёт только сервер, ``n`` растёт внутри задачи.
 _CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
+# Имя действия на проводе. Сегменты [a-z0-9_], между ними точка.
+# Знака «@» нет: create_node@new_group — не id, а условие риска.
+_ACTION_NAME = r"^[a-z0-9_]+(\.[a-z0-9_]+)*$"
 # Детектор явных скриптов, не санитайзер. Не ловит ``<svg/onload=…>``,
 # ``<img/onerror=…>`` и ``&#106;avascript:``.
 # ``on*=`` только внутри тега. Текст «onload=» вне разметки детектор не трогает.
@@ -72,7 +75,7 @@ class ActionMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, pattern=_ACTION_NAME)
     risk: RiskName
     read_only: bool
     destructive: bool
@@ -146,8 +149,8 @@ def _check_change_id(value: str) -> str:
 
 
 def _plain_action(value: str) -> str:
-    if "@" in value:
-        raise ValueError("action не содержит @")
+    if not isinstance(value, str) or re.fullmatch(_ACTION_NAME, value) is None:
+        raise ValueError("action — имя из [a-z0-9_.] без @")
     return value
 
 
@@ -164,7 +167,7 @@ class EditResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra=_SKIPPED_REQUIRES_PARTIAL)
 
-    action: str = Field(min_length=1)
+    action: str = Field(min_length=1, pattern=_ACTION_NAME)
     change_id: str
     node_ref: NodeRef
     before: Any = None
@@ -223,7 +226,10 @@ class ReportResult(BaseModel):
     report_id: int = Field(ge=1)
     html: str = Field(min_length=1)
     version: int = Field(ge=1)
-    edit_action: Literal["update_report"] = REPORT_EDIT_ACTION
+    edit_action: Literal["update_report"] = Field(
+        default=REPORT_EDIT_ACTION,
+        json_schema_extra={"pattern": _ACTION_NAME},
+    )
 
     @field_validator("html")
     @classmethod
@@ -253,7 +259,7 @@ class ApprovalRequired(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: str = Field(min_length=1)
+    action: str = Field(min_length=1, pattern=_ACTION_NAME)
     metadata: ActionMetadata
     reason: str = Field(min_length=1)
     preview: ApprovalPreview
@@ -286,9 +292,9 @@ class SoftDeleteResult(BaseModel):
     model_config = ConfigDict(extra="forbid", json_schema_extra=_SKIPPED_REQUIRES_PARTIAL)
 
     change_id: str
-    action: str = Field(min_length=1)
+    action: str = Field(min_length=1, pattern=_ACTION_NAME)
     marked: bool
-    restore_action: str = Field(min_length=1)
+    restore_action: str = Field(min_length=1, pattern=_ACTION_NAME)
     snapshot_id: str | None = None
     archive_ref: str | None = None
     skipped: list[str] = Field(default_factory=list)

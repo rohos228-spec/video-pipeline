@@ -1,20 +1,40 @@
 # Контракт результатов действий R2 (моки WS4)
 
 Версия: `ws2-r2.3` (`CONTRACT_VERSION` в `app/orchestrator/action_contracts/contracts.py`).
-sha256 схемы: `a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c`.
+sha256 схемы: `76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123`.
 
-## Изменения r2.2 → r2.3
+## Изменения r2.0 → r2.1
 
-- Непустой `skipped` требует `partial: true`. Это и ошибка модели, и ветка JSON Schema `if`/`then`.
-- `ApprovalRequired.metadata` можно только ужесточить относительно реестра: риск не ниже, `destructive` и `paid` нельзя снять.
-- Новая группа у `create_node` повышает риск политикой `RISK_ESCALATIONS` (`when=group_is_new`: risk `high`, `destructive`). Поле `action` остаётся `create_node`. Знак `@` в `action` запрещён: ядро имя вроде `create_node@new_group` не исполнит.
-- 16 записей метаданных вместо 11 имён плана §6: 11 действий плана, `revert_node_to_git`, три restore и политика повышения риска. Это метаданные, не исполнители.
+- `ApprovalRequired` — запрос, не карточка: поля `change_id` нет. Карточку рисует ядро событиями `approval_required` / `approval_decided` (ws3-r3.4).
+- `estimate is None` — оценки нет, `0` — бесплатно. Платная оценка больше 0 или отсутствует.
+- `ApprovalRequired.metadata` сверяется с `metadata_of`.
+- `resume_node` не слабее `project.resume`.
+- `diff`: `op=removed` — ключ исчез, `op=set` и `after=null` — значение стало null.
+- Мягкое удаление требует `snapshot_id` или `archive_ref`. `status=ok` требует `marked=true`. Восстановление по kind: `frame.restore`, `group.restore`, `prompt.restore_master`.
+- `EditResult` несёт `before` или `snapshot_id`, а также `version` и `base_version`.
+- Конверт несёт `warnings`, правка — `skipped`.
+- Правки ноды и отчёта (`edit_node_prompt`, `edit_node_params`, `update_report`, `revert_node_to_git`) деструктивны и ждут подтверждения. `revert_node_to_git` — риск `medium`, ярус `destructive`.
 
 ## Изменения r2.1 → r2.2
 
 - `EditResult.version` строго больше `base_version`. Равные номера не проходят.
 - `snapshot_id` и `archive_ref` не бывают пустой строкой или строкой из пробелов.
 - Непустой `skipped` у `EditResult` и `SoftDeleteResult` даёт `partial: true`.
+
+## Изменения r2.2 → r2.3
+
+- Схемы живут в `app/orchestrator/action_contracts`, не в пакете реестра. Приёмка больше не пропускает реестр по `CONTRACT_VERSION`.
+- Флаги 102 зафиксированы в `audit_metadata.json`. Markdown при импорте не читается.
+- `partial=false` вместе с непустым `skipped` — ошибка, а не тихий `partial=true`.
+- `reject_stale_edit`: и `base_version` из будущего, и устаревшая база дают `failed` / `conflict`.
+- `create_node@new_group` — риск `high` и `destructive`. Метаданные можно только ужесточить.
+- Проверка html — детектор `_SCRIPT_DETECTOR`, не санитайзер.
+- Непустой `skipped` требует `partial: true`. Это и ошибка модели, и ветка JSON Schema `if`/`then`.
+- `ApprovalRequired.metadata` можно только ужесточить относительно реестра: риск не ниже, `destructive` и `paid` нельзя снять.
+- Новая группа у `create_node` повышает риск политикой `RISK_ESCALATIONS` (`when=group_is_new`: risk `high`, `destructive`). Поле `action` остаётся `create_node`. Знак `@` в `action` запрещён: ядро имя вроде `create_node@new_group` не исполнит.
+- 16 записей метаданных вместо 11 имён плана §6: 11 действий плана, `revert_node_to_git`, три restore и политика повышения риска. Это метаданные, не исполнители.
+- Имя действия в JSON Schema (`action`, `restore_action`, `ActionMetadata.name`, `edit_action`) ограничено `pattern` `^[a-z0-9_]+(\.[a-z0-9_]+)*$`. Схема отвергает `create_node@new_group`. Все 102 id из `AUDIT_ACTION_IDS` этот шаблон принимают.
+- Канонический `*.schema.json` в репозитории с LF (`.gitattributes`: `eol=lf`). sha256 считается по этим байтам.
 
 Это только схемы. Исполнителей, записи в node_store и HTTP здесь нет.
 Имена взяты из плана `fable-context` §6 и из `docs/fable/actions_audit.md`.
