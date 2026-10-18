@@ -382,7 +382,7 @@ export function blockOutcome(reason: string): TaskStatus | null {
 /** Текст отказа #370: имени нет в белом списке, карточка approval не открывается. */
 export const NOT_IN_WHITELIST = "not_in_whitelist";
 export const NOT_IN_WHITELIST_TEXT =
-  "Действия нет в белом списке. Одобрить и выполнить его нельзя.";
+  "Действия нет в белом списке. Одобрить и выполнить его нельзя. not_in_whitelist";
 
 export function isTerminalBlock(reason: string): boolean {
   const outcome = blockOutcome(reason);

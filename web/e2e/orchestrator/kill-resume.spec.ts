@@ -239,7 +239,8 @@ test("карточка paid_outcome_unknown показывает change_id ша�
 
   const approval = page.getByTestId("orch-approval");
   await expect(approval).toHaveAttribute("data-change-id", "orch-appr-7-1");
-  await expect(approval.getByTestId("orch-approve")).toHaveCount(1);
+  await expect(approval.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(approval.getByTestId("orch-retry")).toHaveCount(1);
   await expect(approval.getByTestId("orch-reject")).toHaveCount(1);
   await expect(page.getByTestId("orch-paid-reason")).toHaveText("Исход платного шага неизвестен");
   await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
@@ -254,7 +255,7 @@ test("карточка paid_outcome_unknown показывает change_id ша�
   });
   await expect(page.getByTestId("orch-paid-step-change")).toHaveText("chg-charge-9");
   await expect(page.getByTestId("orch-paid-step-missing")).toHaveCount(0);
-  await expect(page.getByTestId("orch-approve")).toHaveCount(1);
+  await expect(page.getByTestId("orch-retry")).toHaveCount(1);
 });
 
 test("paid_outcome_unknown берёт step_change_id и кнопки approve retry_step deny", async ({ page }) => {
@@ -282,15 +283,10 @@ test("paid_outcome_unknown берёт step_change_id и кнопки approve ret
   await expect(card.getByTestId("orch-paid-step-change")).toHaveText("chg-step-9");
   await expect(card).not.toContainText("chg-checkpoint-only");
   await expect(page.getByTestId("orch-approve")).toHaveCount(0);
-  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
-  const decisions = page.getByTestId("orch-decision");
-  await expect(decisions).toHaveCount(3);
-  await expect(decisions.nth(0)).toHaveAttribute("data-decision", "approve");
-  await expect(decisions.nth(0)).toHaveText("Шаг выполнен, продолжить");
-  await expect(decisions.nth(1)).toHaveAttribute("data-decision", "retry_step");
-  await expect(decisions.nth(1)).toHaveText("Перезапустить шаг");
-  await expect(decisions.nth(2)).toHaveAttribute("data-decision", "deny");
-  await expect(decisions.nth(2)).toHaveText("Остановить задачу");
+  const retry = page.getByTestId("orch-retry");
+  const deny = page.getByTestId("orch-reject");
+  await expect(retry).toHaveText("Перезапустить шаг");
+  await expect(deny).toHaveText("Reject");
   await expect(page.getByTestId("orch-resume")).toBeEnabled();
 
   let posted = "";
@@ -307,7 +303,7 @@ test("paid_outcome_unknown берёт step_change_id и кнопки approve ret
       }),
     });
   });
-  await decisions.nth(2).click();
+  await deny.click();
   await expect(page.getByTestId("orch-approval")).toHaveCount(0);
   await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
   await expect(page.getByTestId("orch-resume")).toHaveCount(0);
@@ -345,12 +341,9 @@ test("partial_write: approve идёт дальше, deny ставит failed и 
   });
 
   await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-partial-row");
-  const decisions = page.getByTestId("orch-decision");
-  await expect(decisions).toHaveCount(2);
-  await expect(decisions.nth(0)).toHaveAttribute("data-decision", "approve");
-  await expect(decisions.nth(1)).toHaveAttribute("data-decision", "deny");
-  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
-  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(1);
+  await expect(page.getByTestId("orch-reject")).toHaveCount(1);
+  await expect(page.getByTestId("orch-retry")).toHaveCount(0);
   await expect(page.getByTestId("orch-resume")).toBeEnabled();
 
   let posted = "";
@@ -368,7 +361,7 @@ test("partial_write: approve идёт дальше, deny ставит failed и 
       }),
     });
   });
-  await decisions.nth(1).click();
+  await page.getByTestId("orch-reject").click();
   await expect(page.getByTestId("orch-approval")).toHaveCount(0);
   await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
   await expect(page.getByTestId("orch-resume")).toHaveCount(0);
@@ -409,7 +402,7 @@ test("partial_write: approve идёт дальше, deny ставит failed и 
       }),
     });
   });
-  await page.getByTestId("orch-decision").first().click();
+  await page.getByTestId("orch-approve").click();
   await expect(page.getByTestId("orch-approval")).toHaveCount(0);
   await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-partial-row");
@@ -451,7 +444,7 @@ test("not_in_whitelist: экран отказывает до карточки, g
     action: "exec",
     task_id: 1,
   });
-  await page.route("**/api/orchestrator/approvals/orch-appr-1-1/approve", async (route) => {
+  await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
     await route.fulfill({
       status: 403,
       contentType: "application/json",
@@ -492,15 +485,15 @@ test("grant not_in_whitelist закрывает карточку и ставит
     step_change_id: "chg-bash",
   });
   await expect(page.getByTestId("orch-resume")).toBeEnabled();
-  await expect(page.getByTestId("orch-decision")).toHaveCount(3);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-retry")).toHaveCount(1);
 
-  const approve = page.getByTestId("orch-decision").first();
-  await approve.click();
+  await page.getByTestId("orch-retry").click();
   const screen = page.getByTestId("orch-approval");
   await expect(page.getByTestId("orch-whitelist")).toHaveText("Действия нет в белом списке");
   await expect(screen).toContainText("Одобрить и выполнить его нельзя");
   await expect(screen).toHaveAttribute("data-terminal", "true");
-  await expect(page.getByTestId("orch-decision")).toHaveCount(0);
+  await expect(page.getByTestId("orch-retry")).toHaveCount(0);
   await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
   await expect(page.getByTestId("orch-resume")).toHaveCount(0);
   await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
