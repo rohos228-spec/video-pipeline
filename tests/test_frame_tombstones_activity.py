@@ -1,7 +1,8 @@
 """Один предикат активности.
 
 Если ``activity_flags`` импортируется, ``frame_tombstones`` отдаёт те же
-функции. Иначе локальная матрица. NaN, ``"0.0"`` и «ложь» здесь не задаются.
+объекты. Иначе локальная матрица, как blob ``e8a3284a``. Сравнение с blob
+не фиксирует ожидаемые края само: оба ответа должны совпасть.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {ACTIVE_MARK: " OFF "}, False, False),
     ("shot", {ACTIVE_MARK: True}, True, False),
     ("shot", {DELETED_MARK: True}, False, False),
-    ("shot", {DELETED_MARK: "да"}, False, False),
+    ("shot", {DELETED_MARK: "да"}, True, False),
     ("shot", {DELETED_MARK: 1}, False, False),
     ("shot", {DELETED_MARK: False}, True, False),
     ("shot", {DELETED_MARK: 0}, True, False),
@@ -53,7 +54,7 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {DELETED_MARK: "no"}, True, False),
     ("shot", {DELETED_MARK: "off"}, True, False),
     ("shot", {QUARANTINE_MARK: True}, False, False),
-    ("shot", {QUARANTINE_MARK: "да"}, False, False),
+    ("shot", {QUARANTINE_MARK: "да"}, True, False),
     ("shot", {QUARANTINE_MARK: 1}, False, False),
     ("shot", {QUARANTINE_MARK: False}, True, False),
     ("shot", {QUARANTINE_MARK: 0}, True, False),
@@ -190,11 +191,11 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         assert shot_is_active({}) is True
 
 
-_WS1_FLAGS_SHA = "d984a52d"
+_FLAGS_BLOB = "e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0"
 
 
 def test_activity_fallback_simulates_import_error() -> None:
-    """ImportError оставляет локальную матрицу. Крайние значения сюда не входят."""
+    """ImportError оставляет локальную матрицу. Ядро: True, False, нет ключа."""
     import builtins
     import importlib
 
@@ -228,36 +229,55 @@ def test_activity_fallback_simulates_import_error() -> None:
         importlib.reload(tomb)
 
 
-def test_activity_predicates_reexport_ws1_when_importable(tmp_path) -> None:
+def _activity_flags_blob_source() -> bytes | None:
+    """Текст blob ``e8a3284a``. None — git или blob недоступны."""
+
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(
+            ["git", "show", _FLAGS_BLOB],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout
+
+
+def _load_activity_flags_blob(tmp_path, source: bytes, module_name: str):
+    import importlib.util
+
+    path = tmp_path / f"{module_name}.py"
+    path.write_bytes(source)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_activity_predicates_reexport_when_importable(tmp_path) -> None:
     """Когда модуль импортируется, предикаты — те же объекты, не обёртка.
 
-    Файл #371 только во временном каталоге и в репозиторий не попадает.
+    Файл #371 лежит только во временном каталоге и в репозиторий не попадает.
     """
     import importlib
-    import importlib.util
-    import io
-    import subprocess
-    import tarfile
 
     import app.services.frame_tombstones as tomb
 
-    repo = __import__("pathlib").Path(__file__).resolve().parents[1]
-    archive = subprocess.run(
-        ["git", "archive", _WS1_FLAGS_SHA, "app/orchestrator/validators/activity_flags.py"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    ).stdout
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-        tar.extractall(tmp_path, filter="data")
-    path = tmp_path / "app" / "orchestrator" / "validators" / "activity_flags.py"
-    spec = importlib.util.spec_from_file_location(
-        "app.orchestrator.validators.activity_flags", path
+    source = _activity_flags_blob_source()
+    if source is None:
+        pytest.skip("git или blob activity_flags недоступен")
+    ws1 = _load_activity_flags_blob(
+        tmp_path, source, "app.orchestrator.validators.activity_flags"
     )
-    assert spec is not None and spec.loader is not None
-    ws1 = importlib.util.module_from_spec(spec)
     sys.modules["app.orchestrator.validators.activity_flags"] = ws1
-    spec.loader.exec_module(ws1)
     try:
         importlib.reload(tomb)
         assert tomb.shot_is_active is ws1.shot_is_active
@@ -265,3 +285,60 @@ def test_activity_predicates_reexport_ws1_when_importable(tmp_path) -> None:
     finally:
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
+
+
+def test_fallback_matches_final_activity_flags_blob(tmp_path) -> None:
+    """Локальная матрица и blob e8a3284a дают один ответ на широком наборе."""
+
+    import app.services.activity_flags_fallback as fallback
+
+    source = _activity_flags_blob_source()
+    if source is None:
+        pytest.skip("git или blob activity_flags недоступен")
+    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_e8a3284a")
+    nan = float("nan")
+    scalars = [
+        None,
+        True,
+        False,
+        0,
+        0.0,
+        1,
+        "",
+        "   ",
+        "0",
+        "false",
+        "FALSE",
+        " нет ",
+        "no",
+        " OFF ",
+        "off",
+        "ложь",
+        "ЛОЖЬ",
+        "0.0",
+        "да",
+        "да?",
+        nan,
+    ]
+    payloads: list[object] = [None, "не словарь", 1, [], {}]
+    for value in scalars:
+        payloads.append({ACTIVE_MARK: value})
+        payloads.append({DELETED_MARK: value})
+        payloads.append({QUARANTINE_MARK: value})
+    payloads.extend(
+        [
+            {DELETED_MARK: True, ACTIVE_MARK: True},
+            {DELETED_MARK: nan, ACTIVE_MARK: True},
+            {DELETED_MARK: "0.0", ACTIVE_MARK: "ложь"},
+            {DELETED_MARK: "ложь", QUARANTINE_MARK: "да?"},
+            {QUARANTINE_MARK: nan, ACTIVE_MARK: "0.0"},
+            {QUARANTINE_MARK: 1, ACTIVE_MARK: False},
+            {ACTIVE_MARK: "да?", DELETED_MARK: ""},
+        ]
+    )
+    for value in scalars:
+        assert fallback.flag_is_false(value) is remote.flag_is_false(value)
+        assert fallback.flag_is_true(value) is remote.flag_is_true(value)
+    for payload in payloads:
+        assert fallback.shot_is_active(payload) is remote.shot_is_active(payload)
+        assert fallback.frame_is_active(payload) is remote.frame_is_active(payload)
