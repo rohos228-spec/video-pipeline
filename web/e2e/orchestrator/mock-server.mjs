@@ -133,15 +133,21 @@ function touchSession(session) {
   session.clock = ++busClock;
 }
 
-/** Несколько сессий могут держать один `orch-appr-<task>-<n>`. Решает живая, последняя. */
+/** Несколько сессий могут держать один id. Живой SSE важнее, но REST без стрима тоже находит ожидание. */
 function pickLiveWait(field, approvalId) {
-  let chosen = null;
+  let live = null;
+  let idle = null;
   for (const session of sessions.values()) {
     const wait = session[field];
-    if (!wait || wait.id !== approvalId || session.clients.size === 0) continue;
-    if (!chosen || (session.clock || 0) >= (chosen.clock || 0)) chosen = session;
+    if (!wait || wait.id !== approvalId) continue;
+    const newer = (candidate) => !candidate || (session.clock || 0) >= (candidate.clock || 0);
+    if (session.clients.size > 0) {
+      if (newer(live)) live = session;
+    } else if (newer(idle)) {
+      idle = session;
+    }
   }
-  return chosen;
+  return live || idle;
 }
 
 function noteIssued(session, changeId) {

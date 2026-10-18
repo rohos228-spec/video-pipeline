@@ -510,6 +510,58 @@ function readSessionEvents(session: string): Promise<string> {
   });
 }
 
+test("approve без открытого SSE не отвечает 404", async ({ page }) => {
+  const session = "rest-approve";
+  const started = await page.request.post(`${MOCK}/api/orchestrator/chat/${session}/message`, {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Orch-Scenario": "approval",
+    },
+    data: { text: "запуск без стрима" },
+  });
+  expect(started.ok()).toBeTruthy();
+  const bus = await new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const req = http.get(
+      new URL(`/api/orchestrator/chat/${encodeURIComponent(session)}/stream`, MOCK),
+      { headers: { Authorization: `Bearer ${TOKEN}`, Accept: "text/event-stream" } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+          const text = Buffer.concat(chunks).toString("utf8");
+          if (!text.includes("event: approval_required") || settled) return;
+          settled = true;
+          req.destroy();
+          resolve(text);
+        });
+      },
+    );
+    req.setTimeout(8_000, () => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      resolve("");
+    });
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled || error.code === "ECONNRESET") return;
+      reject(error);
+    });
+  });
+  expect(bus).toContain("approval_required");
+  const approved = await page.request.post(`${MOCK}/api/orchestrator/approvals/appr-1/approve`, {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Orch-Scenario": "approval",
+    },
+    data: {},
+  });
+  expect(approved.status()).toBe(200);
+  expect(await approved.json()).toMatchObject({ ok: true, approval_id: "appr-1", matched: true });
+});
+
 function orchUrl(scenario: string, session = "studio", project?: number): string {
   const q = new URLSearchParams({
     scenario,
