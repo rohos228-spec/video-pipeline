@@ -305,6 +305,35 @@ async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSig
   return (await res.json()) as T;
 }
 
+function liveVersion(body: { version?: unknown; base_version?: unknown } | null): number | null {
+  const value = body?.version ?? body?.base_version;
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : null;
+}
+
+/** Текущая версия после 409: снимок, если он есть, иначе status. */
+export async function readOrchLiveVersion(
+  cfg: OrchClientConfig,
+  snapshotUrl: string | null,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  const paths: string[] = [];
+  if (snapshotUrl && snapshotUrl.startsWith("/api/orchestrator/") && !snapshotUrl.split("/").includes("..")) {
+    paths.push(snapshotUrl);
+  }
+  paths.push(`/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/status`);
+  for (const path of paths) {
+    try {
+      const body = await getJson<{ version?: unknown; base_version?: unknown }>(cfg, path, signal);
+      const version = liveVersion(body);
+      if (version != null) return version;
+    } catch (error) {
+      if (signal?.aborted) return null;
+      if (error instanceof OrchApiError && error.status === 401) throw error;
+    }
+  }
+  return null;
+}
+
 export function listOrchReports(cfg: OrchClientConfig, projectId: number, signal?: AbortSignal): Promise<{ reports: OrchReportsRow[] }> {
   return getJson(cfg, `/api/orchestrator/projects/${projectId}/reports`, signal);
 }

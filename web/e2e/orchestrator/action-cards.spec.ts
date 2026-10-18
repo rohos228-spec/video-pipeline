@@ -461,22 +461,19 @@ test("конфликт версии 409 предлагает обновить и
     if (req.method() !== "POST" || !req.url().includes("/message")) return;
     posts.push(req.postDataJSON());
   });
+  await expect(edit.getByTestId("orch-conflict-retry")).toBeEnabled();
   await edit.getByTestId("orch-conflict-retry").click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
     text: "Обновить и повторить",
-    action: { name: "edit_node_prompt" },
+    action: { name: "edit_node_prompt", base_version: 9 },
   });
+  expect(posts[0]?.action?.base_version).not.toBe(4);
 
   await emit(page, "act-409", "step_finished", EXAMPLE_VERSION_CONFLICT);
-  const bare = page.getByTestId("orch-action-card").filter({ hasText: "Данные не изменены" }).last();
-  await expect(bare.getByTestId("orch-version-conflict")).toContainText("409");
-  await bare.getByTestId("orch-conflict-retry").click();
-  await expect.poll(() => posts.length).toBe(2);
-  expect(posts[1]).toEqual({
-    text: "Обновить и повторить",
-    action: { name: "conflict" },
-  });
+  const namedConflict = page.locator("[data-testid='orch-action-card'][data-action='conflict']");
+  await expect(namedConflict).toHaveCount(0);
+  expect(posts).toHaveLength(1);
 });
 
 test("восстановление мягкого удаления идёт по kind и снимку", async ({ page }) => {
@@ -565,11 +562,13 @@ test("поля r2.1: предупреждения, пропуск, конфли�
 });
 
 test("повтор конфликта не шлёт прежний base_version", () => {
-  expect(conflictRetryBody("edit_node_prompt", 4)).toEqual({
+  expect(conflictRetryBody("edit_node_prompt", null, 4)).toBeNull();
+  expect(conflictRetryBody("edit_node_prompt", 4, 4)).toBeNull();
+  expect(conflictRetryBody("conflict", 9, 4)).toBeNull();
+  expect(conflictRetryBody("edit_node_prompt", 9, 4)).toEqual({
     text: "Обновить и повторить",
-    action: { name: "edit_node_prompt" },
+    action: { name: "edit_node_prompt", base_version: 9 },
   });
-  expect(conflictRetryBody("edit_node_prompt", 4).action).not.toHaveProperty("base_version");
 });
 
 test("лента карточек держит предел", () => {
@@ -677,6 +676,66 @@ test("ok-карточки edit, delete и report не содержат риск"
 test("approval без needsApproval даёт invalid", () => {
   const view = readActionEnvelope(EXAMPLE_UNKNOWN_APPROVAL, 1);
   expect(view?.kind).toBe("invalid");
+});
+
+test("голый 409 показывает конфликт с именем исходного действия", () => {
+  let state = reduceOrchScreen(initialOrchScreen(), {
+    type: "user-action",
+    name: "edit_node_prompt",
+    baseVersion: 4,
+  } as Parameters<typeof reduceOrchScreen>[1]);
+  state = reduceOrchScreen(state, {
+    type: "event",
+    event: {
+      type: "step_finished",
+      task_id: 1,
+      seq: 1,
+      payload: { status: "failed", status_code: 409, result: null, error: "409 conflict" },
+    },
+  });
+  const card = state.actionResults[0];
+  expect(card?.conflict).toBe(true);
+  expect(card?.kind).not.toBe("invalid");
+  expect(card?.action).toBe("edit_node_prompt");
+  expect(card?.action).not.toBe("conflict");
+});
+
+test("голый 409 не шлёт второй POST и перечитывает состояние", async ({ page }) => {
+  const posts: { text?: string; action?: { name?: string; base_version?: number } }[] = [];
+  const rereads: string[] = [];
+  page.on("request", (req) => {
+    const url = req.url();
+    if (req.method() === "POST" && url.includes("/message")) posts.push(req.postDataJSON());
+    if (req.method() === "GET" && (url.includes("/status") || url.includes("/snapshot"))) rereads.push(url);
+  });
+  await openWithToken(page, "act-bare409");
+  await emit(page, "act-bare409", "step_finished", EXAMPLE_GROUP_DELETE);
+  await page.getByTestId("orch-restore").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]?.action?.name).toBe("group.restore");
+
+  await emit(page, "act-bare409", "step_finished", {
+    status: "failed",
+    status_code: 409,
+    result: null,
+    error: "в тексте 409 conflict",
+  });
+  const card = page.locator("[data-testid='orch-action-card'][data-action='group.restore']");
+  await expect(card).toHaveAttribute("data-conflict", "true");
+  await expect(card).not.toHaveAttribute("data-action", "conflict");
+  await expect.poll(() => rereads.length).toBeGreaterThan(0);
+  expect(posts).toHaveLength(1);
+});
+
+test("голый 409 без исходного имени — invalid", () => {
+  const view = readActionEnvelope({
+    status: "failed",
+    status_code: 409,
+    result: null,
+    error: "409 conflict",
+  }, 1);
+  expect(view?.kind).toBe("invalid");
+  expect(view?.action).not.toBe("conflict");
 });
 
 test("approval_required с @ в имени не рисует ожидание", async ({ page }) => {

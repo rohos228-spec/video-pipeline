@@ -102,6 +102,8 @@ export interface ActionResultView {
   /** У правки и отчёта — целое ≥ 1. Иначе карточка успеха не строится. */
   version: number | null;
   baseVersion: number | null;
+  /** Версия после перечитывания. Пока null, повтор не уходит. */
+  retryBaseVersion: number | null;
   conflict: boolean;
   /** null — оценки нет, не ноль. 0 — бесплатно. */
   estimate: number | null;
@@ -360,6 +362,7 @@ function blankView(id: string, metadata: ActionMetadata | null, kind: ActionCard
     snapshotUrl: null,
     version: null,
     baseVersion: null,
+    retryBaseVersion: null,
     conflict: false,
     estimate: null,
   };
@@ -465,16 +468,24 @@ function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unk
   view.snapshotUrl = snapshotUrlOf(source.snapshot_url) ?? snapshotUrlOf(payload.snapshot_url);
   view.version = intGe1(source.version) ?? intGe1(payload.version);
   view.baseVersion = intGe1(source.base_version) ?? intGe1(payload.base_version);
-  const statusCode = num(payload.status_code);
-  const error = str(payload.error);
-  view.conflict =
-    payload.status === "failed" &&
-    (statusCode === 409 || error.trim().toLowerCase() === "conflict" || /409|конфликт версий/i.test(error));
+  view.conflict = payload.status === "failed" && num(payload.status_code) === 409;
 }
 
-export function readActionEnvelope(payload: Record<string, unknown>, seq: number): ActionResultView | null {
+/** Имя исходного запроса. «conflict» и пробелы не подходят. */
+export function requestedActionName(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "" || value !== value.trim()) return null;
+  if (value === "conflict" || !ACTION_NAME.test(value)) return null;
+  return value;
+}
+
+export function readActionEnvelope(
+  payload: Record<string, unknown>,
+  seq: number,
+  originAction?: string | null,
+  staleBase?: number | null,
+): ActionResultView | null {
   try {
-    return readActionEnvelopeInner(payload, seq);
+    return readActionEnvelopeInner(payload, seq, originAction ?? null, staleBase ?? null);
   } catch {
     const status = payload.status;
     if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
@@ -482,7 +493,22 @@ export function readActionEnvelope(payload: Record<string, unknown>, seq: number
   }
 }
 
-function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number): ActionResultView | null {
+function bareConflictView(seq: number, originAction: string | null, staleBase: number | null): ActionResultView {
+  const name = requestedActionName(originAction);
+  if (!name) return invalidView(seq);
+  const view = blankView(`conflict-${seq}`, null, cardKind(name, null));
+  view.action = name;
+  view.conflict = true;
+  view.baseVersion = staleBase;
+  return view;
+}
+
+function readActionEnvelopeInner(
+  payload: Record<string, unknown>,
+  seq: number,
+  originAction: string | null,
+  staleBase: number | null,
+): ActionResultView | null {
   const status = payload.status;
   if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
   const result = plainObject(payload.result);
@@ -509,6 +535,9 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
     return view;
   }
   if (status === "failed") {
+    if (num(payload.status_code) === 409 && !result) {
+      return bareConflictView(seq, originAction, intGe1(staleBase));
+    }
     const error = str(payload.error).trim();
     if (result && editSatisfied(result)) {
       const view = readEdit(result, seq);
@@ -615,10 +644,16 @@ export function restoreBody(restoreAction: string, snapshotId: string | null, ar
   return { text: "Восстановить", action };
 }
 
-export function conflictRetryBody(actionName: string, _baseVersion: number | null): ConflictRetryBody {
-  // Повтор не несёт base_version: это та же база, на которой уже был 409.
-  const action: ConflictRetryBody["action"] = { name: actionName.trim() || "conflict" };
-  return { text: "Обновить и повторить", action };
+/** Ручной повтор только с новой базой. Без неё и с прежней базой запрос не уходит. */
+export function conflictRetryBody(
+  actionName: string,
+  baseVersion: number | null,
+  staleBase: number | null = null,
+): ConflictRetryBody | null {
+  const name = requestedActionName(actionName);
+  if (!name || baseVersion == null || !Number.isInteger(baseVersion) || baseVersion < 1) return null;
+  if (staleBase != null && baseVersion === staleBase) return null;
+  return { text: "Обновить и повторить", action: { name, base_version: baseVersion } };
 }
 
 export function openStudioNode(ref: ActionNodeRef): void {

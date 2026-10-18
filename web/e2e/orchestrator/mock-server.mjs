@@ -1142,6 +1142,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (
+    req.method === "GET" &&
+    parts[0] === "api" &&
+    parts[1] === "orchestrator" &&
+    ((parts[2] === "chat" && (parts[4] === "status" || parts[4] === "snapshot")) || parts[2] === "snapshots")
+  ) {
+    sendJson(res, 200, { version: 9 });
+    return;
+  }
+
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "stream") {
     handleStream(req, res, decodeURIComponent(parts[3]));
     return;

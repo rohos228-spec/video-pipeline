@@ -3,7 +3,7 @@
  * Дедуп по seq делает вызывающий код до dispatch.
  */
 
-import { readActionEnvelope, type ActionResultView } from "./orchestratorActionCards";
+import { readActionEnvelope, requestedActionName, type ActionResultView } from "./orchestratorActionCards";
 import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
@@ -218,6 +218,8 @@ export interface OrchScreenState {
   tasks: TaskView[];
   approvals: ApprovalView[];
   actionResults: ActionResultView[];
+  /** Действие, которое клиент только что отправил. Голый 409 берёт имя отсюда. */
+  pendingAction: { name: string; baseVersion: number | null } | null;
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
@@ -226,6 +228,8 @@ export interface OrchScreenState {
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
+  | { type: "user-action"; name: string; baseVersion: number | null }
+  | { type: "conflict-refresh"; ids: string[]; version: number }
   | {
       type: "kill-notice";
       detail: string;
@@ -250,6 +254,7 @@ export function initialOrchScreen(): OrchScreenState {
     tasks: [],
     approvals: [],
     actionResults: [],
+    pendingAction: null,
     ack: null,
     classification: null,
     killNotice: null,
@@ -484,7 +489,11 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 const ACTION_RESULT_LIMIT = 40;
 
 function rememberActionResult(state: OrchScreenState, payload: Record<string, unknown>, seq: number): void {
-  const view = readActionEnvelope(payload, seq);
+  const origin = state.pendingAction;
+  const view = readActionEnvelope(payload, seq, origin?.name ?? null, origin?.baseVersion ?? null);
+  if (payload.status === "failed" && payload.status_code === 409 && payload.result == null) {
+    state.pendingAction = null;
+  }
   if (!view) return;
   if (view.reportId != null) {
     const index = state.actionResults.findIndex((item) => item.reportId === view.reportId);
@@ -510,6 +519,21 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         ...state.messages,
         { id: action.id, role: "user", text: action.text, taskId: action.taskId },
       ],
+    };
+  }
+  if (action.type === "user-action") {
+    const name = requestedActionName(action.name);
+    if (!name) return state;
+    return { ...state, pendingAction: { name, baseVersion: action.baseVersion } };
+  }
+  if (action.type === "conflict-refresh") {
+    return {
+      ...state,
+      actionResults: state.actionResults.map((item) => {
+        if (!action.ids.includes(item.id) || item.retryBaseVersion != null) return item;
+        if (item.baseVersion != null && action.version === item.baseVersion) return item;
+        return { ...item, retryBaseVersion: action.version };
+      }),
     };
   }
   if (action.type === "kill-notice") {

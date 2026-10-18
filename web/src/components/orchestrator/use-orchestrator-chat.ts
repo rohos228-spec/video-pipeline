@@ -10,6 +10,7 @@ import {
   postOrchKill,
   postOrchActionMessage,
   postOrchMessage,
+  readOrchLiveVersion,
   readOrchProjectId,
   postOrchReject,
   probeOrchAuth,
@@ -57,6 +58,7 @@ export function useOrchestratorChat() {
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);
   const decisionLock = useRef(false);
+  const conflictRefresh = useRef(new Set<string>());
 
   useEffect(() => {
     setToken(readOrchToken());
@@ -214,6 +216,7 @@ export function useOrchestratorChat() {
         text: body.text,
         taskId: null,
       });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: null });
       try {
         await postOrchActionMessage(cfg, body);
         setSendError("");
@@ -238,6 +241,7 @@ export function useOrchestratorChat() {
         text: body.text,
         taskId: null,
       });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: null });
       try {
         await postOrchActionMessage(cfg, body);
         setSendError("");
@@ -253,15 +257,16 @@ export function useOrchestratorChat() {
   );
 
   const sendConflictRetry = useCallback(
-    async (actionName: string, baseVersion: number | null) => {
-      const body = conflictRetryBody(actionName, baseVersion);
-      if (!body.text || !token || blocked) return false;
+    async (actionName: string, baseVersion: number | null, staleBase: number | null) => {
+      const body = conflictRetryBody(actionName, baseVersion, staleBase);
+      if (!body || !token || blocked) return false;
       dispatch({
         type: "user-message",
         id: `user-conflict-${body.action.name}-${state.messages.length}`,
         text: body.text,
         taskId: null,
       });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: body.action.base_version ?? null });
       try {
         await postOrchActionMessage(cfg, body);
         setSendError("");
@@ -275,6 +280,37 @@ export function useOrchestratorChat() {
     },
     [blocked, cfg, noteAuth, state.messages.length, token],
   );
+
+  useEffect(() => {
+    if (!token || blocked) return;
+    const cards = state.actionResults.filter(
+      (card) => card.conflict && card.kind !== "invalid" && card.retryBaseVersion == null && !conflictRefresh.current.has(card.id),
+    );
+    if (!cards.length) return;
+    const ids = cards.map((card) => card.id);
+    for (const id of ids) conflictRefresh.current.add(id);
+    const snapshotUrl = cards.find((card) => card.snapshotUrl)?.snapshotUrl ?? null;
+    const ac = new AbortController();
+    void (async () => {
+      try {
+        const version = await readOrchLiveVersion(cfg, snapshotUrl, ac.signal);
+        if (ac.signal.aborted) {
+          for (const id of ids) conflictRefresh.current.delete(id);
+          return;
+        }
+        if (version == null) return;
+        dispatch({ type: "conflict-refresh", ids, version });
+      } catch {
+        if (ac.signal.aborted) {
+          for (const id of ids) conflictRefresh.current.delete(id);
+        }
+      }
+    })();
+    return () => {
+      ac.abort();
+      for (const id of ids) conflictRefresh.current.delete(id);
+    };
+  }, [blocked, cfg, state.actionResults, token]);
 
   const decide = useCallback(
     async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {

@@ -159,7 +159,7 @@ export function ActionResultCard({
   result: ActionResultView;
   onReportEdit: (reportId: number, instruction: string) => Promise<boolean>;
   onRestore: (restoreAction: string, snapshotId: string | null, archiveRef: string | null) => Promise<boolean>;
-  onConflictRetry: (actionName: string, baseVersion: number | null) => Promise<boolean>;
+  onConflictRetry: (actionName: string, retryBase: number | null, staleBase: number | null) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [instruction, setInstruction] = useState("");
@@ -191,10 +191,10 @@ export function ActionResultCard({
   };
 
   const sendRetry = async () => {
-    if (!result.conflict || busy || retried) return;
+    if (!result.conflict || busy || retried || result.retryBaseVersion == null) return;
     setBusy(true);
     try {
-      const ok = await onConflictRetry(result.action, result.baseVersion);
+      const ok = await onConflictRetry(result.action, result.retryBaseVersion, result.baseVersion);
       if (ok) setRetried(true);
     } finally {
       setBusy(false);
@@ -271,7 +271,7 @@ export function ActionResultCard({
           variant="outline"
           className="mt-2 h-7 text-[11px]"
           data-testid="orch-conflict-retry"
-          disabled={busy || retried}
+          disabled={busy || retried || result.retryBaseVersion == null}
           onClick={() => void sendRetry()}
         >
           {retried ? "Отправлено" : "Обновить и повторить"}
