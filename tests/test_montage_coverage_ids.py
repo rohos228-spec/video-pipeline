@@ -90,6 +90,51 @@ def test_sync_rewrites_stale_shot_id_to_live_parent_number() -> None:
     assert child.attrs["кадры"][0]["parent_id"] == "13-S3-K1"
 
 
+def test_sync_live_coverage_ids_does_not_revive_inactive_shot() -> None:
+    """Перепись coverage-id не делает неактивный шот живым K1."""
+    from app.services.frame_tombstones import shot_is_active
+
+    pu = "p" * 24
+    parent = _fr(
+        13,
+        uuid=pu,
+        role="vo_parent",
+        shot_id="12-S3-K1",
+        coverage_parent_id="1-S1-K1",
+        shot_index=1,
+        kadry=[
+            {
+                "id": "12-S3-K1",
+                "parent_id": None,
+                "действие": "архив",
+                "активен": False,
+                "карантин": True,
+            },
+            {"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "сидит"},
+        ],
+    )
+    child = _fr(
+        14,
+        uuid="c" * 24,
+        role="shot",
+        shot_id="12-S3-K2",
+        parent_uuid=pu,
+        coverage_parent_id="12-S3-K1",
+        shot_index=2,
+        kadry=[{"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "сидит"}],
+    )
+    sync_live_coverage_ids([parent, child])
+    rows = parent.attrs["кадры"]
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["12-S3-K1"]["активен"] is False
+    assert by_id["12-S3-K1"]["действие"] == "архив"
+    assert shot_is_active(by_id["12-S3-K1"]) is False
+    cov = coverage_shot_id(parent)
+    live = by_id[cov]
+    assert shot_is_active(live)
+    assert live["действие"] == "сидит"
+
+
 def test_sync_live_coverage_ids_keeps_old_shot_ids_inactive() -> None:
     """Старые 12-S3-K1 и 12-S3-K2 остаются в хвосте с активен: False."""
     pu = "p" * 24
