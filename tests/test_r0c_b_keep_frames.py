@@ -76,6 +76,43 @@ def test_vo_cap_marks_extra_shots_without_dropping_them(warn_log) -> None:
     assert any("WARN merge_gpt_shots_with_action" in line and "сверх лимита" in line for line in warn_log)
 
 
+def test_merge_keeps_unmatched_shot_and_replica_fields() -> None:
+    """Сопоставленный шот не теряет реплику, несопоставленный остаётся в хвосте."""
+    from app.services.scene_shot_grammar import merge_gpt_shots_with_action
+
+    action = "1. кабинет — открывает папку → берёт ключ → смотрит в окно → садится на стул"
+    shots = [
+        {
+            "id": "a",
+            "действие": "открывает папку",
+            "реплика": "алло",
+            "говорит": "герой",
+            "select_fix": "T3→T1",
+        },
+        {"id": "b", "действие": "берёт ключ"},
+        {"id": "c", "действие": "смотрит в окно"},
+        {"id": "d", "действие": "садится на стул"},
+        {
+            "id": "extra",
+            "действие": "чешет затылок",
+            "реплика": "хм",
+            "говорит": "он",
+            "select_fix": "keep",
+        },
+    ]
+    out, _err = merge_gpt_shots_with_action(shots, action, vo="")
+    assert out is not None
+    assert "extra" in [s.get("id") for s in out]
+    matched = next(s for s in out if s.get("id") == "a")
+    assert matched.get("реплика") == "алло"
+    assert matched.get("говорит") == "герой"
+    assert matched.get("select_fix") == "T3→T1"
+    extra = next(s for s in out if s.get("id") == "extra")
+    assert extra.get("реплика") == "хм"
+    assert extra.get("говорит") == "он"
+    assert extra.get("select_fix") == "keep"
+
+
 def test_obshiy_vid_shot_is_marked_not_dropped(warn_log) -> None:
     from app.services.scene_shot_grammar import merge_gpt_shots_with_action
 

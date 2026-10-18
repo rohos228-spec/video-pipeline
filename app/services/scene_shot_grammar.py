@@ -697,6 +697,26 @@ def _prefer_full_action_text(*candidates: str) -> str:
     return best
 
 
+def _append_unmatched_gpt_shots(
+    out: list[dict[str, Any]],
+    cleaned: list[dict[str, Any]],
+    matched_sources: set[int],
+) -> None:
+    """Шоты GPT, не попавшие в склейку, остаются в хвосте."""
+    seen_ids = {str(row.get("id") or "") for row in out if str(row.get("id") or "")}
+    for shot in cleaned:
+        if id(shot) in matched_sources:
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid in seen_ids:
+            continue
+        if any(shot is row for row in out):
+            continue
+        out.append(shot)
+        if sid:
+            seen_ids.add(sid)
+
+
 def merge_gpt_shots_with_action(
     gpt_shots: list[Any],
     action: str,
@@ -798,6 +818,9 @@ def merge_gpt_shots_with_action(
         for key in ("id", "parent_id", "порядок", "сцена", "место"):
             if gpt.get(key) not in (None, ""):
                 row[key] = gpt[key]
+        for key in ("реплика", "говорит", "select_fix"):
+            if gpt.get(key) not in (None, ""):
+                row[key] = gpt[key]
         out.append(row)
         matched_sources.add(id(gpt))
     if missing:
@@ -813,12 +836,14 @@ def merge_gpt_shots_with_action(
             and covered >= 1
         )
         if mild:
+            keep = out if out else list(cleaned)
+            if out:
+                _append_unmatched_gpt_shots(keep, cleaned, matched_sources)
             soft = (
                 f"WARN underproduction: GPT не покрыл {len(missing)} шагов действия "
                 f"({'; '.join(missing[:5])}) — пишем покрытие "
-                f"(кадров {len(out or cleaned)}), repair VO, без invent шагов"
+                f"(кадров {len(keep)}), repair VO, без invent шагов"
             )
-            keep = out if out else cleaned
             return keep, soft
         return None, (
             "GPT не покрыл шаги действия: "
@@ -827,18 +852,7 @@ def merge_gpt_shots_with_action(
         )
     # Кадры GPT, которые не попали в склейку (в том числе помеченный
     # «общий вид»), дописываем. Идентификаторы не теряем.
-    seen_ids = {str(r.get("id") or "") for r in out if str(r.get("id") or "")}
-    for shot in cleaned:
-        if id(shot) in matched_sources:
-            continue
-        sid = str(shot.get("id") or "")
-        if sid and sid in seen_ids:
-            continue
-        if any(shot is row for row in out):
-            continue
-        out.append(shot)
-        if sid:
-            seen_ids.add(sid)
+    _append_unmatched_gpt_shots(out, cleaned, matched_sources)
     # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
     _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
