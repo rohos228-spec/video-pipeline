@@ -305,7 +305,9 @@ export function useOrchestratorChat() {
         dispatch({ type: "approval-resolved", id: approvalId, decision });
         if (decision === "rejected") {
           const failedId = taskId || card.taskId;
-          if (failedId) dispatch({ type: "task-status", taskId: failedId, status: "failed" });
+          if (failedId) {
+            dispatch({ type: "task-status", taskId: failedId, status: "failed", resumeAllowed: false });
+          }
         }
         setSendError("");
       } catch (error) {
@@ -353,7 +355,7 @@ export function useOrchestratorChat() {
   const [resumeError, setResumeError] = useState("");
   const resumeLock = useRef(false);
   const latestTask = state.tasks.at(-1) ?? null;
-  const resumeWatch = `${latestTask?.id ?? ""}:${latestTask?.status ?? ""}:${latestTask?.checkpoints.length ?? 0}`;
+  const resumeWatch = `${latestTask?.id ?? ""}:${latestTask?.status ?? ""}:${latestTask?.checkpoints.length ?? 0}:${latestTask?.resumeAllowed ?? "unset"}`;
   const resumeWatchRef = useRef(resumeWatch);
   useEffect(() => {
     if (resumeWatchRef.current === resumeWatch) return;
@@ -404,7 +406,7 @@ export function useOrchestratorChat() {
         ? (result.status as TaskStatus)
         : null;
       const taskId = result.task_id != null ? String(result.task_id) : latestTask?.id ?? "";
-      if (status && taskId) dispatch({ type: "task-status", taskId, status });
+      if (status && taskId) dispatch({ type: "task-status", taskId, status, resumeAllowed: false });
       setSendError("");
     } catch (error) {
       if (error instanceof OrchApiError && error.status === 404) {

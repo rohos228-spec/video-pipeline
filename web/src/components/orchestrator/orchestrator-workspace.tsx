@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ActionResultCard } from "@/components/orchestrator/action-result-card";
 import {
   AGENT_LABEL,
-  canResumeTask,
+  resumeButtonVisible,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -280,7 +280,7 @@ export function OrchestratorWorkspace() {
         </div>
       ) : null}
 
-      {!chat.needsToken && canResumeTask(task) ? (
+      {!chat.needsToken && resumeButtonVisible(task) ? (
         <div
           data-testid="orch-resume-bar"
           className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning"

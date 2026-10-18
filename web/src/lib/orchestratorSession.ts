@@ -187,6 +187,11 @@ export interface TaskView {
   summary: string;
   error: string;
   plan: PlanStepView[];
+  /**
+   * `agent_status.resume_allowed`. null — поля ещё не было, кнопка смотрит на статус и чекпоинт.
+   * true/false перекрывают этот вывод.
+   */
+  resumeAllowed: boolean | null;
 }
 
 export interface AckView {
@@ -248,7 +253,7 @@ export type OrchScreenAction =
       sessionId?: string | null;
     }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
-  | { type: "task-status"; taskId: string; status: TaskStatus }
+  | { type: "task-status"; taskId: string; status: TaskStatus; resumeAllowed?: boolean }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -273,7 +278,7 @@ export function initialOrchScreen(): OrchScreenState {
 
 /**
  * Статусы, из которых FSM пускает в `executing`.
- * Флага `resume_allowed` в контракте нет: кнопка опирается на статус и на событие `checkpoint`.
+ * Фолбэк, если в `agent_status` ещё не было `resume_allowed`.
  * `cancelled` терминальный (kill в planning → 404, чекпоинта нет; с чекпоинтом resume даёт 409).
  * `executing` не показываем: живой прогон — 409, а признака «прогон мёртв» в событиях нет.
  */
@@ -283,6 +288,14 @@ export function canResumeTask(task: TaskView | null): boolean {
   if (!task) return false;
   if (!RESUME_STATUSES.has(task.status)) return false;
   return task.checkpoints.length > 0;
+}
+
+/** Кнопка «Продолжить». Явный `resume_allowed` важнее статуса и чекпоинта. */
+export function resumeButtonVisible(task: TaskView | null): boolean {
+  if (!task) return false;
+  if (task.resumeAllowed === true) return true;
+  if (task.resumeAllowed === false) return false;
+  return canResumeTask(task);
 }
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
@@ -499,6 +512,7 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
       summary: "",
       error: "",
       plan: [],
+      resumeAllowed: null,
     };
     tasks.push(task);
   } else if (title && task.title === "Задача") {
@@ -546,6 +560,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     }));
     const task = tasks.find((item) => item.id === action.taskId) ?? ensureTask(tasks, action.taskId);
     task.status = status;
+    if (typeof action.resumeAllowed === "boolean") task.resumeAllowed = action.resumeAllowed;
     return { ...state, tasks };
   }
   if (action.type === "user-message") {
@@ -614,7 +629,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (decided && id) closeServerApproval(next, id, decided);
     if (decided === "rejected") {
       const idTask = taskId ?? taskKey(payload.task_id);
-      if (idTask) ensureTask(next.tasks, idTask).status = "failed";
+      if (idTask) {
+        const task = ensureTask(next.tasks, idTask);
+        task.status = "failed";
+        task.resumeAllowed = false;
+      }
     }
     return next;
   }
@@ -693,6 +712,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(str(payload.task_status)) ?? (agent === "supervisor" ? asTaskStatus(str(payload.status)) : null);
     if (taskStatus) task.status = taskStatus;
+    if (typeof payload.resume_allowed === "boolean") task.resumeAllowed = payload.resume_allowed;
     return next;
   }
 
@@ -792,12 +812,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const task = ensureTask(next.tasks, taskId);
     task.status = "done";
     task.summary = str(payload.summary);
+    task.resumeAllowed = false;
     return next;
   }
 
   if (event.type === "task_failed" && taskId) {
     const task = ensureTask(next.tasks, taskId);
     task.status = "failed";
+    task.resumeAllowed = false;
     const error = str(payload.error, str(payload.summary, "задача упала"));
     task.error = error;
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {

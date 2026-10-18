@@ -92,6 +92,45 @@ test("Продолжить шлёт POST resume и после kill в planning �
   expect(body ?? "").toBe("");
 });
 
+test("Продолжить слушает resume_allowed и прячется при false", async ({ page }) => {
+  const session = "resume-flag";
+  await openWithToken(page, session);
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+
+  await emit(page, session, "agent_status", { agent: "supervisor", status: "waiting_approval" });
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-flag",
+    plan: [],
+    position: 0,
+    change_ids: ["chg-flag"],
+    context: "",
+  });
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+
+  await emit(page, session, "agent_status", {
+    agent: "supervisor",
+    status: "waiting_approval",
+    resume_allowed: false,
+  });
+  await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+
+  await emit(page, session, "agent_status", {
+    agent: "supervisor",
+    status: "waiting_approval",
+    resume_allowed: true,
+  });
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+
+  await emit(page, session, "agent_status", {
+    agent: "supervisor",
+    status: "failed",
+    resume_allowed: false,
+  });
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+});
+
 test("partial_write показывает WARN и список GET partial-changes без отката", async ({ page }) => {
   const session = "partial-1";
   await openWithToken(page, session);
