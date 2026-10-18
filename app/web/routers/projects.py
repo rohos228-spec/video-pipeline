@@ -705,6 +705,34 @@ async def media_review(
     return out
 
 
+@router.post("/{project_id}/spend-approval", response_model=ProjectDetail)
+async def approve_project_spend(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> Project:
+    """Одобрить продолжение после потолка трат.
+
+    Ставит approval_status=approved. Ноду в running переводит следующий ▶ шага.
+    """
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    from app.services.step_failure_policy import approve_budget_wait
+
+    try:
+        await approve_budget_wait(session, p)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await commit_with_retry(session)
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"spend_approval": "approved"},
+    )
+    return project_to_detail(p)
+
+
 @router.post("/{project_id}/steps/{step_code}/run", response_model=ProjectDetail)
 async def run_project_step(
     project_id: int,

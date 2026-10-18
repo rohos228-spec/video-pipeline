@@ -205,6 +205,7 @@ _TOKEN_PATHS = [re.compile(p) for p in (
     r"^/projects/[^/]+/media-recovery/",
     r"^/projects/[^/]+/stop$",
     r"^/projects/[^/]+/steps/[^/]+/run$",
+    r"^/projects/[^/]+/spend-approval$",
     r"^/projects/[^/]+/(resume|continue)$",
     r"^/hitl/[^/]+/decision$",
     r"^/projects/[^/]+/mass-lanes/start$",

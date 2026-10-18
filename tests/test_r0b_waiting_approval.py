@@ -139,23 +139,19 @@ async def test_budget_park_goes_through_state_machine(mem, monkeypatch) -> None:
     assert refused == ["spend_guard"]
 
 
-async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None:
-    project_id, ids, wf_id = await _seed(
+async def test_waiting_approval_resumes_after_approval(mem) -> None:
+    from app.web.routers.projects import approve_project_spend
+
+    project_id, ids, _wf_id = await _seed(
         mem, statuses=[("n_plan", NodeRunStatus.waiting_approval)]
     )
-
-    async def _wf(_session=None):
-        return wf_id
-
-    async def _queue_ok(_session, _project):
-        return None
-
-    monkeypatch.setattr("app.services.run_sync._get_default_workflow_id", _wf)
-    monkeypatch.setattr("app.services.gen_queue.assert_can_start_in_queue", _queue_ok)
     async with mem() as session:
         project = await session.get(Project, project_id)
         project.status = ProjectStatus.plan_ready
-        project.meta = {"approval_status": "waiting_approval", "approval_reason": "budget_exhausted"}
+        project.meta = {
+            "approval_status": "waiting_approval",
+            "approval_reason": "budget_exhausted",
+        }
         node = await session.get(NodeRun, ids[0])
         node.node_type = "plan"
         node.node_key = "n_plan"
@@ -167,11 +163,9 @@ async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None
         parked = await session.get(NodeRun, ids[0])
         assert parked.status is NodeRunStatus.waiting_approval
 
-        project.meta = {
-            **(project.meta or {}),
-            "approval_status": "approved",
-        }
-        await session.commit()
+        await approve_project_spend(project_id, session)
+        await session.refresh(project)
+        assert project.meta.get("approval_status") == "approved"
         await start_step(session, project, "plan")
         await session.commit()
         fresh = await session.get(NodeRun, ids[0])

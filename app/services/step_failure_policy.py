@@ -454,6 +454,39 @@ async def _park_budget_exhausted(
     return "waiting_approval"
 
 
+async def approve_budget_wait(session: AsyncSession, project: Project) -> None:
+    """Пользователь одобряет продолжение после потолка трат.
+
+    Ставит ``approval_status=approved``. Ноду из ``waiting_approval`` в
+    ``running`` переводит следующий ``start_step``, не этот вызов.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import NodeRun, NodeRunStatus, WorkflowRun
+
+    meta = dict(project.meta or {})
+    if meta.get("approval_status") != "waiting_approval":
+        raise ValueError("проект не ждёт одобрения трат")
+    waiting = (
+        await session.execute(
+            select(NodeRun.id)
+            .join(WorkflowRun, NodeRun.workflow_run_id == WorkflowRun.id)
+            .where(
+                WorkflowRun.project_id == project.id,
+                NodeRun.status == NodeRunStatus.waiting_approval,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if waiting is None:
+        raise ValueError("нет ноды в ожидании одобрения")
+    meta["approval_status"] = "approved"
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+
+
 async def record_step_failure(
     session: AsyncSession,
     project: Project,
