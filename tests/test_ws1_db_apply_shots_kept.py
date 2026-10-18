@@ -754,6 +754,36 @@ async def test_deleted_net_stays_active(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_merge_keeps_deleted_da(session: AsyncSession) -> None:
+    """Совпадение по id сохраняет ``удалён="да"`` и не оживляет шот."""
+    from app.orchestrator.validators.activity_flags import shot_is_active as flags_active
+
+    project = Project(slug="ws1-deleted-da", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "deleted-da",
+        [{"id": "a", "закадр": "альфа", "удалён": "да"}],
+        number=1,
+    )
+    await session.commit()
+    await apply_ops(
+        session,
+        project,
+        [{"frame_uuid": frame.uuid, "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]}}],
+        export_xlsx=False,
+    )
+    await session.refresh(frame)
+    shots = list(frame.attrs["кадры"])
+    assert len(shots) == 1, shots
+    assert shots[0]["удалён"] == "да"
+    assert shots[0]["закадр"] == "альфа новая"
+    assert flags_active(shots[0]) is False
+
+
+@pytest.mark.asyncio
 async def test_match_keeps_fields_and_second_id_copy(session: AsyncSession) -> None:
     """Совпадение дописывает поля старого шота. Вторая копия того же id не исчезает."""
     project = Project(slug="ws1-overlay", topic="t", status=None)  # type: ignore[arg-type]

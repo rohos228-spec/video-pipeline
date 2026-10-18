@@ -9,9 +9,12 @@ logger = logging.getLogger(__name__)
 ACTIVE_MARK = "активен"
 DELETED_MARK = "удалён"
 QUARANTINE_MARK = "карантин"
+# Маркеры, из-за которых шот или кадр не идёт в платную генерацию.
+HIDE_MARKS = (DELETED_MARK, QUARANTINE_MARK)
 
 _FALSE_TOKENS = frozenset({"0", "false", "нет", "no", "off", "ложь"})
 _DELETED_FALSE_TOKENS = _FALSE_TOKENS | {"0.0"}
+_HIDE_TRUE_TOKENS = frozenset({"1", "true", "да", "yes", "on", "истина"})
 _WARNED_VALUES: set[str] = set()
 
 
@@ -59,7 +62,8 @@ def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
     """«удалён» и «карантин».
 
     None, NaN и пустая строка — флага нет. К ложным строкам добавлены ``0.0``
-    и ``ложь``. Неизвестная строка не удаляет: шот живой, в лог один WARN.
+    и ``ложь``. ``да`` / ``true`` / ``1`` / ``yes`` / ``on`` / ``истина``
+    скрывают шот. Неизвестная строка не удаляет: шот живой, в лог один WARN.
     """
 
     if value is None or _is_nan(value):
@@ -70,6 +74,8 @@ def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
         token = value.strip().casefold()
         if token in _DELETED_FALSE_TOKENS:
             return False
+        if token in _HIDE_TRUE_TOKENS:
+            return True
         _warn_once(mark, value)
         return False
     if flag_is_false(value):
@@ -80,10 +86,9 @@ def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
 def _record_is_active(record: object) -> bool:
     if not isinstance(record, dict):
         return False
-    if flag_is_true(record.get(DELETED_MARK), mark=DELETED_MARK) or flag_is_true(
-        record.get(QUARANTINE_MARK), mark=QUARANTINE_MARK
-    ):
-        return False
+    for mark in HIDE_MARKS:
+        if flag_is_true(record.get(mark), mark=mark):
+            return False
     if ACTIVE_MARK not in record:
         return True
     value = record[ACTIVE_MARK]
