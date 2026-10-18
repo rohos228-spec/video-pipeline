@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,16 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("JSDoc changeId отличает change_id от старого approval_id", () => {
+  const src = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorSession.ts"),
+    "utf8",
+  );
+  const doc = src.match(/\/\*\*(?:(?!\/\*\*)[\s\S])*?\*\/\s*changeId:/);
+  expect(doc?.[0]).toContain("change_id");
+  expect(doc?.[0]).toContain("approval_id");
+});
 
 test("approve и message делят отказ 401", async () => {
   const original = globalThis.fetch;

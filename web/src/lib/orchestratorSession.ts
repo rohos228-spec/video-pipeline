@@ -167,7 +167,11 @@ export interface ApprovalView {
    * Событие закрывает карточку по `changeId`, а если его нет — по `id`.
    */
   serverId: boolean;
-  /** ApprovalEvent.change_id. Событие закрывает карточку только этим значением. */
+  /**
+   * ApprovalEvent.change_id.
+   * Если поля нет, карточка старая и закрывается по approval_id.
+   * Событие с change_id закрывает карточку только этим значением.
+   */
   changeId: string | null;
   /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
   sessionId: string | null;
