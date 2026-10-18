@@ -838,9 +838,9 @@ test.describe("orchestrator chat", () => {
 
   test("approve 404, 409 и 422 оставляют карточку", async ({ page }) => {
     const cases = [
-      ["approve404", "approval not found"],
-      ["approve409", "approval conflict"],
-      ["approve422", "approval unprocessable"],
+      ["approve404", "неизвестный change_id"],
+      ["approve409", "change_id не текущий"],
+      ["approve422", "тело не по схеме"],
     ] as const;
     for (const [scenario, detail] of cases) {
       await openWithToken(page, scenario, scenario);
@@ -990,6 +990,65 @@ test.describe("orchestrator chat", () => {
     expect(posts[0]?.change_id).toBe("orch-appr-9-3");
     expect(posts[0]?.decision).toBe("deny");
     expect(JSON.stringify(posts[0])).not.toContain("cc-step-88");
+  });
+
+  test("коды approve: отказ без автоповтора, 409 читает snapshot", async ({ page }) => {
+    const cases = [
+      [401, "нет токена или токен неверный"],
+      [400, "плохой session_id"],
+      [422, "тело не по схеме"],
+      [404, "неизвестный change_id"],
+      [403, "not_in_whitelist"],
+      [409, "change_id не текущий"],
+    ] as const;
+    for (const [status, text] of cases) {
+      let posts = 0;
+      let snapshots = 0;
+      await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        posts += 1;
+        await route.fulfill({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "raw" }),
+        });
+      });
+      await page.route("**/api/orchestrator/chat/*/status", async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        snapshots += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            session: "snap",
+            task_id: 1,
+            status: "failed",
+            resume_allowed: false,
+          }),
+        });
+      });
+      await openWithToken(page, "budget", `code-${status}`);
+      await page.getByTestId("orch-composer").fill("ещё кадры");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approve")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByText(text).first()).toBeVisible();
+      await expect.poll(() => posts).toBe(1);
+      if (status === 409) {
+        await expect.poll(() => snapshots).toBeGreaterThan(0);
+        await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+      } else {
+        expect(snapshots).toBe(0);
+      }
+      await page.unroute("**/api/orchestrator/chat/*/approve");
+      await page.unroute("**/api/orchestrator/chat/*/status");
+    }
   });
 
   test("approve 204 не успех: нужен JSON 200", async ({ page }) => {
