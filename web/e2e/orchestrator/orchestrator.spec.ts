@@ -314,6 +314,26 @@ test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => 
   }
 });
 
+test("хвостовые CR и LF в NEXT_PUBLIC_ORCH_API не отбрасывают адрес", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  try {
+    expect(normalizedOrchEnvApi("http://127.0.0.1:8799\r\n")).toBe("http://127.0.0.1:8799");
+    expect(normalizedOrchEnvApi("http://127.0.0.1:8799\n")).toBe("http://127.0.0.1:8799");
+    expect(normalizedOrchEnvApi("http://127.0.0.1:87\n99")).toBeNull();
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799\r\n";
+    expect(envOrchApiBase()).toBe("http://127.0.0.1:8799");
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com/orch\n";
+    expect(envOrchApiBase()).toBe("https://api.example.com/orch");
+    process.env.NEXT_PUBLIC_ORCH_API = "http://127.0.0.1:8799\t";
+    expect(envOrchApiBase()).toBe("");
+  } finally {
+    process.env.NEXT_PUBLIC_ORCH_API = "https://api.example.com";
+    envOrchApiBase();
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
 test("data, localhost., 127.0.0.2, управляющие и обратный слэш не становятся базой API", () => {
   expect(new URL("http://[::1]:8799/api").hostname).toBe("[::1]");
   expect(normalizedOrchEnvApi("http://[::1]:8799")).toBe("http://[::1]:8799");
@@ -341,7 +361,7 @@ test("data, localhost., 127.0.0.2, управляющие и обратный с
     "data:",
     "http://localhost.:8799",
     "http://127.0.0.2:8799",
-    "http://127.0.0.1:8799\n",
+    "http://127.0.0.1:87\n99",
     "https://api.example.com/api\u0001",
     "http://127.0.0.1\\@evil.com/api",
     "https://user\\@host/api",
