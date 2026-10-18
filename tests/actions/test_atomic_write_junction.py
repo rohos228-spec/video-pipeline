@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,8 @@ def _make_old_junction(old: Path, outside: Path, monkeypatch, *, windows: bool) 
     if windows:
         import _winapi
 
-        _winapi.CreateJunction(str(old), str(outside))
+        # src — существующая цель, dst — создаваемая ссылка. Иначе WinError 2.
+        _winapi.CreateJunction(str(outside), str(old))
         return
     old.mkdir()
     original = os.path.isjunction
@@ -41,6 +43,23 @@ def _make_old_junction(old: Path, outside: Path, monkeypatch, *, windows: bool) 
         return original(path)
 
     monkeypatch.setattr(os.path, "isjunction", fake)
+
+
+def test_create_junction_args_are_target_then_link(tmp_path: Path, monkeypatch) -> None:
+    """CreateJunction(src=цель, dst=ссылка). Обратный порядок — WinError 2."""
+    calls: list[tuple[str, str]] = []
+    winapi = types.ModuleType("_winapi")
+
+    def CreateJunction(src: str, dst: str) -> None:
+        calls.append((src, dst))
+
+    winapi.CreateJunction = CreateJunction
+    monkeypatch.setitem(sys.modules, "_winapi", winapi)
+    old = tmp_path / "old"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _make_old_junction(old, outside, monkeypatch, windows=True)
+    assert calls == [(str(outside), str(old))]
 
 
 def test_old_junction_cannot_escape_windows(tmp_path: Path, monkeypatch) -> None:
