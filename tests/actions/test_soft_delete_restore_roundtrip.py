@@ -286,3 +286,38 @@ async def test_production_delete_snapshot_restores_without_test_helper(
     }])
     _assert_restore(back_prompt, "prompt.restore_master", prompt_snap)
     assert prompt_path.read_text(encoding="utf-8") == "текст до удаления"
+
+
+async def test_frame_restore_occupied_number_does_not_overwrite(env) -> None:
+    pid = await env.add_project(frames=2)
+    ids = await env.frame_ids(pid)
+    live_shots = [{"id": "s1", "текст": "живой", "активен": True}]
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.voiceover_text = "живой текст"
+        frame.attrs = {"кадры": [dict(shot) for shot in live_shots]}
+        await session.commit()
+    before = await capture_frame(pid, ids[1])
+    assert before is not None
+    before["voiceover_text"] = "чужой текст"
+    before["attrs"] = {"кадры": [{"id": "s9", "текст": "чужой", "активен": False}]}
+    snap = await remember_soft_delete(
+        _snap_ctx(),
+        action_id="montage.delete_frame",
+        project_id=pid,
+        kind="frame",
+        target={"frame_id": ids[1], "number": 1},
+        before=before,
+    )
+    restored = await _run(env, [{
+        "action_id": "frame.restore",
+        "params": {"project_id": pid, "snapshot_id": snap},
+    }])
+    assert restored["status"] == "failed", restored
+    step = restored["steps"][0]
+    assert step["status"] == "failed"
+    assert "conflict" in step["error"]
+    async with env.factory() as session:
+        row = await session.get(Frame, ids[1])
+        assert row.voiceover_text == "живой текст"
+        assert row.attrs["кадры"] == live_shots

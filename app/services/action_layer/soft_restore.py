@@ -230,7 +230,6 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
     from app.models import Frame, FrameStatus, Project
     from app.services.action_layer.store import sessions
     from app.services.frame_tombstones import forget_deleted
-    from sqlalchemy.orm.attributes import flag_modified
 
     number = int(before["number"])
     incoming = (before.get("attrs") or {}).get("кадры") if isinstance(before.get("attrs"), dict) else []
@@ -241,26 +240,23 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
         frame = await session.scalar(
             select(Frame).where(Frame.project_id == project_id, Frame.number == number)
         )
-        attrs = dict((frame.attrs if frame is not None else before.get("attrs")) or {})
+        if frame is not None:
+            raise ActionCallError(409, "conflict")
+        attrs = dict(before.get("attrs") or {})
         attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), incoming)
-        if frame is None:
-            frame = Frame(
-                project_id=project_id,
-                number=number,
-                voiceover_text=str(before.get("voiceover_text") or ""),
-                image_prompt=before.get("image_prompt"),
-                animation_prompt=before.get("animation_prompt"),
-                meaning=before.get("meaning"),
-                sort_key=before.get("sort_key"),
-                uuid=before.get("uuid"),
-                status=FrameStatus.planned,
-                attrs=attrs,
-            )
-            session.add(frame)
-        else:
-            frame.voiceover_text = str(before.get("voiceover_text") or frame.voiceover_text or "")
-            frame.attrs = attrs
-            flag_modified(frame, "attrs")
+        frame = Frame(
+            project_id=project_id,
+            number=number,
+            voiceover_text=str(before.get("voiceover_text") or ""),
+            image_prompt=before.get("image_prompt"),
+            animation_prompt=before.get("animation_prompt"),
+            meaning=before.get("meaning"),
+            sort_key=before.get("sort_key"),
+            uuid=before.get("uuid"),
+            status=FrameStatus.planned,
+            attrs=attrs,
+        )
+        session.add(frame)
         forget_deleted(project, number)
         await session.commit()
         return {
