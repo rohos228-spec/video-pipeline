@@ -9,6 +9,11 @@
 множество. Имя вне реестра из context не становится разрешённым.
 
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
+``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе:
+``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
+``context["approval"]`` с ``risk == "high"`` и ``destructive is True``.
+Нет поля ``soft_delete`` — это false. Адаптера ``cursor/ws2-action-adapter``
+в origin ещё нет, поэтому ``metadata_of`` берётся у реестра.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
 (E8).
 """
@@ -105,7 +110,7 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
         if not action:
             errors.append(_err(index, action, "missing_action"))
             continue
-        if is_deletion(action, params):
+        if is_deletion(action, params) and not _soft_delete_granted(action, context, registry):
             errors.append(_err(index, action, "deletion_forbidden"))
             continue
         if action not in whitelist:
@@ -216,6 +221,58 @@ def _registry_names(registry: Any) -> set[str]:
     if isinstance(registry, dict):
         return {str(key) for key in registry}
     return set()
+
+
+_SOFT_FRAME_DELETES = frozenset({"montage.delete_frame", "montage.delete_child_frame"})
+
+
+def _soft_delete_granted(action: str, context: dict[str, Any], registry: Any) -> bool:
+    """Мягкое удаление кадра монтажа: пометка и одобрение ядра, иначе блок."""
+
+    token = action.strip().lower().replace("-", "_")
+    if token not in _SOFT_FRAME_DELETES:
+        return False
+    if not _metadata_soft_delete(token, registry, context):
+        return False
+    return _core_approved_high_destructive(context)
+
+
+def _metadata_soft_delete(action: str, registry: Any, context: dict[str, Any]) -> bool:
+    """``metadata_of(name).get("soft_delete") is True``. Нет поля или метода — false."""
+
+    for source in (registry, context.get("registry")):
+        fn = getattr(source, "metadata_of", None)
+        if not callable(fn):
+            continue
+        try:
+            meta = fn(action)
+        except Exception:  # noqa: BLE001 — нет карточки, как отсутствие поля
+            return False
+        getter = getattr(meta, "get", None)
+        if not callable(getter):
+            return False
+        return getter("soft_delete") is True
+    return False
+
+
+def _core_approved_high_destructive(context: dict[str, Any]) -> bool:
+    """Ядро уже получило одобрение risk=high и destructive.
+
+    Читается ``context["approval"]``: dict или объект с полями ``risk`` и
+    ``destructive``. Оба условия обязательны. ``destructive is True``,
+    ``risk`` сравнивается без регистра.
+    """
+
+    approval = context.get("approval")
+    if isinstance(approval, dict):
+        risk = approval.get("risk")
+        destructive = approval.get("destructive")
+    elif approval is not None:
+        risk = getattr(approval, "risk", None)
+        destructive = getattr(approval, "destructive", None)
+    else:
+        return False
+    return str(risk or "").strip().lower() == "high" and destructive is True
 
 
 def _action_deletes(action: str) -> bool:
