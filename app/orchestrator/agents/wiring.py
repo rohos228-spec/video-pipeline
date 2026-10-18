@@ -193,13 +193,13 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1 #379 ``6ee14212``.
+    """Мягкий импорт сохранности. Ветка WS1 не становится зависимостью.
 
     ``run_preservation_validators(before, after, ops=None, *, mode)``.
     ``mode`` keyword-only: ``"reject"`` | ``"soft"``, по умолчанию ``"reject"``.
     Вызов ядра передаёт ``mode="reject"``.
-    ``PreservationRejected`` — отказ, ``after`` не меняется.
-    Модуля в базе нет — фолбэк, ветка WS1 не становится зависимостью.
+    Любой ``PreservationRejected`` — блокирующий отказ, ``after`` не меняется.
+    Модуля нет — фолбэк.
     """
     module = load_module(_PRESERVATION)
     if module is None:
