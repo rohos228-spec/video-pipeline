@@ -486,14 +486,24 @@ async def build_assembly_timeline(
     """
     master = await probe_duration(voice_full_path)
 
-    if per_frame_tts and not has_all_frame_audio(audio_dir, frame_numbers):
+    omit_ids = {int(n) for n in (omit_numbers or set())}
+    # Помеченный номер обязан попасть в клипы, если его mp3 есть: иначе
+    # omit не находит кусок и mux забирает весь voice_full вместе с речью.
+    # Отсутствие mp3 у помеченного кадра не сбрасывает per-frame живых кадров.
+    required_numbers = [n for n in frame_numbers if int(n) not in omit_ids]
+    if per_frame_tts and not has_all_frame_audio(audio_dir, required_numbers):
         logger.warning(
             "per_frame в meta, но frame_*.mp3 нет — таймлайн по voice_full + Whisper"
         )
         per_frame_tts = False
 
-    if per_frame_tts and has_all_frame_audio(audio_dir, frame_numbers):
-        clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
+    if per_frame_tts and has_all_frame_audio(audio_dir, required_numbers):
+        load_numbers = [
+            n
+            for n in frame_numbers
+            if int(n) not in omit_ids or frame_audio_path(audio_dir, n).is_file()
+        ]
+        clips = await load_frame_clips_from_disk(audio_dir, load_numbers)
         raw_sum = sum(c.duration for c in clips)
         if raw_sum <= 0:
             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")

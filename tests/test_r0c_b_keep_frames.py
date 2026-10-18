@@ -2428,3 +2428,195 @@ def test_shifted_words_match_subtitles_without_marked_frame() -> None:
     assert by_text["один"][0] == pytest.approx(0.0, abs=0.05)
     assert by_text["три"][0] == pytest.approx(1.0, abs=0.05)
     assert by_text["три"][1] <= 2.0 + 0.05
+
+
+@pytest.mark.asyncio
+async def test_run_assemble_cuts_marked_frame_speech(
+    session: AsyncSession, project: Project, monkeypatch, warn_log
+) -> None:
+    """_run_assemble передаёт помеченный номер в R15, речь этого кадра вырезается.
+
+    Строка 15 в xlsx изначально пуста: метки пишутся только для номеров,
+    которые сборка реально отдала в ensure_r15. Если помеченный кадр
+    отфильтрован заранее, его секунда остаётся в ролике.
+    """
+    import json
+    import subprocess
+
+    from openpyxl import Workbook
+
+    from app.settings import settings
+
+    if not isinstance(settings.data_dir, Path):
+        settings.data_dir = Path(settings.data_dir)
+
+    from app.models import Artifact, ArtifactKind, FrameStatus
+    from app.orchestrator.steps.assemble import _run_assemble
+    from app.services.media_probe import probe_duration
+    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8, SHEET_PLAN_V8
+
+    def tone(path: Path, seconds: float, freq: int) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"sine=frequency={freq}:duration={seconds}:sample_rate=44100",
+                "-c:a", "pcm_s16le",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    def clip(path: Path, color: str) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"color=c={color}:s=320x240:d=2:r=30",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    session.add(project)
+    await session.flush()
+    root = project.data_dir
+    audio = root / "audio"
+    videos = root / "videos"
+    audio.mkdir(parents=True)
+    videos.mkdir(parents=True)
+    parts = [audio / "p1.wav", audio / "p2.wav", audio / "p3.wav"]
+    tone(parts[0], 1.0, 440)
+    tone(parts[1], 1.0, 2000)
+    tone(parts[2], 1.0, 880)
+    voice = audio / "voice_full.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(parts[0]), "-i", str(parts[1]), "-i", str(parts[2]),
+            "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le",
+            str(voice),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    clip(videos / "clip_001_a.mp4", "red")
+    clip(videos / "clip_003_a.mp4", "blue")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    for col, text in ((3, "один"), (4, "два"), (5, "три")):
+        ws.cell(row=ROW_VOICEOVER_V8, column=col, value=text)
+    wb.save(root / "project.xlsx")
+    wb.close()
+
+    seen: list[list[int]] = []
+
+    async def _fake_ensure(project_obj, *, frame_numbers, cells, words, voice_full_path, master=None):
+        from app.services.plan_timestamps import format_timecode_range
+        from app.storage.plan_sheet_v8 import write_plan_timestamps
+
+        seen.append([int(n) for n in frame_numbers])
+        windows = {1: (0.0, 1.0), 2: (1.0, 2.0), 3: (2.0, 3.0)}
+        ranges = [
+            (int(n), format_timecode_range(*windows[int(n)]))
+            for n in frame_numbers
+        ]
+        written = write_plan_timestamps(project_obj, ranges)
+        assert written == len(ranges)
+        return ranges, 15
+
+    async def _noop(*_a, **_k):
+        return None
+
+    async def _enter(*_a, **_k):
+        return True, "", None
+
+    monkeypatch.setattr(
+        "app.services.plan_timestamps.ensure_r15_from_asr", _fake_ensure
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.steps.assemble.recover_before_assemble", _noop
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.steps.assemble.can_enter_running", _enter
+    )
+    monkeypatch.setattr("app.orchestrator.steps.assemble.send_hitl_video", _noop)
+    monkeypatch.setattr(
+        "app.services.mass_factory.on_child_montage_complete", _noop
+    )
+
+    words_path = audio / "words.json"
+    words_path.write_text(
+        json.dumps({
+            "words": [
+                {"word": "один", "start": 0.0, "end": 0.9, "prob": 0.9},
+                {"word": "три", "start": 2.1, "end": 2.9, "prob": 0.9},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    for number, text, marked in (
+        (1, "один", False),
+        (2, "два", True),
+        (3, "три", False),
+    ):
+        attrs = (
+            {"удалён": True, "активен": False, "карантин": True, "пометка": "сборка"}
+            if marked
+            else {}
+        )
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=number,
+                uuid=f"{number:02d}" * 12,
+                voiceover_text=text,
+                status=FrameStatus.planned,
+                attrs=attrs,
+            )
+        )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.audio,
+            uuid="au" * 12,
+            path=str(voice),
+            meta={"mode": "full_voice"},
+        )
+    )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid="ww" * 12,
+            path=str(words_path),
+            meta={},
+        )
+    )
+    await session.flush()
+
+    full_dur = await probe_duration(voice)
+    assert abs(full_dur - 3.0) < 0.05
+    mid_before = _band_mean_db(voice, "bandpass=f=2000:width_type=h:w=200")
+    await _run_assemble(session, project, None)  # type: ignore[arg-type]
+
+    assert seen and 2 in seen[0]
+    assert sorted(seen[0]) == [1, 2, 3]
+    out = root / "final" / f"{project.slug}.mp4"
+    assert out.is_file()
+    out_dur = await probe_duration(out)
+    assert abs(out_dur - 2.0) < 0.35
+    assert out_dur < full_dur - 0.7
+    mid_after = _band_mean_db(out, "bandpass=f=2000:width_type=h:w=200")
+    kept_after = _band_mean_db(out, "highpass=f=300,lowpass=f=600")
+    assert mid_after < mid_before - 12.0
+    assert kept_after > mid_after + 12.0
+    marked = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id, Frame.number == 2))
+    ).scalar_one()
+    assert marked.voiceover_text == "два"
+    assert (marked.attrs or {}).get("удалён") is True
+    assert any("речь помеченных кадров" in line for line in warn_log)

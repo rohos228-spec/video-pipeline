@@ -162,6 +162,9 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
 
     from app.services.frame_tombstones import frame_is_active
 
+    # Полный список до фильтра: R15 и per-frame таймлайн должны видеть
+    # помеченный кадр, иначе его речь остаётся в voice_full и не вырезается.
+    all_frame_numbers = [int(fr.number) for fr in frames_all]
     marked_numbers = [int(fr.number) for fr in frames_all if not frame_is_active(fr)]
     if marked_numbers:
         logger.warning(
@@ -214,7 +217,7 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
     if not audio_path.is_file():
         raise RuntimeError(f"файл озвучки не найден: {audio_path}")
     audio_dir = project.data_dir / "audio"
-    frame_numbers = [fr.number for fr in frames_all]
+    frame_numbers = list(all_frame_numbers)
     audio_meta = audio.meta or {}
     per_frame_tts = (
         audio_meta.get("mode") == "per_frame"
