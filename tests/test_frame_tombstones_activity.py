@@ -378,6 +378,15 @@ def test_activity_predicates_reexport_when_importable(tmp_path) -> None:
         importlib.reload(tomb)
         assert tomb.shot_is_active is ws1.shot_is_active
         assert tomb.frame_is_active is ws1.frame_is_active
+        import inspect
+
+        import app.services.activity_flags_fallback as fallback_mod
+
+        assert tomb._fallback_shot_is_active is fallback_mod.shot_is_active
+        assert tomb._fallback_frame_is_active is fallback_mod.frame_is_active
+        assert tomb._fallback_entity_is_marked is tomb.entity_is_marked
+        assert list(inspect.signature(tomb._fallback_shot_is_active).parameters) == ["shot"]
+        assert list(inspect.signature(tomb._fallback_frame_is_active).parameters) == ["attrs"]
     finally:
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
@@ -648,16 +657,16 @@ def _heil_value_table() -> list[tuple[object, object, bool]]:
 def test_activity_parity_real_vs_fallback(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
     """Решение Heil: не fail-closed, фолбэк совпадает с blob ``56a6e8cf``.
 
-    Одна таблица идёт в модуль, загруженный из этого blob, и в fallback:
-    ``shot_is_active``, ``frame_is_active``, ``entity_is_marked``.
-    «-» оставляет запись живой и пишет ровно один WARN на значение.
+    Одна таблица идёт в модуль, загруженный из этого blob, и в именные
+    фолбэки ``_fallback_shot_is_active(shot)``, ``_fallback_frame_is_active(attrs)``,
+    ``_fallback_entity_is_marked``. «-» оставляет запись живой и пишет ровно один WARN.
     """
 
+    import inspect
     import subprocess
     from pathlib import Path
 
-    import app.services.activity_flags_fallback as fallback
-    from app.services.frame_tombstones import entity_is_marked
+    from app.services import frame_tombstones as tomb
 
     repo = Path(__file__).resolve().parents[1]
     loaded = subprocess.run(
@@ -684,14 +693,16 @@ def test_activity_parity_real_vs_fallback(tmp_path, caplog: pytest.LogCaptureFix
             if record.levelno >= logging.WARNING
         ]
 
+    assert list(inspect.signature(tomb._fallback_shot_is_active).parameters) == ["shot"]
+    assert list(inspect.signature(tomb._fallback_frame_is_active).parameters) == ["attrs"]
+    assert callable(tomb._fallback_entity_is_marked)
     sides = (
-        ("real", real.shot_is_active, real.frame_is_active, real_marked, real),
+        ("real", real.shot_is_active, real.frame_is_active, real_marked),
         (
             "fallback",
-            fallback.shot_is_active,
-            fallback.frame_is_active,
-            entity_is_marked,
-            fallback,
+            tomb._fallback_shot_is_active,
+            tomb._fallback_frame_is_active,
+            tomb._fallback_entity_is_marked,
         ),
     )
     rows = _heil_value_table()
@@ -704,8 +715,8 @@ def test_activity_parity_real_vs_fallback(tmp_path, caplog: pytest.LogCaptureFix
         expect_marked = mark == DELETED_MARK and not expected_active
         expect_warn = value == "-"
         seen: dict[str, tuple[tuple[bool, bool, bool], list[str]]] = {}
-        for label, shot, frame, marked, module in sides:
-            module._WARNED_VALUES.clear()
+        for label, shot, frame, marked in sides:
+            shot.__globals__["_WARNED_VALUES"].clear()
             caplog.clear()
             got = (shot(payload), frame(payload), marked(entity))
             messages = warnings()

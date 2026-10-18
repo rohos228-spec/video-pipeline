@@ -70,6 +70,11 @@ def entity_is_marked(entity) -> bool:
     )
 
 
+# Отдельная реализация, не реэкспорт WS1. Имя остаётся, даже когда
+# shot_is_active / frame_is_active пришли из activity_flags.
+_fallback_entity_is_marked = entity_is_marked
+
+
 def deleted_numbers(project) -> set[int]:
     raw = (getattr(project, "meta", None) or {}).get(_KEY) or []
     out: set[int] = set()
@@ -129,6 +134,10 @@ except ImportError:
     # Обёртка над кадром читала бы dict.attrs как пусто и считала бы кадр живым.
     shot_is_active = _fallback_shot_is_active
     frame_is_active = _fallback_frame_is_active
+
+# Публичные имена выше могут быть реэкспортом WS1. Фолбэк остаётся здесь
+# всегда: ``_fallback_shot_is_active(shot)``, ``_fallback_frame_is_active(attrs)``,
+# ``_fallback_entity_is_marked(entity)``.
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
