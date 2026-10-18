@@ -281,6 +281,43 @@ async def test_e2e_frame_restore_returns_the_marked_shot(env, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_e2e_partial_skipped_are_read_from_result(env, monkeypatch) -> None:
+    """partial и skipped читаются из result. Соседнее data не подменяет их."""
+    del env
+    import app.orchestrator.actions as actions
+    from app.orchestrator.action_contracts.contracts import ActionResult as Envelope
+    from app.orchestrator.action_contracts.contracts import SoftDeleteResult
+
+    body = SoftDeleteResult(
+        change_id="orch-appr-7-1",
+        action="montage.delete_frame",
+        marked=True,
+        restore_action="frame.restore",
+        snapshot_id="snap-e2e",
+        partial=True,
+        skipped=["shot-b"],
+    )
+    envelope = Envelope(status="ok", result=body, error=None, warnings=[])
+    object.__setattr__(envelope, "data", {"partial": False, "skipped": ["decoy"]})
+
+    async def _return(_name, _params, _ctx):
+        return envelope
+
+    monkeypatch.setattr(actions, "execute", _return)
+    out = await ActionsBridge(ModuleActions(actions)).execute(
+        "montage.delete_frame",
+        {"project_id": 1, "frame_id": 1},
+        {"operator": "e2e"},
+    )
+    assert out["status"] == "partial"
+    assert out["ok"] is False
+    assert out["result"]["partial"] is True
+    assert out["result"]["skipped"] == ["shot-b"]
+    assert out["data"]["skipped"] == ["shot-b"]
+    assert "decoy" not in out["data"]["skipped"]
+
+
+@pytest.mark.asyncio
 async def test_e2e_unknown_name_is_refused(env, monkeypatch) -> None:
     """Канон — whitelist(). Карточка metadata_of вызов не открывает."""
     del env
