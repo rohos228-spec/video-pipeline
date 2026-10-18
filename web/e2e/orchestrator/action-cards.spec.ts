@@ -679,6 +679,13 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("snapshot_url с .. отвергается", () => {
+  const payload = structuredClone(EXAMPLE_DELETE_OK);
+  const result = payload.result as { snapshot_url?: string };
+  result.snapshot_url = "/api/orchestrator/../x";
+  expect(readActionEnvelope(payload, 1)?.snapshotUrl).toBeNull();
+});
+
 test("action с хвостовым пробелом отвергается", () => {
   const payload = structuredClone(EXAMPLE_NODE_CREATE);
   (payload.result as { action: string }).action = "create_node ";

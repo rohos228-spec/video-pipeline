@@ -397,11 +397,12 @@ function blankRef(value: unknown): boolean {
   return typeof value === "string" && value.trim() === "";
 }
 
-/** snapshot_url нет в схеме r2.2. Ссылка только на свой API, без схемы и javascript:. */
+/** Ссылка только внутри /api/orchestrator, без схемы, javascript: и сегмента .. */
 function snapshotUrlOf(value: unknown): string | null {
   const url = str(value).trim();
   if (!url.startsWith("/api/orchestrator/")) return null;
   if (url.includes("\\") || url.includes("://")) return null;
+  if (url.split("/").some((part) => part === "..")) return null;
   return url;
 }
 
