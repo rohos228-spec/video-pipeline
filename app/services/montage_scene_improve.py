@@ -1542,7 +1542,6 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     shot["карантин"] = True
     shot["пометка"] = reason
     shot["активен"] = False
-    shot["fw_qc"] = reason
     logger.warning(
         "WARN {}: кадр {} помечен, не удалён: {}",
         where,

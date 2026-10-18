@@ -40,24 +40,7 @@ async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str)
         )
     ).scalars().first()
     if not vo:
-        if existing is not None and (existing.text or "").strip():
-            # Пустой закадр не стирает текст: строка уходит в архив,
-            # а живая выборка voiceover получает пустую замену.
-            existing.kind = "vo_archived"
-            logger.warning(
-                "WARN montage: FrameText id={} не удалён, kind=vo_archived, "
-                "текст сохранён",
-                existing.id,
-            )
-            session.add(
-                FrameText(
-                    project_id=int(frame.project_id),
-                    frame_id=int(frame.id),
-                    kind="voiceover",
-                    text="",
-                )
-            )
-        elif existing is not None:
+        if existing is not None:
             existing.text = ""
         return
     if existing is None:
@@ -259,55 +242,6 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
             coverage_parent_number=int(head.number),
         )
     return head
-
-
-_HEAD_ROLLBACK_KEY = "head_promotion_rollback"
-
-
-def _store_head_rollback(parent: Frame, kids: list[Frame]) -> None:
-    """Запомнить голову и шоты до повышения, чтобы restore вернул роли."""
-    snap = {
-        "head_voiceover": parent.voiceover_text,
-        "head_attrs": copy.deepcopy(dict(getattr(parent, "attrs", None) or {})),
-        "members": [
-            {
-                "id": int(fr.id),
-                "voiceover_text": fr.voiceover_text,
-                "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
-            }
-            for fr in kids
-        ],
-    }
-    attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs[_HEAD_ROLLBACK_KEY] = snap
-    parent.attrs = attrs
-    _flag_attrs(parent)
-
-
-def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
-    """Вернуть голову и шоты к состоянию до повышения. False — снимка нет."""
-    raw = dict(getattr(frame, "attrs", None) or {})
-    snap = raw.get(_HEAD_ROLLBACK_KEY)
-    if not isinstance(snap, dict):
-        return False
-    by_id = {int(fr.id): fr for fr in frames if getattr(fr, "id", None)}
-    frame.voiceover_text = snap.get("head_voiceover")
-    frame.attrs = copy.deepcopy(snap.get("head_attrs") or {})
-    _flag_attrs(frame)
-    for member in snap.get("members") or []:
-        if not isinstance(member, dict):
-            continue
-        try:
-            mid = int(member.get("id"))
-        except (TypeError, ValueError):
-            continue
-        kid = by_id.get(mid)
-        if kid is None or kid is frame:
-            continue
-        kid.voiceover_text = member.get("voiceover_text")
-        kid.attrs = copy.deepcopy(member.get("attrs") or {})
-        _flag_attrs(kid)
-    return True
 
 
 async def delete_montage_frame(
@@ -579,20 +513,9 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
-    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.db_apply import merge_kadry_keep_missing
 
-    before_rows = (
-        [dict(row) if isinstance(row, dict) else row for row in old_kadry]
-        if isinstance(old_kadry, list)
-        else []
-    )
-    attrs["кадры"] = keep_soft_kadry(
-        before_rows,
-        merge_kadry_keep_missing(old_kadry, kadry),
-        scene_id=getattr(parent, "uuid", None) or "cell",
-        number=getattr(parent, "number", None) or 0,
-    )
+    attrs["кадры"] = merge_kadry_keep_missing(old_kadry, kadry)
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

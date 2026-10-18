@@ -849,10 +849,15 @@ def merge_gpt_shots_with_action(
             + "; ".join(missing[:5])
             + " — нужен добор GPT"
         )
-    # Кадры GPT, которые не попали в склейку (в том числе помеченный
-    # «общий вид»), дописываем. Идентификаторы не теряем.
-    _append_unmatched_gpt_shots(out, cleaned, matched_sources)
-    # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
+    # если GPT дал больше кадров (осознанные вставки) — дописать хвост GPT
+    if len(cleaned) > len(out):
+        seen_ids = {str(r.get("id") or "") for r in out}
+        for s in cleaned[len(out) :]:
+            sid = str(s.get("id") or "")
+            if sid and sid in seen_ids:
+                continue
+            out.append(s)
+    # VO-cap / expected: не держим десятки кадров на короткий закадр.
     _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
 

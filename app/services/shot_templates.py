@@ -899,9 +899,9 @@ def _assign_scene_vo(
             and own_empty_piece
             and not target.get("удалён")
         ):
-            target.pop("карантин", None)
-            target.pop("пометка", None)
-            target.pop("активен", None)
+            shots[0].pop("карантин", None)
+            shots[0].pop("пометка", None)
+            shots[0].pop("активен", None)
             logger.warning(
                 "WARN _assign_scene_vo: кадр {} получил весь закадр, карантин снят",
                 target.get("id"),
@@ -1096,8 +1096,7 @@ def fill_kadry_from_catalog(
         marked = dict(sh)
         marked["активен"] = False
         marked["карантин"] = True
-        if not str(marked.get("пометка") or "").strip():
-            marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
+        marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
         tail.append(marked)
     if tail:
         logger.warning(
