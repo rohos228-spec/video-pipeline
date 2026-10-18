@@ -90,7 +90,6 @@ _R0B_XFAIL = {
     'tests/test_r0c_b_keep_frames.py::test_marked_frame_is_not_revived_or_duplicated_by_xlsx_import': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_marked_shot_gets_no_voiceover_and_no_active_frame': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_merge_keeps_unmatched_shot_and_replica_fields': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
-    'tests/test_r0c_b_keep_frames.py::test_mux_without_marked_raises_when_live_track_missing': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_obshiy_vid_shot_is_marked_not_dropped': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_r15_marked_middle_frame_speech_absent_from_final_audio': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_regen_stops_paid_call_when_db_read_fails': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
