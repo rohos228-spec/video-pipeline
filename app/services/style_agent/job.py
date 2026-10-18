@@ -599,43 +599,6 @@ def _pipeline_text_override(model: dict[str, Any] | None) -> Any:
     return None
 
 
-def _resolve_style_text_override(
-    model: dict[str, Any] | None,
-    *,
-    project_id: int,
-    node_key: str | None,
-) -> tuple[Any, str | None]:
-    """52pay, если маршрут есть. Иначе vibecode — с явной пометкой, без остановки."""
-    from app.services.llm_override import NodeLlmOverride
-    from app.services.model_substitution import note_model_substitution
-
-    ov = _pipeline_text_override(model)
-    if ov is not None:
-        return ov, None
-    if not (model and model.get("kind") == "text"):
-        return None, None
-    provider = str(model.get("provider") or "vibecode")
-    built = NodeLlmOverride(
-        model_id=str(model["id"]),
-        channel=str(model.get("channel") or "stable"),
-        kind="text",
-        provider=provider,
-        label=str(model.get("label") or model["id"]),
-    )
-    if provider != "vibecode":
-        return built, None
-    requested = str(model.get("id") or "text")
-    line = note_model_substitution(
-        original_model=f"52pay:{requested}",
-        substituted_model=f"vibecode:{built.model_id}",
-        reason="нет маршрута 52pay, текстовый разбор style_agent идёт через vibecode",
-        node=node_key or "style_extract",
-        run=project_id,
-        project_id=project_id,
-    )
-    return built, line
-
-
 async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any]) -> None:
     from app.models import Project
     from app.project_db import project_db_session_scope

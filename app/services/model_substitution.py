@@ -83,11 +83,6 @@ def note_model_substitution(
     return line
 
 
-def style_job_substitution_patch(line: str) -> dict[str, Any]:
-    """Поле job.model_substitution — видимая строка в мета ноды style_agent."""
-    return {"job": {"model_substitution": line}}
-
-
 def frame_card_with_substitution(
     attrs: dict[str, Any] | None,
     line: str,
