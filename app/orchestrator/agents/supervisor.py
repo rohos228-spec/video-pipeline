@@ -88,6 +88,7 @@ from app.orchestrator.contracts import (
     escalation_for,
     forecast_cost,
     forecast_unknown,
+    frame_soft_delete_state,
     grant_forbidden,
     max_risk,
     metadata_call_gate,
@@ -1404,6 +1405,9 @@ class Supervisor:
             await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
+            if frame_soft_delete_state(step.action, self.actions) == "forbidden":
+                await self._apply_block(task_id, session_id, "deletion_forbidden")
+                return True
             if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
@@ -1517,6 +1521,20 @@ class Supervisor:
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
+            frame = frame_soft_delete_state(step.action, self.actions) if len(batch) == 1 else None
+            if frame == "forbidden":
+                await self._apply_block(task_id, session_id, "deletion_forbidden")
+                return
+            if frame == "grant" and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
+                await self._checkpoint(task_id, session_id, plan, index)
+                self._block_reason[task_id] = "destructive"
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "destructive",
+                    extra={"action": step.action, "soft_delete": True, "gate": "soft_delete"},
+                )
+                return
             if any(not_in_whitelist(item.action, self.actions) for item in batch):
                 await self._apply_block(task_id, session_id, "not_in_whitelist")
                 return

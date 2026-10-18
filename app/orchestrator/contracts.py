@@ -964,7 +964,7 @@ def block_status(reason: str) -> TaskStatus:
 
 def grant_forbidden(reason: str | None) -> bool:
     """Терминальная причина: grant этот план не исполняет."""
-    if reason == "not_in_whitelist":
+    if reason in {"not_in_whitelist", "deletion_forbidden"}:
         return True
     if reason is None or reason not in BLOCK_OUTCOMES:
         return False
@@ -1535,12 +1535,40 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     return None
 
 
+_FRAME_SOFT_DELETES = frozenset(
+    {
+        "montage.delete_frame",
+        "montage.delete_child_frame",
+        "delete_child_frame",
+    }
+)
+
+
+def frame_soft_delete_state(action: str, registry: Any | None) -> str | None:
+    """``grant`` — ``soft_delete is True``. ``forbidden`` — метаданные есть, флага нет.
+
+    ``None`` — это не кадр, либо реестр без ``metadata_of`` (контур A):
+    имя по-прежнему ``deletion_blocked``.
+    """
+    if action not in _FRAME_SOFT_DELETES:
+        return None
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind == "absent":
+        return None
+    if kind != "value" or not isinstance(meta, dict) or meta.get("soft_delete") is not True:
+        return "forbidden"
+    return "grant"
+
+
 def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
     """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен.
 
     ``KeyError`` из ``metadata_of`` — имя неизвестно реестру, это не удаление кадра.
+    Кадр с ``soft_delete is True`` не бан: его пускает только грант ядра.
     Свободный текст параметров не сканируется: только структурные ключи.
     """
+    if frame_soft_delete_state(step.action, registry) == "grant":
+        return False
     if (
         is_deletion_action(step.action)
         or _protects_media(step.action)
