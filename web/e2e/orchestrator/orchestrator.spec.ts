@@ -226,10 +226,37 @@ test.describe("orchestrator chat", () => {
     );
     await page.getByTestId("orch-approve").click();
     const body = (await posted).postDataJSON() as { change_id?: string; decision?: string };
-    expect(body).toEqual({ change_id: "chg-budget-d4", decision: "approve" });
+    expect(body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     await expect(page.getByTestId("orch-transcript")).toContainText("Суб-бюджет добавлен");
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+  });
+
+  test("step_change_id не подставляется в /approve", async ({ page }) => {
+    const posts: Record<string, unknown>[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      if (!new URL(req.url()).pathname.endsWith("/approve")) return;
+      posts.push((req.postDataJSON() ?? {}) as Record<string, unknown>);
+    });
+
+    await openWithToken(page, "stepchange", "step-only");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approval-noid")).toContainText("orch-appr");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    expect(posts).toEqual([]);
+
+    posts.length = 0;
+    await openWithToken(page, "stepchangeboth", "step-both");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.change_id).toBe("orch-appr-9-3");
+    expect(JSON.stringify(posts[0])).not.toContain("cc-step-88");
   });
 
   test("approve 204 не успех: нужен JSON 200", async ({ page }) => {
@@ -271,7 +298,7 @@ test.describe("orchestrator chat", () => {
     const approve = posts[0];
     expect(approve).toBeTruthy();
     expect(new URL(approve!.url).pathname).toBe("/api/orchestrator/chat/wire-ok/approve");
-    expect(approve!.body).toEqual({ change_id: "chg-budget-d4", decision: "approve" });
+    expect(approve!.body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
     expect(approve!.body).not.toHaveProperty("approval_id");
     expect(approve!.body).not.toHaveProperty("task_id");
 
@@ -285,7 +312,7 @@ test.describe("orchestrator chat", () => {
     const deny = posts[0];
     expect(deny).toBeTruthy();
     expect(new URL(deny!.url).pathname).toBe("/api/orchestrator/chat/wire-no/approve");
-    expect(deny!.body).toEqual({ change_id: "chg-budget-d4", decision: "deny" });
+    expect(deny!.body).toEqual({ change_id: "orch-appr-4-1", decision: "deny" });
     expect(Object.keys(deny!.body).sort()).toEqual(["change_id", "decision"]);
   });
 
