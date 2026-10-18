@@ -31,7 +31,7 @@ import {
   type StepView,
   type TaskView,
 } from "@/lib/orchestratorSession";
-import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
+import { ORCH_EVENT_TYPES, type ApprovalReason, type NodeDef, type TaskStatus } from "@/lib/orchestratorTypes";
 import { orchTaskModeEnabled, readOrchProjectId } from "@/lib/orchestratorApi";
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
@@ -254,6 +254,7 @@ export function OrchestratorWorkspace() {
       {!chat.needsToken && chat.partialWrite ? (
         <div
           data-testid="orch-partial"
+          data-known-event={(ORCH_EVENT_TYPES as readonly string[]).includes("partial_write") ? "partial_write" : ""}
           className="shrink-0 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs text-warning"
         >
           <div className="flex items-center gap-2">

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { EXAMPLE_PAID_APPROVAL } from "../../src/lib/orchestratorActionCards";
+import { ORCH_EVENT_TYPES } from "../../src/lib/orchestratorTypes";
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
@@ -158,6 +159,27 @@ test("partial_write показывает WARN и список GET partial-change
   await expect(items.nth(0)).toHaveText("chg-partial-a");
   await expect(items.nth(1)).toHaveText("chg-partial-b");
   await expect(banner).not.toContainText("only-in-event");
+});
+
+test("partial_write входит в известные типы событий", async ({ page }) => {
+  expect(ORCH_EVENT_TYPES).toContain("partial_write");
+  const session = "partial-known";
+  await openWithToken(page, session);
+  const seeded = await page.request.post(`${MOCK}/api/orchestrator/test/partial-changes`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: session, task_id: 1, change_ids: ["chg-known"] },
+  });
+  expect(seeded.ok()).toBeTruthy();
+  await emit(page, session, "partial_write", {
+    level: "WARN",
+    change_ids: [],
+    position: 0,
+    task_id: 1,
+  });
+  const banner = page.getByTestId("orch-partial");
+  await expect(banner).toHaveAttribute("data-known-event", "partial_write");
+  await expect(page.getByTestId("orch-partial-level")).toHaveText("WARN partial_write");
+  await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-known");
 });
 
 test("карточка paid_outcome_unknown показывает change_id шага, кнопки только из approval_required", async ({ page }) => {

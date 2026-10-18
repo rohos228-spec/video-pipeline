@@ -62,7 +62,7 @@ export type ChunkCorpus = (typeof CHUNK_CORPUS)[number];
 export const RISK = ["none", "low", "medium", "high"] as const;
 export type Risk = (typeof RISK)[number];
 
-export const ORCH_EVENT_TYPES = ["ack", "token", "agent_status", "step_started", "step_finished", "approval_required", "checkpoint", "validator_result", "task_done", "task_failed", "classification", "message", "kill_switch", "paid_retry_blocked", "step_skipped"] as const;
+export const ORCH_EVENT_TYPES = ["ack", "token", "agent_status", "step_started", "step_finished", "approval_required", "checkpoint", "validator_result", "task_done", "task_failed", "classification", "message", "kill_switch", "partial_write", "paid_retry_blocked", "step_skipped"] as const;
 export type EventType = (typeof ORCH_EVENT_TYPES)[number];
 export type OrchEventType = EventType;
 
