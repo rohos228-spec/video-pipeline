@@ -1415,7 +1415,7 @@ async def test_coverage_delete_stamps_parent_shot(
 
 
 @pytest.mark.asyncio
-async def test_export_skips_marked_frame_column(
+async def test_export_keeps_marked_frame_column_with_marker_r0b(
     session: AsyncSession, project: Project
 ) -> None:
     """Колонка помеченного кадра остаётся на col = number + 2.
