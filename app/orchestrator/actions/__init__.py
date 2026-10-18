@@ -4,7 +4,7 @@
 ``ACTION_IDS`` и ``AUDIT_ACTION_IDS``: белый список собирает адаптер из реестра.
 """
 
-from app.orchestrator.actions.executor import execute, metadata_of
+from app.orchestrator.actions.executor import execute, metadata_of, whitelist
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 
 __all__ = [
@@ -12,4 +12,5 @@ __all__ = [
     "execute",
     "metadata_of",
     "registry",
+    "whitelist",
 ]
