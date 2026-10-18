@@ -1578,10 +1578,19 @@ async def apply_ops(
             attrs["промты_детей"] = children
         if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
             attrs = _merge_camera_subdivide(attrs, fields)
+        from loguru import logger
+
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            raw_attr = fields[attr_key]
+            if raw_attr is None or (isinstance(raw_attr, str) and not raw_attr.strip()):
+                logger.warning(
+                    "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
+                    attr_key,
+                )
+                continue
+            attrs[attr_key] = _coerce_structured_attr(raw_attr)
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
