@@ -171,6 +171,19 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
     return tuple(parts)
 
 
+def _overlay_hide_marks(old: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """«удалён», «карантин» и «пометка» старой строки переживают тот же id."""
+
+    for key in (DELETED_MARK, "удален"):
+        if flag_is_true(old.get(key), mark=key):
+            incoming[key] = old[key]
+    if flag_is_true(old.get(QUARANTINE_MARK), mark=QUARANTINE_MARK):
+        incoming[QUARANTINE_MARK] = old[QUARANTINE_MARK]
+    note = old.get(REASON_MARK)
+    if str(note or "").strip():
+        incoming[REASON_MARK] = note
+
+
 def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     """Новый список ``кадры`` не выбрасывает старые шоты.
 
@@ -225,6 +238,7 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             if sid in seen_ids:
+                _overlay_hide_marks(shot, incoming_by_id[sid])
                 if shot.get(ACTIVE_MARK) is False and not _incoming_revives(
                     shot, incoming_by_id[sid]
                 ):
