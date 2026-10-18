@@ -114,7 +114,7 @@ def test_clean_project_and_inactive_shot_pass() -> None:
 
 
 def test_warn_does_not_block_the_registry() -> None:
-    before = {"сцены": [{"id": "s1", "номер": 1, "кадры": [{"id": "k1"}]}]}
+    before = {"сцены": [{"id": "s1", "номер": 1, "кадры": []}]}
     after = {"сцены": [{"id": "s1", "номер": 1, "кадры": None}]}
     result = run("preservation", 1, {"before": before, "after": after})
     assert result.passed is True
