@@ -272,13 +272,15 @@ def _aggregate_workflow_run_status(
     any_running = False
     any_pending = False
     any_failed = False
+    any_parked = False
     for nr in run.node_runs:
         if nr.status in (
             NodeRunStatus.running,
             NodeRunStatus.queued,
-            NodeRunStatus.waiting_approval,
         ):
             any_running = True
+        elif nr.status == NodeRunStatus.waiting_approval:
+            any_parked = True
         elif nr.status == NodeRunStatus.pending:
             any_pending = True
         elif nr.status == NodeRunStatus.failed:
@@ -294,6 +296,8 @@ def _aggregate_workflow_run_status(
             run.status = WorkflowRunStatus.running
             if run.started_at is None:
                 run.started_at = now
+        elif any_parked:
+            run.status = WorkflowRunStatus.paused
         else:
             run.status = WorkflowRunStatus.done
             if run.finished_at is None:
@@ -306,6 +310,8 @@ def _aggregate_workflow_run_status(
         run.status = WorkflowRunStatus.running
         if run.started_at is None:
             run.started_at = now
+    elif any_parked:
+        run.status = WorkflowRunStatus.paused
     elif any_pending:
         run.status = WorkflowRunStatus.waiting_hitl
     else:

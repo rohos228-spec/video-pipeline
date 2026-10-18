@@ -197,6 +197,20 @@ def test_complete_node_skips_parked_without_forbidden_log(monkeypatch) -> None:
     assert errors == []
 
 
+def test_parked_node_does_not_count_as_running() -> None:
+    run = SimpleNamespace(
+        node_runs=[SimpleNamespace(status=NodeRunStatus.waiting_approval)],
+        status=WorkflowRunStatus.new,
+        started_at=None,
+        finished_at=None,
+    )
+    project = SimpleNamespace(status=ProjectStatus.planning)
+    _aggregate_workflow_run_status(run, project)
+    assert run.status is not WorkflowRunStatus.running
+    assert run.status is not WorkflowRunStatus.done
+    assert run.finished_at is None
+
+
 def test_aggregate_waiting_approval_is_not_done() -> None:
     run = SimpleNamespace(
         node_runs=[
