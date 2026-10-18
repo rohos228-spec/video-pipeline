@@ -17,11 +17,14 @@ import json
 import os
 import re
 import sys
+import tempfile
 import textwrap
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
+
+from tests.actions.fs_helpers import _symlink_or_skip
 
 FORBIDDEN_IDS = frozenset(
     {
@@ -81,11 +84,13 @@ _SHUTIL_WRITE = {
 }
 _OS_RENAME = frozenset({"rename", "replace"})
 _OS_DELETE = frozenset({"remove", "unlink", "rmdir", "removedirs"})
+_OS_LINK = frozenset({"symlink", "link"})
 _PATH_DELETE = frozenset({"unlink", "rmdir"})
 _PATH_CREATE = frozenset({"touch", "mkdir"})
 _PATH_MOVE = frozenset({"rename", "replace"})
-_DANGEROUS_OS = _OS_DELETE | _OS_RENAME | frozenset({"truncate"})
-_DANGEROUS_PATH = _PATH_DELETE | _PATH_MOVE | frozenset({"truncate"})
+_PATH_LINK = frozenset({"symlink_to", "hardlink_to"})
+_DANGEROUS_OS = _OS_DELETE | _OS_RENAME | _OS_LINK | frozenset({"truncate"})
+_DANGEROUS_PATH = _PATH_DELETE | _PATH_MOVE | _PATH_LINK | frozenset({"truncate"})
 _OS_WRITE_FLAGS = frozenset({"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"})
 _OS_READ_FLAGS = frozenset({"O_RDONLY"})
 _OS_NEUTRAL_FLAGS = frozenset(
@@ -131,6 +136,12 @@ _DELETE_KINDS = frozenset(
         "sql.unknown",
         "http.delete",
         "http.unknown",
+        "orm.delete",
+        "os.symlink",
+        "os.link",
+        "Path.symlink_to",
+        "Path.hardlink_to",
+        "_winapi.CreateJunction",
     }
 )
 _SQL_NAMES = frozenset({"execute", "executescript", "executemany", "text"})
@@ -155,7 +166,19 @@ _ALLOW_MARKERS = (
 # заранее объявленное исключение вне реестра, не 103-е действие.
 _RAG_ID = "rag.reindex"
 _OUTSIDE_REGISTRY_ALLOW = frozenset({_RAG_ID})
-_CONTENT_OVERWRITE = frozenset({"open", "write_text", "write_bytes", "os.open"})
+_CONTENT_OVERWRITE = frozenset(
+    {
+        "open",
+        "write_text",
+        "write_bytes",
+        "os.open",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+    }
+)
 _RAG_SUFFIXES = ("orch_rag.db", "orch_rag.db-wal", "orch_rag.db-shm")
 _SNAPSHOT_DIR = "action_layer_snapshots"
 # Решение куратора: каталог снимков разрешён только этим трём id.
@@ -1061,19 +1084,6 @@ def _norm_sketch(sketch: str | None) -> str | None:
     return _resolve_path(sketch)
 
 
-def _is_tmp_sketch(sketch: str) -> bool:
-    name = sketch.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    return name.endswith(".tmp")
-
-
-def _same_sketch_dir(left: str, right: str) -> bool:
-    norm_left = _norm_sketch(left)
-    norm_right = _norm_sketch(right)
-    if not norm_left or not norm_right or "/" not in norm_left or "/" not in norm_right:
-        return False
-    return norm_left.rsplit("/", 1)[0] == norm_right.rsplit("/", 1)[0]
-
-
 def _resolved_is_allow(sketch: str | None) -> bool:
     resolved = _norm_sketch(sketch)
     return bool(resolved) and _is_allow_path(resolved)
@@ -1094,82 +1104,118 @@ def _is_version_operand(node: ast.AST) -> bool:
     return False
 
 
-def _compares_version(fn_node: ast.AST) -> bool:
-    """Разрешение на запись: сравнение версии с текущим значением, не упоминание имени."""
-    found = False
+def _read_path(node: ast.AST, env: dict[str, str]) -> str | None:
+    """Путь, который выражение читает, а не пишет."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr in {"read", "read_text", "read_bytes"}:
+            return _read_path(node.func.value, env)
+        if node.func.attr == "load" and node.args:
+            return _read_path(node.args[0], env)
+    if isinstance(node, ast.Call) and _call_name(node.func) in {
+        "open",
+        "read_version",
+        "_stored_version",
+    }:
+        return _sketch(_call_arg(node, 0, "file", "path", "dest"), env)
+    return None
 
-    def walk(node: ast.AST, *, nested: bool) -> None:
-        nonlocal found
-        if found:
-            return
-        if nested and isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
-        ):
-            return
-        if (
-            isinstance(node, ast.Compare)
-            and len(node.ops) == 1
-            and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE))
-        ):
-            operands = [node.left, *node.comparators]
-            version_ops = [item for item in operands if _is_version_operand(item)]
-            others = [item for item in operands if item not in version_ops]
-            dynamic = all(not isinstance(item, ast.Constant) for item in operands)
-            distinct = not (
-                len(operands) == 2
-                and isinstance(operands[0], ast.Name)
-                and isinstance(operands[1], ast.Name)
-                and operands[0].id == operands[1].id
-            )
-            if version_ops and dynamic and distinct and (others or len(version_ops) >= 2):
-                found = True
-                return
-        for child in ast.iter_child_nodes(node):
-            walk(child, nested=True)
 
-    walk(fn_node, nested=False)
+def _read_bindings(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        path = _read_path(node.value, env)
+        if path:
+            found[target.id] = path
     return found
 
 
-def _atomic_tmp_map(
-    fn_node: ast.AST,
-    env: dict[str, str],
-    os_modules: set[str],
-    os_funcs: dict[str, str],
-    path_names: set[str],
-) -> dict[str, str]:
-    """tmp → назначение для os.replace/rename из того же каталога."""
+def _body_aborts(body: list[ast.stmt]) -> bool:
+    return any(isinstance(stmt, (ast.Raise, ast.Return)) for stmt in body)
+
+
+def _contains(node: ast.AST, target: ast.AST) -> bool:
+    if node is target:
+        return True
+    return any(_contains(child, target) for child in ast.iter_child_nodes(node))
+
+
+def _guard_paths_for_call(fn_node: ast.AST, env: dict[str, str], call: ast.Call) -> set[str]:
+    """Пути, чья версия уже сверена чтением файла и raise/return до этой записи."""
+    reads = _read_bindings(fn_node, env)
+    paths: set[str] = set()
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.If):
+            continue
+        if getattr(node, "lineno", 0) > getattr(call, "lineno", 0):
+            continue
+        if any(_contains(stmt, call) for stmt in node.body):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+        ):
+            continue
+        operands = [test.left, *test.comparators]
+        if len(operands) == 2 and ast.dump(operands[0]) == ast.dump(operands[1]):
+            continue
+        if not any(_is_version_operand(item) for item in operands):
+            continue
+        if not _body_aborts(node.body):
+            continue
+        for item in operands:
+            if isinstance(item, ast.Name) and item.id in reads:
+                norm = _norm_sketch(reads[item.id])
+                if norm:
+                    paths.add(norm)
+    return paths
+
+
+def _is_atomic_helper(func: ast.AST) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id == "atomic_write_text"
+    if isinstance(func, ast.Attribute):
+        return func.attr == "atomic_write_text"
+    return False
+
+
+def _is_mkstemp_call(func: ast.AST) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id == "mkstemp"
+    if isinstance(func, ast.Attribute):
+        return func.attr == "mkstemp"
+    return False
+
+
+def _mkstemp_names(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
+    """Имя временного пути из mkstemp(dir=allowlist) → каталог."""
     found: dict[str, str] = {}
     for node in ast.walk(fn_node):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        src_node: ast.AST | None = None
-        dst_node: ast.AST | None = None
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in {"replace", "rename"}:
-            if isinstance(func.value, ast.Name) and func.value.id in os_modules:
-                src_node = _call_arg(node, 0, "src")
-                dst_node = _call_arg(node, 1, "dst")
-            elif func.attr == "replace" and _is_path_replace(node, func, path_names):
-                src_node = func.value
-                dst_node = _call_arg(node, 0, "target")
-        elif (
-            isinstance(func, ast.Name)
-            and func.id in os_funcs
-            and os_funcs[func.id] in {"replace", "rename"}
-        ):
-            src_node = _call_arg(node, 0, "src")
-            dst_node = _call_arg(node, 1, "dst")
-        if src_node is None or dst_node is None:
+        target = node.targets[0]
+        if not isinstance(node.value, ast.Call) or not _is_mkstemp_call(node.value.func):
             continue
-        src = _sketch(src_node, env)
-        dst = _sketch(dst_node, env)
-        if not src or not dst or not _is_tmp_sketch(src) or not _same_sketch_dir(src, dst):
+        if not isinstance(target, ast.Tuple) or len(target.elts) < 2:
             continue
-        norm_src = _norm_sketch(src)
-        norm_dst = _norm_sketch(dst)
-        if norm_src and norm_dst:
-            found[norm_src] = norm_dst
+        name = target.elts[1]
+        if not isinstance(name, ast.Name):
+            continue
+        dir_node = None
+        for keyword in node.value.keywords:
+            if keyword.arg == "dir":
+                dir_node = keyword.value
+        if dir_node is None and len(node.value.args) >= 3:
+            dir_node = node.value.args[2]
+        sketch = _sketch(dir_node, env) if dir_node is not None else None
+        if sketch and _resolved_is_allow(sketch):
+            found[name.id] = sketch
     return found
 
 
@@ -1278,7 +1324,7 @@ def _live_calls(
 def _os_move_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     modules: set[str] = set()
     funcs: dict[str, str] = {}
-    watched = _OS_RENAME | _OS_DELETE | frozenset({"truncate"})
+    watched = _OS_RENAME | _OS_DELETE | _OS_LINK | frozenset({"truncate"})
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1501,8 +1547,106 @@ def _http_method_expr(call: ast.Call) -> ast.AST | None:
     return None
 
 
+_HTTP_DELETE_RECEIVERS = frozenset({"client", "requests", "httpx", "ctx"})
+_ATOMIC_MODULE = "app.orchestrator.node_store.atomic_write"
+_PRIVATE_ATOMIC = frozenset(
+    {
+        "_copy_nofollow",
+        "_write_tmp",
+        "_write_at",
+        "_write_without_dir_fd",
+        "_write_exclusive",
+        "_open_dir",
+        "_descend",
+        "_open_old",
+        "_open_lock",
+        "_acquire_lock",
+        "_release_lock",
+        "_INTERNAL",
+    }
+)
+
+
+def _is_create_junction(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute) and node.attr == "CreateJunction":
+        return isinstance(node.value, ast.Name) and node.value.id in {"_winapi", "winapi"}
+    return isinstance(node, ast.Name) and node.id == "CreateJunction"
+
+
+def _is_atomic_module(module: str | None) -> bool:
+    if not module:
+        return False
+    return module == _ATOMIC_MODULE or module.endswith(".atomic_write")
+
+
+def _atomic_surface(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """Имена модуля atomic_write и алиасы импортированных из него _-имён."""
+    modules: set[str] = set()
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _ATOMIC_MODULE or alias.name.endswith(".atomic_write"):
+                    modules.add(alias.asname or alias.name.rsplit(".", 1)[-1])
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if _is_atomic_module(module):
+                for alias in node.names:
+                    if alias.name.startswith("_"):
+                        aliases[alias.asname or alias.name] = alias.name
+            elif module.split(".")[-1:] == ["node_store"]:
+                for alias in node.names:
+                    if alias.name == "atomic_write":
+                        modules.add(alias.asname or alias.name)
+    return modules, aliases
+
+
+def _private_import_hits(node: ast.ImportFrom, function: str) -> list[WriteHit]:
+    if not _is_atomic_module(node.module):
+        return []
+    hits: list[WriteHit] = []
+    for alias in node.names:
+        if not alias.name.startswith("_"):
+            continue
+        hits.append(
+            WriteHit(
+                "atomic_private",
+                None,
+                function,
+                source=None,
+                allowed=False,
+                snapshot_delete=False,
+            )
+        )
+    return hits
+
+
+def _getattr_is_atomic_private(call: ast.Call, atomic_modules: set[str]) -> bool:
+    if _call_name(call.func) != "getattr" or not call.args:
+        return False
+    recv = call.args[0]
+    attr = call.args[1] if len(call.args) > 1 else None
+    literal = attr.value if isinstance(attr, ast.Constant) and isinstance(attr.value, str) else None
+    if literal in _PRIVATE_ATOMIC:
+        return True
+    on_module = isinstance(recv, ast.Name) and recv.id in atomic_modules
+    if not on_module:
+        return False
+    if literal is None:
+        return True
+    return literal.startswith("_")
+
+
 def _http_kind(call: ast.Call, env: dict[str, str]) -> str | None:
-    if _call_name(call.func) not in {"call", "request"}:
+    func = call.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "delete"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in _HTTP_DELETE_RECEIVERS
+    ):
+        return "http.delete"
+    if _call_name(func) not in {"call", "request"}:
         return None
     folded = _fold_string(_http_method_expr(call), env)
     if not isinstance(folded, str):
@@ -1558,20 +1702,41 @@ def _write_hit(
     path_names: set[str] | None = None,
     os_flags: dict[str, str] | None = None,
     os_open_names: set[str] | None = None,
-    atomic_tmp: dict[str, str] | None = None,
-    versioned: bool = False,
+    mkstemp_names: dict[str, str] | None = None,
+    fn_node: ast.AST | None = None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
     path_names = path_names or {"Path"}
     os_flags = os_flags or {}
     os_open_names = os_open_names or set()
-    atomic_tmp = atomic_tmp or {}
+    mkstemp_names = mkstemp_names or {}
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
-    if _call_name(func) == "getattr":
+    if _getattr_is_atomic_private(call, atomic_modules):
+        kind = "atomic_private"
+    elif _call_name(func) == "getattr":
         kind = "getattr"
+    elif isinstance(func, ast.Name) and func.id in atomic_aliases:
+        kind = "atomic_private"
+    elif (
+        isinstance(func, ast.Attribute)
+        and func.attr.startswith("_")
+        and (
+            func.attr in _PRIVATE_ATOMIC
+            or (isinstance(func.value, ast.Name) and func.value.id in atomic_modules)
+        )
+    ):
+        kind = "atomic_private"
+    elif _call_name(func) in _PRIVATE_ATOMIC:
+        kind = "atomic_private"
+    elif _is_create_junction(func):
+        kind = "_winapi.CreateJunction"
     elif _call_name(func) == "__import__":
         kind = "__import__"
     elif _call_name(func) == "import_module":
@@ -1580,6 +1745,17 @@ def _write_hit(
         kind = sql_kind
     elif (http_kind := _http_kind(call, env)) is not None:
         kind = http_kind
+    elif _is_atomic_helper(func):
+        kind = "atomic_write_text"
+        dest = _call_arg(call, 0, "dest")
+    elif _is_mkstemp_call(func):
+        kind = "mkstemp"
+        dest = None
+        for keyword in call.keywords:
+            if keyword.arg == "dir":
+                dest = keyword.value
+        if dest is None and len(call.args) >= 3:
+            dest = call.args[2]
     elif isinstance(func, ast.Name) and func.id == "open" and func.id not in os_open_names:
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
@@ -1603,6 +1779,9 @@ def _write_hit(
         kind = f"os.{attr}"
         if attr in _OS_DELETE:
             dest = _call_arg(call, 0, "path")
+        elif attr in _OS_LINK:
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
         else:
             src = _call_arg(call, 0, "src")
             dest = _call_arg(call, 1, "dst")
@@ -1654,6 +1833,20 @@ def _write_hit(
         ):
             kind = f"os.{attr}"
             dest = _call_arg(call, 0, "path")
+        elif (
+            attr in _OS_LINK
+            and isinstance(func.value, ast.Name)
+            and func.value.id in os_modules
+        ):
+            kind = f"os.{attr}"
+            src = _call_arg(call, 0, "src")
+            dest = _call_arg(call, 1, "dst")
+        elif attr in _PATH_LINK:
+            kind = f"Path.{attr}"
+            dest = func.value
+        elif attr == "delete":
+            kind = "orm.delete"
+            dest = func.value
         elif attr in _PATH_DELETE or attr == "truncate":
             kind = f"Path.{attr}" if attr != "truncate" else "Path.truncate"
             dest = func.value
@@ -1670,26 +1863,34 @@ def _write_hit(
     source = _sketch(src, env) if src is not None else None
     norm_sketch = _norm_sketch(sketch)
     norm_source = _norm_sketch(source)
-    atomic_dest = atomic_tmp.get(norm_source or "")
-    atomic_ok = bool(
-        versioned
-        and kind in {"os.replace", "Path.replace"}
-        and norm_source
-        and norm_sketch
-        and atomic_dest == norm_sketch
-        and _resolved_is_allow(norm_sketch)
-        and _resolved_is_allow(norm_source)
-    )
-    denied = kind in _DELETE_KINDS or kind.startswith("alias:")
-    if atomic_ok:
+    if kind == "atomic_private":
         return WriteHit(
             kind,
             sketch,
             function,
-            source=source,
-            allowed=True,
+            source=None,
+            allowed=False,
             snapshot_delete=False,
         )
+    if kind == "atomic_write_text":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=bool(sketch) and _resolved_is_allow(sketch),
+            snapshot_delete=False,
+        )
+    if kind == "mkstemp":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=False,
+            snapshot_delete=False,
+        )
+    denied = kind in _DELETE_KINDS or kind.startswith("alias:")
     if denied:
         under = sketch is None or _under_snapshot(sketch)
         if source and _under_snapshot(source):
@@ -1705,6 +1906,8 @@ def _write_hit(
     if kind in {"shutil.move"}:
         dest_ok = bool(sketch) and _path_permitted(sketch, action_id)
         src_ok = bool(source) and _path_permitted(source, action_id)
+        if dest_ok and _resolved_is_allow(sketch):
+            dest_ok = False
         return WriteHit(
             kind,
             sketch,
@@ -1714,17 +1917,8 @@ def _write_hit(
             snapshot_delete=source is None or _under_snapshot(source),
         )
     path_ok = bool(sketch) and _path_permitted(sketch, action_id)
-    if (
-        kind in _CONTENT_OVERWRITE
-        and path_ok
-        and _resolved_is_allow(sketch)
-    ):
-        published = atomic_tmp.get(norm_sketch or "")
-        path_ok = bool(
-            versioned
-            and published
-            and _resolved_is_allow(published)
-        )
+    if kind in _CONTENT_OVERWRITE and path_ok and _resolved_is_allow(sketch):
+        path_ok = False
     return WriteHit(
         kind,
         sketch,
@@ -1743,9 +1937,28 @@ def _dangerous_value_kind(
     shutil_funcs: dict[str, str],
     path_names: set[str],
     os_open_names: set[str] | None = None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> str | None:
     """Ссылка на опасную функцию не в позиции вызова равна вызову."""
     os_open_names = os_open_names or set()
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
+    if _is_create_junction(node):
+        return "_winapi.CreateJunction"
+    if isinstance(node, ast.Attribute) and (
+        node.attr in _PRIVATE_ATOMIC
+        or (
+            node.attr.startswith("_")
+            and isinstance(node.value, ast.Name)
+            and node.value.id in atomic_modules
+        )
+    ):
+        return "atomic_private"
+    if isinstance(node, ast.Name) and (
+        node.id in atomic_aliases or node.id in _PRIVATE_ATOMIC
+    ):
+        return "atomic_private"
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
         recv = node.value.id
         if recv in os_modules and node.attr in _DANGEROUS_OS:
@@ -1794,13 +2007,16 @@ def _scan_writes(
     *,
     file_kind: str | None,
     file_kinds: frozenset[str] | None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> tuple[list[WriteHit], list[ast.Call]]:
     """Живые вызовы и ссылки на опасные функции в том же порядке, что исходник."""
     hits: list[WriteHit] = []
     calls: list[ast.Call] = []
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
-    atomic_tmp = _atomic_tmp_map(fn_node, env, os_modules, os_funcs, path_names)
-    versioned = _compares_version(fn_node)
+    mkstemp_names = _mkstemp_names(fn_node, env)
 
     def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
         if (
@@ -1835,8 +2051,10 @@ def _scan_writes(
                 path_names,
                 os_flags,
                 os_open_names,
-                atomic_tmp,
-                versioned,
+                mkstemp_names,
+                fn_node,
+                atomic_modules,
+                atomic_aliases,
             )
             if hit is not None:
                 hits.append(hit)
@@ -1847,6 +2065,8 @@ def _scan_writes(
                 if kw.value is not None:
                     walk(kw.value, root=False, call_func=False)
             return
+        if isinstance(node, ast.ImportFrom):
+            hits.extend(_private_import_hits(node, function))
         if not call_func:
             kind = _dangerous_value_kind(
                 node,
@@ -1856,6 +2076,8 @@ def _scan_writes(
                 shutil_funcs,
                 path_names,
                 os_open_names,
+                atomic_modules,
+                atomic_aliases,
             )
             if kind is not None:
                 hits.append(_ref_hit(kind, function))
@@ -1875,7 +2097,11 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
     fs_modules, path_names, imported = _fs_surface(tree)
     os_flags = _os_flag_bindings(tree)
     os_open_names = _os_open_names(tree)
+    atomic_modules, atomic_aliases = _atomic_surface(tree)
     hits: list[WriteHit] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            hits.extend(_private_import_hits(node, "<module>"))
     for fn_node in tree.body:
         if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1895,6 +2121,8 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
             os_open_names,
             file_kind=None,
             file_kinds=frozenset(),
+            atomic_modules=atomic_modules,
+            atomic_aliases=atomic_aliases,
         )
         hits.extend(found)
     return hits
@@ -2033,6 +2261,7 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
         fs_modules, path_names, imported = _fs_surface(module)
         os_flags = _os_flag_bindings(module)
         os_open_names = _os_open_names(module)
+        atomic_modules, atomic_aliases = _atomic_surface(module)
         tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
         found, calls = _scan_writes(
             fn_node,
@@ -2048,6 +2277,8 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
             os_open_names,
             file_kind=file_kind,
             file_kinds=file_kinds,
+            atomic_modules=atomic_modules,
+            atomic_aliases=atomic_aliases,
         )
         hits.extend(found)
         for call in calls:
@@ -2213,9 +2444,6 @@ def test_reworded_delete_still_requires_modify() -> None:
         "Удаляет файл пользовательской группы.",
     ):
         assert _DELETE_PHRASE_RE.search(sample), sample
-    rewritten = "Удаляет файл пользовательской группы.".replace("Удаляет", "Снимает")
-    assert rewritten.startswith("Снимает")
-    assert _DELETE_PHRASE_RE.search(rewritten)
 
     audit = _audit_text()
     assert "Детектор не видит удалений внутри обработчиков студии" in audit
@@ -2234,13 +2462,21 @@ def test_reworded_delete_still_requires_modify() -> None:
         matched_keep.append(row["id"])
     assert set(matched_keep) == set(_DELETE_WORDING_EXCEPTIONS)
 
+    group = by_id["group.delete"]
+    rewritten = group["what"].replace("Удаляет", "Снимает")
+    assert rewritten != group["what"]
+    assert _DELETE_PHRASE_RE.search(rewritten)
+    assert group["verdict"] == "modify"
+
     queue = by_id["montage.cancel_queue_ops"]
     assert queue["verdict"] == "keep"
     assert _DELETE_PHRASE_RE.search(queue["what"])
     assert _DELETE_WORDING_EXCEPTIONS["montage.cancel_queue_ops"] in audit
-    hidden = {key: value for key, value in _DELETE_WORDING_EXCEPTIONS.items() if key != queue["id"]}
-    assert queue["id"] not in hidden
-    assert _DELETE_PHRASE_RE.search(queue["what"])
+    stripped = queue["what"]
+    for word in ("Снимает", "снимает", "очищает", "Очищает", "убирает", "отменяет"):
+        stripped = stripped.replace(word, "хранит")
+    assert stripped != queue["what"]
+    assert _DELETE_PHRASE_RE.search(stripped) is None
 
 
 def test_empty_registry_is_not_green() -> None:
@@ -2454,7 +2690,7 @@ def test_fs_allowlist_reports_and_node_overrides() -> None:
 
 
 def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
-    """Прямой open('w') в allowlist — отказ. tmp + os.replace и версия — разрешение."""
+    """Прямой open('w') и фиксированный tmp в allowlist — отказ."""
     bare = (
         "def save(version):\n"
         "    open('data/node_overrides/x.json', 'w')\n"
@@ -2475,7 +2711,7 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
     )
     hits = analyze_module_source(atomic, "node.set_config")
     assert [hit.kind for hit in hits] == ["open", "os.replace", "open", "os.replace"]
-    assert [hit.allowed for hit in hits] == [True, True, True, True]
+    assert [hit.allowed for hit in hits] == [False, False, False, False]
 
     no_version = (
         "import os\n"
@@ -2488,7 +2724,8 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
         for hit in analyze_module_source(no_version, "node.set_config")
     )
 
-def test_versioned_requires_version_compare(tmp_path: Path) -> None:
+
+def test_versioned_requires_version_compare(tmp_path: Path, monkeypatch) -> None:
     """Параметр version без сравнения с текущей версией запись не разрешает."""
     unused = (
         "import os\n"
@@ -2525,20 +2762,24 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     )
     compared_hits = analyze_module_source(compared, "node.set_config")
     assert [hit.kind for hit in compared_hits] == ["open", "os.replace"]
-    assert [hit.allowed for hit in compared_hits] == [True, True]
+    assert [hit.allowed for hit in compared_hits] == [False, False]
 
-    import inspect
-
+    from app.orchestrator.node_store import atomic_write as atomic_mod
     from app.orchestrator.node_store.atomic_write import VersionConflict, atomic_write_text
 
-    source = inspect.getsource(atomic_write_text)
-    assert "mkstemp" in source
+    source = inspect.getsource(atomic_mod)
+    assert "O_NOFOLLOW" in source
+    assert "dir_fd" in source
     assert 'name + ".tmp"' not in source
 
-    dest = tmp_path / "node_overrides" / "x.json"
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    dest = Path(settings.data_dir) / "node_overrides" / f"version-{tmp_path.name}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(dest, "hello", expected_version=0)
     atomic_write_text(dest, "next", expected_version=1)
-    previous = dest.parent / "old" / "x.json.v1"
+    previous = dest.parent / "old" / f"{dest.name}.v1"
     assert previous.is_file()
     assert "hello" in previous.read_text(encoding="utf-8")
     with pytest.raises(VersionConflict) as exc:
@@ -2549,6 +2790,137 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     assert "race" not in body
     assert "hello" in previous.read_text(encoding="utf-8")
     assert not list(dest.parent.glob("*.tmp"))
+    dest.unlink(missing_ok=True)
+    dest.with_name(dest.name + ".lock").unlink(missing_ok=True)
+    previous.unlink(missing_ok=True)
+
+
+def test_version_compare_must_guard_write() -> None:
+    """Сравнение версии разрешает запись только если оно прерывает функцию и читает файл."""
+    logged = (
+        "import os, tempfile\n"
+        "def save(version, cur):\n"
+        "    if version != cur:\n"
+        "        log('x')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    logged_hits = [
+        hit
+        for hit in analyze_module_source(logged, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert logged_hits and logged_hits[0].allowed is False
+
+    identical = (
+        "import os, tempfile\n"
+        "def save(self):\n"
+        "    if self.version != self.version:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    identical_hits = [
+        hit
+        for hit in analyze_module_source(identical, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert identical_hits and identical_hits[0].allowed is False
+
+    guarded = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    guarded_hits = [
+        hit
+        for hit in analyze_module_source(guarded, "node.set_config")
+        if hit.kind == "os.replace"
+    ]
+    assert guarded_hits and guarded_hits[0].allowed is False
+
+
+def test_mkstemp_publish_without_lock_is_denied() -> None:
+    """В allowlist пишет только atomic_write_text. mkstemp без lock — отказ."""
+    source = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    hits = analyze_module_source(source, "node.set_config")
+    assert hits
+    assert all(hit.allowed is False for hit in hits)
+
+    copied = (
+        "import shutil\n"
+        "def save(src):\n"
+        "    shutil.copy2(src, 'data/node_overrides/x.json')\n"
+        "    shutil.copy(src, 'data/reports/a.txt')\n"
+        "    shutil.copyfile(src, 'data/reports/b.txt')\n"
+        "    shutil.move('data/reports/a.txt', 'data/reports/c.txt')\n"
+        "    atomic_write_text('data/node_overrides/x.json', 'ok', expected_version=0)\n"
+    )
+    copy_hits = analyze_module_source(copied, "node.set_config")
+    assert [hit.kind for hit in copy_hits] == [
+        "shutil.copy2",
+        "shutil.copy",
+        "shutil.copyfile",
+        "shutil.move",
+        "atomic_write_text",
+    ]
+    assert [hit.allowed for hit in copy_hits] == [False, False, False, False, True]
+
+
+def test_fixed_tmp_denied_helper_and_mkstemp_allowed() -> None:
+    """Фиксированный tmp и mkstemp в allowlist запрещены. Разрешён только helper."""
+    fixed = (
+        "import os\n"
+        "def save(version, current):\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+    )
+    fixed_hits = analyze_module_source(fixed, "node.set_config")
+    assert fixed_hits
+    assert all(hit.allowed is False for hit in fixed_hits)
+
+    helper = (
+        "def save(store):\n"
+        "    atomic_write_text('data/node_overrides/x.json', 'a', expected_version=0)\n"
+        "    store.atomic_write_text('templates/node_groups/x.md', 'b', expected_version=0)\n"
+        "    store.atomic_write_text('data/reports/a.txt', 'c', expected_version=1)\n"
+    )
+    helper_hits = analyze_module_source(helper, "prompt.save_master")
+    assert [hit.kind for hit in helper_hits] == [
+        "atomic_write_text",
+        "atomic_write_text",
+        "atomic_write_text",
+    ]
+    assert [hit.allowed for hit in helper_hits] == [True, False, True]
+
+    mkstemp = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+        "    fd, other = tempfile.mkstemp(dir='templates', suffix='.tmp')\n"
+        "    os.replace(other, 'templates/x.md')\n"
+    )
+    mk_hits = analyze_module_source(mkstemp, "node.set_config")
+    assert [hit.kind for hit in mk_hits] == ["mkstemp", "os.replace", "mkstemp", "os.replace"]
+    assert [hit.allowed for hit in mk_hits] == [False, False, False, False]
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
@@ -2782,7 +3154,7 @@ def test_move_and_rename_check_source_and_dest() -> None:
         "    rp('data/action_layer_snapshots/a', 'data/reports/a')\n"
     )
     hits = analyze_module_source(source, "history.rollback")
-    assert [hit.allowed for hit in hits] == [True, False, False, False, False, False, False]
+    assert [hit.allowed for hit in hits] == [False, False, False, False, False, False, False]
     assert [hit.snapshot_delete for hit in hits] == [False, False, False, False, False, False, True]
     foreign = analyze_module_source(source, "group.delete")
     assert foreign[-1].allowed is False
@@ -2846,16 +3218,16 @@ def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
 
 
 def _symlinks_available() -> bool:
-    """Windows без права на symlink даёт WinError 1314. Это не падение теста."""
-    if os.name == "nt":
-        return False
-    probe = Path(os.environ.get("TMPDIR", "/tmp")) / f"vp-symlink-probe-{os.getpid()}"
+    """Skip только при WinError 1314: нет привилегии на symlink."""
+    probe = Path(tempfile.gettempdir()) / f"vp-symlink-probe-{os.getpid()}"
     try:
         probe.mkdir(parents=True, exist_ok=True)
         os.symlink(str(probe / "target"), str(probe / "link"))
         return True
-    except OSError:
-        return False
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            return False
+        raise
     finally:
         import shutil
 
@@ -2868,14 +3240,14 @@ def test_plain_file_under_reports_stays_allowed(tmp_path: Path) -> None:
     assert paths_share_root(str(reports / "ok.txt"), str(reports))
 
 
-@pytest.mark.skipif(not _symlinks_available(), reason="symlink недоступен")
+@pytest.mark.skipif(not _symlinks_available(), reason="WinError 1314: нет привилегии на symlink")
 def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> None:
     reports = tmp_path / "data" / "reports"
     outside = tmp_path / "outside"
     reports.mkdir(parents=True)
     outside.mkdir()
     link = reports / "escape"
-    link.symlink_to(outside, target_is_directory=True)
+    _symlink_or_skip(link, outside, target_is_directory=True)
     escaped = link / "secret.txt"
     assert not paths_share_root(str(escaped), str(reports))
     source = f"def save():\n    open({str(escaped)!r}, 'w')\n"
@@ -3167,6 +3539,40 @@ def test_sql_delete_drop_truncate_are_denied() -> None:
     )
     hits = analyze_module_source(source, "prompt.save_master")
     assert [hit.kind for hit in hits] == ["sql", "sql", "sql", "sql"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_session_and_db_delete_are_orm_delete() -> None:
+    """session.delete и db.delete — удаление, даже если получатель не HTTP-клиент."""
+    source = (
+        "def save(session, db, other):\n"
+        "    session.delete(row)\n"
+        "    db.delete(item)\n"
+        "    other.delete()\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == ["orm.delete", "orm.delete", "orm.delete"]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_client_delete_method_is_http_delete() -> None:
+    source = (
+        "def save(client, requests, httpx, ctx, session):\n"
+        "    client.delete('/projects/1')\n"
+        "    requests.delete('/y')\n"
+        "    httpx.delete('/z')\n"
+        "    ctx.delete('/w')\n"
+        "    session.delete(row)\n"
+        "    client.get('/ok')\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == [
+        "http.delete",
+        "http.delete",
+        "http.delete",
+        "http.delete",
+        "orm.delete",
+    ]
     assert all(hit.allowed is False for hit in hits)
 
 
