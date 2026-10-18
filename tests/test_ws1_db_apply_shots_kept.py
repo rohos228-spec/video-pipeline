@@ -568,6 +568,92 @@ async def test_replace_all_frames_skips_tombstone_numbers(session: AsyncSession)
     assert any(fr.uuid == "tomb-old" and int(fr.number) == 1 for fr in rows)
 
 
+@pytest.mark.asyncio
+async def test_same_text_different_fields_kept_inactive(session: AsyncSession) -> None:
+    """Одинаковый закадр с разной камерой и артефактом не выпадает из списка."""
+    project = Project(slug="ws1-same-text", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "same-text-fields",
+        [
+            {"закадр": "A", "камера": "wide", "img": 1},
+            {"закадр": "A", "камера": "close", "img": 2},
+        ],
+        number=1,
+    )
+    await session.commit()
+    new_list = [{"закадр": "A"}]
+
+    async def _apply() -> list[dict]:
+        await apply_ops(
+            session,
+            project,
+            [{"frame_uuid": frame.uuid, "fields": {"кадры": new_list}}],
+            export_xlsx=False,
+        )
+        await session.refresh(frame)
+        return list(frame.attrs["кадры"])
+
+    first = await _apply()
+    second = await _apply()
+    assert len(first) == 3, first
+    assert len(second) == len(first)
+    active = [shot for shot in second if shot_is_active(shot)]
+    inactive = [shot for shot in second if not shot_is_active(shot)]
+    assert len(active) == 1
+    assert active[0]["закадр"] == "A"
+    assert active[0].get("камера") is None
+    assert {(shot.get("камера"), shot.get("img")) for shot in inactive} == {
+        ("wide", 1),
+        ("close", 2),
+    }
+    assert all(shot["активен"] is False for shot in inactive)
+
+
+@pytest.mark.asyncio
+async def test_two_identical_old_shots_both_kept_inactive(session: AsyncSession) -> None:
+    """Две одинаковые копии без id, которых нет в новом списке, обе остаются."""
+    project = Project(slug="ws1-two-copies", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "two-copies",
+        [
+            {"закадр": "один", "описание": "то же"},
+            {"закадр": "один", "описание": "то же"},
+        ],
+        number=1,
+    )
+    await session.commit()
+    new_list = [{"закадр": "другой"}]
+
+    async def _apply() -> list[dict]:
+        await apply_ops(
+            session,
+            project,
+            [{"frame_uuid": frame.uuid, "fields": {"кадры": new_list}}],
+            export_xlsx=False,
+        )
+        await session.refresh(frame)
+        return list(frame.attrs["кадры"])
+
+    first = await _apply()
+    second = await _apply()
+    assert len(first) == 3, first
+    assert len(second) == len(first)
+    inactive = [shot for shot in second if not shot_is_active(shot)]
+    assert len(inactive) == 2
+    assert all(shot["закадр"] == "один" for shot in inactive)
+    assert all(shot["описание"] == "то же" for shot in inactive)
+    assert all(shot["активен"] is False for shot in inactive)
+    assert sum(1 for shot in second if shot_is_active(shot)) == 1
+
+
 _TOMBSTONE = {
     "удалён": True,
     "пометка": "дубль",

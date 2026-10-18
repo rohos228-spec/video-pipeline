@@ -354,6 +354,7 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
 
 
 _TOMBSTONE_MARKS = ("удалён", "пометка", "карантин", "активен")
+_PAYLOAD_IGNORE = frozenset({"активен", "порядок", "номер"})
 
 
 def _stamp_tombstone_marks(old_shot: dict[str, Any], target: dict[str, Any]) -> None:
@@ -365,20 +366,17 @@ def _stamp_tombstone_marks(old_shot: dict[str, Any], target: dict[str, Any]) -> 
             target[key] = old_shot[key]
 
 
-def _kadry_dedup_key(shot: Any) -> tuple:
-    """Ключ хвоста: id, иначе текст, иначе поля без ``активен``."""
+def _shot_payload_key(shot: Any) -> tuple:
+    """Полный шот без ``активен``/``порядок``/``номер``."""
     if not isinstance(shot, dict):
         return ("raw", repr(shot))
-    sid = _shot_id(shot)
-    if sid:
-        return ("id", sid)
-    ident = _shot_content_identity(shot)
-    if ident is not None:
-        return ("content", ident)
-    raw = tuple(
-        sorted((str(key), repr(val)) for key, val in shot.items() if key != "активен")
+    return tuple(
+        sorted(
+            (str(key), repr(val))
+            for key, val in shot.items()
+            if key not in _PAYLOAD_IGNORE
+        )
     )
-    return ("raw", raw)
 
 
 def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
@@ -389,6 +387,8 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     и чужой шот получил бы ложное совпадение. Запасное совпадение без id —
     уникальный текст (закадр/описание и соседние поля) среди шотов тоже без id.
     Иначе старый шот остаётся в хвосте с ``активен: False``.
+    Хвост считается мультимножеством полного шота без ``активен``,
+    ``порядок`` и ``номер``: сколько копий было, столько и остаётся.
     Входящий ``активен: False`` не снимается. Старый неактивный шот не
     оживает: ни если его нет в новом списке, ни если новый пришёл без флага,
     ни если во входящем явно ``активен: True``. Совпадение по id или тексту
@@ -427,6 +427,10 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
             incoming_by_content.setdefault(ident, []).append(item)
     if not isinstance(old, list):
         return incoming
+    payload_slots: dict[tuple, list[dict[str, Any]]] = {}
+    for item in incoming:
+        if isinstance(item, dict):
+            payload_slots.setdefault(_shot_payload_key(item), []).append(item)
     old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     for shot in old:
         if isinstance(shot, dict) and _shot_id(shot) is None:
@@ -462,17 +466,13 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 for item in incoming
             ):
                 continue
+        key = _shot_payload_key(shot)
+        slots = payload_slots.get(key)
+        if slots:
+            _stamp_tombstone_marks(shot, slots.pop())
+            continue
         marked = dict(shot)
         marked["активен"] = False
-        key = _kadry_dedup_key(marked)
-        if any(_kadry_dedup_key(item) == key for item in kept):
-            continue
-        # Активная копия того же текста уже в новом списке — хвост не растим.
-        # Неактивную оставляем одной копией: явный False не оживает.
-        if shot.get("активен") is not False and any(
-            _kadry_dedup_key(item) == key for item in incoming
-        ):
-            continue
         kept.append(marked)
     return [*incoming, *kept]
 
