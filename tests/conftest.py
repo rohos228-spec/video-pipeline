@@ -107,6 +107,9 @@ _R0B_XFAIL = {
     'tests/test_vo_shot_expand.py::test_sync_qc_child_mirror_previously_inactive_warns_or_revives': 'app/services/vo_shot_expand.py sync_qc_kadry_onto_coverage_frames как в #352',
     'tests/test_vo_shot_expand.py::test_sync_qc_keeps_ids_missing_from_mirror': 'app/services/vo_shot_expand.py sync_qc_kadry_onto_coverage_frames как в #352',
     'tests/test_vo_shot_expand.py::test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo': 'app/services/vo_shot_expand.py promote/relink/merge_flattened как в #352',
+    # Четыре теста ниже существуют на main и там проходят: ветка переписала их
+    # ожидания (main утверждал физическое удаление кадров/блоков). Это известное
+    # нарушение правила «скрывать только флагами, не удалять», а не скрытая регрессия.
     'tests/test_montage_board_frames.py::test_delete_parent_keeps_children': 'app/services/montage_board_frames.py:278 delete_montage_frame возвращает deleted=1',
     'tests/test_nii67_card.py::test_insert_duplicate_delete_reorder_stay_on_one_door': 'app/services/nii67_card.py:457 blocks.pop удаляет блок',
     'tests/test_reset_step.py::test_clear_step_outputs_split_force_wipe_deletes_frames': 'app/services/reset_step.py:1102 clear_step_outputs_for_rerun стирает кадры',
@@ -118,4 +121,6 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         reason = _R0B_XFAIL.get(item.nodeid)
         if reason:
-            item.add_marker(pytest.mark.xfail(reason=reason))
+            # strict=True: XPASS = падение, чтобы починка или регрессия
+            # не прошла молча под xfail.
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
