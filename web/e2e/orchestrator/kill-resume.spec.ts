@@ -199,3 +199,35 @@ test("not_in_whitelist: экран отказывает до карточки, g
   await expect(grant.getByTestId("orch-approval-error")).toContainText("белом списке");
   await expect(grant.getByTestId("orch-approve")).toBeVisible();
 });
+
+test("deny закрывает карточку, ставит failed и прячет Продолжить", async ({ page }) => {
+  const session = "deny-fail";
+  await openWithToken(page, session);
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-deny",
+    plan: [{ action: "charge", paid: true, risk: "high", estimated_cost: 1 }],
+    position: 0,
+    change_ids: ["chg-charge-1"],
+    context: "",
+  });
+  await emit(page, session, "approval_required", {
+    reason: "paid_outcome_unknown",
+    change_id: "orch-appr-4-1",
+    action: "charge",
+    retry_armed: false,
+    task_id: 1,
+  });
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+  await expect(page.getByTestId("orch-approval")).toHaveAttribute("data-change-id", "orch-appr-4-1");
+  await expect(page.getByTestId("orch-paid-outcome")).toBeVisible();
+
+  await emit(page, session, "approval_decided", {
+    change_id: "orch-appr-4-1",
+    decision: "deny",
+    task_id: 1,
+  });
+  await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+  await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+});

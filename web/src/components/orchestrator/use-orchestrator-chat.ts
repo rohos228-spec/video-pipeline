@@ -303,6 +303,10 @@ export function useOrchestratorChat() {
           return;
         }
         dispatch({ type: "approval-resolved", id: approvalId, decision });
+        if (decision === "rejected") {
+          const failedId = taskId || card.taskId;
+          if (failedId) dispatch({ type: "task-status", taskId: failedId, status: "failed" });
+        }
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {

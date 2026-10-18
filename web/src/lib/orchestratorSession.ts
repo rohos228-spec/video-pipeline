@@ -376,7 +376,7 @@ export function approvalServerKey(body: Record<string, unknown>): string | null 
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
   if (value === "approved" || value === "approve") return "approved";
-  if (value === "rejected" || value === "reject") return "rejected";
+  if (value === "rejected" || value === "reject" || value === "deny") return "rejected";
   return null;
 }
 
@@ -606,6 +606,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
     const decidedId = serverApprovalId(payload.approval_id);
     if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+  }
+
+  if (event.type === "approval_decided") {
+    const decided = approvalDecision(payload.decision);
+    const id = serverApprovalId(payload.change_id) ?? serverApprovalId(payload.approval_id);
+    if (decided && id) closeServerApproval(next, id, decided);
+    if (decided === "rejected") {
+      const idTask = taskId ?? taskKey(payload.task_id);
+      if (idTask) ensureTask(next.tasks, idTask).status = "failed";
+    }
+    return next;
   }
 
   if (event.type === "ack") {
