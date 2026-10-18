@@ -271,13 +271,15 @@ def _plan_scene_columns_ordered(ws) -> list[tuple[int, int]]:
         if _cell_text(ws, ROW_VOICEOVER_V8, c)
     ]
     if vo_cols:
+        # Номер из шапки или col−2: пустая R49 в середине не сдвигает следующие кадры.
         return [(_frame_number_for_plan_column(ws, col), col) for col in vo_cols]
     seen: list[int] = []
     for row in (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8):
         for col in _plan_prompt_columns(ws, row):
             if col not in seen:
                 seen.append(col)
-    return [(_frame_number_for_plan_column(ws, col), col) for col in seen]
+    # Без озвучки кадры идут по порядку колонок промта (merged A45:E45 — один кадр).
+    return list(enumerate(seen, start=1))
 
 
 def _read_plan_image_prompts_ws(ws, *, prompt_row: int | None = None) -> dict[int, str]:
