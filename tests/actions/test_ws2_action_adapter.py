@@ -144,3 +144,49 @@ def test_risk_mapping_read_local_safe_paid_destructive() -> None:
             assert published.paid is True
         if floor.read_only:
             assert published.read_only is True
+
+
+async def test_adapter_never_emits_core_change_id(env) -> None:
+    """Одобрение без change_id. Идентификатор Никиты — только cc_change_id."""
+
+    import json
+
+    from app.orchestrator.action_contracts.contracts import ApprovalRequired
+    from app.orchestrator.actions.executor import execute
+    from app.services.action_layer.spec import registry
+    from tests.action_layer_support import make_spec
+
+    ctx = {"app": env.app, "operator": "adapter-test"}
+    held = await execute(
+        "prompt.create_master",
+        {"step_code": "anim_pr", "name": "adapter-probe", "content": "текст"},
+        ctx,
+    )
+    assert held.status == "approval_required"
+    assert held.error is None
+    assert isinstance(held.result, ApprovalRequired)
+    assert held.result.metadata.destructive is True
+    assert held.result.metadata.needs_approval is True
+    envelope = json.dumps(held.model_dump(), ensure_ascii=False)
+    assert "orch-appr-" not in envelope
+    assert "change_id" not in held.model_dump()["result"]
+
+    async def _nikita(_ctx, _params):
+        return {
+            "ok": True,
+            "change_id": "orch-appr-7-1",
+            "proposal_id": "cc-proposal-1",
+        }
+
+    spec = make_spec("adapter.probe_cc", _nikita, risk="local_safe")
+    registry.register(spec)
+    try:
+        probed = await execute("adapter.probe_cc", {}, {**ctx, "approved": True})
+    finally:
+        registry.unregister("adapter.probe_cc")
+    assert probed.status == "ok"
+    assert probed.cc_change_id == "cc-proposal-1"
+    dumped = probed.model_dump()
+    assert "orch-appr-" not in json.dumps(dumped)
+    assert dumped["result"].get("change_id") is None
+    assert dumped["result"].get("proposal_id") == "cc-proposal-1"

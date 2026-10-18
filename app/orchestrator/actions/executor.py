@@ -6,16 +6,21 @@ change_id вида orch-appr-<task>-<n> адаптер не выдаёт.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import ConfigDict
 
 from app.orchestrator.action_contracts.contracts import ActionMetadata
 from app.orchestrator.action_contracts.contracts import ActionResult
+from app.orchestrator.action_contracts.contracts import ApprovalPreview
+from app.orchestrator.action_contracts.contracts import ApprovalRequired
 from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.services.redact import redact_text
+
+_CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
 
 
 class BoundResult(ActionResult):
@@ -124,6 +129,78 @@ def metadata_of(name: str) -> ActionMetadata:
     return _raise_to_floor(published, map_nikita_risk(spec.risk, name=published.name))
 
 
+def _approved(ctx: Any) -> bool:
+    if not isinstance(ctx, dict):
+        return False
+    if ctx.get("approved") is True:
+        return True
+    return ctx.get("approval") == "granted"
+
+
+def _preview_change(spec: Any, params: dict) -> str:
+    effects = getattr(spec, "destructive_effects", None)
+    text = ""
+    if callable(effects):
+        try:
+            text = str(effects(params) or "")
+        except Exception:
+            text = ""
+    cleaned = redact_text(text).strip()
+    if cleaned:
+        return cleaned[:500]
+    title = str(getattr(spec, "title_ru", "") or spec.id).strip() or spec.id
+    return f"{title}: нужно подтверждение"
+
+
+async def _paid_estimate(spec: Any, params: dict, meta: ActionMetadata) -> float | None:
+    """Платный ярус: положительная оценка, если она уже есть. Иначе поле пустое."""
+
+    if not meta.paid or spec.estimator is None:
+        return None
+    try:
+        estimate = spec.estimator(params)
+        if hasattr(estimate, "__await__"):
+            estimate = await estimate
+    except Exception:
+        return None
+    high = getattr(estimate, "high", None)
+    if isinstance(high, bool) or not isinstance(high, (int, float)):
+        return None
+    if float(high) <= 0:
+        return None
+    return float(high)
+
+
+def _detach_cc(body: dict) -> str | None:
+    """Идентификатор контроля изменений Никиты. orch-appr-* в ответ не попадает."""
+
+    cc: str | None = None
+    proposal = body.get("proposal_id")
+    if isinstance(proposal, str) and proposal.strip() and _CORE_CHANGE_ID.match(proposal.strip()) is None:
+        cc = proposal.strip()
+    change = body.get("change_id")
+    if isinstance(change, str) and change.strip():
+        token = change.strip()
+        if cc is None and _CORE_CHANGE_ID.match(token) is None:
+            cc = token
+    body.pop("change_id", None)
+    return cc
+
+
+async def _approval_required(spec: Any, params: dict, meta: ActionMetadata) -> ActionResult:
+    preview = ApprovalPreview(
+        change=_preview_change(spec, params),
+        estimate=await _paid_estimate(spec, params, meta),
+    )
+    body = ApprovalRequired(
+        action=meta.name,
+        metadata=meta,
+        reason="нужно подтверждение",
+        preview=preview,
+    )
+    return ActionResult(status="approval_required", result=body, error=None, warnings=[])
+
+
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     """Один ActionSpec. Исключения и отказы — status=failed."""
 
@@ -135,6 +212,9 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     problems = registry.validate_params(spec.id, params)
     if problems:
         return _failed("; ".join(problems))
+    meta = metadata_of(spec.id)
+    if meta.needs_approval and not _approved(ctx):
+        return await _approval_required(spec, params, meta)
     try:
         action_ctx = _action_context(ctx)
         if spec.risk == "read":
@@ -153,7 +233,11 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     if refusal:
         return _failed(refusal, warnings)
     body = {key: value for key, value in raw.items() if key not in {"warnings", "warning"}}
-    return BoundResult(status="ok", result=body, error=None, warnings=warnings)
+    cc_change_id = _detach_cc(body)
+    result = BoundResult(status="ok", result=body, error=None, warnings=warnings)
+    if cc_change_id:
+        object.__setattr__(result, "cc_change_id", cc_change_id)
+    return result
 
 
 ensure_builtin_actions()
