@@ -60,9 +60,9 @@ def test_style_agent_vibecode_fallback_is_visible(monkeypatch) -> None:
     patch = style_job_substitution_patch(line)
     assert patch["job"]["model_substitution"] == line
     src = inspect.getsource(_run_job)
-    assert "style_job_substitution_patch" in src
-    assert "model_substitution" in src
-    assert "_resolve_style_text_override" in src
+    assert "нет маршрута 52pay для разбора стиля" in src
+    assert "_pipeline_text_override" in src
+    assert "_resolve_style_text_override" not in src
 
 
 @pytest.mark.asyncio
@@ -107,10 +107,9 @@ async def test_fallback_line_is_on_the_job_and_status_is_not_running(
     await style_job._run_job(13, node_key="style_extract", overrides={})
     job = project.meta["style_agent"]["job"]
     assert job["status"] != "running"
-    assert job["status"] == "done"
-    line = job["model_substitution"]
-    assert "52pay:gpt-5.6-sol" in line
-    assert "vibecode:gpt-5.6-sol" in line
+    assert job["status"] == "failed"
+    assert "нет маршрута 52pay" in str(job.get("error") or "")
+    assert job["status"] != "done"
 
 
 @pytest.mark.asyncio
@@ -138,8 +137,11 @@ async def test_fallback_error_does_not_leave_job_running(monkeypatch, tmp_path) 
     async def _publish(*_a, **_k):
         return None
 
+    class _Route:
+        api_model = "gpt-5.6-sol"
+
     monkeypatch.setattr("app.project_db.project_db_session_scope", _scope)
-    monkeypatch.setattr("app.services.pay52_routes.resolve_text", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.services.pay52_routes.resolve_text", lambda *_a, **_k: _Route())
     monkeypatch.setattr(style_job, "run_style_extract", _boom)
     monkeypatch.setattr(style_job, "_publish", _publish)
     monkeypatch.setattr(style_job, "style_dir", lambda _project: tmp_path)
@@ -154,5 +156,4 @@ async def test_fallback_error_does_not_leave_job_running(monkeypatch, tmp_path) 
     job = project.meta["style_agent"]["job"]
     assert job["status"] != "running"
     assert job["status"] == "failed"
-    assert "52pay:gpt-5.6-sol" in job["model_substitution"]
-    assert "vibecode:gpt-5.6-sol" in job["model_substitution"]
+    assert "extract упал" in str(job.get("error") or "")
