@@ -1,8 +1,10 @@
 """Чат оркестратора: приём сообщения, SSE-поток и решение по approval.
 
 POST ``/api/orchestrator/chat/{session}/message``
+GET  ``/api/orchestrator/chat/{session}/status``
 GET  ``/api/orchestrator/chat/{session}/stream``  (Last-Event-ID)
 POST ``/api/orchestrator/chat/{session_id}/approve``
+GET  ``/api/orchestrator/chat/{session}/partial-changes``
 """
 
 from __future__ import annotations
@@ -197,6 +199,29 @@ async def post_resume(session: str) -> dict[str, object]:
         "session": session,
         "task_id": task_id,
         "status": status.value if status is not None else "",
+    }
+
+
+@router.get("/{session}/status")
+async def get_session_status(session: str) -> dict[str, object]:
+    """Снимок задачи сессии. ``resume_allowed`` совпадает с последним ``agent_status``."""
+    _check_session(session)
+    return get_runtime().supervisor.session_snapshot(session)
+
+
+@router.get("/{session}/partial-changes")
+async def get_partial_changes(session: str, task_id: int) -> dict[str, object]:
+    """Список ``change_id`` шагов ``partial``. Откат не выполняется."""
+    _check_session(session)
+    runtime = get_runtime()
+    row = runtime.tasks.get(task_id)
+    if row is None or str(row.get("session_id")) != session:
+        raise HTTPException(status_code=404, detail="not found")
+    return {
+        "ok": True,
+        "session": session,
+        "task_id": task_id,
+        "change_ids": runtime.supervisor.list_partial_change_ids(task_id),
     }
 
 

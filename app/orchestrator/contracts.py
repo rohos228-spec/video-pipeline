@@ -113,6 +113,7 @@ EVENT_TYPES = (
     "classification",
     "message",
     "kill_switch",
+    "partial_write",
     "paid_retry_blocked",
     "step_skipped",
     "approval_decided",

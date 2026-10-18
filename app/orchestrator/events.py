@@ -27,6 +27,7 @@ from typing import Any
 from app.orchestrator.contracts import (
     EPHEMERAL_EVENT_TYPES,
     EVENT_RETENTION_DAYS,
+    EVENT_TYPES,
     RETAINED_EVENT_TYPES,
     SESSION_EVENT_CAP,
     TOKEN_RING_SIZE,
@@ -36,6 +37,14 @@ from app.orchestrator.db.migrations import connect, resolve_db_path
 
 # Сколько seq резервировать одним UPDATE. Токен не трогает БД, пока пачка не кончилась.
 SEQ_RESERVE = 64
+
+__all__ = [
+    "EVENT_TYPES",
+    "EventBus",
+    "forget_seq_batch",
+    "persisted_types",
+    "seq_reserve_count",
+]
 
 _LOCK = threading.RLock()
 _CONNS: dict[str, Any] = {}

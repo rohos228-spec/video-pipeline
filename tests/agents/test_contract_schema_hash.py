@@ -13,7 +13,7 @@ from app.orchestrator.contracts import CONTRACT_VERSION, export_contract_schemas
 
 _EXPORT_SHA256 = {
     "ws3-r3.3.1": "a8880f1425ab20a266111455a8703d863f54142af242129e60bec8d5674e9bfa",
-    "ws3-r3.4": "564097a4ef10e06c2cbfaac2d4a4d9ca6041937bc8f88102354df377c65f4145",
+    "ws3-r3.4": "7419fb0e4ec6a544101e0417910882992049b5b068ecb7d950c16830c2c6f4e1",
 }
 
 
