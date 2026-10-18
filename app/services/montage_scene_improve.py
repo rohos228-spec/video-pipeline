@@ -1664,6 +1664,8 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
         rebuilt.append(shot)
     # Порядок якорей (units), не исходный порядок GPT. Несовпавшие — в хвост.
     shots[:] = rebuilt
+    # План и ракурс правим от последнего живого кадра — той же точки, что qc_reasons.
+    # Помеченный между двумя живыми не должен уводить угол и плодить новый ремонт.
     live_shots = [shot for shot in shots if _shot_live(shot)]
     fixed.extend(smooth_plan_sequence(live_shots))
     prev: dict[str, Any] | None = None
