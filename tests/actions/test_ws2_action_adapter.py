@@ -63,3 +63,25 @@ def test_metadata_of_covers_registry() -> None:
     assert raised.risk == "high"
     assert raised.destructive is True
     assert raised.needs_approval is True
+
+
+def test_registry_populated_on_import() -> None:
+    """Импорт адаптера сам вызывает ensure_builtin_actions: 102 имени."""
+
+    import subprocess
+    import sys
+
+    code = (
+        "import app.orchestrator.actions\n"
+        "from app.services.action_layer.spec import registry\n"
+        "ids = [spec.id for spec in registry.list()]\n"
+        "assert len(ids) == 102, len(ids)\n"
+        "assert len(set(ids)) == 102\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd="/workspace",
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout

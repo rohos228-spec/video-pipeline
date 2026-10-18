@@ -104,3 +104,6 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
         return _failed(refusal, warnings)
     body = {key: value for key, value in raw.items() if key not in {"warnings", "warning"}}
     return BoundResult(status="ok", result=body, error=None, warnings=warnings)
+
+
+ensure_builtin_actions()
