@@ -13,8 +13,8 @@
 ``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
 ``context["approval"]`` с ``risk == "high"`` (без strip и lower), ``destructive is True``,
 ``granted is True`` и ``action``, равным имени шага.
-Нет поля ``soft_delete`` — это false. Адаптера ``cursor/ws2-action-adapter``
-в origin ещё нет, поэтому ``metadata_of`` берётся у реестра.
+Нет поля ``soft_delete`` или нет ``metadata_of`` у серверного реестра модуля —
+это false. ``context["registry"]`` для решения об удалении не читается.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
 (E8).
 """
@@ -233,27 +233,29 @@ def _soft_delete_granted(action: str, context: dict[str, Any], registry: Any) ->
     token = action.strip().lower().replace("-", "_")
     if token not in _SOFT_FRAME_DELETES:
         return False
-    if not _metadata_soft_delete(token, registry, context):
+    if not _metadata_soft_delete(token, registry):
         return False
     return _core_approved_high_destructive(context, action)
 
 
-def _metadata_soft_delete(action: str, registry: Any, context: dict[str, Any]) -> bool:
-    """``metadata_of(name).get("soft_delete") is True``. Нет поля или метода — false."""
+def _metadata_soft_delete(action: str, registry: Any) -> bool:
+    """``metadata_of`` только у серверного реестра модуля.
 
-    for source in (registry, context.get("registry")):
-        fn = getattr(source, "metadata_of", None)
-        if not callable(fn):
-            continue
-        try:
-            meta = fn(action)
-        except Exception:  # noqa: BLE001 — нет карточки, как отсутствие поля
-            return False
-        getter = getattr(meta, "get", None)
-        if not callable(getter):
-            return False
-        return getter("soft_delete") is True
-    return False
+    ``context["registry"]`` сюда не входит: его кладёт вызывающий, не сервер.
+    Нет метода или поля ``soft_delete`` — false.
+    """
+
+    fn = getattr(registry, "metadata_of", None)
+    if not callable(fn):
+        return False
+    try:
+        meta = fn(action)
+    except Exception:  # noqa: BLE001 — нет карточки, как отсутствие поля
+        return False
+    getter = getattr(meta, "get", None)
+    if not callable(getter):
+        return False
+    return getter("soft_delete") is True
 
 
 def _core_approved_high_destructive(context: dict[str, Any], action: str) -> bool:

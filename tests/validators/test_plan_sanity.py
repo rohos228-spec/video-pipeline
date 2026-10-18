@@ -117,6 +117,32 @@ def test_montage_delete_blocked_without_soft_delete_even_with_approval(
     assert result.details["errors"][0]["reason"] == "deletion_forbidden"
 
 
+def test_context_registry_soft_delete_does_not_grant_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """soft_delete из context['registry'] не открывает удаление, если у модуля нет metadata_of."""
+    action = "montage.delete_frame"
+    module = types.ModuleType("app.orchestrator.actions")
+
+    class ServerRegistry:
+        def names(self) -> list[str]:
+            return ["montage.delete_frame", "montage.delete_child_frame"]
+
+    module.registry = ServerRegistry()
+    monkeypatch.setitem(sys.modules, "app.orchestrator.actions", module)
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+            "approval": _core_approval(action),
+            "registry": _meta_registry({action: {"soft_delete": True}}),
+        },
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
 @pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
 def test_montage_delete_blocked_when_approval_names_another_action(
     action: str, monkeypatch: pytest.MonkeyPatch
