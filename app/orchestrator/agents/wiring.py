@@ -193,7 +193,7 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1 #379 ``1ef07735``.
+    """Мягкий импорт WS1 #379 ``6ee14212``.
 
     ``run_preservation_validators(before, after, ops=None, *, mode)``.
     ``mode`` keyword-only: ``"reject"`` | ``"soft"``, по умолчанию ``"reject"``.
