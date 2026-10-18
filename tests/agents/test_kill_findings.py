@@ -155,6 +155,7 @@ async def _partial_row(runtime, task_id: int) -> dict:
 
 @pytest.mark.asyncio
 async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None:
+    """request_kill, без подложенного change_id и без прямого _runs.cancel."""
     del token
     actions = MockActions()
     runtime = build_runtime(
@@ -170,19 +171,21 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
     try:
         task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
         await actions.started.wait()
-        row = runtime.tasks.list_steps(task_id)[0]
-        runtime.tasks.note_running_outcome(int(row["id"]), "chg-partial", 0.0)
-        runtime.supervisor._runs[task_id].cancel()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
         with contextlib.suppress(asyncio.CancelledError):
             await runtime.supervisor.wait(task_id, timeout=5)
-        saved = runtime.tasks.list_steps(task_id)[0]
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
         assert saved["status"] == "partial"
-        assert saved["change_id"] == "chg-partial"
+        assert saved["change_id"] == "chg-write-1"
+        assert [call["name"] for call in actions.calls] == ["write"]
         checkpoint = runtime.checkpoints.load_latest(task_id)
         assert checkpoint is not None
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
         assert warned[-1].payload["level"] == "WARN"
-        assert warned[-1].payload["change_ids"] == ["chg-partial"]
+        assert warned[-1].payload["change_ids"] == ["chg-write-1"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
     finally:
         actions.release.set()
@@ -277,12 +280,16 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
     try:
         task_id = await runtime.supervisor.start_task(session, "частично", project_id=13)
         await actions.started.wait()
-        row = runtime.tasks.list_steps(task_id)[0]
-        runtime.tasks.note_running_outcome(int(row["id"]), "chg-list", 0.0)
-        runtime.supervisor._runs[task_id].cancel()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
         with contextlib.suppress(asyncio.CancelledError):
             await runtime.supervisor.wait(task_id, timeout=5)
-        assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-list"]
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
+        assert saved["change_id"] == "chg-write-1"
+        assert [call["name"] for call in actions.calls] == ["write"]
+        assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-write-1"]
         app = FastAPI()
         app.add_middleware(OrchestratorAuthMiddleware)
         app.include_router(chat_router, prefix="/api")
@@ -294,10 +301,10 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
                 headers={"Authorization": f"Bearer {TEST_TOKEN}"},
             )
         assert listed.status_code == 200
-        assert listed.json()["change_ids"] == ["chg-list"]
+        assert listed.json()["change_ids"] == ["chg-write-1"]
         assert TEST_TOKEN not in listed.text
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
-        assert warned[-1].payload["change_ids"] == ["chg-list"]
+        assert warned[-1].payload["change_ids"] == ["chg-write-1"]
     finally:
         actions.release.set()
         set_runtime(None)
