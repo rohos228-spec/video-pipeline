@@ -4,9 +4,11 @@
 
 Эталоны: `915b932f` (junit базы R0a, 46 failure и 3 error) и `3ec7c957` (junit #342, 56 failure и 26 error). Имя считается эталонным, если оно есть хотя бы в одном из этих двух прогонов.
 
-Вне эталона на снимке было 4 имени. На текущем HEAD `5b314795` все четыре зелёные (`pytest` этих четырёх, 4 passed). Новых блокеров мёржа среди +57F/+22E нет. Остальные 75 имён уже падают в `915b932f` или в `3ec7c957`.
+Имя вне `915b932f` ∪ `3ec7c957` — блокер мёржа.
 
-Четыре имени вне эталона:
+Вне эталона на снимке было 4 имени. Это блокеры снимка `15598ef8`. Полный гейт локальной цепочки `c28827a11bd6498d327c642eeb78a0ead77a4a09` (`pytest tests/ -n auto --timeout=600`, junit `/tmp/pytest-r0b-c28827a1.xml`, 2026-10-18 00:30 UTC) дал 60 failed, 8501 passed, 7 skipped, 1 xfailed, 22 errors. Все 82 имени failure/error этого гейта лежат в эталоне. Четыре блокера снимка в этом прогоне зелёные. Открытых блокеров нет. Остальные 75 имён прироста уже падают в `915b932f` или в `3ec7c957`.
+
+Четыре блокера снимка (на гейте `c28827a1` зелёные):
 
 - `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_disk_block_waits_without_retry`
 - `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_exhausted_budget_does_not_send_http`
@@ -37,9 +39,9 @@
 | `tests.observe_v1.test_media_dry_run_videos.VideosDryRun::test_resume_without_a_decision_layer_also_makes_zero_requests_and_is_idempotent` | failure | поведение: human_review вместо verified | нет | да | нет |
 | `tests.observe_v1.test_media_dry_run_videos.VideosDryRun::test_spend_caps_are_irrelevant_to_a_resume_and_nothing_is_reserved` | failure | поведение: human_review вместо verified | нет | да | нет |
 | `tests.observe_v1.test_media_dry_run_videos.VideosDryRun::test_the_failed_attempt_may_edit_frame_progress_without_invalidating_the_baseline` | failure | поведение: human_review вместо verified | нет | да | нет |
-| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_disk_block_waits_without_retry` | failure | реальный баг снимка: нет маршрута 52pay; на HEAD зелёный | нет | нет | снята на HEAD |
-| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_exhausted_budget_does_not_send_http` | failure | реальный баг снимка: нет маршрута 52pay; на HEAD зелёный | нет | нет | снята на HEAD |
-| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_kill_switch_waits_without_retry` | failure | реальный баг снимка: нет маршрута 52pay; на HEAD зелёный | нет | нет | снята на HEAD |
+| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_disk_block_waits_without_retry` | failure | блокер: нет в эталоне; на снимке не было маршрута 52pay | нет | нет | блокер, закрыт на c28827a1 |
+| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_exhausted_budget_does_not_send_http` | failure | блокер: нет в эталоне; на снимке не было маршрута 52pay | нет | нет | блокер, закрыт на c28827a1 |
+| `tests.pipeline_regression.test_scene_boundaries_live_gate::test_live_kill_switch_waits_without_retry` | failure | блокер: нет в эталоне; на снимке не было маршрута 52pay | нет | нет | блокер, закрыт на c28827a1 |
 | `tests.test_media_tranche_local::test_approve_final_barrier_cannot_be_bypassed_by_auto_mode_or_a_tampered_file` | failure | поведение теста, уже в эталоне | нет | да | нет |
 | `tests.test_media_tranche_local::test_assemble_dry_run_with_the_real_verifier` | failure | окружение: проверка медиа даёт ValueError | нет | да | нет |
 | `tests.test_media_verification.OtherMediaNodes::test_assemble_final_digest_and_the_approval_barrier_are_reported` | failure | поведение теста, уже в эталоне | нет | да | нет |
@@ -51,7 +53,7 @@
 | `tests.w40_test_infra_test::test_wait_returns_when_the_holder_finishes` | failure | поведение теста, уже в эталоне | нет | да | нет |
 | `tests.w4_2_c03_images_verification_test.AudioContentCheckIsWired::test_a_silent_voice_file_fails_with_the_silent_code` | failure | поведение теста, уже в эталоне | нет | да | нет |
 | `tests.w4_2_c03_images_verification_test.AudioContentCheckIsWired::test_a_voice_file_with_a_signal_passes` | failure | поведение теста, уже в эталоне | нет | да | нет |
-| `tests.w5_d05_split_image_prompts_retry_test::test_rollback_returns_the_frames_their_artifacts_and_meta` | failure | реальный баг снимка: откат не вернул artifact; на HEAD зелёный | нет | нет | снята на HEAD |
+| `tests.w5_d05_split_image_prompts_retry_test::test_rollback_returns_the_frames_their_artifacts_and_meta` | failure | блокер: нет в эталоне; на снимке откат не вернул artifact | нет | нет | блокер, закрыт на c28827a1 |
 | `tests.w5_d06_local_resume_test::test_audio_finished_file_is_resume_local_and_verified` | failure | окружение: проверка медиа даёт ValueError | нет | да | нет |
 | `tests.w5_d06_local_resume_test::test_sfx_event_files_on_record_are_resume_local_and_verified` | failure | поведение теста, уже в эталоне | нет | да | нет |
 | `tests.w5f_elevenlabs_nodes_script_test::test_a_dry_run_of_one_node_runs_only_that_node` | failure | поведение теста, уже в эталоне | нет | да | нет |
