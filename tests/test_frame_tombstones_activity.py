@@ -1,7 +1,7 @@
 """Матрица активности шота и кадра совпадает с WS1 activity_flags.
 
-Пока модуля нет, ``frame_tombstones`` держит ту же копию. ``frame_is_active``
-принимает кадр, матрица — ``attrs``.
+Локальная копия — ``app/services/activity_flags_fallback.py``, байт-в-байт
+``d984a52d``. ``frame_is_active`` у вызывающих принимает кадр, матрица — ``attrs``.
 """
 
 from __future__ import annotations
@@ -267,3 +267,119 @@ def test_activity_predicates_reexport_ws1_when_importable(tmp_path) -> None:
     finally:
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
+
+
+def _git_show(repo, spec: str) -> str:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "show", spec],
+        cwd=repo,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        subprocess.run(
+            ["git", "fetch", "origin", "cursor/ws1-validators-inactive-shots"],
+            cwd=repo,
+            check=True,
+        )
+        result = subprocess.run(
+            ["git", "show", spec],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+    return result.stdout.decode("utf-8")
+
+
+def _ws1_matrix(source: str) -> list[tuple[str, object, bool, bool]]:
+    import ast
+
+    tree = ast.parse(source)
+    segment = None
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(node, ast.Assign):
+            target = next(
+                (item for item in node.targets if isinstance(item, ast.Name) and item.id == "_CASES"),
+                None,
+            )
+        if isinstance(target, ast.Name) and target.id == "_CASES" and node.value is not None:
+            segment = ast.get_source_segment(source, node.value)
+            break
+    if not segment:
+        raise AssertionError("в тесте WS1 нет матрицы _CASES")
+    return eval(  # noqa: S307 — матрица из зафиксированного коммита репозитория
+        segment,
+        {
+            "ACTIVE_MARK": "активен",
+            "DELETED_MARK": "удалён",
+            "QUARANTINE_MARK": "карантин",
+        },
+    )
+
+
+def _load_ws1_flags(tmp_path, source: str):
+    import importlib.util
+
+    path = tmp_path / "activity_flags.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("ws1_activity_flags_d984a52d", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _active_and_warn(fn, payload, caplog: pytest.LogCaptureFixture) -> tuple[bool, bool]:
+    caplog.clear()
+    value = fn(payload)
+    warned = any("активен" in record.getMessage() for record in caplog.records)
+    return value, warned
+
+
+def test_activity_matrix_matches_ws1_flags_file(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Матрица #371 гоняется на локальной копии и на файле d984a52d из tmp.
+
+    Расхождение ответа или WARN делает тест красным. Файл #371 в репозиторий
+    этой ветки не коммитится.
+    """
+    from pathlib import Path
+
+    import app.services.activity_flags_fallback as fallback
+    import app.services.frame_tombstones as tomb
+
+    repo = Path(__file__).resolve().parents[1]
+    source = _git_show(repo, f"{_WS1_FLAGS_SHA}:app/orchestrator/validators/activity_flags.py")
+    ours = (repo / "app/services/activity_flags_fallback.py").read_text(encoding="utf-8")
+    assert ours == source
+    cases = _ws1_matrix(
+        _git_show(repo, f"{_WS1_FLAGS_SHA}:tests/validators/test_activity_flags.py")
+    )
+    assert cases
+    ws1 = _load_ws1_flags(tmp_path, source)
+    assert fallback.shot_is_active is tomb._fallback_shot_is_active
+    assert fallback.frame_is_active is tomb._fallback_frame_attrs_is_active
+    assert (fallback.ACTIVE_MARK, fallback.DELETED_MARK, fallback.QUARANTINE_MARK) == (
+        ws1.ACTIVE_MARK,
+        ws1.DELETED_MARK,
+        ws1.QUARANTINE_MARK,
+    )
+    caplog.set_level(logging.WARNING)
+    for kind, payload, expected, warns in cases:
+        if kind == "shot":
+            local = fallback.shot_is_active
+            remote = ws1.shot_is_active
+        else:
+            local = fallback.frame_is_active
+            remote = ws1.frame_is_active
+        local_active, local_warn = _active_and_warn(local, payload, caplog)
+        remote_active, remote_warn = _active_and_warn(remote, payload, caplog)
+        assert local_active is remote_active is expected
+        assert local_warn is remote_warn is warns
+        if kind == "frame":
+            wrapped, wrapped_warn = _active_and_warn(
+                tomb._fallback_frame_is_active, _as_frame(payload), caplog
+            )
+            assert wrapped is remote_active
+            assert wrapped_warn is warns

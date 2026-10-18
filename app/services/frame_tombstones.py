@@ -11,68 +11,29 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.services.activity_flags_fallback import (
+    ACTIVE_MARK,
+    DELETED_MARK,
+    QUARANTINE_MARK,
+    flag_is_false,
+    flag_is_true,
+    frame_is_active as _fallback_frame_attrs_is_active,
+    shot_is_active as _fallback_shot_is_active,
+)
+
 _KEY = "deleted_frame_numbers"
-DELETED_MARK = "удалён"
 REASON_MARK = "пометка"
-ACTIVE_MARK = "активен"
-QUARANTINE_MARK = "карантин"
 
-# Та же матрица, что у WS1 ``activity_flags``. WARN — stdlib logging,
-# чтобы его видел caplog; остальные предупреждения модуля остаются на loguru.
-_activity_log = logging.getLogger(__name__)
-_FALSE_TOKENS = frozenset({"0", "false", "нет", "no", "off"})
-
-
-def flag_is_false(value: object) -> bool:
-    """False, 0, ``0.0`` и строки ``0`` / ``false`` / ``нет`` / ``no`` / ``off``.
-
-    Регистр и крайние пробелы у строк не важны.
-    """
-
-    if value is False or value == 0:
-        return True
-    if isinstance(value, str):
-        return value.strip().casefold() in _FALSE_TOKENS
-    return False
-
-
-def flag_is_true(value: object) -> bool:
-    """«удалён» и «карантин»: None, пустая строка и ложные флаги — не удалено."""
-
-    if value is None:
-        return False
-    if isinstance(value, str) and not value.strip():
-        return False
-    if flag_is_false(value):
-        return False
-    return bool(value)
-
-
-def _record_is_active(record: object) -> bool:
-    if not isinstance(record, dict):
-        return False
-    if flag_is_true(record.get(DELETED_MARK)) or flag_is_true(record.get(QUARANTINE_MARK)):
-        return False
-    if ACTIVE_MARK not in record:
-        return True
-    value = record[ACTIVE_MARK]
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return True
-    if flag_is_false(value):
-        return False
-    if isinstance(value, str):
-        _activity_log.warning(
-            "неизвестное значение «активен» %r — считаем активным",
-            value,
-        )
-    return True
+# ``activity_flags_fallback`` — байт-в-байт копия
+# ``app/orchestrator/validators/activity_flags.py`` @ d984a52d (#371).
+# Сам файл #371 в это дерево не входит. Вызывающие по-прежнему передают
+# кадр в ``frame_is_active``; матрица WS1 смотрит на ``attrs``.
 
 
 def _activity_flags():
@@ -156,19 +117,14 @@ def frame_marked_deleted(frame: Any) -> bool:
     return bool(is_true(attrs.get(DELETED_MARK)))
 
 
-def _fallback_shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``, пока модуля WS1 нет в дереве."""
-    return _record_is_active(shot)
-
-
 def _fallback_frame_is_active(frame: Any) -> bool:
-    """Живой кадр. Вызывающие передают кадр, матрица смотрит на ``attrs``."""
+    """Живой кадр. Вызывающие передают кадр, матрица — ``frame_is_active(attrs)``."""
     if frame is None:
         return False
     attrs = getattr(frame, "attrs", None)
     if attrs is None:
         attrs = {}
-    return _record_is_active(attrs)
+    return _fallback_frame_attrs_is_active(attrs)
 
 
 try:
