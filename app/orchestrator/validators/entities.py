@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.orchestrator.validators.grammar import shot_counts_as_active
+from app.orchestrator.validators.activity_flags import shot_is_active
 
 _SCENE_KEYS = ("scenes", "сцены", "scenes_archived", "сцены_архив", "archived_scenes")
 _CHAR_KEYS = ("characters", "персонажи", "cards", "characters_archived", "персонажи_архив")
@@ -47,11 +47,14 @@ def is_archived(entity: Any) -> bool:
 
 
 def frame_is_exempt(frame: Any) -> bool:
-    """Неактивный или архивный кадр не считается удалённым."""
+    """Неактивный или архивный кадр не считается удалённым.
+
+    Живость решает только ``activity_flags.shot_is_active``.
+    """
 
     if not isinstance(frame, dict):
         return False
-    if not shot_counts_as_active(frame):
+    if not shot_is_active(frame):
         return True
     return is_archived(frame)
 

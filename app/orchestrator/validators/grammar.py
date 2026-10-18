@@ -13,34 +13,15 @@ import copy
 import re
 from typing import Any
 
+from app.orchestrator.validators.activity_flags import shot_is_active
+
 _re = re
-
-_SHOT_IS_ACTIVE: Any = _re  # sentinel: ещё не искали frame_tombstones
-
-
-def _external_shot_is_active() -> Any:
-    """``shot_is_active``, если модуль уже в дереве. Иначе None."""
-
-    global _SHOT_IS_ACTIVE
-    if _SHOT_IS_ACTIVE is not _re:
-        return _SHOT_IS_ACTIVE
-    try:
-        from app.services.frame_tombstones import shot_is_active
-    except Exception:  # noqa: BLE001 — на #351 модуля нет
-        shot_is_active = None
-    _SHOT_IS_ACTIVE = shot_is_active if callable(shot_is_active) else None
-    return _SHOT_IS_ACTIVE
 
 
 def shot_counts_as_active(shot: Any) -> bool:
-    """Живой шот: импорт ``shot_is_active``, иначе ``активен is not False``."""
+    """Живой шот. Единственный предикат — ``activity_flags.shot_is_active``."""
 
-    checker = _external_shot_is_active()
-    if checker is not None:
-        return bool(checker(shot))
-    if not isinstance(shot, dict):
-        return True
-    return shot.get("активен") is not False
+    return shot_is_active(shot)
 
 
 class KadryInvalid:
@@ -349,7 +330,7 @@ def shots_of(context: dict[str, Any]) -> list[Any] | None | KadryInvalid:
     """Кадры из context. None — ключа не было.
 
     Несписок (строка, dict, null) — ``KadryInvalid``, не ``[]``.
-    Неактивные (``активен is False``) в проверку не входят и из context не
+    Неактивные (``shot_is_active`` ложен) в проверку не входят и из context не
     выкидываются: наружу уходит новый список.
     """
 

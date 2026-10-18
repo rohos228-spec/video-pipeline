@@ -12,6 +12,12 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from app.orchestrator.validators.activity_flags import (
+    ACTIVE_MARK,
+    HIDE_MARKS,
+    flag_is_false,
+    flag_is_true,
+)
 from app.orchestrator.validators.entities import (
     collect_scenes,
     frame_id,
@@ -431,13 +437,43 @@ def _op_id(op: dict[str, Any]) -> str:
     return ""
 
 
+def _activity_choice(value: object) -> bool | None:
+    """Явное значение ``активен``. Пустое и None — флага нет."""
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if flag_is_false(value):
+        return False
+    if flag_is_true(value, mark=ACTIVE_MARK):
+        return True
+    return None
+
+
+def _source_activity(source: dict[str, Any]) -> bool | None:
+    """False, если скрывающая метка истинна или ``активен`` ложен."""
+
+    seen = False
+    for mark in HIDE_MARKS:
+        if mark not in source:
+            continue
+        seen = True
+        if flag_is_true(source.get(mark), mark=mark):
+            return False
+    choice: bool | None = None
+    if ACTIVE_MARK in source:
+        seen = True
+        choice = _activity_choice(source[ACTIVE_MARK])
+    if not seen:
+        return None
+    return choice
+
+
 def _flag(op: dict[str, Any]) -> bool | None:
     for source in (op.get("fields"), op):
-        if isinstance(source, dict) and "активен" in source:
-            if source["активен"] is False:
-                return False
-            if source["активен"] is True:
-                return True
+        if isinstance(source, dict):
+            choice = _source_activity(source)
+            if choice is not None:
+                return choice
     verb = _verb(op)
     if verb in _ACTIVATE_VERBS:
         return True
