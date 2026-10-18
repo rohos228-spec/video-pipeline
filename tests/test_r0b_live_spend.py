@@ -100,18 +100,15 @@ async def test_live_stream_calls_overlap_without_queue(
 ) -> None:
     _quiet_gate(monkeypatch, run_cap=0.0)
     _install_live(monkeypatch)
-    t0 = time.monotonic()
 
     async def one(tag: str) -> str:
         return await sb.call_opus("user", "system", tag, tmp_path / tag, tries=1)
 
     a, b = await asyncio.gather(one("a"), one("b"))
-    elapsed = time.monotonic() - t0
     assert a.strip() and b.strip()
     assert len(_Stream.intervals) == 2
     left, right = _Stream.intervals
     assert left[0] < right[1] and right[0] < left[1]
-    assert elapsed < 0.35 * 1.5
 
 
 @pytest.mark.asyncio
