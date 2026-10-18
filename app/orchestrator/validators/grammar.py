@@ -221,7 +221,8 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
     """Временная копия ``ensure_wide_before_dialogue``. TODO(R0a): удалить.
 
     Говорящие и предыдущий план смотрятся только у живых шотов. Неактивный
-    остаётся на своём месте, его id и ``порядок`` не переписываются.
+    остаётся на своём месте, его id не переписывается; ``порядок`` сдвигается
+    у всех строк после вставки, как в R0a.
     """
 
     if not isinstance(shots, list) or not shots:
@@ -270,8 +271,6 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
             if "порядок" in w:
                 for row in shots[i:]:
                     if not isinstance(row, dict) or "порядок" not in row:
-                        continue
-                    if not shot_counts_as_active(row):
                         continue
                     try:
                         row["порядок"] = int(row["порядок"]) + 1

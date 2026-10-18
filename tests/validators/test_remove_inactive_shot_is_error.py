@@ -125,3 +125,23 @@ def test_drop_first_of_two_marked_idless_shots_is_error(mode: str) -> None:
     )
     after = _scene([{"активен": False, "закадр": "y"}])
     _assert_removed(before, after, mode, "x")
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_drop_marked_while_marking_neighbor_is_error(mode: str) -> None:
+    """Удалить помеченный x и пометить соседа z — потеря x, а не правка на месте."""
+
+    before = _scene(
+        [
+            {"активен": False, "закадр": "x"},
+            {"активен": False, "закадр": "y"},
+            {"закадр": "z"},
+        ]
+    )
+    after = _scene(
+        [
+            {"активен": False, "закадр": "y"},
+            {"активен": False, "закадр": "z"},
+        ]
+    )
+    _assert_removed(before, after, mode, "x")

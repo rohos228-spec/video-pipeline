@@ -75,6 +75,11 @@ def check_marked_shot_removed(before: Any, after: Any, ops: Any = None) -> list[
         # «То же место» засчитывается, только если помеченных безымянных шотов
         # в кадре не стало меньше: иначе сдвиг прячет удаление.
         slot_ok = _marked_idless_count(after_list) >= _marked_idless_count(shots)
+        cell_texts = {
+            _anon_text(other)
+            for other in shots
+            if isinstance(other, dict) and frame_id(other) is None
+        }
         for shot_index, shot in enumerate(shots):
             if not isinstance(shot, dict) or shot_is_active(shot):
                 continue
@@ -85,7 +90,9 @@ def check_marked_shot_removed(before: Any, after: Any, ops: Any = None) -> list[
                 seen.add(fid)
                 token = fid
             else:
-                if slot_ok and _same_slot_still_marked(after_list, shot_index):
+                if slot_ok and _same_slot_still_marked(
+                    after_list, shot_index, _anon_text(shot), cell_texts
+                ):
                     continue
                 token = _anon_text(shot)
                 if not token or token in after_anon or token in seen:
@@ -145,15 +152,29 @@ def _marked_idless_count(shots: list[Any]) -> int:
     )
 
 
-def _same_slot_still_marked(after_shots: list[Any], shot_index: int) -> bool:
-    """Тот же индекс кадра: шота без id всё ещё нет среди живых."""
+def _same_slot_still_marked(
+    after_shots: list[Any],
+    shot_index: int,
+    own_text: str = "",
+    cell_texts: set[str] | None = None,
+) -> bool:
+    """Тот же индекс кадра: шота без id всё ещё нет среди живых.
+
+    Если на этом месте стоит текст другого шота того же кадра, это сдвиг
+    соседа, а не правка на месте.
+    """
 
     if shot_index >= len(after_shots):
         return False
     other = after_shots[shot_index]
     if not isinstance(other, dict) or frame_id(other) is not None:
         return False
-    return not shot_is_active(other)
+    if shot_is_active(other):
+        return False
+    other_text = _anon_text(other)
+    if cell_texts and other_text != own_text and other_text in cell_texts:
+        return False
+    return True
 
 
 def _anon_text(shot: dict[str, Any]) -> str:

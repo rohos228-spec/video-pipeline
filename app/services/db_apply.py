@@ -370,7 +370,7 @@ def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def merge_kadry_keep_missing(
-    old: Any, incoming: Any, *, allow_restore: bool = False
+    old: Any, incoming: Any, *, restore_ids: Any = None
 ) -> list[dict[str, Any]]:
     """Короткий список не выкидывает старые шоты: их хвост с активен False.
 
@@ -405,8 +405,9 @@ def merge_kadry_keep_missing(
         if sid and sid in old_by_id:
             merged = {**old_by_id[sid], **row}
             marks = _kept_hide_marks(old_by_id[sid])
-            if allow_restore:
-                # Явный restore: снимаются только пометки, пришедшие в строке.
+            if restore_ids and sid in restore_ids:
+                # Явный restore адресованного шота: снимаются только пометки,
+                # пришедшие в его строке. Остальные шоты не оживают.
                 marks = {k: v for k, v in marks.items() if k not in row}
             merged.update(marks)
             out.append(merged)
@@ -1548,6 +1549,22 @@ def _indexed_shot_id(op: dict[str, Any]) -> str:
     return ""
 
 
+def _restore_shot_ids(op: Any) -> set[str]:
+    """id шота, который op явно восстанавливает (shot_id или индекс)."""
+
+    if not isinstance(op, dict):
+        return set()
+    verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+    if verb not in _RESTORE_VERBS:
+        return set()
+    explicit = "" if op.get("shot_id") in (None, "") else str(op["shot_id"])
+    indexed = _indexed_shot_id(op)
+    if explicit and indexed and explicit != indexed:
+        return set()
+    target = explicit or indexed
+    return {target} if target else set()
+
+
 def _ops_with_shot_address(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Явный restore/activate по индексу кадры[] получает shot_id для preservation.
 
@@ -1989,10 +2006,7 @@ async def apply_ops(
                     coerced = merge_kadry_keep_missing(
                         attrs.get("кадры"),
                         coerced,
-                        allow_restore=str(
-                            op.get("op") or op.get("action") or op.get("type") or ""
-                        ).strip().casefold()
-                        in _RESTORE_VERBS,
+                        restore_ids=_restore_shot_ids(op),
                     )
                 attrs[attr_key] = coerced
             for attr_key in _ATTR_EXCEL_ROWS:

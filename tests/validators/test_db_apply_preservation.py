@@ -803,3 +803,91 @@ def test_preservation_view_frame_without_uuid_prefers_pk() -> None:
     frame.number = 9
     view = db_apply._preservation_view([frame])
     assert view["сцены"][0]["id"] == "pk:12"
+
+
+async def test_db_apply_restore_revives_only_addressed_shot(session: AsyncSession) -> None:
+    """restore по индексу снимает пометку только у адресованного шота.
+
+    Сосед с той же пометкой и скопированным активен: True остаётся скрытым.
+    """
+    project = Project(slug="revive-one", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="dddddddddddddddddddddddd",
+        voiceover_text="один два",
+        attrs={
+            "кадры": [
+                {"id": "2-K1", "текст": "один", "активен": False},
+                {"id": "2-K2", "текст": "два", "активен": False},
+            ]
+        },
+    )
+    session.add(frame)
+    await session.commit()
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        [
+            {
+                "target": "frame",
+                "frame_uuid": frame.uuid,
+                "op": "restore",
+                "shot_index": 1,
+                "fields": {
+                    "кадры": [
+                        {"id": "2-K1", "текст": "один", "активен": True},
+                        {"id": "2-K2", "текст": "два", "активен": True},
+                    ]
+                },
+            }
+        ],
+    )
+    await session.refresh(frame)
+    by_id = {row["id"]: row for row in frame.attrs["кадры"]}
+    assert by_id["2-K2"]["активен"] is True
+    assert by_id["2-K1"]["активен"] is False
+
+
+async def test_db_apply_plain_update_keeps_hide_mark(session: AsyncSession) -> None:
+    """Обычная правка без restore не оживляет помеченный шот (#352)."""
+    project = Project(slug="keep-mark", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="eeeeeeeeeeeeeeeeeeeeeeee",
+        voiceover_text="один два",
+        attrs={
+            "кадры": [
+                {"id": "3-K1", "текст": "один"},
+                {"id": "3-K2", "текст": "два", "активен": False},
+            ]
+        },
+    )
+    session.add(frame)
+    await session.commit()
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": frame.uuid,
+                "fields": {
+                    "кадры": [
+                        {"id": "3-K1", "текст": "один!"},
+                        {"id": "3-K2", "текст": "два", "активен": True},
+                    ]
+                },
+            }
+        ],
+    )
+    await session.refresh(frame)
+    by_id = {row["id"]: row for row in frame.attrs["кадры"]}
+    assert by_id["3-K1"]["текст"] == "один!"
+    assert by_id["3-K2"]["активен"] is False
