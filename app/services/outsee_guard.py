@@ -152,6 +152,10 @@ async def run(ctx: Ctx, call: Callable[[], Awaitable[Any]]) -> Any:
         raise
     except Exception as exc:
         kind = classify_failure(exc, probe)
+        if isinstance(exc, outsee_http.OutseeSubmitUncertain):
+            # main: POST мог дойти (таймаут чтения, ответ без id) — исход неизвестен, не отказ
+            probe["maybe_sent"] = True
+            kind = "unknown"
         if kind == "unknown":
             from app.bots.outsee_http import OutseeSubmitUnknownError
             if isinstance(exc, OutseeSubmitUnknownError):

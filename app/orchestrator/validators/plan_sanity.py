@@ -182,9 +182,9 @@ def _whitelist(context: dict[str, Any]) -> tuple[set[str], Any]:
 
 
 def _import_registry() -> tuple[set[str], Any]:
-    for module_name, attr in (
-        ("app.orchestrator.actions", "registry"),
-        ("app.services.action_layer.spec", "registry"),
+    for module_name, attr, ceiling in (
+        ("app.orchestrator.actions", "registry", True),
+        ("app.services.action_layer.spec", "registry", False),
     ):
         try:
             module = importlib.import_module(module_name)
@@ -204,6 +204,10 @@ def _import_registry() -> tuple[set[str], Any]:
                 continue
         names = _registry_names(registry)
         if names:
+            if not ceiling:
+                # Реестр action layer (main) — своё пространство имён; план-действия
+                # оркестратора из FALLBACK_WHITELIST в нём не описаны и не должны выпадать.
+                names |= set(FALLBACK_WHITELIST)
             return names, registry
     return set(), None
 
