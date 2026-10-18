@@ -11,6 +11,7 @@ from app.models import FrameStatus
 from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
 from app.orchestrator.steps.generate_videos import _skip_frame_video_generation
 from app.orchestrator.validators.activity_flags import (
+    ACTIVE_MARK,
     HIDE_MARKS,
     frame_is_active,
     shot_is_active,
@@ -44,6 +45,20 @@ def test_hide_mark_affirmative_is_inactive(kind: str, mark: str, value: object) 
     payload = {mark: value}
     active = shot_is_active(payload) if kind == "shot" else frame_is_active(payload)
     assert active is False
+
+
+@pytest.mark.parametrize("kind", ("shot", "frame"))
+def test_active_mark_zero_string_matches_number(kind: str) -> None:
+    """активен=\"0.0\" неактивен так же, как активен=0.0."""
+
+    text = {ACTIVE_MARK: "0.0"}
+    number = {ACTIVE_MARK: 0.0}
+    if kind == "shot":
+        assert shot_is_active(text) is False
+        assert shot_is_active(number) is False
+    else:
+        assert frame_is_active(text) is False
+        assert frame_is_active(number) is False
 
 
 def test_merge_keeps_da_deleted_out_of_paid_generation(tmp_path: Path) -> None:
