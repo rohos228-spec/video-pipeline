@@ -558,7 +558,7 @@ function ensureTask(tasks: TaskView[], id: string, title?: string): TaskView {
 
 function readMessageId(payload: Record<string, unknown>): number | null {
   const raw = payload.message_id;
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
   return raw;
 }
 

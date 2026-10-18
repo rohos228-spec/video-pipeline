@@ -41,6 +41,31 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("дробный message_id не открывает пузырь", () => {
+  const fractional = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "message_start",
+      task_id: 1,
+      seq: 1,
+      session_id: "s",
+      payload: { message_id: 1.5, role: "assistant" },
+    },
+  });
+  expect(fractional.messages).toHaveLength(0);
+  const whole = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "message_start",
+      task_id: 1,
+      seq: 1,
+      session_id: "s",
+      payload: { message_id: 2, role: "assistant" },
+    },
+  });
+  expect(whole.messages[0]?.messageId).toBe(2);
+});
+
 test("legacy-токен не дописывается в пузырь выше реплики с message_id", () => {
   const older = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
