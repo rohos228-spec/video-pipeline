@@ -309,7 +309,7 @@ class ActionsBridge:
         result = self.inner.execute(name, params, task_ctx)
         if inspect.isawaitable(result):
             result = await result
-        if isinstance(result, dict) and result.get("status") in _ENVELOPE_STATUSES:
+        if _envelope_status(result) in _ENVELOPE_STATUSES and not isinstance(result, ActionResult):
             return _map_r23(result)
         if not isinstance(result, ActionResult):
             result = ActionResult.model_validate(result)
@@ -340,34 +340,58 @@ def _error_code(error: Any) -> str | None:
     return text or None
 
 
-def _map_r23(payload: dict[str, Any]) -> dict[str, Any]:
+def _envelope_status(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return payload.get("status")
+    return getattr(payload, "status", None)
+
+
+def _envelope_field(payload: Any, key: str, default: Any = None) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
+def _result_body(raw: Any) -> dict[str, Any]:
+    """Тело ``result`` конверта. Поле ``data`` конверта сюда не читается."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    dump = getattr(raw, "model_dump", None)
+    if callable(dump):
+        dumped = dump()
+        if isinstance(dumped, dict):
+            return dict(dumped)
+    return {}
+
+
+def _map_r23(payload: Any) -> dict[str, Any]:
     """Конверт r2.3 → ``ok`` / ``data`` / ``cost``.
 
+    ``status=approval_required`` остаётся эскалацией: ``ok`` ложно, это не
+    ``failed`` и не исключение. Супервизор поднимает карточку ядра.
     ``warnings`` остаются на результате: супервизор кладёт их в событие шага.
-    ``error`` — код, статус ``failed``. ``partial: true`` при уже включённом
-    partial kill-fixes даёт статус ``partial``, не успех.
+    ``error`` — код, статус ``failed``. ``partial: true`` внутри ``result``
+    даёт статус ``partial``, не успех. Поле ``data`` конверта не читается.
     Чужой ``change_id`` уходит в ``cc_change_id`` и не подменяет id ядра.
     ``orch-appr-*`` здесь не принимается: его выдаёт только ядро.
     """
-    status = str(payload.get("status") or "")
-    raw_result = payload.get("result")
-    data = dict(raw_result) if isinstance(raw_result, dict) else {}
+    status = str(_envelope_field(payload, "status") or "")
+    data = _result_body(_envelope_field(payload, "result"))
     raw_id = data.pop("change_id", None)
     if not isinstance(raw_id, str):
-        raw_id = payload.get("change_id")
+        raw_id = _envelope_field(payload, "change_id")
     _core_id, cc_change_id = _split_change_id(raw_id)
-    partial = payload.get("partial") is True or data.get("partial") is True
-    if status == "ok" and partial:
+    if status == "ok" and data.get("partial") is True:
         status = "partial"
-    error = _error_code(payload.get("error"))
+    error = _error_code(_envelope_field(payload, "error"))
     if error and status == "ok":
         status = "failed"
-    raw_cost = payload.get("cost", data.get("cost", 0))
+    raw_cost = _envelope_field(payload, "cost", data.get("cost", 0))
     try:
         cost = float(raw_cost or 0)
     except (TypeError, ValueError):
         cost = 0.0
-    warnings = payload.get("warnings")
+    warnings = _envelope_field(payload, "warnings")
     if not isinstance(warnings, list):
         warnings = []
     return {
