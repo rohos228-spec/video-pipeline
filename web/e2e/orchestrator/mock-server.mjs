@@ -952,6 +952,17 @@ function startScenario(session, scenario, text, mode) {
     void runPaidOutcome(session, id, false);
     return;
   }
+  if (scenario === "destructive" || scenario === "partialwrite" || scenario === "paidunknown") {
+    const reason =
+      scenario === "destructive" ? "destructive" : scenario === "partialwrite" ? "partial_write" : "paid_outcome_unknown";
+    void runReasonApproval(
+      session,
+      id,
+      reason,
+      scenario === "paidunknown" ? "orch-appr-3-1" : scenario === "destructive" ? "orch-appr-2-1" : "orch-appr-8-1",
+    );
+    return;
+  }
   void runStream(session, id);
 }
 
@@ -1359,6 +1370,33 @@ async function runRiskApproval(session, taskId) {
     risk: "medium",
     action: "test.medium_touch",
   });
+}
+
+async function runReasonApproval(session, taskId, reason, changeId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: reason,
+    detail: reason,
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: changeId,
+    change_id: changeId,
+    title: reason,
+    reason,
+    action: "run_node",
+    ...(reason === "paid_outcome_unknown" ? { step_change_id: "cc-step-88" } : {}),
+  });
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: changeId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision) {
+    emit(session, "message", taskId, { role: "assistant", text: `решение ${decision}` });
+  }
 }
 
 async function runUnknownReason(session, taskId) {
