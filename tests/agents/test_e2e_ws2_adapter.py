@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
+from sqlalchemy import func, select
 
 pytest.importorskip("app.orchestrator.actions")
 
@@ -156,15 +159,125 @@ async def test_e2e_soft_delete_needs_grant_and_core_change_id(env, monkeypatch) 
     )
     assert bad["status"] == "failed"
     assert bad["ok"] is False
-    done = await bridge.execute("montage.delete_frame", params, _grant(ctx, "montage.delete_frame"))
+    done = await bridge.execute(
+        "montage.delete_frame",
+        params,
+        _grant(ctx, "montage.delete_frame", cc_change_id="cc-frame-1"),
+    )
     assert done["status"] == "ok"
     assert done["ok"] is True
     assert done["data"]["marked"] is True
+    assert done["data"]["restore_action"] == "frame.restore"
     assert done["data"]["snapshot_id"]
     assert done["change_id"] is None
+    assert done["cc_change_id"] == "cc-frame-1"
     assert done["result"]["partial"] is False
     assert done["result"]["skipped"] == []
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        assert frame is not None
+        assert frame.attrs["кадры"][0]["активен"] is False
+        total = await session.scalar(select(func.count()).select_from(Frame).where(Frame.project_id == pid))
+        assert total == 1
     assert "montage.delete_frame" in calls
+
+
+_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
+
+
+@pytest.mark.asyncio
+async def test_e2e_delete_frame_through_core_keeps_the_row(env, monkeypatch) -> None:
+    """Ядро выдаёт change_id, адаптер только помечает кадр."""
+    from app.orchestrator.actions import metadata_of
+
+    from app.models import Frame
+
+    for name in ("montage.delete_frame", "montage.delete_child_frame"):
+        card = metadata_of(name)
+        assert card.soft_delete is True
+        assert card.restore_action == "frame.restore"
+    bridge, calls, contexts = _bridge(monkeypatch)
+    pid = await env.add_project(frames=1)
+    ids = await env.frame_ids(pid)
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.attrs = {"кадры": [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]}
+        await session.commit()
+    runtime = build_runtime(
+        actions=bridge,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(
+                    action="montage.delete_frame",
+                    params={"project_id": pid, "frame_id": ids[1]},
+                    mutating=True,
+                    risk="high",
+                )
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session_id = "e2e-delete"
+    try:
+        task_id = await runtime.supervisor.start_task(session_id, "пометь кадр", project_id=pid)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        opened = [event for event in runtime.bus.replay(session_id, 0) if event.type == "approval_required"]
+        assert opened
+        change_id = opened[-1].payload["change_id"]
+        assert _CHANGE_ID.fullmatch(change_id)
+        await runtime.supervisor.grant_approval(session_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        row = runtime.tasks.get(task_id)
+        assert row["status"] == TaskStatus.done.value, row
+        assert calls == ["montage.delete_frame"]
+        assert contexts[-1]["approval"]["change_id"] == change_id
+        assert _CHANGE_ID.fullmatch(contexts[-1]["approval"]["change_id"])
+        async with env.factory() as session:
+            frame = await session.get(Frame, ids[1])
+            assert frame is not None
+            assert frame.attrs["кадры"][0]["активен"] is False
+            total = await session.scalar(
+                select(func.count()).select_from(Frame).where(Frame.project_id == pid)
+            )
+            assert total == 1
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.skip(reason="WS2 #385: frame.restore ожидается ~07:30")
+@pytest.mark.asyncio
+async def test_e2e_frame_restore_returns_the_marked_shot(env, monkeypatch) -> None:
+    """frame.restore возвращает активен и не создаёт новую строку кадра."""
+    from app.models import Frame
+
+    bridge, calls, _contexts = _bridge(monkeypatch)
+    pid = await env.add_project(frames=1)
+    ids = await env.frame_ids(pid)
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.attrs = {"кадры": [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]}
+        await session.commit()
+    ctx = {"app": env.app, "operator": "e2e"}
+    params = {"project_id": pid, "frame_id": ids[1]}
+    done = await bridge.execute("montage.delete_frame", params, _grant(ctx, "montage.delete_frame"))
+    assert done["status"] == "ok"
+    restored = await bridge.execute(
+        "frame.restore",
+        {"project_id": pid, "frame_id": ids[1], "snapshot_id": done["data"]["snapshot_id"]},
+        _grant(ctx, "frame.restore"),
+    )
+    assert restored["status"] == "ok"
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        assert frame is not None
+        assert frame.attrs["кадры"][0]["активен"] is True
+        total = await session.scalar(select(func.count()).select_from(Frame).where(Frame.project_id == pid))
+        assert total == 1
+    assert calls[-1] == "frame.restore"
 
 
 @pytest.mark.asyncio

@@ -1690,7 +1690,7 @@ def frame_soft_delete_state(action: str, registry: Any | None) -> str | None:
     kind, meta = lookup_action_metadata(action, registry)
     if kind == "absent":
         return None
-    if kind != "value" or not isinstance(meta, dict) or meta.get("soft_delete") is not True:
+    if kind != "value" or meta is None or _meta_field(meta, "soft_delete", None) is not True:
         return "forbidden"
     return "grant"
 

@@ -111,6 +111,23 @@ async def test_frame_delete_runs_only_with_soft_delete_and_grant(token: str, nam
         set_runtime(None)
 
 
+def test_object_soft_delete_card_is_grant() -> None:
+    """Карточка WS2 — объект с soft_delete, не dict."""
+    from app.orchestrator.contracts import frame_soft_delete_state
+
+    class _Card:
+        def metadata_of(self, name: str) -> object:
+            if name != "montage.delete_frame":
+                raise KeyError(name)
+            return type(
+                "Soft",
+                (),
+                {"soft_delete": True, "restore_action": "frame.restore", "name": name},
+            )()
+
+    assert frame_soft_delete_state("montage.delete_frame", _Card()) == "grant"
+
+
 @pytest.mark.asyncio
 async def test_grant_does_not_run_frame_delete_without_soft_delete(token: str) -> None:
     del token
