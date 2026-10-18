@@ -2155,9 +2155,18 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         if ladder_parts:
             from app.services.scene_design.camera_expand import vo_chunk_is_dangling
 
-            head = [p for p in ladder_parts[: len(live_members)] if p]
-            if head and not any(vo_chunk_is_dangling(p) for p in head):
-                parts = ladder_parts[: len(live_members)]
+            usable = list(ladder_parts)
+            n_live = len(live_members)
+            if n_live and len(usable) > n_live:
+                tail = " ".join(
+                    piece for piece in usable[n_live - 1 :] if piece
+                ).strip()
+                usable = usable[: n_live - 1] + [tail]
+            elif n_live and len(usable) < n_live:
+                usable = usable + [""] * (n_live - len(usable))
+            head = [piece for piece in usable[:n_live] if piece]
+            if head and not any(vo_chunk_is_dangling(piece) for piece in head):
+                parts = usable[:n_live]
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
         if planned and ladder_parts:
