@@ -45,6 +45,38 @@ def split_rules(text: str, *, source_id: str) -> list[SourceDoc]:
     return docs
 
 
+def section_windows(text: str, *, limit: int = 900, window: int = 700) -> list[str]:
+    """Длинную секцию режет по абзацам. Короткая секция окон не получает.
+
+    Родительский текст остаётся отдельным чанком: окна — дополнительные
+    входы в ту же секцию, не замена part_key.
+    """
+    body = (text or "").strip()
+    if limit < 1 or window < 1 or len(body) <= limit:
+        return []
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+    if len(paragraphs) < 2:
+        step = window
+        paragraphs = [body[start : start + step] for start in range(0, len(body), step)]
+    windows: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for paragraph in paragraphs:
+        extra = len(paragraph) + 2
+        if current and current_len + extra > window:
+            windows.append("\n\n".join(current))
+            current = [paragraph]
+            current_len = len(paragraph)
+        else:
+            current.append(paragraph)
+            current_len += extra
+    if current:
+        windows.append("\n\n".join(current))
+    if len(windows) < 2:
+        return []
+    return windows
+
+
 def split_prompt(text: str, *, max_parts: int = 8) -> list[tuple[str, str]]:
     """Режет промпт по заголовкам ``##`` и укладывает в не больше ``max_parts`` частей."""
     body = text.strip()
