@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   ShieldCheck,
   ShieldAlert,
+  RotateCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,14 @@ const ENTITY_SHEET_TO_TYPE: Record<string, string> = {
 };
 /** Листы кадров (остальное из книги), fallback если xlsx ещё нет. */
 const FRAME_SHEETS_DEFAULT = [SHEET_GENERAL_V8, SHEET_PLAN_V8] as const;
+
+function isArchivedMark(value: string | null | undefined): boolean {
+  return (value || "").startsWith("archived:");
+}
+
+function entityIsMarked(attrs: Record<string, unknown> | null | undefined): boolean {
+  return Boolean(attrs?.["удалён"] || attrs?.archived);
+}
 
 function isEntitySheetName(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(
@@ -1108,17 +1117,31 @@ function FrameDetails({
               {ru(TEXT_KIND_RU, t.kind)}
             </span>
             <span className="flex-1 whitespace-pre-wrap text-white/75">{t.text}</span>
-            <button
-              type="button"
-              title="Удалить текст"
-              onClick={async () => {
-                await api.dbDeleteText(t.id);
-                void onChanged();
-              }}
-              className="rounded p-0.5 text-white/30 hover:text-red-400"
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
+            {isArchivedMark(t.kind) ? (
+              <button
+                type="button"
+                title="Вернуть текст"
+                onClick={async () => {
+                  await api.dbRestoreText(t.id);
+                  void onChanged();
+                }}
+                className="rounded p-0.5 text-white/30 hover:text-emerald-300"
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                title="Удалить текст"
+                onClick={async () => {
+                  await api.dbDeleteText(t.id);
+                  void onChanged();
+                }}
+                className="rounded p-0.5 text-white/30 hover:text-red-400"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            )}
           </div>
         ))}
         <div className="mt-1 flex gap-1.5">
@@ -1237,17 +1260,31 @@ function FrameDetails({
             <span className="flex-1 text-white/70">
               → кадр {allFrames.find((f) => f.id === e.to_frame_id)?.number ?? e.to_frame_id}
             </span>
-            <button
-              type="button"
-              title="Удалить связь"
-              onClick={async () => {
-                await api.dbDeleteEdge(e.id);
-                void onChanged();
-              }}
-              className="rounded p-0.5 text-white/30 hover:text-red-400"
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
+            {isArchivedMark(e.type) ? (
+              <button
+                type="button"
+                title="Вернуть связь"
+                onClick={async () => {
+                  await api.dbRestoreEdge(e.id);
+                  void onChanged();
+                }}
+                className="rounded p-0.5 text-white/30 hover:text-emerald-300"
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                title="Удалить связь"
+                onClick={async () => {
+                  await api.dbDeleteEdge(e.id);
+                  void onChanged();
+                }}
+                className="rounded p-0.5 text-white/30 hover:text-red-400"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            )}
           </div>
         ))}
         <div className="mt-1 flex gap-1.5">
@@ -1483,17 +1520,31 @@ function EntitiesPanel({
                   <span className="min-w-0 flex-1 truncate font-semibold text-white/80">
                     {en.name ?? "—"}
                   </span>
-                  <button
-                    type="button"
-                    title="Удалить сущность"
-                    onClick={async () => {
-                      await api.dbDeleteEntity(en.id);
-                      void onChanged();
-                    }}
-                    className="shrink-0 rounded p-0.5 text-white/30 hover:text-red-400"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+                  {entityIsMarked(en.attrs) ? (
+                    <button
+                      type="button"
+                      title="Вернуть сущность"
+                      onClick={async () => {
+                        await api.dbRestoreEntity(en.id);
+                        void onChanged();
+                      }}
+                      className="shrink-0 rounded p-0.5 text-white/30 hover:text-emerald-300"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      title="Удалить сущность"
+                      onClick={async () => {
+                        await api.dbDeleteEntity(en.id);
+                        void onChanged();
+                      }}
+                      className="shrink-0 rounded p-0.5 text-white/30 hover:text-red-400"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
