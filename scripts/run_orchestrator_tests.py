@@ -9,6 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FAST = [
     "tests/actions/test_whitelist_no_exec.py",
+    "tests/actions/test_node_param_snapshots.py",
+    "tests/actions/test_create_master_destructive.py",
+    "tests/actions/test_master_prompt_rollback.py",
+    "tests/actions/test_soft_delete_restore_roundtrip.py",
+    "tests/actions/test_edit_executors_call_reject_stale_edit.py",
     "tests/pipeline_regression/test_r0a_regressions.py",
     "tests/pipeline_regression/test_scene_boundaries_spend_gate.py",
     "tests/pipeline_regression/test_scene_boundaries_live_gate.py",
