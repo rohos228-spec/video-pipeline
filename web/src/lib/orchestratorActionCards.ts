@@ -344,9 +344,9 @@ function blankRef(value: unknown): boolean {
   return typeof value === "string" && value.trim() === "";
 }
 
-function invalidView(seq: number): ActionResultView {
+function invalidView(seq: number, message = INVALID_ACTION_TEXT): ActionResultView {
   const view = blankView(`invalid-${seq}`, QUIET, "invalid");
-  view.error = INVALID_ACTION_TEXT;
+  view.error = message;
   return view;
 }
 
@@ -464,6 +464,10 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   }
   const deleteAction = str(result.action).trim();
   if (result.marked === true || Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, deleteAction)) {
+    const hasRef = Boolean(str(result.snapshot_id).trim() || str(result.archive_ref).trim());
+    if (Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, deleteAction) && (result.marked !== true || !hasRef)) {
+      return invalidView(seq, "пометка не подтверждена");
+    }
     if (!softDeleteSatisfied(result)) return null;
     const changeId = validChangeId(result.change_id);
     const restore = str(result.restore_action).trim();

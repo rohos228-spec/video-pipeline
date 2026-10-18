@@ -102,7 +102,9 @@ test("версия, снимок и marked обязательны", () => {
   const dropped = noSnapshot.result as { snapshot_id?: string; archive_ref?: string; marked?: boolean };
   delete dropped.snapshot_id;
   delete dropped.archive_ref;
-  expect(readActionEnvelope(noSnapshot, 6)).toBeNull();
+  const hiddenDelete = readActionEnvelope(noSnapshot, 6);
+  expect(hiddenDelete?.kind).toBe("invalid");
+  expect(hiddenDelete?.error).toBe("пометка не подтверждена");
 
   dropped.archive_ref = "old/scenes/13";
   dropped.snapshot_id = undefined;
@@ -110,7 +112,26 @@ test("версия, снимок и marked обязательны", () => {
 
   const unmarked = structuredClone(EXAMPLE_DELETE_OK);
   (unmarked.result as { marked?: boolean }).marked = false;
-  expect(readActionEnvelope(unmarked, 8)).toBeNull();
+  const unmarkedView = readActionEnvelope(unmarked, 8);
+  expect(unmarkedView?.kind).toBe("invalid");
+  expect(unmarkedView?.error).toBe("пометка не подтверждена");
+});
+
+test("удаление без пометки или снимка не прячется", () => {
+  const frame = structuredClone(EXAMPLE_FRAME_DELETE);
+  const frameResult = frame.result as { marked?: boolean; snapshot_id?: string; archive_ref?: string };
+  frameResult.marked = false;
+  const unmarkedFrame = readActionEnvelope(frame, 1);
+  expect(unmarkedFrame?.kind).toBe("invalid");
+  expect(unmarkedFrame?.error).toBe("пометка не подтверждена");
+
+  const group = structuredClone(EXAMPLE_GROUP_DELETE);
+  const groupResult = group.result as { snapshot_id?: string; archive_ref?: string };
+  delete groupResult.snapshot_id;
+  delete groupResult.archive_ref;
+  const bareGroup = readActionEnvelope(group, 2);
+  expect(bareGroup?.kind).toBe("invalid");
+  expect(bareGroup?.error).toBe("пометка не подтверждена");
 });
 
 test("невалидный ответ действия остаётся карточкой", async ({ page }) => {
