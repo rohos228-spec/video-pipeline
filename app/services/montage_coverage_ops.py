@@ -1238,31 +1238,13 @@ def _shot_address(shot: Any) -> str:
 def _revive_coverage_shots(
     before_rows: list[Any], incoming_rows: list[Any], merged: list[Any]
 ) -> None:
-    """Явный ``активен: True`` или другой текст возвращают шот, который merge спрятал."""
-    from app.services.frame_tombstones import _incoming_revives, _shot_id
+    """Смена текста и ``активен: True`` на строке шот не оживляют.
 
-    old_by: dict[str, dict[str, Any]] = {}
-    for shot in before_rows:
-        if isinstance(shot, dict) and (sid := _shot_id(shot)):
-            old_by[sid] = shot
-    incoming_by: dict[str, dict[str, Any]] = {}
-    for shot in incoming_rows:
-        if isinstance(shot, dict) and (sid := _shot_id(shot)):
-            incoming_by[sid] = shot
-    for shot in merged:
-        if not isinstance(shot, dict):
-            continue
-        sid = _shot_id(shot)
-        if not sid or sid not in old_by or sid not in incoming_by:
-            continue
-        if old_by[sid].get("активен") is not False:
-            continue
-        incoming_shot = incoming_by[sid]
-        if incoming_shot.get("активен") is False:
-            continue
-        if not _incoming_revives(old_by[sid], incoming_shot):
-            continue
-        shot["активен"] = True
+    Явный restore — операция пользователя. Её читает
+    ``_restore_ops_for_revived`` и только тогда пропускает шот в живые.
+    """
+
+    del before_rows, incoming_rows, merged
 
 
 def _warn_coverage_parked(
@@ -1289,30 +1271,96 @@ def _warn_coverage_parked(
         )
 
 
-def _restore_ops_for_revived(
-    before_rows: list[Any], after_rows: Any, *, frame_uuid: str
-) -> list[dict[str, str]]:
-    """Явный restore парой (frame_uuid, shot_id) для шотов, которые merge вернул в живые."""
-    from app.services.frame_tombstones import shot_is_active
+_USER_RESTORE_VERBS = {"activate", "set_active", "restore", "восстановить"}
 
-    inactive: set[str] = set()
+
+def _op_is_explicit_restore(op: dict[str, Any]) -> bool:
+    for source in (op.get("fields"), op):
+        if isinstance(source, dict) and source.get("активен") is True:
+            return True
+    verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+    return verb in _USER_RESTORE_VERBS
+
+
+def _explicit_restore_ids(user_ops: Any, frame_uuid: str) -> set[str]:
+    found: set[str] = set()
+    for op in list(user_ops or []):
+        if not isinstance(op, dict) or not _op_is_explicit_restore(op):
+            continue
+        fid = ""
+        for source in (op, op.get("fields") if isinstance(op.get("fields"), dict) else {}):
+            for key in ("shot_id", "id"):
+                value = source.get(key)
+                if value not in (None, ""):
+                    fid = str(value)
+                    break
+            if fid:
+                break
+        if not fid:
+            continue
+        frame_ref = str(op.get("frame_uuid") or "")
+        if frame_ref and frame_ref != frame_uuid:
+            continue
+        found.add(fid)
+    return found
+
+
+def _shot_voice(shot: dict[str, Any]) -> str:
+    return " ".join(str(shot.get("закадр") or shot.get("действие") or "").split())
+
+
+def _restore_ops_for_revived(
+    before_rows: list[Any],
+    after_rows: Any,
+    *,
+    frame_uuid: str,
+    user_ops: Any = None,
+) -> list[dict[str, str]]:
+    """Restore только из явной операции пользователя.
+
+    Если код потерял пометку или прислал другой текст без этой операции,
+    шот остаётся неактивным и в лог пишется WARN. Свою операцию функция
+    не сочиняет.
+    """
+
+    from app.services.frame_tombstones import _overlay_hide_marks, shot_is_active
+
+    allowed = _explicit_restore_ids(user_ops, frame_uuid)
+    before_by: dict[str, dict[str, Any]] = {}
     for shot in before_rows:
         if not isinstance(shot, dict) or shot_is_active(shot):
             continue
         fid = _shot_address(shot)
         if fid:
-            inactive.add(fid)
+            before_by.setdefault(fid, shot)
     ops: list[dict[str, str]] = []
     seen: set[str] = set()
     rows = after_rows if isinstance(after_rows, list) else []
     for shot in rows:
-        if not isinstance(shot, dict) or not shot_is_active(shot):
+        if not isinstance(shot, dict):
             continue
         fid = _shot_address(shot)
-        if not fid or fid not in inactive or fid in seen:
+        if not fid or fid not in before_by or fid in seen:
             continue
         seen.add(fid)
-        ops.append({"op": "restore", "shot_id": fid, "frame_uuid": frame_uuid})
+        old = before_by[fid]
+        if shot_is_active(shot):
+            if fid in allowed:
+                ops.append({"op": "restore", "shot_id": fid, "frame_uuid": frame_uuid})
+                continue
+            _overlay_hide_marks(old, shot)
+            if shot_is_active(shot):
+                shot["активен"] = False
+            logger.warning(
+                "WARN montage: шот {} без явного restore остаётся неактивным",
+                fid,
+            )
+            continue
+        if _shot_voice(old) != _shot_voice(shot):
+            logger.warning(
+                "WARN montage: шот {} без явного restore остаётся неактивным",
+                fid,
+            )
     return ops
 
 

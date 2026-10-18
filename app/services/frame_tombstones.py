@@ -172,8 +172,14 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
 
 
 def _overlay_hide_marks(old: dict[str, Any], incoming: dict[str, Any]) -> None:
-    """«удалён», «карантин» и «пометка» старой строки переживают тот же id."""
+    """Пометки скрытия старой строки переживают тот же id.
 
+    Как ``db_apply._kept_hide_marks`` на ``c7885ab7``: ложный «активен»,
+    «удалён», «карантин» и непустая «пометка». Входящая строка их не стирает.
+    """
+
+    if flag_is_false(old.get(ACTIVE_MARK)):
+        incoming[ACTIVE_MARK] = old.get(ACTIVE_MARK)
     for key in (DELETED_MARK, "удален"):
         if flag_is_true(old.get(key), mark=key):
             incoming[key] = old[key]
@@ -190,9 +196,9 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     Та же семантика, что у WS1 ``_merge_kadry_keep_missing``: совпадение по id,
     без id — только по уникальному тексту, не по ``порядок``. Пропавшие шоты
     остаются в хвосте с ``активен: False``. Входящий флаг не снимается.
-    Старый неактивный шот с тем же id оживает, если новый список прислал
-    явный ``активен: True`` или другой текст. Совпадение без id по тому же
-    тексту оживает только от явного ``активен: True``.
+    Тот же id не снимает «удалён», «карантин» и ложный «активен»: другой
+    текст и ``активен: True`` на новой строке — не restore. Совпадение без
+    id по тому же тексту оживает только от явного ``активен: True``.
     """
     if not isinstance(new, list):
         logger.warning(
@@ -239,10 +245,6 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         if sid:
             if sid in seen_ids:
                 _overlay_hide_marks(shot, incoming_by_id[sid])
-                if shot.get(ACTIVE_MARK) is False and not _incoming_revives(
-                    shot, incoming_by_id[sid]
-                ):
-                    incoming_by_id[sid][ACTIVE_MARK] = False
                 continue
         else:
             ident = _shot_content_identity(shot)

@@ -1476,7 +1476,7 @@ async def test_scene_action_keeps_missing_shots_inactive(
 async def test_shrink_then_expand_revives_same_positional_id(
     session: AsyncSession, project: Project
 ) -> None:
-    """Сжатие гасит 8-K3. Явный активен: True или новый текст возвращает его."""
+    """Сжатие гасит 8-K3. Новый текст и «активен: True» на строке его не оживляют."""
     from app.services.frame_tombstones import merge_kadry_keep_missing
     from app.services.montage_coverage_ops import apply_coverage_scene_action
 
@@ -1540,12 +1540,12 @@ async def test_shrink_then_expand_revives_same_positional_id(
     assert still["8-K3"]["активен"] is False
 
     revived = await _apply(explicit)
-    assert revived["8-K3"]["активен"] is True
+    assert revived["8-K3"]["активен"] is False
     assert revived["8-K3"]["закадр"] == "три"
 
     await _apply(short)
     renewed = await _apply(changed)
-    assert renewed["8-K3"].get("активен") is not False
+    assert renewed["8-K3"]["активен"] is False
     assert renewed["8-K3"]["закадр"] == "новый текст"
 
     quiet = merge_kadry_keep_missing(
@@ -1558,6 +1558,140 @@ async def test_shrink_then_expand_revives_same_positional_id(
         [{"закадр": "тот же текст", "активен": True}],
     )
     assert spoken[0]["активен"] is True
+
+
+@pytest.mark.asyncio
+async def test_same_id_new_text_keeps_deleted_out_of_paid_generation(
+    session: AsyncSession, project: Project, tmp_path: Path
+) -> None:
+    """Тот же id и новый текст не снимают «удалён: да» и не идут в платную генерацию.
+
+    Обе точки: ``_rewrite_vo_cell`` и ``apply_coverage_scene_action``.
+    """
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.models import FrameStatus
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+    from app.orchestrator.steps.generate_videos import _skip_frame_video_generation
+    from app.orchestrator.validators.activity_flags import shot_is_active
+    from app.services.animation_prompt_gpt import collect_batch_items
+    from app.services.montage_board_frames import _rewrite_vo_cell
+    from app.services.montage_coverage_ops import (
+        _restore_ops_for_revived,
+        apply_coverage_scene_action,
+    )
+
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        parent = SimpleNamespace(
+            uuid="bb" * 12,
+            number=1,
+            voiceover_text="новый текст",
+            attrs={
+                "кадры": [
+                    {"id": "1-K1", "удалён": "да", "закадр": "секрет", "действие": "старое"}
+                ]
+            },
+        )
+        member = SimpleNamespace(
+            number=1,
+            voiceover_text="новый текст",
+            attrs={"действие": "новое", "место": "двор"},
+        )
+        _rewrite_vo_cell(parent, [member])
+        board_shot = next(row for row in parent.attrs["кадры"] if row.get("id") == "1-K1")
+        assert board_shot["удалён"] == "да"
+        assert board_shot["закадр"] == "новый текст"
+        assert shot_is_active(board_shot) is False
+
+        lost = [{"id": "k", "удалён": "да", "закадр": "секрет"}]
+        revived_row = [{"id": "k", "закадр": "новый", "активен": True}]
+        assert _restore_ops_for_revived(lost, revived_row, frame_uuid="frame-1") == []
+        assert revived_row[0]["удалён"] == "да"
+        assert shot_is_active(revived_row[0]) is False
+        user = [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-1"}]
+        active = [{"id": "k", "закадр": "новый", "активен": True}]
+        assert _restore_ops_for_revived(
+            lost, active, frame_uuid="frame-1", user_ops=user
+        ) == [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-1"}]
+        assert shot_is_active(active[0]) is True
+
+        session.add(project)
+        cell = Frame(
+            project_id=project.id,
+            number=4,
+            uuid="cc" * 12,
+            voiceover_text="секрет",
+            status="planned",
+            sort_key=4.0,
+            image_prompt="герой стоит у двери на общем плане",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "cc" * 12,
+                },
+                "кадры": [
+                    {"id": "4-K1", "удалён": "да", "закадр": "секрет", "действие": "старое"}
+                ],
+            },
+        )
+        session.add(cell)
+        await session.flush()
+        report = await apply_coverage_scene_action(
+            session,
+            project,
+            cell,
+            [cell],
+            "1. двор — новый текст",
+            kadry=[{"id": "4-K1", "закадр": "новый текст", "действие": "новое"}],
+            lock_parent_plan=False,
+        )
+        stored = next(row for row in cell.attrs["кадры"] if row.get("id") == "4-K1")
+        assert stored["удалён"] == "да"
+        assert stored["закадр"] == "новый текст"
+        assert shot_is_active(stored) is False
+        assert report["shots"] == 0
+    finally:
+        logger.remove(sink)
+
+    assert any("1-K1" in line and "без явного restore" in line for line in lines)
+    assert any("4-K1" in line and "без явного restore" in line for line in lines)
+
+    hidden_board = SimpleNamespace(
+        number=1,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="новый текст",
+        status=FrameStatus.planned,
+        attrs=dict(board_shot),
+    )
+    hidden_coverage = SimpleNamespace(
+        number=4,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="новый текст",
+        status=FrameStatus.planned,
+        attrs=dict(stored),
+    )
+    live = SimpleNamespace(
+        number=5,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="живой кадр",
+        status=FrameStatus.planned,
+        attrs={},
+    )
+    paid_project = SimpleNamespace(id=project.id, data_dir=tmp_path)
+    items = collect_batch_items(paid_project, [hidden_board, hidden_coverage, live])
+    assert [item.frame.number for item in items] == [5]
+    assert frame_hidden_from_paid_generation(hidden_board) is True
+    assert frame_hidden_from_paid_generation(hidden_coverage) is True
+    assert _skip_frame_video_generation(hidden_board, False) is True
+    assert _skip_frame_video_generation(hidden_coverage, False) is True
+    assert _skip_frame_video_generation(live, False) is False
 
 
 @pytest.mark.asyncio
