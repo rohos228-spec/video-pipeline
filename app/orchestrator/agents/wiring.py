@@ -193,7 +193,7 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1 #379 ``63be300a``.
+    """Мягкий импорт WS1 #379 ``9820d123``.
 
     ``run_preservation_validators(before, after, ops=None, *, mode)``.
     ``PreservationRejected`` — отказ, ``after`` не меняется.
@@ -229,7 +229,12 @@ class FunctionValidators:
         if name != "preservation" or not callable(fn):
             return result
         try:
-            fn(payload.get("before"), payload.get("after"), payload.get("ops"))
+            fn(
+                payload.get("before"),
+                payload.get("after"),
+                payload.get("ops"),
+                mode=payload.get("mode", "reject"),
+            )
         except Exception as exc:
             if rejected is not None and isinstance(exc, rejected):
                 return _blocking_preservation(name, exc)
