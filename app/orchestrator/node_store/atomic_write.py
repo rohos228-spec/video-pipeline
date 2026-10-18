@@ -419,9 +419,11 @@ def _write_without_dir_fd(
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target.with_name(target.name + ".lock")
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    locked = False
     tmp_path: Path | None = None
     try:
         _acquire_lock(lock_fd, lock_timeout)
+        locked = True
         root, _parts = _classify(target)
         _reject_reparse(target)
         current = _stored_version(target)
@@ -452,10 +454,13 @@ def _write_without_dir_fd(
         os.replace(tmp_path, target)
         tmp_path = None
     finally:
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink()
-        _release_lock(lock_fd)
-        os.close(lock_fd)
+        try:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink()
+            if locked:
+                _release_lock(lock_fd)
+        finally:
+            os.close(lock_fd)
 
 
 def atomic_write_text(
