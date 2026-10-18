@@ -113,18 +113,6 @@ def _unknown_tokens(payload: object) -> list[str]:
     return tokens
 
 
-def _tombstone_stub(shot: object) -> bool:
-    """Старый shot_is_active: только ``is False``, сырой truthy удалён/карантин."""
-
-    if not isinstance(shot, dict):
-        return False
-    if shot.get(DELETED_MARK) or shot.get(QUARANTINE_MARK):
-        return False
-    if shot.get(ACTIVE_MARK) is False:
-        return False
-    return True
-
-
 @pytest.mark.parametrize(
     ("kind", "payload", "expected", "warns"),
     _CASES,
@@ -136,7 +124,10 @@ def test_shot_activity_matches_frame_tombstones_matrix(
     expected: bool,
     warns: bool,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import builtins
+
     import app.orchestrator.validators.grammar as grammar
 
     caplog.set_level(logging.WARNING)
@@ -144,14 +135,21 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         assert shot_is_active(payload) is expected
     else:
         assert frame_is_active(payload) is expected
-
-    grammar._SHOT_IS_ACTIVE = _tombstone_stub
-    try:
-        assert grammar.shot_counts_as_active(payload) is expected
-    finally:
-        grammar._SHOT_IS_ACTIVE = None
     assert grammar.shot_counts_as_active(payload) is expected
-    grammar._SHOT_IS_ACTIVE = grammar._re
+
+    imported: list[str] = []
+    real_import = builtins.__import__
+
+    def tracking(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
+        if name == "app.services.frame_tombstones":
+            imported.append(name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", tracking)
+    if hasattr(grammar, "_SHOT_IS_ACTIVE"):
+        monkeypatch.setattr(grammar, "_SHOT_IS_ACTIVE", grammar._re)
+    assert grammar.shot_counts_as_active(payload) is expected
+    assert imported == [], imported
 
     tokens = _unknown_tokens(payload)
     warned_values = getattr(activity_flags, "_WARNED_VALUES", ())
@@ -163,3 +161,9 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         assert any(token in getattr(activity_flags, "_WARNED_VALUES", ()) for token in tokens)
     else:
         assert not warnings
+
+    tombstones = pytest.importorskip(
+        "app.services.frame_tombstones",
+        reason="в этом дереве нет frame_tombstones, сверку с activity_flags сделает R0c-B",
+    )
+    assert tombstones.shot_is_active(payload) is shot_is_active(payload)

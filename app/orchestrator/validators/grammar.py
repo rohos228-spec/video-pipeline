@@ -17,33 +17,10 @@ from app.orchestrator.validators.activity_flags import shot_is_active
 
 _re = re
 
-_SHOT_IS_ACTIVE: Any = _re  # sentinel: ещё не искали frame_tombstones
-
-
-def _external_shot_is_active() -> Any:
-    """``shot_is_active``, если модуль уже в дереве. Иначе None."""
-
-    global _SHOT_IS_ACTIVE
-    if _SHOT_IS_ACTIVE is not _re:
-        return _SHOT_IS_ACTIVE
-    try:
-        from app.services.frame_tombstones import shot_is_active
-    except ImportError:  # на #351 модуля нет; прочие ошибки не глотаем
-        shot_is_active = None
-    _SHOT_IS_ACTIVE = shot_is_active if callable(shot_is_active) else None
-    return _SHOT_IS_ACTIVE
-
 
 def shot_counts_as_active(shot: Any) -> bool:
-    """Живой шот. И путь с frame_tombstones, и фолбэк зовут activity_flags.
+    """Живой шот. Источник истины — activity_flags, не frame_tombstones."""
 
-    Булев ответ внешнего чекера не используется: матрица одна. Сам вызов
-    остаётся, чтобы RuntimeError из импорта не глотался (ловится только ImportError).
-    """
-
-    checker = _external_shot_is_active()
-    if checker is not None:
-        return shot_is_active(shot)
     return shot_is_active(shot)
 
 
