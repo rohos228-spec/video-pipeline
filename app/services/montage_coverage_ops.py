@@ -1235,6 +1235,60 @@ def _shot_address(shot: Any) -> str:
     return ""
 
 
+def _revive_coverage_shots(
+    before_rows: list[Any], incoming_rows: list[Any], merged: list[Any]
+) -> None:
+    """Явный ``активен: True`` или другой текст возвращают шот, который merge спрятал."""
+    from app.services.frame_tombstones import _incoming_revives, _shot_id
+
+    old_by: dict[str, dict[str, Any]] = {}
+    for shot in before_rows:
+        if isinstance(shot, dict) and (sid := _shot_id(shot)):
+            old_by[sid] = shot
+    incoming_by: dict[str, dict[str, Any]] = {}
+    for shot in incoming_rows:
+        if isinstance(shot, dict) and (sid := _shot_id(shot)):
+            incoming_by[sid] = shot
+    for shot in merged:
+        if not isinstance(shot, dict):
+            continue
+        sid = _shot_id(shot)
+        if not sid or sid not in old_by or sid not in incoming_by:
+            continue
+        if old_by[sid].get("активен") is not False:
+            continue
+        incoming_shot = incoming_by[sid]
+        if incoming_shot.get("активен") is False:
+            continue
+        if not _incoming_revives(old_by[sid], incoming_shot):
+            continue
+        shot["активен"] = True
+
+
+def _warn_coverage_parked(
+    before_rows: list[Any], merged: list[Any], project_id: Any, number: Any
+) -> None:
+    was_live: set[str] = set()
+    for shot in before_rows:
+        if not isinstance(shot, dict):
+            continue
+        sid = str(shot.get("id") or "").strip()
+        if sid and shot.get("активен") is not False:
+            was_live.add(sid)
+    for shot in merged:
+        if not isinstance(shot, dict) or shot.get("активен") is not False:
+            continue
+        sid = str(shot.get("id") or "").strip()
+        if sid not in was_live:
+            continue
+        logger.warning(
+            "WARN montage scene_action #{} ячейка {}: шот {} нет в новой цепи, активен: False",
+            project_id,
+            number,
+            sid,
+        )
+
+
 def _restore_ops_for_revived(
     before_rows: list[Any], after_rows: Any, *, frame_uuid: str
 ) -> list[dict[str, str]]:
@@ -1343,7 +1397,10 @@ async def apply_coverage_scene_action(
         dict(shot) if isinstance(shot, dict) else shot
         for shot in old_kadry
     ] if isinstance(old_kadry, list) else []
+    incoming_rows = [dict(shot) for shot in kadry if isinstance(shot, dict)]
     kadry = merge_kadry_keep_missing(old_kadry, kadry)
+    _revive_coverage_shots(before_rows, incoming_rows, kadry)
+    _warn_coverage_parked(before_rows, kadry, project.id, getattr(parent, "number", "?"))
     frame_uuid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
     restore_ops = _restore_ops_for_revived(before_rows, kadry, frame_uuid=frame_uuid)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
@@ -1403,7 +1460,9 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
+    merged_kadry = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
+    _revive_coverage_shots(before_rows, incoming_rows, merged_kadry)
+    attrs["кадры"] = merged_kadry
     parent.attrs = attrs
     _flag_attrs(parent)
 

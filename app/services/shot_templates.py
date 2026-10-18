@@ -1133,9 +1133,83 @@ def fill_kadry_from_catalog(
             len(tail),
         )
         out.extend(tail)
+    _keep_anonymous_source_text(incoming, out)
     from app.pipeline.no_deletions_guard import keep_soft_kadry
 
     return keep_soft_kadry(incoming, out, scene_id=cell_number, number=cell_number)
+
+
+def _anonymous_shot_text(shot: dict[str, Any]) -> str:
+    for key in ("закадр", "voiceover", "vo", "text", "текст", "действие"):
+        text = " ".join(str(shot.get(key) or "").split())
+        if text:
+            return text
+    return ""
+
+
+def _shot_has_id(shot: dict[str, Any]) -> bool:
+    return any(shot.get(key) not in (None, "") for key in ("id", "uuid", "frame_id", "shot_id"))
+
+
+def _keep_anonymous_source_text(incoming: list[dict[str, Any]], out: list[dict[str, Any]]) -> None:
+    """Кадр без id остаётся живым и без id, с тем же текстом.
+
+    Лестница каталога даёт новым шотам id и другой закадр. Текст исходного
+    кадра без id иначе выглядит как удаление.
+    """
+    carried = {
+        _anonymous_shot_text(shot)
+        for shot in out
+        if isinstance(shot, dict) and shot_is_active(shot) and not _shot_has_id(shot)
+    }
+    existing_actions = {
+        " ".join(str(shot.get("действие") or "").split()).casefold()
+        for shot in out
+        if isinstance(shot, dict)
+    }
+    for src in incoming:
+        if not isinstance(src, dict) or _shot_has_id(src) or not shot_is_active(src):
+            continue
+        text = _anonymous_shot_text(src)
+        if not text or text in carried:
+            continue
+        try:
+            scene_n = int(src.get("сцена"))
+        except (TypeError, ValueError):
+            scene_n = None
+        host = next(
+            (
+                shot
+                for shot in out
+                if isinstance(shot, dict)
+                and shot_is_active(shot)
+                and (scene_n is None or shot.get("сцена") == scene_n)
+            ),
+            None,
+        )
+        base = " ".join(str((host or {}).get("действие") or "").split())
+        if not base or is_stub_shot_action(base) or " / " in base:
+            base = " ".join(str(src.get("действие") or "").split())
+        if not base or is_stub_shot_action(base) or " / " in base:
+            base = "кадр"
+        action = f"{base} — текст кадра сохранён"
+        if action.casefold() in existing_actions:
+            action = f"{base} — текст кадра сохранён: {text}"
+        kept: dict[str, Any] = {
+            "сцена": src.get("сцена"),
+            "закадр": text,
+            "действие": action,
+        }
+        template = (host or src).get("шаблон") or src.get("шаблон")
+        if template:
+            kept["шаблон"] = template
+        out.append(kept)
+        existing_actions.add(action.casefold())
+        carried.add(text)
+        logger.warning(
+            "WARN fill_kadry_from_catalog: кадр без id «{}» остаётся в лестнице",
+            text,
+        )
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:

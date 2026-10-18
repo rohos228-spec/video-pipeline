@@ -2256,6 +2256,10 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         full = _cell_full_text(parent, members)
         if not full:
             continue
+        raw_attrs = getattr(parent, "attrs", None) or {}
+        before_rows = _kadry_copies(
+            raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
+        )
         stored = planned_shots_from_attrs(parent)
         hidden_zakadr = [
             (item, str(item.get("закадр") or ""))
@@ -2288,7 +2292,7 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
             parts = _vo_parts_without_empty(full, len(live_members))
             while len(parts) < len(live_members):
                 parts.append("")
-        attrs = dict(getattr(parent, "attrs", None) or {})
+        attrs = dict(raw_attrs or {})
         attrs["vo_cell_full"] = full
         if planned and ladder_parts:
             for i, item in enumerate(planned):
@@ -2298,9 +2302,12 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = list(stored)
-        for item, text in hidden_zakadr:
-            item["закадр"] = text
+            for item, text in hidden_zakadr:
+                item["закадр"] = text
+            attrs["кадры"] = _keep_assigned_kadry(parent, before_rows, list(stored))
+        else:
+            for item, text in hidden_zakadr:
+                item["закадр"] = text
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(live_members):
@@ -2444,9 +2451,15 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 if not isinstance(shot, dict):
                     shot = {}
                 sid = str(shot.get("id") or "").strip()
+                had_body = any(
+                    str(shot.get(key) or "").strip()
+                    for key in ("закадр", "действие", "место", "план")
+                )
                 shot["порядок"] = pos + 1
+                # Пустой шот без id не получает закадр: иначе пустой текст
+                # пропадает, и сохранность видит удалённый кадр без id.
                 # Неактивный шот остаётся в лестнице со своим закадром.
-                if shot_is_active(shot):
+                if shot_is_active(shot) and (sid or had_body):
                     shot["закадр"] = pieces[pos]
                 pid = str(shot.get("parent_id") or "").strip()
                 if pos == 0 and (not pid or pid == sid or pid in shot_ids):
