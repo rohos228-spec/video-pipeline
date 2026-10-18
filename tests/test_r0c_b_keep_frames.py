@@ -1414,50 +1414,126 @@ async def test_coverage_delete_stamps_parent_shot(
     assert child.voiceover_text == "хвост"
 
 
-def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
-    from types import SimpleNamespace
+@pytest.mark.asyncio
+async def test_export_skips_marked_frame_column(
+    session: AsyncSession, project: Project
+) -> None:
+    """Колонка помеченного кадра остаётся на col = number + 2.
 
+    Очищать её нельзя: повторный импорт пропускает пустую R49 и сажает
+    данные соседа на номер помеченного кадра. Экспорт оставляет закадр
+    и промты на месте и пишет в строку «статус» (R14) маркер «неактивен».
+    После импорта живые кадры те же, помеченный не оживает.
+    """
     from openpyxl import Workbook, load_workbook
 
     from app.services.db_apply import export_project_xlsx
-    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.xlsx_v8_import import (
+        ROW_IMAGE_PROMPT_V8,
+        ROW_VIDEO_PROMPT_V8,
+        ROW_VOICEOVER_V8,
+        import_v8_xlsx,
+    )
 
-    path = tmp_path / "project.xlsx"
+    status_row = 14  # лист «план», подпись A: «статус»
+    inactive_marker = "неактивен"
+    session.add(project)
+    await session.flush()
+    specs = (
+        (1, "живой-1", "img-1", "vid-1", {}),
+        (
+            2,
+            "секретный закадр",
+            "img-2",
+            "vid-2",
+            {"удалён": True, "активен": False, "карантин": True},
+        ),
+        (3, "живой-3", "img-3", "vid-3", {}),
+    )
+    frames = [
+        Frame(
+            project_id=project.id,
+            number=number,
+            uuid=f"{number:02d}" * 12,
+            voiceover_text=voice,
+            image_prompt=image,
+            animation_prompt=video,
+            duration_seconds=float(number),
+            status=FrameStatus.planned,
+            attrs=dict(attrs),
+        )
+        for number, voice, image, video, attrs in specs
+    ]
+    session.add_all(frames)
+    await session.flush()
+    ids_by_number = {fr.number: fr.id for fr in frames}
+    marked = frames[1]
+
+    data_dir = project.data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / "project.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "план"
-    ws.cell(row=ROW_VOICEOVER_V8, column=4, value="старый-закадр")
+    ws.cell(row=status_row, column=1, value="статус")
+    for col in (3, 4, 5):
+        ws.cell(row=ROW_VOICEOVER_V8, column=col, value=f"чужой-{col}")
+        ws.cell(row=ROW_IMAGE_PROMPT_V8, column=col, value=f"чужой-img-{col}")
+        ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col, value=f"чужой-vid-{col}")
+        ws.cell(row=status_row, column=col, value="готов")
     wb.save(path)
     wb.close()
-    marked = SimpleNamespace(
-        number=2,
-        image_prompt="картинка",
-        animation_prompt="видео",
-        voiceover_text="секретный закадр",
-        duration_seconds=3.0,
-        start_ts=0.0,
-        end_ts=3.0,
-        attrs={"удалён": True, "активен": False, "карантин": True},
-    )
-    live = SimpleNamespace(
-        number=1,
-        image_prompt="",
-        animation_prompt="",
-        voiceover_text="живой",
-        duration_seconds=1.0,
-        start_ts=None,
-        end_ts=None,
-        attrs={},
-    )
-    project = SimpleNamespace(data_dir=tmp_path, meta={})
-    export_project_xlsx(project, [live, marked])  # type: ignore[arg-type]
+
+    export_project_xlsx(project, frames)
     wb2 = load_workbook(path)
     sheet = wb2["план"]
-    assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
-    assert sheet.cell(ROW_VOICEOVER_V8, 4).value is None
+    for fr in frames:
+        col = fr.number + 2
+        assert sheet.cell(ROW_VOICEOVER_V8, col).value == fr.voiceover_text
+        assert sheet.cell(ROW_IMAGE_PROMPT_V8, col).value == fr.image_prompt
+        assert sheet.cell(ROW_VIDEO_PROMPT_V8, col).value == fr.animation_prompt
+    marked_col = marked.number + 2
+    assert sheet.cell(ROW_VOICEOVER_V8, marked_col).value == "секретный закадр"
+    assert sheet.cell(status_row, marked_col).value == inactive_marker
+    for fr in frames:
+        if fr.number == marked.number:
+            continue
+        assert sheet.cell(status_row, fr.number + 2).value != inactive_marker
     wb2.close()
-    assert marked.voiceover_text == "секретный закадр"
-    assert marked.attrs["удалён"] is True
+
+    await import_v8_xlsx(
+        session,
+        project,
+        path,
+        keep_fields=True,
+        update_frames_voiceover=True,
+    )
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    assert [fr.number for fr in rows] == [1, 2, 3]
+    by_number = {fr.number: fr for fr in rows}
+    assert [by_number[n].id for n in (1, 2, 3)] == [
+        ids_by_number[1],
+        ids_by_number[2],
+        ids_by_number[3],
+    ]
+    assert by_number[1].voiceover_text == "живой-1"
+    assert by_number[1].image_prompt == "img-1"
+    assert by_number[1].animation_prompt == "vid-1"
+    assert frame_is_active(by_number[1]) is True
+    assert by_number[3].voiceover_text == "живой-3"
+    assert by_number[3].image_prompt == "img-3"
+    assert by_number[3].animation_prompt == "vid-3"
+    assert frame_is_active(by_number[3]) is True
+    assert by_number[2].voiceover_text == "секретный закадр"
+    assert by_number[2].image_prompt == "img-2"
+    assert by_number[2].animation_prompt == "vid-2"
+    assert (by_number[2].attrs or {}).get("активен") is False
+    assert frame_is_active(by_number[2]) is False
 
 
 def test_assembly_clips_skip_marked_frame(tmp_path: Path) -> None:
