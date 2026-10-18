@@ -326,6 +326,11 @@ async function postApproval(
   }
 }
 
+/**
+ * POST `/api/orchestrator/approvals/{id}/approve`.
+ * `{id}` — `change_id` карточки, если он есть, иначе `approval_id`.
+ * Тело несёт тот же id в поле `approval_id`.
+ */
 export function postOrchApprove(
   cfg: OrchClientConfig,
   body: OrchApprovalDecision,

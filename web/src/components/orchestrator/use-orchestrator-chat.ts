@@ -216,12 +216,14 @@ export function useOrchestratorChat() {
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        const body = { approval_id: approvalId, task_id: taskId };
-        const result =
-          decision === "approved"
-            ? await postOrchApprove(cfg, body)
-            : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
-        if (!approvalPostAccepted(result, approvalId)) {
+      // Путь /approvals/{id}: change_id, если сервер его прислал, иначе id карточки (approval_id).
+      const pathId = card.changeId ?? approvalId;
+      const body = { approval_id: pathId, task_id: taskId };
+      const result =
+        decision === "approved"
+          ? await postOrchApprove(cfg, body)
+          : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+      if (!approvalPostAccepted(result, pathId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }

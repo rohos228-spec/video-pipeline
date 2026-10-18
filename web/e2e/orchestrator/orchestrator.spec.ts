@@ -48,6 +48,33 @@ test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает о�
   }
 });
 
+test("терминальная block-карточка закрывается следующей сменой статуса своей сессии", () => {
+  const blocked = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "task_failed",
+      task_id: 4,
+      seq: 3,
+      session_id: "own",
+      payload: { error: "deletion_blocked" },
+    },
+  });
+  const card = blocked.approvals.find((item) => item.id === "block-3");
+  expect(card?.changeId).toBeNull();
+  expect(card?.resolved).toBeNull();
+  const done = reduceOrchScreen(blocked, {
+    type: "event",
+    event: {
+      type: "task_done",
+      task_id: 4,
+      seq: 4,
+      session_id: "own",
+      payload: { summary: "закрыто" },
+    },
+  });
+  expect(done.approvals.find((item) => item.id === "block-3")?.resolved).toBe("closed");
+});
+
 test("карточка без change_id и без session_id не закрывается сменой статуса", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
@@ -1060,6 +1087,29 @@ test.describe("orchestrator chat", () => {
     });
     await expect(page.getByTestId("orch-agent-supervisor")).toContainText("own-seen");
     await expect(card).toHaveCount(0);
+  });
+
+  test("approve с change_id и approval_id уходит на change_id", async ({ page }) => {
+    const urls: string[] = [];
+    await page.route("**/api/orchestrator/approvals/**/approve", async (route) => {
+      urls.push(route.request().url());
+      await route.fulfill({ status: 204, body: "" });
+    });
+    await openWithToken(page, "idle", "chg-path");
+    await emitBus(page, "chg-path", "approval_required", 1, {
+      change_id: "chg-own",
+      approval_id: "appr-other",
+      title: "Два id",
+      reason: "нужно решение",
+      risk: "low",
+      action: "run_node",
+    });
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    await page.getByTestId("orch-approve").click();
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain("/approvals/chg-own/approve");
+    expect(urls[0]).not.toContain("appr-other");
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
   });
 
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
