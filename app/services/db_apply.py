@@ -462,11 +462,6 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                     for item in incoming_by_content.get(ident) or []:
                         _stamp_tombstone_marks(shot, item)
                 continue
-            if ident is None and any(
-                isinstance(item, dict) and _shot_id(item) is None and item == shot
-                for item in incoming
-            ):
-                continue
         key = _shot_payload_key(shot)
         slots = payload_slots.get(key)
         if slots:

@@ -651,6 +651,44 @@ async def test_two_identical_old_shots_both_kept_inactive(session: AsyncSession)
 
 
 @pytest.mark.asyncio
+async def test_identical_shots_without_text_kept_as_multiset(session: AsyncSession) -> None:
+    """Три одинаковых шота без текста против одного входящего не схлопываются."""
+    project = Project(slug="ws1-no-text", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "no-text-copies",
+        [{"план": "x"}, {"план": "x"}, {"план": "x"}],
+        number=1,
+    )
+    await session.commit()
+    new_list = [{"план": "x"}]
+
+    async def _apply() -> list[dict]:
+        await apply_ops(
+            session,
+            project,
+            [{"frame_uuid": frame.uuid, "fields": {"кадры": new_list}}],
+            export_xlsx=False,
+        )
+        await session.refresh(frame)
+        return list(frame.attrs["кадры"])
+
+    first = await _apply()
+    second = await _apply()
+    assert len(first) == 3, first
+    assert len(second) == len(first)
+    active = [shot for shot in second if shot_is_active(shot)]
+    inactive = [shot for shot in second if not shot_is_active(shot)]
+    assert len(active) == 1
+    assert active[0]["план"] == "x"
+    assert len(inactive) == 2
+    assert all(shot["план"] == "x" and shot["активен"] is False for shot in inactive)
+
+
+@pytest.mark.asyncio
 async def test_null_kadry_keeps_old_shots_active(
     session: AsyncSession, warn_log: list[str]
 ) -> None:
