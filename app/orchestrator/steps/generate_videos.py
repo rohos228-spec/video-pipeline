@@ -118,7 +118,11 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не вызывать outsee, если клип уже есть на диске или одобрен."""
+    """Не вызывать outsee, если кадр скрыт, клип уже есть или одобрен."""
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
+    if frame_hidden_from_paid_generation(fr):
+        return True
     if getattr(fr, "status", None) == FrameStatus.video_approved:
         return True
     return bool(has_video_file)
@@ -336,9 +340,15 @@ async def _claim_shot2_video_batch(
     from app.services.freeze_stills import frame_is_freeze
     from app.services.vo_shot_expand import is_shot_child
 
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_videos"):
+        if frame_hidden_from_paid_generation(fr):
+            logger.warning(
+                "WARN generate_videos: кадр #{} скрыт — платная генерация пропущена, строка сохранена",
+                fr.number,
+            )
             continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":

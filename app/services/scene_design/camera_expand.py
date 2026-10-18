@@ -338,7 +338,7 @@ def already_subdivided(frames: list[Frame]) -> bool:
     Помеченный ``удалён`` ребёнок строку не занимает в живой дроблёнке:
     повторный camera_subdivide не должен пропускаться из-за архива.
     """
-    return any(_is_shot_child(f) and frame_is_active(f) for f in frames)
+    return any(_is_shot_child(f) and frame_is_active(getattr(f, "attrs", None) or {}) for f in frames)
 
 
 async def collapse_shot_children(
@@ -371,14 +371,14 @@ async def collapse_shot_children(
         ).scalars()
     )
     child_ids = [
-        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(fr)
+        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(getattr(fr, "attrs", None) or {})
     ]
     # Восстановить полный текст ячейки на родителе ДО пометки детей:
     # после дроби родитель несёт только свой фрагмент — склеиваем группу.
     # Уже помеченные дети в склейку не входят, чтобы не задвоить текст.
     by_parent: dict[str, list[Frame]] = {}
     for fr in frames:
-        if _is_shot_child(fr) and not frame_is_active(fr):
+        if _is_shot_child(fr) and not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         meta = _subdivide_attr(fr)
         pu = str(meta.get("parent_uuid") or "").strip()

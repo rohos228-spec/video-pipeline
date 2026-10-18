@@ -160,24 +160,18 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
         )
 
-    from app.services.frame_tombstones import frame_is_active
-
-    marked_numbers = [int(fr.number) for fr in frames_all if not frame_is_active(fr)]
-    if marked_numbers:
-        logger.warning(
-            "WARN [#{}] assemble: кадры {} помечены «удалён» — не входят в ролик, строки сохранены",
-            project.id,
-            marked_numbers,
-        )
-    frames_all = [fr for fr in frames_all if frame_is_active(fr)]
-    if not frames_all:
-        raise RuntimeError(
-            "нет активных кадров — помеченные «удалён» не входят в ролик, строки сохранены"
-        )
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
 
     frames: list[Frame] = []
     skipped_no_video: list[int] = []
     for fr in frames_all:
+        if frame_hidden_from_paid_generation(fr):
+            logger.warning(
+                "WARN [#{}] assemble: кадр #{} помечен — не входит в ролик, строка сохранена",
+                project.id,
+                fr.number,
+            )
+            continue
         p1 = await _scene_video_path(session, project, fr, shot=1)
         p2 = await _scene_video_path(session, project, fr, shot=2)
         if p1 is not None or p2 is not None:

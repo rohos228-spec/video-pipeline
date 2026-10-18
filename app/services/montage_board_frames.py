@@ -336,7 +336,7 @@ async def delete_montage_frame(
 
     from app.services.frame_tombstones import frame_is_active
 
-    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(getattr(fr, "attrs", None) or {})]
     if kids:
         _store_head_rollback(frame, kids)
     reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"

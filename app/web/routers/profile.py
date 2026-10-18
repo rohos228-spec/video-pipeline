@@ -299,12 +299,24 @@ def _origin_host(request: Request) -> str:
     return rest.split("/", 1)[0].split(":", 1)[0].lower()
 
 
+def _client_host(request: Request) -> str:
+    client = request.client
+    return str(getattr(client, "host", "") or "").strip().lower()
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("127.")
+
+
 def _origin_allowed_for_keys(request: Request) -> bool:
-    """Чужой Origin не даёт права писать ключи. Пустой Origin — не браузер."""
+    """Чужой Origin не даёт права писать ключи.
+
+    Без Origin пускаем только loopback-клиента. Удалённый клиент без Origin — 403.
+    """
     host = _origin_host(request)
     if not host:
-        return True
-    if host in {"127.0.0.1", "localhost", "::1"}:
+        return _is_loopback_host(_client_host(request))
+    if _is_loopback_host(host):
         return True
     allowed: set[str] = set()
     for raw in (settings.fleet_public_url, settings.fleet_local_web_url):

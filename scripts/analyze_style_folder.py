@@ -17,7 +17,7 @@ from pathlib import Path
 from app.services.style_analyzer import IMG_EXTS, analyze_style_images, categorize_styles
 
 
-async def main(root: Path) -> int:
+async def main(root: Path, *, project_id: int | None = None) -> int:
     if not root.is_dir():
         print(f"Папка не найдена: {root}")
         return 1
@@ -34,7 +34,9 @@ async def main(root: Path) -> int:
             continue
         print(f"… {sub.name}: {len(images)} изображений, анализ")
         try:
-            entry = await analyze_style_images(images, name_hint=sub.name)
+            entry = await analyze_style_images(
+                images, name_hint=sub.name, project_id=project_id
+            )
         except Exception as e:  # noqa: BLE001
             print(f"✗ {sub.name}: {e}")
             continue
@@ -53,7 +55,7 @@ async def main(root: Path) -> int:
     print(f"\nЗаписи стилей: {out_dir / 'styles.json'}")
 
     if len(entries) >= 2:
-        cats = await categorize_styles(entries)
+        cats = await categorize_styles(entries, project_id=project_id)
         (out_dir / "categories.json").write_text(
             json.dumps(cats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
@@ -65,4 +67,5 @@ async def main(root: Path) -> int:
 
 if __name__ == "__main__":
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/style-lab")
-    raise SystemExit(asyncio.run(main(root)))
+    project_id = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    raise SystemExit(asyncio.run(main(root, project_id=project_id)))

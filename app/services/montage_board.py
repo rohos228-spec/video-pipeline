@@ -1199,6 +1199,8 @@ async def build_montage_board(
             layout_text,
         )
 
+        from app.orchestrator.validators.activity_flags import frame_is_active
+
         layout = layout_text(fr)
         img1_prompt = (prompts.get("image_prompt_shot1") or "").strip() or layout_start_text(
             layout
@@ -1226,7 +1228,7 @@ async def build_montage_board(
                 "frame_id": fr.id,
                 "number": fr.number,
                 "удалён": frame_marked_deleted(fr),
-                "активен": frame_is_active(fr),
+                "активен": frame_is_active(getattr(fr, "attrs", None) or {}),
                 "карантин": bool((fr.attrs or {}).get("карантин")),
                 "voiceover_text": fr.voiceover_text,
                 "voiceover_excel": ex.get("voiceover_excel") or "",
@@ -1268,6 +1270,7 @@ async def build_montage_board(
                     }
                 ),
                 "manual_refs": manual_refs_for_board(data_dir, fr),
+                "скрыт": not frame_is_active(fr.attrs or {}),
             }
         )
 

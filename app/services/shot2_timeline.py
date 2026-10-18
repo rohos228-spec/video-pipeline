@@ -33,7 +33,7 @@ def build_assembly_clip_specs(
     trims = video_trims or {}
     clips: list[ClipSpec] = []
     for fr in frames:
-        if not frame_is_active(fr):
+        if not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         total = duration_by_frame.get(fr.number)
         if total is None:

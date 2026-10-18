@@ -76,7 +76,7 @@ async def truncate_vo_to_ratio(
             kept_ids.add(f.id)
 
     delete_ids = [
-        f.id for f in frames if f.id not in kept_ids and frame_is_active(f)
+        f.id for f in frames if f.id not in kept_ids and frame_is_active(getattr(f, "attrs", None) or {})
     ]
     drop_set = set(delete_ids)
     marked = 0
@@ -97,7 +97,7 @@ async def truncate_vo_to_ratio(
     if marked:
         park_marked_frame_numbers(ordered, project)
         await session.flush()
-    live = [f for f in ordered if frame_is_active(f)]
+    live = [f for f in ordered if frame_is_active(getattr(f, "attrs", None) or {})]
     vo_parts = [
         (f.voiceover_text or "").strip()
         for f in live

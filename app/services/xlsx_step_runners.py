@@ -2101,10 +2101,10 @@ async def _load_img_pr_context(
             continue
         if not (fr.voiceover_text or "").strip():
             continue
+        from app.orchestrator.validators.activity_flags import frame_is_active
+
         fr_attrs = fr.attrs or {}
-        if isinstance(fr_attrs, dict) and (
-            fr_attrs.get("активен") is False or fr_attrs.get("удалён")
-        ):
+        if isinstance(fr_attrs, dict) and not frame_is_active(fr_attrs):
             continue
         if is_shot_child(fr):
             n_child += 1

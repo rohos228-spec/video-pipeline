@@ -119,7 +119,7 @@ def _project65_and_readers_stay_active() -> None:
         assert ACTIVE_MARK not in attrs
         frames.append(SimpleNamespace(attrs=attrs, id=row["id"], number=row["number"]))
     assert len(frames) == 98
-    assert all(frame_is_active(frame) for frame in frames)
+    assert all(frame_is_active(frame.attrs or {}) for frame in frames)
 
     report = build_shots_report_model(
         [_ns(_cell_from_scene(scene)) for scene in raw["scenes"]]
@@ -137,11 +137,11 @@ def _project65_and_readers_stay_active() -> None:
     ]
     assert [shot for shot in mixed if shot_is_active(shot)] == mixed[:4]
     frame_rows = [_as_frame(dict(item)) for item in mixed]
-    assert [frame for frame in frame_rows if frame_is_active(frame)] == frame_rows[:4]
+    assert [frame for frame in frame_rows if frame_is_active(frame.attrs or {})] == frame_rows[:4]
     assert frame_marked_deleted(_as_frame({DELETED_MARK: "false"})) is False
     assert frame_marked_deleted(_as_frame({DELETED_MARK: "нет"})) is False
     assert frame_marked_deleted(_as_frame({DELETED_MARK: 0})) is False
-    assert frame_is_active(_as_frame({QUARANTINE_MARK: True})) is False
+    assert frame_is_active({QUARANTINE_MARK: True}) is False
 
     tomb = SimpleNamespace(attrs={}, id=1, number=1)
     mark_frame_deleted(tomb, None, "matrix")
@@ -160,10 +160,10 @@ def _fallback_core_cases() -> None:
     assert shot_is_active({ACTIVE_MARK: False}) is False
     assert shot_is_active({DELETED_MARK: True}) is False
     assert shot_is_active({QUARANTINE_MARK: True}) is False
-    assert frame_is_active(_as_frame({})) is True
-    assert frame_is_active(_as_frame({ACTIVE_MARK: False})) is False
-    assert frame_is_active(_as_frame({DELETED_MARK: True})) is False
-    assert frame_is_active(_as_frame({QUARANTINE_MARK: True})) is False
+    assert frame_is_active({}) is True
+    assert frame_is_active({ACTIVE_MARK: False}) is False
+    assert frame_is_active({DELETED_MARK: True}) is False
+    assert frame_is_active({QUARANTINE_MARK: True}) is False
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def test_shot_activity_matches_frame_tombstones_matrix(
     if kind == "shot":
         assert shot_is_active(payload) is expected
     else:
-        assert frame_is_active(_as_frame(payload)) is expected
+        assert frame_is_active(payload) is expected
     warned = any("активен" in record.getMessage() for record in caplog.records)
     assert warned is warns
     if kind == "shot" and payload == {}:

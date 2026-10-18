@@ -390,13 +390,13 @@ def _detach_from_coverage_ancestor(
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
     from app.services.frame_tombstones import frame_is_active
 
-    if not frame_is_active(parent):
+    if not frame_is_active(getattr(parent, "attrs", None) or {}):
         logger.warning(
             "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
             getattr(parent, "number", None),
         )
         return
-    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
+    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(getattr(fr, "attrs", None) or {})]
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -760,21 +760,21 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
+    """Живые шоты ячейки: leftover и скрытый кадр не получают слот покрытия.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
-    а помеченный шот возвращается новым активным кадром.
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
     """
-    from app.services.frame_tombstones import frame_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active
 
     live = [
         m
         for m in members
-        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
+        if not bool(_cs(m).get("leftover"))
+        and frame_is_active(getattr(m, "attrs", None) or {})
     ]
     if not live:
         live = [parent]
-    elif parent not in live and frame_is_active(parent):
+    elif parent not in live:
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1163,7 +1163,7 @@ async def delete_coverage_child(
     if parent is not None and int(parent.number) != int(frame.number):
         from app.services.frame_tombstones import frame_is_active
 
-        if frame_is_active(parent):
+        if frame_is_active(getattr(parent, "attrs", None) or {}):
             _refresh_shots_in_beat(frames, parent)
     await session.flush()
     logger.warning(
@@ -1335,7 +1335,8 @@ async def apply_coverage_scene_action(
         )
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
+    from app.services.db_apply import merge_kadry_keep_missing
 
     old_kadry = (getattr(parent, "attrs", None) or {}).get("кадры")
     before_rows = [
@@ -1402,7 +1403,7 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry, restore_ops)
+    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
     parent.attrs = attrs
     _flag_attrs(parent)
 
@@ -1624,7 +1625,7 @@ async def apply_coverage_op(
         quarantine_frame_media(project, int(frame.number))
         mark_frame_deleted(frame, project, reason)
         _stamp_deleted_shot(frames, frame, reason)
-        if parent is not None and frame_is_active(parent):
+        if parent is not None and frame_is_active(getattr(parent, "attrs", None) or {}):
             _refresh_shots_in_beat(frames, parent)
 
     await session.flush()

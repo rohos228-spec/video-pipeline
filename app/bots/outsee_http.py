@@ -341,8 +341,10 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
     import tempfile
 
     from app.services.api_tracker_hook import check_api_allowed
+    from app.services.spend_guard import guard_paid_spend
 
     check_api_allowed(provider="outsee", model="generate")
+    guard_paid_spend("outsee_generate_curl")
     curl = shutil.which("curl")
     if not curl:
         return None
@@ -633,6 +635,9 @@ async def _download_via_curl(url: str, out_path: Path) -> bool:
     curl = shutil.which("curl")
     if not curl:
         return False
+    from app.services.spend_guard import guard_paid_spend
+
+    guard_paid_spend("outsee_download_curl")
     try:
         proc = await asyncio.create_subprocess_exec(
             curl,

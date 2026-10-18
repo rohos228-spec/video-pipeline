@@ -294,7 +294,7 @@ class PaidFrameSkipped(RuntimeError):
 
 def paid_frame_skip_reason(frame: Any) -> str | None:
     """Почему кадр нельзя отправлять в платную генерацию картинки или видео."""
-    if frame_is_active(frame):
+    if frame_is_active(getattr(frame, "attrs", None) or {}):
         return None
     number = getattr(frame, "number", None)
     if frame_marked_deleted(frame):

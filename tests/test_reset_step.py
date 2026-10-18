@@ -460,11 +460,11 @@ async def test_wipe_split_parks_numbers_so_resplit_does_not_revive(session):
     assert again_a is not None and again_b is not None
     assert again_a.voiceover_text == vo_a
     assert again_b.voiceover_text == vo_b
-    assert frame_is_active(again_a) is False
-    assert frame_is_active(again_b) is False
+    assert frame_is_active(getattr(again_a, "attrs", None) or {}) is False
+    assert frame_is_active(getattr(again_b, "attrs", None) or {}) is False
     assert again_a.attrs["исходный_номер"] == 1
     assert {c.id for c in created}.isdisjoint({id_a, id_b})
-    assert all(frame_is_active(c) for c in created)
+    assert all(frame_is_active(getattr(c, "attrs", None) or {}) for c in created)
 
 
 @pytest.mark.asyncio

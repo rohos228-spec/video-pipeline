@@ -19,7 +19,7 @@ def active_split_frames(frames: list[Frame]) -> list[Frame]:
     live: list[Frame] = []
     skipped: list[Frame] = []
     for fr in frames:
-        if frame_is_active(fr):
+        if frame_is_active(getattr(fr, "attrs", None) or {}):
             live.append(fr)
         else:
             skipped.append(fr)

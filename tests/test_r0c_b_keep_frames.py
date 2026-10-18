@@ -748,7 +748,7 @@ async def test_coverage_delete_in_auto_apply_marks_frame(
     live = await session.get(Frame, child_id)
     assert live is not None
     assert (live.attrs or {}).get("удалён") is True
-    assert frame_is_active(live) is False
+    assert frame_is_active(getattr(live, "attrs", None) or {}) is False
     assert live.status == FrameStatus.image_generated
     prompt = (
         await session.execute(select(PromptVersion).where(PromptVersion.frame_id == child_id))
@@ -808,9 +808,9 @@ async def test_delete_montage_frame_marks_parent_and_keeps_children(
         )
     ).scalars().all()
     assert [fr.id for fr in left] == [parent_id, child_id]
-    assert frame_is_active(left[0]) is False
+    assert frame_is_active(getattr(left[0], "attrs", None) or {}) is False
     assert (left[0].attrs or {}).get("пометка")
-    assert frame_is_active(left[1]) is True
+    assert frame_is_active(getattr(left[1], "attrs", None) or {}) is True
     assert any("WARN delete_montage_frame" in line for line in warn_log)
 
 
@@ -903,7 +903,7 @@ async def test_marked_frame_is_not_revived_or_duplicated_by_xlsx_import(
     assert live.image_prompt == "старый промт"
     assert live.status == FrameStatus.planned
     assert (live.attrs or {}).get("удалён") is True
-    assert frame_is_active(live) is False
+    assert frame_is_active(getattr(live, "attrs", None) or {}) is False
     assert deleted_numbers(project) == {3}
     assert sum(1 for fr in rows if fr.number == 3) == 1
     assert any("помечен «удалён»" in line for line in warn_log)
@@ -1645,9 +1645,9 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
-    active_before = sum(1 for fr in rows if frame_is_active(fr))
+    active_before = sum(1 for fr in rows if frame_is_active(getattr(fr, "attrs", None) or {}))
     assert active_before == 2
-    assert frame_is_active(rows[1]) is False
+    assert frame_is_active(getattr(rows[1], "attrs", None) or {}) is False
 
     kadry = list((rows[0].attrs or {}).get("кадры") or [])
     await apply_coverage_scene_action(
@@ -1666,7 +1666,7 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
-    assert sum(1 for fr in rows if frame_is_active(fr)) == active_before
+    assert sum(1 for fr in rows if frame_is_active(getattr(fr, "attrs", None) or {})) == active_before
     marked = next(fr for fr in rows if fr.number == 2)
     assert marked.voiceover_text == "кусок шота"
     assert any(
@@ -1682,7 +1682,7 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.id for fr in rows if fr.number == 1] == [parent_row.id]
-    assert frame_is_active(rows[0]) is False
+    assert frame_is_active(getattr(rows[0], "attrs", None) or {}) is False
     assert result["promoted"] == 3
     head = next(fr for fr in rows if fr.number == 3)
     assert _cs(head).get("role") == "vo_parent"
@@ -2044,7 +2044,7 @@ async def test_drop_frame_rows_marks_and_keeps_related_rows(
     kept = await session.get(Frame, frame_id)
     assert kept is not None
     assert kept.voiceover_text == "не стирать"
-    assert frame_is_active(kept) is False
+    assert frame_is_active(getattr(kept, "attrs", None) or {}) is False
     assert (kept.attrs or {}).get("удалён") is True
     prompt = (
         await session.execute(select(PromptVersion).where(PromptVersion.frame_id == frame_id))
@@ -2130,14 +2130,14 @@ async def test_delete_merge_and_restore_keep_frame_rows(
     assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
     marked = next(fr for fr in rows if fr.uuid == child_uid)
     assert marked.attrs.get("удалён") is True
-    assert frame_is_active(marked) is False
+    assert frame_is_active(getattr(marked, "attrs", None) or {}) is False
     assert any("WARN delete_coverage_child" in line for line in warn_log)
 
     restored = await restore_montage_frame(session, project, int(marked.id))
     await session.refresh(marked)
     assert restored["restored"] == 1
     assert marked.attrs.get("удалён") is not True
-    assert frame_is_active(marked) is True
+    assert frame_is_active(getattr(marked, "attrs", None) or {}) is True
     assert any("WARN restore_montage_frame" in line for line in warn_log)
 
     result = await delete_montage_frame(session, project, int(parent.id))
@@ -2148,11 +2148,11 @@ async def test_delete_merge_and_restore_keep_frame_rows(
     assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
     head = next(fr for fr in rows if fr.uuid == parent_uid)
     assert head.attrs.get("удалён") is True
-    assert frame_is_active(head) is False
+    assert frame_is_active(getattr(head, "attrs", None) or {}) is False
 
     await restore_montage_frame(session, project, int(head.id))
     await session.refresh(head)
-    assert frame_is_active(head) is True
+    assert frame_is_active(getattr(head, "attrs", None) or {}) is True
 
     merged = await merge_montage_scenes(
         session,
@@ -2224,7 +2224,7 @@ async def test_collapse_and_apply_keep_frames_and_report_deleted_zero(
     archived = next(fr for fr in rows if fr.uuid == "k2" * 12)
     assert is_coverage_leftover(archived)
     assert archived.attrs.get("активен") is False
-    assert frame_is_active(archived) is False
+    assert frame_is_active(getattr(archived, "attrs", None) or {}) is False
     assert archived.image_prompt == "промт второго"
     assert any("WARN archive leftover" in line for line in warn_log)
     assert any("WARN collapse_flattened_coverage_cells" in line for line in warn_log)
@@ -2353,7 +2353,7 @@ async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
     ).scalars().all()
     promoted = next(fr for fr in rows if fr.number == 2)
     assert _cs(promoted).get("role") == "vo_parent"
-    assert frame_is_active(rows[0]) is False
+    assert frame_is_active(getattr(rows[0], "attrs", None) or {}) is False
 
     await restore_montage_frame(session, project, int(head.id))
     rows = (
@@ -2363,7 +2363,7 @@ async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
     restored = rows[0]
-    assert frame_is_active(restored) is True
+    assert frame_is_active(getattr(restored, "attrs", None) or {}) is True
     assert restored.attrs.get("удалён") is not True
     assert _cs(restored).get("role") == "vo_parent"
     assert _cs(restored).get("parent_uuid") == head_uid

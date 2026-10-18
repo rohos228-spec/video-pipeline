@@ -348,7 +348,7 @@ async def test_rebuild_keeps_live_frame_edges(session: AsyncSession, warn_log) -
     """Было: delete(FrameEdge).where(type=='next') в rebuild_vo_cells_from_shots.
 
     Связь двух живых кадров остаётся той же строкой. Связь с leftover
-    помечается archived:next, а не стирается. type=continues не трогается.
+    помечается next_stale, а не стирается. type=continues не трогается.
     """
     project = await _project(session, "live-edges")
     keep = _frame(project, 1, "keep-edge", "Живой закадр первого.", sort_key=1.0)
@@ -393,8 +393,8 @@ async def test_rebuild_keeps_live_frame_edges(session: AsyncSession, warn_log) -
     kept_stale = await session.get(FrameEdge, stale_id)
     assert kept_live is not None and kept_live.type == "next"
     assert kept_side is not None and kept_side.type == "continues"
-    assert kept_stale is not None and kept_stale.type == "archived:next"
-    assert any("archived:next" in line for line in warn_log)
+    assert kept_stale is not None and kept_stale.type == "next_stale"
+    assert any("next_stale" in line for line in warn_log)
 
 
 @pytest.mark.asyncio
