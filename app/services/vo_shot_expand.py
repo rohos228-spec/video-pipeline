@@ -286,11 +286,13 @@ def strip_non_scene_kadry(frame: Any) -> bool:
     Активный список очищается, чтобы шаг «Кадры» писал лестницу с нуля.
     Архив идемпотентный: повторный вызов не плодит дубли по id.
     """
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    kadry_rows = attrs.get("кадры") if isinstance(attrs.get("кадры"), list) else []
+    shots_rows = attrs.get("shots") if isinstance(attrs.get("shots"), list) else []
     planned = planned_shots_from_attrs(frame)
     live = [shot for shot in planned if shot_is_active(shot)]
     if not live or kadry_are_scene_shots(live):
         return False
-    attrs = dict(getattr(frame, "attrs", None) or {})
     archived = [
         dict(row) if isinstance(row, dict) else {"value": row}
         for row in (attrs.get("кадры_archived") or [])
@@ -301,14 +303,15 @@ def strip_non_scene_kadry(frame: Any) -> bool:
         if isinstance(row, dict) and str(row.get("id") or "").strip()
     }
     added = 0
-    for shot in live:
-        row = dict(shot)
+    for shot in [*kadry_rows, *shots_rows]:
+        row = dict(shot) if isinstance(shot, dict) else {"value": shot}
         sid = str(row.get("id") or "").strip()
         if sid and sid in seen:
             continue
-        row["активен"] = False
-        row["карантин"] = True
-        row["пометка"] = "не сцена — в архиве"
+        if shot_is_active(row):
+            row["активен"] = False
+            row["карантин"] = True
+            row["пометка"] = "не сцена — в архиве"
         archived.append(row)
         if sid:
             seen.add(sid)
