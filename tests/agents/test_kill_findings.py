@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -630,6 +631,98 @@ async def test_cancelled_task_does_not_take_another_tasks_partial_cost(token: st
         assert router.partial_cost_usd == 0
     finally:
         router.release.set()
+        set_runtime(None)
+
+
+class _NoTaskPlanner:
+    """Зовёт router.call без task_id: стоимость не должна теряться."""
+
+    def __init__(self, router: Any) -> None:
+        self.router = router
+        self.last_response = None
+
+    async def make_plan(self, goal: str, context: str = "", **kwargs: Any) -> list[PlanStep]:
+        del goal, context, kwargs
+        await self.router.call("strong", [])
+        return [PlanStep(action="look", risk="none")]
+
+
+class _BareCostRouter:
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.started = asyncio.Event()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        assert kwargs.get("task_id") in (None, "")
+        self.partial_cost_usd = 0.21
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_without_task_id_keeps_partial_cost(token: str) -> None:
+    del token
+    router = _BareCostRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=_NoTaskPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("cost-bare", "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) > 0
+    finally:
+        set_runtime(None)
+
+
+class _DualCostRouter:
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.seen = [asyncio.Event(), asyncio.Event()]
+        self.n = 0
+        self.lock = asyncio.Lock()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        async with self.lock:
+            idx = self.n
+            self.n += 1
+            self.partial_cost_usd = 0.2 if idx == 0 else 0.5
+            self.seen[idx].set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_two_cancelled_llm_calls_do_not_swap_partial_cost(token: str) -> None:
+    del token
+    router = _DualCostRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=_NoTaskPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_a = await runtime.supervisor.start_task("cost-a2", "план")
+        await router.seen[0].wait()
+        task_b = await runtime.supervisor.start_task("cost-b2", "план")
+        await router.seen[1].wait()
+        runtime.supervisor._runs[task_a].cancel()
+        runtime.supervisor._runs[task_b].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_a, timeout=5)
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_b, timeout=5)
+        assert float(runtime.tasks.get(task_a)["spend_internal"] or 0) == pytest.approx(0.2)
+        assert float(runtime.tasks.get(task_b)["spend_internal"] or 0) == pytest.approx(0.5)
+    finally:
         set_runtime(None)
 
 

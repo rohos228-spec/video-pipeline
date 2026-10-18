@@ -42,6 +42,8 @@ Read-only и удаление смотрит реестр; флаги плана
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import re
 from typing import Any
@@ -151,6 +153,10 @@ def _coerce_decision(decision: ApprovalDecision | str | None) -> ApprovalDecisio
     if isinstance(decision, ApprovalDecision):
         return decision
     return ApprovalDecision(str(decision))
+
+
+_LLM_TASK: contextvars.ContextVar[int | None] = contextvars.ContextVar("orch_llm_task", default=None)
+_LLM_SLOT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("orch_llm_slot", default=None)
 
 
 class Supervisor:
@@ -1176,21 +1182,78 @@ class Supervisor:
                 continue
             owner.call = self._partial_cost_call(owner, original)
             owner._orch_partial_bound = True
+            self._install_partial_meter(owner)
+
+    def _install_partial_meter(self, owner: Any) -> None:
+        """Присваивание partial_cost_usd сразу плюсуется задаче из contextvar.
+
+        Общий атрибут больше не единственная копилка: два call не затирают
+        суммы. Ноль (сброс после снятия) в копилку не идёт.
+        """
+        if getattr(owner, "_orch_meter", False) or not hasattr(owner, "partial_cost_usd"):
+            return
+        try:
+            visible = float(getattr(owner, "partial_cost_usd", 0) or 0)
+        except (TypeError, ValueError):
+            visible = 0.0
+        with contextlib.suppress(AttributeError):
+            delattr(owner, "partial_cost_usd")
+        supervisor = self
+
+        class _Metered(owner.__class__):
+            @property
+            def partial_cost_usd(self) -> float:
+                return float(getattr(self, "_orch_visible_partial", 0) or 0)
+
+            @partial_cost_usd.setter
+            def partial_cost_usd(self, value: Any) -> None:
+                try:
+                    number = float(value or 0)
+                except (TypeError, ValueError):
+                    number = 0.0
+                self._orch_visible_partial = number
+                if number == 0:
+                    return
+                slot = _LLM_SLOT.get()
+                if not slot or slot.get("task") is None:
+                    return
+                task_key = int(slot["task"])
+                slot["credit"] = float(slot.get("credit") or 0) + number
+                supervisor._partial_llm_cost[task_key] = (
+                    supervisor._partial_llm_cost.get(task_key, 0.0) + number
+                )
+
+        owner.__class__ = _Metered
+        owner._orch_visible_partial = visible
+        owner._orch_meter = True
 
     def _partial_cost_call(self, owner: Any, original: Any) -> Any:
         async def _call(*args: Any, **kwargs: Any) -> Any:
             raw_task = kwargs.get("task_id")
             try:
-                task_key = int(raw_task) if raw_task is not None else None
+                task_key = int(raw_task) if raw_task not in (None, "") else None
             except (TypeError, ValueError):
                 task_key = None
+            if task_key is None:
+                task_key = _LLM_TASK.get()
+            slot = {"credit": 0.0, "task": task_key}
+            token = _LLM_SLOT.set(slot)
             try:
-                return await original(*args, **kwargs)
+                result = await original(*args, **kwargs)
             except asyncio.CancelledError:
-                cost = self._take_partial_cost(owner)
-                if task_key is not None and cost > 0:
-                    self._partial_llm_cost[task_key] = cost
+                self._take_partial_cost(owner)
                 raise
+            else:
+                if task_key is not None and slot["credit"]:
+                    left = self._partial_llm_cost.get(task_key, 0.0) - float(slot["credit"])
+                    if left > 0:
+                        self._partial_llm_cost[task_key] = left
+                    else:
+                        self._partial_llm_cost.pop(task_key, None)
+                self._take_partial_cost(owner)
+                return result
+            finally:
+                _LLM_SLOT.reset(token)
 
         return _call
 
@@ -1336,9 +1399,9 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = [
-            step_with_registry_paid(step, self.actions)
-            for step in await self._cancellable(
+        token = _LLM_TASK.set(int(task_id))
+        try:
+            drafted = await self._cancellable(
                 session_id,
                 self.planner.make_plan(
                     goal,
@@ -1346,7 +1409,9 @@ class Supervisor:
                     **self._llm_kwargs(task_id, AgentRole.planner.value),
                 ),
             )
-        ]
+        finally:
+            _LLM_TASK.reset(token)
+        plan = [step_with_registry_paid(step, self.actions) for step in drafted]
         self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None
@@ -1362,16 +1427,20 @@ class Supervisor:
         if task_id in self._budget_stop:
             await self._settle_stopped(task_id, session_id)
             return None
-        verdict = str(
-            await self._cancellable(
-                session_id,
-                self.critic.review(
-                    plan,
-                    context=context,
-                    **self._llm_kwargs(task_id, AgentRole.critic.value),
-                ),
+        token = _LLM_TASK.set(int(task_id))
+        try:
+            verdict = str(
+                await self._cancellable(
+                    session_id,
+                    self.critic.review(
+                        plan,
+                        context=context,
+                        **self._llm_kwargs(task_id, AgentRole.critic.value),
+                    ),
+                )
             )
-        )
+        finally:
+            _LLM_TASK.reset(token)
         if await self._absorb_budget(task_id, session_id, getattr(self.critic, "last_response", None)):
             return None
         return verdict
