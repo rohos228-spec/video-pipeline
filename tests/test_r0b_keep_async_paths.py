@@ -278,23 +278,10 @@ async def test_db_browser_apply_ops_does_not_delete_frames(apply_ops_client) -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "Баг в запрещённых файлах, фикс не вносился: "
-        "db_apply.py apply_ops заменяет attrs['кадры'] целиком "
-        "(~1590, 1-K2 пропадает); upsert_scene_registry "
-        "(~797) заменяет meta.scene_registry и теряет scene_tail. "
-        "Роутер db_browser.apply_ops только прокидывает тело."
-    ),
-    strict=False,
-)
 async def test_db_browser_apply_ops_keeps_partial_kadry_and_scenes(
     apply_ops_client,
 ) -> None:
-    """Короткий список кадров и сцен не выкидывает старые id.
-
-    Сейчас падает: запись идёт в db_apply.py, этот файл не трогаем.
-    """
+    """Короткий список кадров и сцен не выкидывает старые id."""
     client, project_id, scene_id, factory = apply_ops_client
     response = await client.post(
         f"/api/db/projects/{project_id}/apply-ops",
