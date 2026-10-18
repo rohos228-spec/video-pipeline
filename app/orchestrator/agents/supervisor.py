@@ -211,6 +211,7 @@ class Supervisor:
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
+        self._mutating_result: dict[int, str] = {}
         self._partial_announced: set[tuple[int, int]] = set()
         self._bind_partial_llm_cost()
 
@@ -1994,9 +1995,11 @@ class Supervisor:
             return
         if exc is not None:
             return
+        change_id = envelope_change_id(done.result())
+        if change_id:
+            self._mutating_result[int(step_id)] = change_id
         if task_id not in self._shield_orphaned:
             return
-        change_id = envelope_change_id(done.result())
         # Уже записанный id не отменяет событие: WARN всё равно один, с этим id.
         resolved = change_id or self._stored_change_id(task_id, step_id)
         if not resolved:
@@ -2063,7 +2066,7 @@ class Supervisor:
             if not done_step.mutating:
                 self.tasks.finish_step(step_id, "cancelled", None, 0.0)
                 continue
-            existing = self._stored_change_id(task_id, step_id)
+            existing = self._stored_change_id(task_id, step_id) or self._mutating_result.get(int(step_id))
             if existing:
                 known.append(existing)
                 await self._announce_partial_once(task_id, session_id, step_id, index, existing)
@@ -2089,7 +2092,7 @@ class Supervisor:
         key = (int(task_id), int(step_id))
         if key in self._partial_announced:
             return
-        resolved = change_id or self._stored_change_id(task_id, step_id)
+        resolved = change_id or self._mutating_result.get(int(step_id)) or self._stored_change_id(task_id, step_id)
         if not resolved:
             return
         self._partial_announced.add(key)

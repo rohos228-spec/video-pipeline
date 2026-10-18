@@ -146,6 +146,51 @@ async def test_kill_records_real_change_id_after_mutating_release(token: str) ->
         set_runtime(None)
 
 
+@pytest.mark.asyncio
+async def test_inner_done_before_kill_keeps_change_id_and_resume_does_not_rewrite(token: str) -> None:
+    """K1: inner уже done, callback ещё не видит _shield_orphaned. partial с реальным id."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False),
+                PlanStep(action="later", mutating=True, paid=False),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-k1"
+    supervisor = runtime.supervisor
+    original = supervisor._on_mutating_done
+
+    def _kill_as_soon_as_inner_finishes(done, **kwargs):
+        original(done, **kwargs)
+        supervisor.request_kill(session)
+
+    supervisor._on_mutating_done = _kill_as_soon_as_inner_finishes
+    try:
+        task_id = await supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        actions.release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await supervisor.wait(task_id, timeout=5)
+        saved = await _partial_row(runtime, task_id)
+        assert saved["status"] == "partial"
+        assert saved["change_id"] == "chg-write-1"
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["change_ids"] == ["chg-write-1"]
+        await supervisor.resume(task_id)
+        await supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["write"]
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
 def _delay_partial_publish(runtime) -> None:
     """publish partial_write уступает циклу: пустой WARN не должен обогнать id."""
     original = runtime.bus.publish
