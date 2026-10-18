@@ -1687,12 +1687,17 @@ async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> No
         WordTS("три", 5.0, 9.0, 1.0),
     ]
     voice = Path("voice_full.wav")
+    live = Path("audio/_live/voice_full.live-test.mp3")
     with (
         patch(
             "app.services.frame_audio.probe_duration",
             new=AsyncMock(return_value=9.0),
         ),
         patch("app.services.frame_audio.has_all_frame_audio", return_value=False),
+        patch(
+            "app.services.frame_audio.materialize_closed_timeline_audio",
+            new=AsyncMock(return_value=live),
+        ),
     ):
         clips, master, _scale, per_frame, mux_audio = await build_assembly_timeline(
             Path("."),
@@ -1703,7 +1708,8 @@ async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> No
             omit_numbers={2},
         )
     assert per_frame is False
-    assert mux_audio == voice
+    assert mux_audio == live
+    assert mux_audio != voice
     assert [c.frame_number for c in clips] == [1, 3]
     assert abs(sum(c.duration for c in clips) - master) < 0.05
     assert clips[1].start_ts == clips[0].end_ts
