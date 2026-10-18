@@ -300,11 +300,11 @@ def test_note_experimental_follows_the_code_flag(monkeypatch: pytest.MonkeyPatch
     assert disabled["experimental"] is False
 
 
-def test_regenerated_artifact_with_empty_mark_stays_experimental() -> None:
-    """Повторная сборка при пустом mark сохраняет experimental и совпадает с файлом."""
+def test_regenerated_artifact_with_empty_mark_stays_experimental(tmp_path: Path) -> None:
+    """Повторная сборка пишет весь файл артефакта, не только блок acceptance."""
     import inspect
 
-    from evals.orchestrator.precision_live import acceptance_for_remeasure, run_remeasure
+    from evals.orchestrator.precision_live import acceptance_for_remeasure, run_remeasure, write_pass_artifact
 
     path = ROOT / "evals" / "orchestrator" / "datasets" / "precision_live_passes.json"
     committed = json.loads(path.read_text(encoding="utf-8"))
@@ -312,7 +312,9 @@ def test_regenerated_artifact_with_empty_mark_stays_experimental() -> None:
     assert acceptance["mark"] == ""
     assert acceptance["experimental"] is True
     regenerated = {**committed, "acceptance": acceptance}
-    assert regenerated == committed
+    out = tmp_path / path.name
+    write_pass_artifact(out, regenerated)
+    assert out.read_bytes() == path.read_bytes()
     assert "acceptance_for_remeasure(" in inspect.getsource(run_remeasure)
 
 
