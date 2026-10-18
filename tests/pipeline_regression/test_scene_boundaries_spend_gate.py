@@ -489,11 +489,11 @@ async def test_exhausted_budget_parks_task_and_keeps_ready_scenes(
 
 @pytest.mark.asyncio
 async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> None:
-    """ApiEmergencyBlockedError не повторяется в call_opus.
+    """Блок посреди ретрая не запускает следующую попытку.
 
-    Два места одного цикла: прямой проброс из try (около 233–241) и
-    except, который иначе ретраит всё кроме HTTP 4xx до 4 раз с паузой
-    15·k с (около 249–260).
+    Живой путь: первый HTTP — 500, потолок сразу ниже оценки. Наружу уходит
+    блок шлюза, HTTP ровно один, паузы 15·k с нет. Дальше те же пробросы
+    ApiEmergencyBlockedError и PaidCallBlocked из цикла call_opus.
     """
     from app.services.api_tracker_hook import ApiEmergencyBlockedError
     from app.services.scene_boundaries import call_opus
@@ -506,6 +506,88 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
         return None
 
     monkeypatch.setattr(asyncio, "sleep", _fast)
+
+    # Живой путь: 500, затем потолок ниже оценки. Второй HTTP и второй sleep не стартуют.
+    import httpx
+
+    from app.services import gpt_api
+    from app.services.spend_guard import BudgetExhausted
+    from app.settings import settings
+
+    estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
+    cap_state = {"daily": estimate * 1.5}
+
+    def _caps() -> dict[str, float]:
+        return {"daily": cap_state["daily"], "project": 0.0, "run": 0.0}
+
+    async def _sums(_session: object, **_k: object) -> dict[str, float]:
+        return {"run": 0.0, "project": 0.0, "daily": 0.0}
+
+    async def _no_block(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _host_ok(_url: str) -> None:
+        return None
+
+    class _Http:
+        n = 0
+
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _Http:
+            return self
+
+        async def __aexit__(self, *_e: object) -> bool:
+            return False
+
+        def stream(self, *_a: object, **_k: object) -> _Http:
+            _Http.n += 1
+            cap_state["daily"] = estimate * 0.5
+            return self
+
+        async def post(self, *_a: object, **_k: object) -> _Http:
+            _Http.n += 1
+            self.status_code = 500
+            self.text = "upstream down"
+            return self
+
+        async def aread(self) -> bytes:
+            return b"upstream down"
+
+        async def aiter_lines(self):
+            if False:
+                yield ""
+
+    _Http.status_code = 500
+    monkeypatch.setattr(spend_guard, "caps", _caps)
+    monkeypatch.setattr(spend_guard, "conservative_sums", _sums)
+    monkeypatch.setattr(spend_guard, "_record_block", _no_block)
+    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", _host_ok)
+    monkeypatch.setattr(httpx, "AsyncClient", _Http)
+    from app.services import disk_guard, kill_switch
+
+    async def _guard(_sessions: object) -> None:
+        return None
+
+    monkeypatch.setattr(kill_switch, "guard_native", _guard)
+    monkeypatch.setattr(disk_guard, "check", lambda: None)
+    spend_guard.reset_inflight()
+    sleeps.clear()
+    with pytest.raises(Exception) as raised:
+        await call_opus("привет", "система", "http500", tmp_path / "http500")
+    blocked = raised.value
+    gate = getattr(blocked, "context", None) or {}
+    assert (
+        isinstance(blocked, (BudgetExhausted, PaidCallBlocked))
+        or (isinstance(gate, dict) and (gate.get("paid_gate_blocked") or gate.get("gate_code") in spend_guard.REFUSAL_CODES))
+        or spend_guard.is_budget_exhausted(blocked)
+    ), type(blocked)
+    assert _Http.n == 1, sleeps
+    assert len([delay for delay in sleeps if delay >= 2]) == 0, sleeps
+    assert all(delay < 15 for delay in sleeps)
+    sleeps.clear()
 
     calls = {"n": 0}
 
