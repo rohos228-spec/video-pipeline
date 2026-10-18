@@ -255,7 +255,10 @@ class RagEngine:
         ]
         rerank_scores: dict[str, float] = {}
         if use_rerank and self.reranker is not None:
-            candidates = ordered[:rerank_pool]
+            # Один чанк на родителя, с лучшей оценкой. Смотрим весь fused-список,
+            # а не срез rerank_pool: дубль окна не занимает место чужого семейства.
+            # В реранкер по-прежнему уходит rerank_pool пассажей, дальше порядок базовый.
+            candidates = _unique_parent_pool(ordered, fused, by_id, rerank_pool)
             passages = [_rerank_passage(by_id[chunk_id]) for chunk_id in candidates]
             raw_scores = self.reranker.score(query, passages)
             if len(raw_scores) != len(candidates):
@@ -454,6 +457,48 @@ def _doc_key(chunk: Chunk) -> str:
 
 def _is_section_window(chunk: Chunk) -> bool:
     return bool(str(chunk.metadata.get("parent_part_key") or ""))
+
+
+def _pool_parent_key(chunk: Chunk) -> tuple[str, str, str]:
+    """Окно и его секция — один родитель. Чужая секция — другой."""
+    part = str(chunk.metadata.get("parent_part_key") or chunk.metadata.get("part_key") or "")
+    if not part:
+        return (chunk.corpus, chunk.source_id, chunk.chunk_id)
+    return (chunk.corpus, chunk.source_id, part)
+
+
+def _unique_parent_pool(
+    ordered: list[str],
+    scores: dict[str, float],
+    by_id: dict[str, Chunk],
+    limit: int,
+) -> list[str]:
+    """До ``limit`` чанков: у каждого родителя остаётся чанк с лучшей оценкой.
+
+    Список ``ordered`` уже по убыванию оценки. Победитель родителя
+    встаёт на место этого победителя, не на место худшего дубля.
+    Без дублей результат совпадает с ``ordered[:limit]``.
+    """
+    best_score: dict[tuple[str, str, str], float] = {}
+    best_id: dict[tuple[str, str, str], str] = {}
+    for chunk_id in ordered:
+        chunk = by_id.get(chunk_id)
+        if chunk is None:
+            continue
+        key = _pool_parent_key(chunk)
+        score = float(scores.get(chunk_id, 0.0))
+        if key not in best_score or score > best_score[key]:
+            best_score[key] = score
+            best_id[key] = chunk_id
+    winners = set(best_id.values())
+    kept: list[str] = []
+    for chunk_id in ordered:
+        if chunk_id not in winners:
+            continue
+        kept.append(chunk_id)
+        if len(kept) >= limit:
+            break
+    return kept
 
 
 def _collapse_to_parents(
