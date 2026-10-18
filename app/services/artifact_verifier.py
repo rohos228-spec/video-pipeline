@@ -10,6 +10,9 @@ from pathlib import Path
 
 MAX_BYTES = 256 * 1024 * 1024
 _LINKER_WARNING = b"no version information available"
+_LINKER_LINE = re.compile(
+    rb"(?:ffprobe|ffmpeg): /\S+: " + re.escape(_LINKER_WARNING) + rb"(?: \(required by [^\s()]+\))?"
+)
 
 
 def probe_stderr_blocks(stderr: bytes) -> bool:
@@ -17,12 +20,15 @@ def probe_stderr_blocks(stderr: bytes) -> bool:
 
     tmux кладёт свой libncurses в LD_LIBRARY_PATH, и ffprobe пишет в stderr
     «no version information available», хотя код возврата 0 и JSON годный.
+
+    Пропускается только строка целиком «ffprobe: /путь/lib.so: no version information
+    available (required by …)»; любая другая непустая строка stderr — брак.
     """
     for raw in stderr.splitlines():
         line = raw.strip()
         if not line:
             continue
-        if line.startswith((b"ffprobe:", b"ffmpeg:")) and _LINKER_WARNING in line:
+        if _LINKER_LINE.fullmatch(line):
             continue
         return True
     return False

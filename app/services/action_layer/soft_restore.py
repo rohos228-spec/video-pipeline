@@ -1,8 +1,9 @@
 """Восстановление мягкого удаления: frame.restore, group.restore, prompt.restore_master.
 
 Имена и конверт — из SOFT_DELETE_RESTORE / ActionResult (ws2-r2.2).
-Физически кадры и сцены здесь не удаляются: снимок пишется до уже существующего
-DELETE, восстановление вставляет строку и кадры[] обратно.
+Физически кадры и сцены здесь не удаляются: удаление ставит флаги удалён/активен
+в attrs, восстановление снимает их с той же строки; вставка из снимка — только
+если строки правда нет.
 """
 
 from __future__ import annotations
@@ -224,6 +225,54 @@ async def frame_restore(ctx: ActionContext, params: dict) -> dict:
     )
 
 
+_SOFT_DELETE_MARKS = ("удалён", "активен", "карантин", "пометка")
+
+
+def soft_deleted_attrs(attrs: Any) -> dict:
+    """Пометка мягкого удаления: строка, тексты, промты и кадры[] остаются на месте."""
+    marked = copy.deepcopy(attrs) if isinstance(attrs, dict) else {}
+    marked["удалён"] = True
+    marked["активен"] = False
+    return marked
+
+
+def restored_frame_attrs(current: Any, before: dict) -> dict:
+    """attrs после восстановления: пометки сняты, кадры[] текущей строки слиты со снимком.
+
+    Есть строка — её кадры[] (в т.ч. добавленные после удаления и скрытые пометки)
+    сливаются со снимком. Строки нет — берутся attrs из снимка.
+    """
+    snap_attrs = before.get("attrs") if isinstance(before.get("attrs"), dict) else {}
+    incoming = snap_attrs.get("кадры") or []
+    if isinstance(current, dict):
+        attrs = copy.deepcopy(current)
+        attrs["кадры"] = merge_kadry_keep_missing(current.get("кадры") or [], incoming)
+    else:
+        attrs = copy.deepcopy(snap_attrs)
+        attrs["кадры"] = copy.deepcopy(incoming) if isinstance(incoming, list) else []
+    for key in _SOFT_DELETE_MARKS:
+        attrs.pop(key, None)
+    return attrs
+
+
+async def mark_frame_soft_deleted(project_id: int, number: int) -> bool:
+    """Мягкое удаление кадра без DELETE: ставит флаги, строку не трогает. False — кадра нет."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+    from app.services.action_layer.store import sessions
+
+    async with sessions()() as session:
+        frame = await session.scalar(
+            select(Frame).where(Frame.project_id == int(project_id), Frame.number == int(number))
+        )
+        if frame is None:
+            return False
+        frame.attrs = soft_deleted_attrs(frame.attrs)
+        await session.commit()
+        return True
+
+
 async def _restore_frame_row(project_id: int, before: dict) -> dict:
     from sqlalchemy import select
 
@@ -232,7 +281,6 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
     from app.services.frame_tombstones import forget_deleted
 
     number = int(before["number"])
-    incoming = (before.get("attrs") or {}).get("кадры") if isinstance(before.get("attrs"), dict) else []
     async with sessions()() as session:
         project = await session.get(Project, project_id)
         if project is None:
@@ -241,27 +289,31 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
             select(Frame).where(Frame.project_id == project_id, Frame.number == number)
         )
         if frame is not None:
-            raise ActionCallError(409, "conflict")
-        attrs = dict(before.get("attrs") or {})
-        attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), incoming)
-        frame = Frame(
-            project_id=project_id,
-            number=number,
-            voiceover_text=str(before.get("voiceover_text") or ""),
-            image_prompt=before.get("image_prompt"),
-            animation_prompt=before.get("animation_prompt"),
-            meaning=before.get("meaning"),
-            sort_key=before.get("sort_key"),
-            uuid=before.get("uuid"),
-            status=FrameStatus.planned,
-            attrs=attrs,
-        )
-        session.add(frame)
+            # Строка жива (мягкое удаление): снимаем пометки, тексты и промты не трогаем.
+            attrs = restored_frame_attrs(frame.attrs, before)
+            frame.attrs = attrs
+        else:
+            # Запасной путь: строки правда нет — вставляем из снимка.
+            attrs = restored_frame_attrs(None, before)
+            frame = Frame(
+                project_id=project_id,
+                number=number,
+                voiceover_text=str(before.get("voiceover_text") or ""),
+                image_prompt=before.get("image_prompt"),
+                animation_prompt=before.get("animation_prompt"),
+                meaning=before.get("meaning"),
+                sort_key=before.get("sort_key"),
+                uuid=before.get("uuid"),
+                status=FrameStatus.planned,
+                attrs=attrs,
+            )
+            session.add(frame)
         forget_deleted(project, number)
+        voiceover = str(frame.voiceover_text or "")
         await session.commit()
         return {
             "number": number,
-            "voiceover_text": frame.voiceover_text,
+            "voiceover_text": voiceover,
             "кадры": copy.deepcopy(attrs["кадры"]),
         }
 

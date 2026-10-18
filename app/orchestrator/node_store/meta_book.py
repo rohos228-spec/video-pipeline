@@ -232,9 +232,10 @@ def load_book(meta: dict | None) -> MetaBook:
 
 
 def checked_meta_version(params: dict, book: MetaBook) -> int:
-    """Если ключ передан — его сверяет expected_version. Иначе версия уже прочитанной книги."""
-    if "expected_meta_version" not in params:
-        return book.version
+    """Версия из запроса для оптимистичной блокировки. Без expected_meta_version — VersionConflict.
+
+    Подставлять book.version нельзя: книга только что прочитана, сравнение с собой ничего не ловит.
+    """
     return expected_version(params, book)
 
 
