@@ -253,6 +253,23 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("отменено");
   });
 
+  test("kill → stopped → resume снова включает kill", async ({ page }) => {
+    await openWithToken(page, "kill", "kill-resume");
+    await page.getByTestId("orch-composer").fill("платная генерация");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    await expect(page.getByTestId("orch-kill-status")).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(page.getByTestId("orch-kill")).toBeDisabled();
+    await emitBus(page, "kill-resume", "agent_status", 1, {
+      agent: "supervisor",
+      status: "running",
+      task_status: "executing",
+    });
+    await expect(page.getByTestId("orch-kill-status")).toHaveCount(0);
+    await expect(page.getByTestId("orch-kill")).toBeEnabled();
+  });
+
   test("kill switch: оговорка видна при произвольном detail", async ({ page }) => {
     await openWithToken(page, "idle", "kill-custom");
     await page.route("**/api/orchestrator/kill", async (route) => {

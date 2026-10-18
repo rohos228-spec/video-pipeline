@@ -599,6 +599,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(taskStatusRaw);
     if (taskStatus) task.status = taskStatus;
+    if (taskStatus === "executing" && next.killNotice?.phase === "stopped") {
+      const noticeSession = next.killNotice.sessionId;
+      const eventSession = event.session_id || null;
+      if (!noticeSession || !eventSession || noticeSession === eventSession) next.killNotice = null;
+    }
     return next;
   }
 
