@@ -264,9 +264,16 @@ async def test_apply_ops_batches_parallel_through_gate(
 
 
 def test_e2e_text_nodes_port_is_ephemeral() -> None:
+    import importlib.util
     import socket
+    import sys
 
-    import scripts.e2e_vibecode_text_nodes as stand
+    path = Path(__file__).resolve().parents[1] / "scripts" / "e2e_vibecode_text_nodes.py"
+    spec = importlib.util.spec_from_file_location("e2e_vibecode_text_nodes", path)
+    assert spec is not None and spec.loader is not None
+    stand = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = stand
+    spec.loader.exec_module(stand)
 
     held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     held.bind(("127.0.0.1", 18767))
