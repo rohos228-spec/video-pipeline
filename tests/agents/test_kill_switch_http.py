@@ -165,6 +165,8 @@ async def test_kill_during_paid_step_keeps_change_id_and_resume_skips_replan(tok
             assert created.status_code == 200
             await runtime.queue.drain()
             task_id = _task_id(runtime, session)
+            await runtime.supervisor.wait(task_id, timeout=5)
+            await runtime.supervisor.grant_approval(session)
             await actions.started.wait()
             assert runtime.tasks.get(task_id)["status"] == TaskStatus.executing.value
             plan_at_kill = runtime.tasks.get(task_id)["plan_json"]
@@ -331,6 +333,8 @@ async def test_kill_one_session_does_not_stop_the_other(token: str) -> None:
             assert opened.status_code == 200
             await runtime.queue.drain()
             paid_id = _task_id(runtime, first)
+            await runtime.supervisor.wait(paid_id, timeout=5)
+            await runtime.supervisor.grant_approval(first)
             await asyncio.wait_for(actions.started.wait(), 5)
             assert runtime.tasks.get(paid_id)["status"] == TaskStatus.executing.value
             other = await client.post(

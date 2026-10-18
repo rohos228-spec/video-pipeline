@@ -31,7 +31,7 @@ _VALIDATORS = "app.orchestrator.validators"
 _PRESERVATION = "app.orchestrator.validators.preservation"
 _ACTIONS = "app.orchestrator.actions"
 _APPROVAL_CHANGE_ID = re.compile(r"^orch-appr-\d+-\d+$")
-_ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required"})
+_ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required", "partial"})
 
 
 def load_module(name: str) -> Any | None:
@@ -193,11 +193,13 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1 #379 ``9820d123``.
+    """Мягкий импорт сохранности. Ветка WS1 не становится зависимостью.
 
     ``run_preservation_validators(before, after, ops=None, *, mode)``.
-    ``PreservationRejected`` — отказ, ``after`` не меняется.
-    Модуля в базе нет — фолбэк, ветка WS1 не становится зависимостью.
+    ``mode`` keyword-only: ``"reject"`` | ``"soft"``, по умолчанию ``"reject"``.
+    Вызов ядра передаёт ``mode="reject"``.
+    Любой ``PreservationRejected`` — блокирующий отказ, ``after`` не меняется.
+    Модуля нет — фолбэк.
     """
     module = load_module(_PRESERVATION)
     if module is None:
@@ -233,7 +235,7 @@ class FunctionValidators:
                 payload.get("before"),
                 payload.get("after"),
                 payload.get("ops"),
-                mode=payload.get("mode", "reject"),
+                mode="reject",
             )
         except Exception as exc:
             if rejected is not None and isinstance(exc, rejected):
@@ -309,31 +311,113 @@ class ActionsBridge:
         result = self.inner.execute(name, params, task_ctx)
         if inspect.isawaitable(result):
             result = await result
-        if isinstance(result, dict) and result.get("status") in _ENVELOPE_STATUSES:
-            return _strip_envelope(result)
+        if _envelope_status(result) in _ENVELOPE_STATUSES and not isinstance(result, ActionResult):
+            return _map_r23(result)
         if not isinstance(result, ActionResult):
             result = ActionResult.model_validate(result)
-        change_id = result.change_id
-        if isinstance(change_id, str) and _APPROVAL_CHANGE_ID.match(change_id):
+        _core_id, cc_change_id = _split_change_id(result.change_id)
+        if cc_change_id is not None:
+            return {
+                "ok": result.ok,
+                "status": "ok" if result.ok else "failed",
+                "data": dict(result.data),
+                "cost": float(result.cost or 0),
+                "change_id": None,
+                "cc_change_id": cc_change_id,
+                "warnings": [],
+                "error": None,
+            }
+        if isinstance(result.change_id, str) and _APPROVAL_CHANGE_ID.match(result.change_id):
             return result.model_copy(update={"change_id": None})
         return result
 
 
-def _strip_approval_id(value: Any) -> Any:
-    if isinstance(value, str) and _APPROVAL_CHANGE_ID.match(value):
+def _error_code(error: Any) -> str | None:
+    if error is None:
         return None
-    return value
+    if isinstance(error, dict):
+        raw = error.get("code", error.get("error"))
+        return str(raw) if raw else "failed"
+    text = str(error).strip()
+    return text or None
 
 
-def _strip_envelope(payload: dict[str, Any]) -> dict[str, Any]:
-    """Конверт r2.2 проходит как есть. ``orch-appr-*`` срезается и в теле ``result``."""
-    body = dict(payload)
-    if "change_id" in body:
-        body["change_id"] = _strip_approval_id(body.get("change_id"))
-    inner = body.get("result")
-    if isinstance(inner, dict):
-        inner = dict(inner)
-        if "change_id" in inner:
-            inner["change_id"] = _strip_approval_id(inner.get("change_id"))
-        body["result"] = inner
-    return body
+def _envelope_status(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return payload.get("status")
+    return getattr(payload, "status", None)
+
+
+def _envelope_field(payload: Any, key: str, default: Any = None) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
+def _result_body(raw: Any) -> dict[str, Any]:
+    """Тело ``result`` конверта. Поле ``data`` конверта сюда не читается."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    dump = getattr(raw, "model_dump", None)
+    if callable(dump):
+        dumped = dump()
+        if isinstance(dumped, dict):
+            return dict(dumped)
+    return {}
+
+
+def _map_r23(payload: Any) -> dict[str, Any]:
+    """Конверт r2.3 → ``ok`` / ``data`` / ``cost``.
+
+    ``status=approval_required`` остаётся эскалацией: ``ok`` ложно, это не
+    ``failed`` и не исключение. Супервизор поднимает карточку ядра.
+    ``warnings`` остаются на результате: супервизор кладёт их в событие шага.
+    ``error`` — код, статус ``failed``. ``partial: true`` внутри ``result``
+    даёт статус ``partial``, не успех. Поле ``data`` конверта не читается.
+    Чужой ``change_id`` уходит в ``cc_change_id`` и не подменяет id ядра.
+    ``orch-appr-*`` здесь не принимается: его выдаёт только ядро.
+    """
+    status = str(_envelope_field(payload, "status") or "")
+    data = _result_body(_envelope_field(payload, "result"))
+    raw_id = data.pop("change_id", None)
+    if not isinstance(raw_id, str):
+        raw_id = _envelope_field(payload, "change_id")
+    _core_id, cc_change_id = _split_change_id(raw_id)
+    # cc_change_id — отдельный ключ одобрения. Id ядра из тела его не заменяет.
+    cc_attr = _envelope_field(payload, "cc_change_id", None)
+    if isinstance(cc_attr, str) and cc_attr.strip() and _APPROVAL_CHANGE_ID.fullmatch(cc_attr.strip()) is None:
+        cc_change_id = cc_attr.strip()
+    if status == "ok" and data.get("partial") is True:
+        status = "partial"
+    error = _error_code(_envelope_field(payload, "error"))
+    if error and status == "ok":
+        status = "failed"
+    raw_cost = _envelope_field(payload, "cost", data.get("cost", 0))
+    try:
+        cost = float(raw_cost or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    warnings = _envelope_field(payload, "warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "data": data,
+        "result": data,
+        "cost": cost,
+        "warnings": [str(item) for item in warnings],
+        "error": error,
+        "change_id": None,
+        "cc_change_id": cc_change_id,
+    }
+
+
+def _split_change_id(raw: Any) -> tuple[None, str | None]:
+    """Id ядра этот слой не подставляет. Change-control id живёт в ``cc_change_id``."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    text = raw.strip()
+    if _APPROVAL_CHANGE_ID.match(text):
+        return None, None
+    return None, text

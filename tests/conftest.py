@@ -31,6 +31,9 @@ def _clear_project_db_caches() -> None:
 @pytest.fixture(autouse=True)
 def _isolate_settings_paths(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(settings, "harness_gate_disabled", True)
+    from app.services.step_cancel import _stop_pids
+
+    _stop_pids.clear()
     root = tmp_path_factory.mktemp("vp-isol")
     monkeypatch.setattr(settings, "data_dir", root)
     monkeypatch.setattr(settings, "sqlite_path", root / "state.db")

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
-from app.orchestrator.contracts import CheckpointData, PlanStep, TaskStatus
+from app.orchestrator.contracts import ApprovalDecision, CheckpointData, PlanStep, TaskStatus
 from tests.agents.mocks import MockActions, MockValidators, ScriptedRouter
 
 
@@ -70,7 +71,8 @@ async def test_paid_outcome_grant_does_not_replan(token: str) -> None:
         paid=True,
         mutating=True,
     )
-    planner = _Planner([step])
+    follow = PlanStep(action="note", mutating=True)
+    planner = _Planner([step, follow])
     actions = MockActions()
     runtime = build_runtime(
         actions=actions,
@@ -81,6 +83,8 @@ async def test_paid_outcome_grant_does_not_replan(token: str) -> None:
     set_runtime(runtime)
     try:
         task_id = await runtime.supervisor.start_task("fp-paid", "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("fp-paid")
         await actions.started.wait()
         runtime.supervisor.request_cancel("fp-paid")
         actions.release.set()
@@ -88,12 +92,64 @@ async def test_paid_outcome_grant_does_not_replan(token: str) -> None:
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert planner.calls == 1
         assert [call["name"] for call in actions.calls] == ["charge"]
-        await runtime.supervisor.grant_approval("fp-paid")
+        await runtime.supervisor.grant_approval("fp-paid", ApprovalDecision.approve)
         await runtime.supervisor.wait(task_id, timeout=5)
         assert planner.calls == 1
-        assert [call["name"] for call in actions.calls] == ["charge"]
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert [call["name"] for call in actions.calls] == ["charge", "note"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+        row = runtime.tasks.list_steps(task_id)[0]
+        assert row["status"] == "done"
+        assert row["change_id"] == "chg-1"
+        assert task_id not in runtime.supervisor._paid_outcome_hold
     finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_paid_outcome_deny_cancels_and_drains_queue(token: str) -> None:
+    del token
+    charge = PlanStep(
+        action="charge",
+        params={"_wait": True, "_cost": 1, "_change_id": "chg-1"},
+        paid=True,
+        mutating=True,
+    )
+    note = PlanStep(action="note", mutating=True)
+    planner = _Planner([charge])
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=planner,
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("fp-deny", "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("fp-deny")
+        await actions.started.wait()
+        runtime.supervisor.request_cancel("fp-deny")
+        actions.release.set()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        held = runtime.tasks.list_steps(task_id)[0]
+        assert held["change_id"] == "chg-1"
+        planner.plan = [note]
+        queued = await runtime.supervisor.submit_task("fp-deny", "следующая", project_id=13)
+        assert runtime.tasks.get(queued)["status"] == TaskStatus.queued.value
+        runtime.supervisor.request_cancel("fp-deny")
+        pending = [job for job in runtime.supervisor._shield_jobs if not job.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        kept = runtime.tasks.list_steps(task_id)[0]
+        assert kept["change_id"] == "chg-1"
+        await runtime.supervisor.wait(queued, timeout=5)
+        assert runtime.tasks.get(queued)["status"] == TaskStatus.done.value
+        assert [call["name"] for call in actions.calls] == ["charge", "note"]
+    finally:
+        actions.release.set()
         set_runtime(None)
 
 

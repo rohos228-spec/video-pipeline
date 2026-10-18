@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.orchestrator.agents.planner import RouterPlanner
+from app.orchestrator.agents.stubs import FallbackRouter
+from app.orchestrator.agents.wiring import RoutingAdapter
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.checkpoints import CheckpointStore
@@ -21,7 +23,13 @@ from app.orchestrator.contracts import (
     PlanStep,
     TaskStatus,
 )
-from app.services.step_cancel import abort_if_cancelled, clear_stop, is_stop_requested, request_stop
+from app.services.step_cancel import (
+    StepCancelledError,
+    abort_if_cancelled,
+    clear_stop,
+    is_stop_requested,
+    request_stop,
+)
 from app.web.routers.orchestrator_chat import router as chat_router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
@@ -109,6 +117,57 @@ async def test_kill_sets_node_stop_key(token: str) -> None:
         assert is_stop_requested(13)
     finally:
         clear_stop(13)
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_kill_after_cleared_external_stop_sets_the_key(token: str) -> None:
+    """Повторный kill не выходит до request_stop: ключ стоит, воркер его видит.
+
+    Первый kill застаёт чужой stop и помечает проект внешним. После clear_stop
+    следующий kill обязан поставить ключ заново. stop_key_set совпадает с
+    is_stop_requested, а abort_if_cancelled (следующий шаг воркера) срывается.
+    """
+    del token
+    project_id = 3701
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="slow", params={"_wait": True}, risk="none")]),
+    )
+    set_runtime(runtime)
+    try:
+        clear_stop(project_id)
+        request_stop(project_id, reason="user_stop")
+        task_id = await runtime.supervisor.start_task("kill-ext", "стой", project_id=project_id)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill("kill-ext")
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert project_id in runtime.supervisor._stop_external
+        clear_stop(project_id)
+        assert is_stop_requested(project_id) is False
+        actions.started.clear()
+        task_again = await runtime.supervisor.start_task("kill-ext-2", "стой", project_id=project_id)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill("kill-ext-2")
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_again, timeout=5)
+        kill = next(
+            event for event in runtime.bus.replay("kill-ext-2", 0) if event.type == "kill_switch"
+        )
+        assert kill.payload["stop_key_set"] is is_stop_requested(project_id) is True
+        with pytest.raises(StepCancelledError):
+            abort_if_cancelled(project_id)
+    finally:
+        actions.release.set()
+        clear_stop(project_id)
         set_runtime(None)
 
 
@@ -539,6 +598,60 @@ async def test_deny_partial_fails_task_and_keeps_the_row(token: str) -> None:
         set_runtime(None)
 
 
+class _WriteWithoutChangeId(MockActions):
+    async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
+        self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
+        self.started.set()
+        if params.get("_wait"):
+            await self.release.wait()
+        return ActionResult(ok=True, data={"name": name}, change_id=None, cost=0.0)
+
+
+@pytest.mark.asyncio
+async def test_accept_partial_without_change_id_does_not_rewrite(token: str) -> None:
+    """approve partial без change_id не вызывает execute второй раз и не плодит строки."""
+    del token
+    actions = _WriteWithoutChangeId()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "partial-noid"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        row = None
+        for _ in range(50):
+            rows = runtime.tasks.list_steps(task_id)
+            if rows and rows[0]["status"] == "partial":
+                row = rows[0]
+                break
+            await asyncio.sleep(0.01)
+        assert row is not None
+        assert not row["change_id"]
+        before = len(runtime.tasks.list_steps(task_id))
+        assert len(actions.calls) == 1
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert len(actions.calls) == 1
+        assert len(runtime.tasks.list_steps(task_id)) == before
+        assert runtime.tasks.list_steps(task_id)[0]["status"] == "done"
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
 class _MeterRouter(ScriptedRouter):
     def __init__(self) -> None:
         super().__init__()
@@ -572,6 +685,87 @@ async def test_cancelled_llm_step_records_spent_tokens(token: str) -> None:
             await runtime.supervisor.wait(task_id, timeout=5)
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
         assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.37)
+    finally:
+        set_runtime(None)
+
+
+class _PricedFallback(FallbackRouter):
+    """Боевой FallbackRouter: цена на cost_usd, атрибута partial_cost_usd нет."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cost_usd = 0.0
+
+    async def call(self, *args, **kwargs):
+        del args, kwargs
+        self.cost_usd = 0.41
+        self.started.set()
+        await asyncio.Event().wait()
+        return None
+
+
+@pytest.mark.asyncio
+async def test_real_router_partial_cost_is_spent(token: str) -> None:
+    """Отмена хода настоящего router кладёт cost_usd в spend, без partial_cost_usd."""
+    del token
+    inner = _PricedFallback()
+    router = RoutingAdapter(inner)
+    assert not hasattr(router, "partial_cost_usd")
+    assert not hasattr(inner, "partial_cost_usd")
+    assert isinstance(inner, FallbackRouter)
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("partial-cost", "план")
+        await inner.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) > 0
+    finally:
+        set_runtime(None)
+
+
+class _PricedPartial:
+    """Счётчик partial_cost_usd маленький, настоящая цена — cost_usd."""
+
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.cost_usd = 0.0
+        self.started = asyncio.Event()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        self.partial_cost_usd = 0.01
+        self.cost_usd = 0.58
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_keeps_cost_usd_when_partial_meter_is_smaller(token: str) -> None:
+    """Отмена не оставляет дешёвый partial, если cost_usd уже больше."""
+    del token
+    router = _PricedPartial()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("partial-real", "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.58)
     finally:
         set_runtime(None)
 

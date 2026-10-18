@@ -26,16 +26,22 @@ class _Registry:
         self.calls: list[dict] = []
         self.risk = risk
 
-    def metadata_of(self, name: str) -> dict[str, object]:
-        if name != "create_node":
-            raise KeyError(name)
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
         return {
-            "name": name,
-            "risk": self.risk,
-            "read_only": True,
-            "destructive": False,
-            "paid": False,
+            "create_node": {
+                "name": "create_node",
+                "risk": self.risk,
+                "read_only": True,
+                "destructive": False,
+                "paid": False,
+            }
         }
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        listed = self.metadata_registry()
+        if name not in listed:
+            raise KeyError(name)
+        return listed[name]
 
     def risk_of(self, name: str) -> Risk:
         return Risk(str(self.metadata_of(name)["risk"]))
@@ -54,8 +60,19 @@ def test_fallback_escalates_new_group_and_at_sign_is_not_a_name() -> None:
     assert matched[0].risk == "high"
     assert matched[0].destructive is True
     assert escalation_for("create_node", {"group_is_new": True}) is matched[0]
-    assert escalation_for("create_node", {"group_is_new": False}) is None
-    assert escalation_for("create_node", {}) is None
+    assert escalation_for("create_node", {"group_is_new": False}) is matched[0]
+    assert escalation_for("create_node", {}) is matched[0]
+    from app.services.node_groups import get_node_group
+
+    assert get_node_group("scene_design_fanout") is not None
+    assert escalation_for(
+        "create_node",
+        {"group": "scene_design_fanout", "group_is_new": False},
+    ) is None
+    assert escalation_for(
+        "create_node",
+        {"group": "scene_design_fanout", "group_is_new": True},
+    ) is matched[0]
     assert escalation_for("create_node@new_group", {"group_is_new": True}) is None
     assert not_in_whitelist("create_node@new_group", _Registry(risk="low")) is True
     assert not_in_whitelist("create_node", _Registry(risk="low")) is False
@@ -190,8 +207,22 @@ async def test_create_node_unknown_group_key_is_new_without_planner_flag() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_planner_false_and_new_group_still_escalates() -> None:
+    """group_is_new=False от планировщика не прячет новую группу."""
+    runtime, actions, task_id = await _run({"group": "g_brand_new", "group_is_new": False})
+    assert actions.calls == []
+    assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+    opened = [event for event in runtime.bus.replay("cn-esc", 0) if event.type == "approval_required"]
+    assert opened[-1].payload["risk"] == "high"
+    assert opened[-1].payload["action"] == "create_node"
+
+
+@pytest.mark.asyncio
 async def test_create_node_existing_group_follows_base_risk() -> None:
-    runtime, actions, task_id = await _run({"group_is_new": False})
+    runtime, actions, task_id = await _run(
+        {"group": "scene_design_fanout", "group_is_new": False}
+    )
     assert [call["name"] for call in actions.calls] == ["create_node"]
     assert "approval" not in actions.calls[0]["ctx"]
     assert "waiting_approval" not in _statuses(runtime, task_id)
@@ -203,7 +234,14 @@ async def test_create_node_existing_group_follows_base_risk() -> None:
         validators=MockValidators(),
         router=ScriptedRouter(),
         planner=FixedPlanner(
-            [PlanStep(action="create_node", params={}, mutating=True, risk="none")]
+            [
+                PlanStep(
+                    action="create_node",
+                    params={"group": "scene_design_fanout", "group_is_new": False},
+                    mutating=True,
+                    risk="none",
+                )
+            ]
         ),
         critic=ScriptedCritic(["approve"]),
     )

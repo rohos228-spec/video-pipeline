@@ -97,7 +97,7 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "GET /api/orchestrator/chat/{session}/partial-changes отдаёт change_id шагов partial. "
         "resume_allowed истинен только для paused, waiting_approval или critic_review, "
         "если чекпоинт есть и прогон не живой. "
-        "partial_write → waiting_approval. "
+        "partial_write → waiting_approval; approve принимает запись, deny проваливает задачу. "
         "skipped_without_partial хранит change_id и не повторяет execute. "
         "deletion_forbidden: кадр без soft_delete не исполняется даже после grant.",
     ),
@@ -685,13 +685,14 @@ class ActionMetadata(BaseModel):
     ``destructive=True`` само по себе не открывает approval. Одобряемый
     destructive — только ``APPROVABLE_DESTRUCTIVE`` (не трогает медиа).
     Остальной destructive и имя с маркером удаления — ``deletion_blocked``.
-    Поле ``paid`` в эту модель не добавляется: его читает ``registry_marks_paid``
-    из dict будущего реестра.
+    ``paid=True`` на модели или в dict реестра помечает шаг платным.
+    План может только добавить платность, не снять её.
     """
 
     risk: str = "high"
     read_only: bool | None = None
     destructive: bool = False
+    paid: bool = False
 
 
 class ActionExecutor(Protocol):
@@ -890,7 +891,9 @@ DELETION_ACTIONS: frozenset[str] = frozenset(
 )
 APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
 # Destructive без медиа. Другие имена с destructive=True остаются deletion_blocked.
-APPROVABLE_DESTRUCTIVE = frozenset({"revert_node_to_git", "prompt.retire_master"})
+APPROVABLE_DESTRUCTIVE = frozenset(
+    {"revert_node_to_git", "prompt.retire_master", "frame.restore"}
+)
 PIPELINE_FORECAST_LIMIT_USD = 40.0
 _RISK_RANK: dict[Risk, int] = {Risk.none: 0, Risk.low: 1, Risk.medium: 2, Risk.high: 3}
 
@@ -1244,28 +1247,46 @@ def _listed_names(values: Any) -> set[str]:
     return names
 
 
+def _optional_name_list(fn: Any) -> Any:
+    """Список имён, пустое множество при сбое, ``_MISSING`` если источника нет."""
+    if not callable(fn):
+        return _MISSING
+    try:
+        values = fn()
+    except Exception:
+        return set()
+    if values is None:
+        return _MISSING
+    return _listed_names(values)
+
+
 def explicit_action_names(registry: Any) -> set[str] | None:
-    """Имена из ``metadata_registry()`` / ``action_names``. ``None`` — списка нет."""
-    for owner in _registry_owners(registry):
-        values: Any = _MISSING
+    """``whitelist()`` по всем владельцам, иначе ``metadata_registry()``.
+
+    Обёртка с ``metadata_registry()`` не прячет ``whitelist()`` модуля.
+    ``None`` — ни одного списка нет: отказ всем. Пустой ``whitelist()`` и
+    исключение из него — отказ, не более широкий реестр.
+    """
+    owners = _registry_owners(registry)
+    for owner in owners:
+        listed = _optional_name_list(getattr(owner, "whitelist", None))
+        if listed is not _MISSING:
+            return listed
+    for owner in owners:
         fn = getattr(owner, "metadata_registry", None)
         if callable(fn):
-            try:
-                values = fn()
-            except Exception:
-                return set()
+            listed = _optional_name_list(fn)
         else:
             raw = getattr(owner, "action_names", None)
             if callable(raw):
-                try:
-                    values = raw()
-                except Exception:
-                    return set()
+                listed = _optional_name_list(raw)
             elif isinstance(raw, (list, tuple, set, frozenset, dict)):
-                values = raw
-        if values is _MISSING or values is None:
+                listed = _listed_names(raw)
+            else:
+                listed = _MISSING
+        if listed is _MISSING:
             continue
-        return _listed_names(values)
+        return listed
     return None
 
 
@@ -1281,21 +1302,22 @@ def _name_listed(action: str, listed: set[str]) -> bool:
 def not_in_whitelist(action: str, registry: Any | None) -> bool:
     """Имя нельзя ни одобрить, ни выполнить.
 
-    Белый список — явный ``metadata_registry()`` / список имён, не сам факт
-    ответа ``metadata_of``. Пустая карточка и ``name``, не равное действию,
-    отказ. Карточка без поля ``name`` и без списка имён остаётся допустимой.
-    ``allow_unlisted=True`` — только явный тестовый флаг; ``@`` и pattern
-    он не открывает.
+    Белый список — ``whitelist()``, если метод есть, иначе
+    ``metadata_registry()`` / список имён. Это не сам факт ответа
+    ``metadata_of``. Нет ни одного списка, пустой список и сбой — отказ.
+    Пустая карточка и ``name``, не равное действию, отказ.
+    ``allow_unlisted=True`` — только явный тестовый флаг на реестре или
+    обёртке; ``@`` и pattern он не открывает.
     """
     raw = action or ""
     if "@" in raw or action_name_rejected(raw):
         return True
     if canonical_action_name(raw) in ACTION_DENYLIST:
         return True
-    if getattr(registry, "allow_unlisted", False) is True:
+    if any(getattr(owner, "allow_unlisted", False) is True for owner in _registry_owners(registry)):
         return False
     listed = explicit_action_names(registry)
-    if listed is not None and not _name_listed(raw, listed):
+    if listed is None or not _name_listed(raw, listed):
         return True
     kind, meta = lookup_action_metadata(action, registry)
     if kind != "value" or meta is None:
@@ -1315,8 +1337,8 @@ def _meta_field(meta: Any, key: str, default: Any = None) -> Any:
 def registry_marks_paid(action: str, registry: Any | None) -> bool:
     """Имени нет в реестре или ``metadata_of`` недоступна через ``KeyError``.
 
-    Поле ``paid`` читается из dict будущего реестра. В ``ActionMetadata`` его нет,
-    и сюда оно не добавляется: известная запись без ``paid`` не становится платной.
+    Поле ``paid`` читается из dict реестра или ``ActionMetadata``.
+    Известная запись без ``paid`` не становится платной.
     """
     kind, meta = lookup_action_metadata(action, registry)
     if kind == "miss":
@@ -1382,27 +1404,30 @@ def load_risk_escalations() -> tuple[Any, ...]:
 
 
 def group_is_new(params: Any) -> bool:
-    """Новая группа — по серверному ключу. Флаг планировщика только без ключа.
+    """Новая группа. Флаг планировщика риск не снижает.
 
-    ``group`` / ``group_id`` / ``group_key``: нет записи или сбой lookup —
-    группа новая. Без ключа остаётся ``group_is_new is True``.
+    Нет ключа ``group`` / ``group_id`` / ``group_key`` — группа новая.
+    Ключ есть: нет записи или сбой lookup — новая. ``group_is_new is True``
+    может только повысить уже найденную группу.
     """
+    planner_new = isinstance(params, dict) and params.get("group_is_new") is True
     if not isinstance(params, dict):
-        return False
+        return True
     key = ""
     for field in ("group", "group_id", "group_key"):
         raw = params.get(field)
         if isinstance(raw, str) and raw.strip():
             key = raw.strip()
             break
-    if key:
-        try:
-            from app.services.node_groups import get_node_group
+    if not key:
+        return True
+    try:
+        from app.services.node_groups import get_node_group
 
-            return get_node_group(key) is None
-        except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
-            return True
-    return params.get("group_is_new") is True
+        server_new = get_node_group(key) is None
+    except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
+        return True
+    return server_new or planner_new
 
 
 def escalation_for(action: str, params: Any) -> Any | None:
@@ -1665,7 +1690,7 @@ def frame_soft_delete_state(action: str, registry: Any | None) -> str | None:
     kind, meta = lookup_action_metadata(action, registry)
     if kind == "absent":
         return None
-    if kind != "value" or not isinstance(meta, dict) or meta.get("soft_delete") is not True:
+    if kind != "value" or meta is None or _meta_field(meta, "soft_delete", None) is not True:
         return "forbidden"
     return "grant"
 
@@ -1685,14 +1710,18 @@ def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
         or params_request_deletion(step.params, action=step.action)
     ):
         return True
-    kind, _meta = lookup_action_metadata(step.action, registry)
+    kind, meta = lookup_action_metadata(step.action, registry)
     if kind == "miss":
         return False
+    if kind == "absent":
+        return action_unknown(step.action, registry)
+    if meta is None:
+        return True
     if _destructive_blocked(step.action, registry):
         return True
     if metadata_call_gate(step.action, registry) in {"paid", "destructive"}:
         return False
-    return not explicitly_safe(step.action, registry)
+    return False
 
 
 def _destructive_blocked(action: str, registry: Any | None) -> bool:
@@ -2322,6 +2351,10 @@ def export_contract_schemas() -> dict[str, Any]:
             "default_block_outcome": TaskStatus.failed.value,
             "approval_decision_labels": dict(APPROVAL_DECISION_LABELS),
             "retained_event_types": sorted(RETAINED_EVENT_TYPES),
+            "partial_write_decisions": [
+                ApprovalDecision.approve.value,
+                ApprovalDecision.deny.value,
+            ],
             "stop_key": "project_{id}.stop",
             "partial_changes_path": "/api/orchestrator/chat/{session}/partial-changes",
         },

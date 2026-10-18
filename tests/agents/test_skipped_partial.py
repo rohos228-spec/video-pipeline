@@ -29,6 +29,9 @@ class _SkipWrite:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {"touch": self.metadata_of("touch")}
+
     def metadata_of(self, name: str) -> dict[str, object]:
         return {
             "name": name,

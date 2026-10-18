@@ -17,6 +17,9 @@ class _Frames:
         self.calls: list[str] = []
         self.contexts: list[dict] = []
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {name: self.metadata_of(name) for name in _NAMES}
+
     def metadata_of(self, name: str) -> dict[str, object]:
         if name not in _NAMES:
             raise KeyError(name)
@@ -111,6 +114,23 @@ async def test_frame_delete_runs_only_with_soft_delete_and_grant(token: str, nam
         set_runtime(None)
 
 
+def test_object_soft_delete_card_is_grant() -> None:
+    """Карточка WS2 — объект с soft_delete, не dict."""
+    from app.orchestrator.contracts import frame_soft_delete_state
+
+    class _Card:
+        def metadata_of(self, name: str) -> object:
+            if name != "montage.delete_frame":
+                raise KeyError(name)
+            return type(
+                "Soft",
+                (),
+                {"soft_delete": True, "restore_action": "frame.restore", "name": name},
+            )()
+
+    assert frame_soft_delete_state("montage.delete_frame", _Card()) == "grant"
+
+
 @pytest.mark.asyncio
 async def test_grant_does_not_run_frame_delete_without_soft_delete(token: str) -> None:
     del token
@@ -132,3 +152,32 @@ async def test_grant_does_not_run_frame_delete_without_soft_delete(token: str) -
         assert runtime.tasks.get(task_id)["error"] == "deletion_forbidden"
     finally:
         set_runtime(None)
+
+
+class _RestoreCard:
+    """Карточка high/destructive есть, но whitelist() имя не содержит."""
+
+    def whitelist(self) -> list[str]:
+        return ["montage.delete_frame"]
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        if name != "frame.restore":
+            raise KeyError(name)
+        return {
+            "name": name,
+            "risk": "high",
+            "read_only": False,
+            "destructive": True,
+            "paid": False,
+        }
+
+
+def test_frame_restore_outside_the_whitelist_is_refused() -> None:
+    """Исключение b72ae2c9 снято: карточка мимо whitelist() грант не открывает."""
+    from app.orchestrator import contracts
+    from app.orchestrator.contracts import not_in_whitelist, step_is_deletion
+
+    assert not hasattr(contracts, "frame_restore_grant")
+    card = _RestoreCard()
+    assert not_in_whitelist("frame.restore", card) is True
+    assert step_is_deletion(PlanStep(action="frame.restore", mutating=True, risk="high"), card) is False

@@ -91,8 +91,11 @@ async def test_append_during_paid_step_reaches_next_planner(token: str) -> None:
             )
             assert created.status_code == 200
             await runtime.queue.drain()
+            task_id = runtime.supervisor._session_task[session]
+            await runtime.supervisor.wait(task_id, timeout=5)
+            assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+            await runtime.supervisor.grant_approval(session)
             await actions.started.wait()
-            task_id = next(iter(runtime.supervisor._runs))
             held = runtime.tasks.get(task_id)["plan_json"]
             assert runtime.tasks.get(task_id)["status"] == TaskStatus.executing.value
             appended = await client.post(
@@ -113,6 +116,9 @@ async def test_append_during_paid_step_reaches_next_planner(token: str) -> None:
             await runtime.queue.drain()
             actions.release.set()
             await runtime.supervisor.wait(task_id, timeout=5)
+            if runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value:
+                await runtime.supervisor.grant_approval(session)
+                await runtime.supervisor.wait(task_id, timeout=5)
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
         users = _planner_user(router_llm)
         assert users
