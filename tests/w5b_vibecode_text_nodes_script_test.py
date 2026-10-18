@@ -251,17 +251,48 @@ def test_evaluate_live_adds_cap_and_real_post_checks():
 
 
 
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _run_dry(node: str, tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
     for name in ("GPT_RELAY_TOKEN", "GPT_PROXY_URL", "VIBECODE_API_KEY", "GPT_API_KEY"):
         env.pop(name, None)
+    # Общий порт 18767: параллельные воркеры попадают в чужой стенд,
+    # и launch-options не содержит ноду этого прогона.
     proc = subprocess.run(
         [sys.executable, "-X", "utf8", str(_PATH), "--node", node, "--work-dir", str(tmp_path), "--dry",
+         "--port", str(_free_port()),
          "--settle-s", "6", "--sleep-minutes", "0.01", "--timeout-s", "420", *extra],
         cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=560)
     result_path = tmp_path / "result.json"
     result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
     return proc.returncode, result, (proc.stdout or "")[-1500:]
+
+
+def test_parallel_dry_runs_do_not_share_the_stand_port(monkeypatch, tmp_path):
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        (tmp_path / "result.json").write_text("{}", encoding="utf-8")
+
+        class Proc:
+            returncode = 0
+            stdout = ""
+
+        return Proc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _run_dry("plan", tmp_path)
+    _run_dry("script", tmp_path)
+    ports = [cmd[cmd.index("--port") + 1] for cmd in seen]
+    assert ports[0] != ports[1]
+    assert script.PORT not in {int(p) for p in ports}
 
 
 @pytest.mark.parametrize("node", WANTED)
