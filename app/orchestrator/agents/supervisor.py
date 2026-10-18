@@ -278,6 +278,8 @@ class Supervisor:
             raise ProjectBindError(409, "not waiting_approval")
         if self._block_reason.get(resolved) != ApprovalReason.missing_project_id.value:
             raise ProjectBindError(409, "not missing_project_id")
+        if resolved in self._budget_stop:
+            raise ProjectBindError(409, "budget_exhausted")
         self.tasks.set_project_id(resolved, int(project_id))
         self._block_reason.pop(resolved, None)
         await self._resume_after_project_bind(session_id, resolved)
@@ -306,7 +308,15 @@ class Supervisor:
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             data = self._checkpoint_from_row(self.tasks.get(task_id) or {})
-        self._budget_stop.discard(task_id)
+        if task_id in self._budget_stop:
+            self._block_reason[task_id] = ApprovalReason.budget_exhausted.value
+            await self.publish_approval_required(
+                session_id,
+                {"reason": ApprovalReason.budget_exhausted.value, "task_id": task_id},
+                task_id=task_id,
+                reuse=True,
+            )
+            return
         if data is None or not data.plan:
             await self._replan_from_grant(task_id, session_id)
             return
