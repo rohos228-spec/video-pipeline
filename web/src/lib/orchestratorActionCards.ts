@@ -485,7 +485,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   if (skippedWithoutPartial(result)) return invalidView(seq);
   if (status === "approval_required") {
     const metadata = metadataFrom(metaRaw);
-    if (!metadata) return invalidView(seq);
+    if (!metadata || !needsApproval(metadata)) return invalidView(seq);
     const view = blankView(`wait-${seq}`, metadata, "waiting");
     view.action = str(result?.action).trim() || metadata.name;
     applyEnvelopeExtras(view, payload, result);
@@ -736,6 +736,7 @@ export const EXAMPLE_PAID_APPROVAL = stepPayload("s-paid", "платный вы�
   error: null,
 });
 
+/** risk none и paid/destructive false: #378 не считает это approval. */
 export const EXAMPLE_UNKNOWN_APPROVAL = stepPayload("s-unknown", "неизвестное", {
   status: "approval_required",
   result: {

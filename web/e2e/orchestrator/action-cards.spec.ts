@@ -432,10 +432,10 @@ test("ApprovalRequired без события ядра не даёт кнопки
   await expect(page.getByTestId("orch-approve")).toHaveCount(0);
 
   await emit(page, "act-wait", "step_finished", EXAMPLE_UNKNOWN_APPROVAL);
-  const unknown = page.getByTestId("orch-action-wait").filter({ hasText: "widget.spin" });
-  await expect(unknown).toContainText("риск none");
-  await expect(unknown).not.toContainText("платно");
-  await expect(unknown).not.toContainText("деструктивно");
+  const unknown = page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" });
+  await expect(unknown).toBeVisible();
+  await expect(unknown).toHaveAttribute("data-kind", "invalid");
+  await expect(page.getByTestId("orch-action-wait").filter({ hasText: "widget.spin" })).toHaveCount(0);
   await expect(page.getByTestId("orch-approve")).toHaveCount(0);
 
   await emit(page, "act-wait", "approval_required", EXAMPLE_CORE_APPROVAL);
@@ -667,3 +667,9 @@ test("ok-карточки edit, delete и report не содержат риск"
   await expect(cards.filter({ hasText: "платно" })).toHaveCount(0);
   await expect(cards.filter({ hasText: "деструктивно" })).toHaveCount(0);
 });
+
+test("approval без needsApproval даёт invalid", () => {
+  const view = readActionEnvelope(EXAMPLE_UNKNOWN_APPROVAL, 1);
+  expect(view?.kind).toBe("invalid");
+});
+
