@@ -469,17 +469,10 @@ def test_frame_text_and_edge_loss_is_error() -> None:
 
 
 def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
+    """Тот же текст и то же число копий. Меняется только ключ закадр → действие."""
+
     before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
-    # Две копии одного текста: пропала одна — frames_cleared, даже если вторая осталась.
-    fewer = _scene([{"действие": "фраза на месте"}])
-    with pytest.raises(PreservationRejected) as fewer_exc:
-        run_preservation_validators(before, fewer, mode="reject")
-    assert any(
-        item.code == "frames_cleared" and item.id == "фраза на месте"
-        for item in fewer_exc.value.violations
-    )
-    # Тот же текст и то же число копий, другой ключ — не потеря.
-    same = _scene([{"действие": "фраза на месте"}, {"текст": "фраза на месте"}])
+    same = _scene([{"действие": "фраза на месте"}, {"действие": "фраза на месте"}])
     assert run_preservation_validators(before, same, mode="reject") == []
 
     gone = _scene([{"id": "k1", "закадр": "другой"}])
@@ -494,6 +487,34 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
 
     quiet = _scene([{"закадр": "фраза на месте", "активен": False}])
     assert run_preservation_validators(quiet, _scene([]), mode="soft") == []
+
+
+def test_two_idless_copies_to_one_is_frames_cleared(tmp_path) -> None:
+    """Две копии без id стали одной: и шим, и модуль fb09550b дают frames_cleared."""
+
+    before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
+    after = _scene([{"действие": "фраза на месте"}])
+    for run, rejected in _preservation_runners(tmp_path):
+        with pytest.raises(rejected) as raised:
+            run(before, after, mode="reject")
+        assert any(
+            item.code == "frames_cleared" and item.id == "фраза на месте"
+            for item in raised.value.violations
+        )
+
+
+def test_idless_copy_reorder_edit_and_new_id_pass(tmp_path) -> None:
+    """Порядок копий, правка одной и выдача id не ошибка. Пропажа копии — ошибка."""
+
+    pair = [{"закадр": "альфа"}, {"закадр": "бета"}]
+    reordered = [{"закадр": "бета"}, {"закадр": "альфа"}]
+    edited = [{"закадр": "фраза на месте"}, {"закадр": "фраза новая"}]
+    identified = [{"закадр": "фраза на месте"}, {"id": "k1", "закадр": "фраза на месте"}]
+    twins = [{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}]
+    for run, _rejected in _preservation_runners(tmp_path):
+        assert run(_scene(pair), _scene(reordered), mode="reject") == []
+        assert run(_scene(twins), _scene(edited), mode="reject") == []
+        assert run(_scene(twins), _scene(identified), mode="reject") == []
 
 
 def test_non_list_kadry_is_error() -> None:
@@ -1041,6 +1062,52 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
                     }
                 )
     return rejected
+
+
+def _preservation_runners(tmp_path):
+    """Шим и настоящий preservation.py из fb09550b. Модуль в дерево не копируется."""
+
+    yield run_preservation_validators, PreservationRejected
+
+    import io
+    import sys
+    import tarfile
+    from pathlib import Path
+
+    import app.orchestrator.validators as validators_pkg
+
+    repo = Path(__file__).resolve().parents[1]
+    sha = _ensure_ws1_commit(repo)
+    extracted = tmp_path / "ws1-preservation"
+    extracted.mkdir()
+    archive = _git(repo, "archive", sha, "app/orchestrator/validators")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        tar.extractall(extracted, filter="data")
+    module_dir = extracted / "app" / "orchestrator" / "validators"
+    flags = module_dir / "activity_flags.py"
+    if not flags.is_file():
+        flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())
+
+    import importlib
+
+    old_path = list(validators_pkg.__path__)
+    saved = {
+        name: sys.modules[name]
+        for name in list(sys.modules)
+        if name.startswith("app.orchestrator.validators.")
+    }
+    validators_pkg.__path__ = [str(module_dir)]
+    try:
+        for name in saved:
+            del sys.modules[name]
+        real = importlib.import_module("app.orchestrator.validators.preservation")
+        yield real.run_preservation_validators, real.PreservationRejected
+    finally:
+        validators_pkg.__path__ = old_path
+        for name in list(sys.modules):
+            if name.startswith("app.orchestrator.validators.") and name not in saved:
+                del sys.modules[name]
+        sys.modules.update(saved)
 
 
 def _ensure_ws1_commit(repo) -> str:

@@ -6,7 +6,6 @@ import importlib
 import importlib.util
 import sys
 
-import numpy as np
 import pytest
 
 from app.orchestrator.validators.activity_flags import (
@@ -16,8 +15,8 @@ from app.orchestrator.validators.activity_flags import (
     shot_is_active,
 )
 
-# NaN того типа, которым pandas заполняет пустую ячейку.
-_NAN = np.float64("nan")
+# NaN: сравнение с собой ложно, как у пустой ячейки pandas. stdlib, без numpy.
+_NAN = float("nan")
 
 # Положительные: пометка «удалён»/«карантин» стоит.
 _POSITIVE = (

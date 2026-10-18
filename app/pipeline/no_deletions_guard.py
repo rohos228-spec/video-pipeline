@@ -889,7 +889,12 @@ else:
         return found
 
     def _anonymous_texts(frames: list[Any]) -> set[str]:
-        """Уникальный текст кадров без id. Число копий одного текста не важно."""
+        """Текст без id, который исчез целиком.
+
+        Число копий считает ``_check_frames_cleared`` через Counter.
+        Пока хотя бы одна копия текста на месте, это не ``frame_deleted``:
+        правка одной копии и выдача ей id список не укорачивают.
+        """
 
         found: set[str] = set()
         for frame in frames:
