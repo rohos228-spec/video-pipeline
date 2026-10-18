@@ -768,11 +768,26 @@ async def test_merge_keeps_deleted_da(session: AsyncSession) -> None:
         [{"id": "a", "закадр": "альфа", "удалён": "да"}],
         number=1,
     )
+    explicit_net = await _frame_with_kadry(
+        session,
+        project,
+        "deleted-da-net",
+        [{"id": "a", "закадр": "альфа", "удалён": "да"}],
+        number=2,
+    )
     await session.commit()
     await apply_ops(
         session,
         project,
-        [{"frame_uuid": frame.uuid, "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]}}],
+        [
+            {"frame_uuid": frame.uuid, "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]}},
+            {
+                "frame_uuid": explicit_net.uuid,
+                "fields": {
+                    "кадры": [{"id": "a", "закадр": "альфа новая", "удалён": "нет"}]
+                },
+            },
+        ],
         export_xlsx=False,
     )
     await session.refresh(frame)
@@ -781,6 +796,15 @@ async def test_merge_keeps_deleted_da(session: AsyncSession) -> None:
     assert shots[0]["удалён"] == "да"
     assert shots[0]["закадр"] == "альфа новая"
     assert flags_active(shots[0]) is False
+
+    await session.refresh(explicit_net)
+    net_shots = list(explicit_net.attrs["кадры"])
+    assert len(net_shots) == 1, net_shots
+    # Явное входящее «нет» не снимает старую метку: штамп возвращает «да».
+    assert net_shots[0]["удалён"] == "да"
+    assert net_shots[0]["закадр"] == "альфа новая"
+    assert net_shots[0]["активен"] is False
+    assert flags_active(net_shots[0]) is False
 
 
 @pytest.mark.asyncio
