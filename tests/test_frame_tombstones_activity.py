@@ -611,55 +611,111 @@ def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
         restore()
 
 
-def test_activity_parity_real_vs_fallback(caplog: pytest.LogCaptureFixture) -> None:
-    """Импортируемый activity_flags и именные фолбэки совпадают с таблицей 1cdf4b83.
+# Решение Heil: не fail-closed. Эталон — blob 56a6e8cf, не «любая левая строка скрывает».
+_HEIL_BLOB = "56a6e8cf104c0a0f6bc1ba1467d54e5844d38819"
+_MISSING = object()
 
-    Числовая строка равна числу. Утвердительные значения ``активен``
-    (``да`` / ``true`` / ``1`` / ``yes`` / ``on`` / ``истина``) не пишут WARN.
-    WARN один раз только у неизвестной строки. Тест не скипается.
+
+def _heil_value_table() -> list[tuple[object, object, bool]]:
+    """Одна таблица. Третий столбец — шот и кадр живые."""
+
+    inactive = (
+        True,
+        1,
+        "1",
+        "true",
+        "True",
+        "да",
+        "Да",
+        " да ",
+        "yes",
+        "on",
+        "истина",
+    )
+    alive = (False, 0, "0", "false", "нет", "ложь", "0.0", float("nan"), None)
+    rows: list[tuple[object, object, bool]] = []
+    for mark in (DELETED_MARK, QUARANTINE_MARK):
+        for value in inactive:
+            rows.append((mark, value, False))
+        for value in alive:
+            rows.append((mark, value, True))
+        rows.append((mark, "-", True))
+    rows.append((ACTIVE_MARK, "ложь", False))
+    rows.append((_MISSING, _MISSING, True))
+    return rows
+
+
+def test_activity_parity_real_vs_fallback(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Решение Heil: не fail-closed, фолбэк совпадает с blob ``56a6e8cf``.
+
+    Одна таблица идёт в модуль, загруженный из этого blob, и в fallback:
+    ``shot_is_active``, ``frame_is_active``, ``entity_is_marked``.
+    «-» оставляет запись живой и пишет ровно один WARN на значение.
     """
 
-    from app.orchestrator.validators import activity_flags as real
-    from app.services import activity_flags_fallback as fallback
-    from app.services.frame_tombstones import (
-        _fallback_frame_is_active,
-        _fallback_shot_is_active,
-    )
-    from tests.validators.test_activity_flags_parity import _payload, _rows
+    import subprocess
+    from pathlib import Path
 
-    def _warnings() -> list[str]:
+    import app.services.activity_flags_fallback as fallback
+    from app.services.frame_tombstones import entity_is_marked
+
+    repo = Path(__file__).resolve().parents[1]
+    loaded = subprocess.run(
+        ["git", "show", _HEIL_BLOB],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
+    assert loaded.returncode == 0 and loaded.stdout, loaded.stderr
+    real = _load_activity_flags_blob(tmp_path, loaded.stdout, "activity_flags_blob_56a6e8cf")
+
+    def real_marked(entity: object) -> bool:
+        attrs = getattr(entity, "attrs", None)
+        if not isinstance(attrs, dict):
+            return False
+        return real.flag_is_true(attrs.get(DELETED_MARK), mark=DELETED_MARK) or real.flag_is_true(
+            attrs.get("archived"), mark="archived"
+        )
+
+    def warnings() -> list[str]:
         return [
             record.getMessage()
             for record in caplog.records
             if record.levelno >= logging.WARNING
         ]
 
-    rows = _rows()
+    sides = (
+        ("real", real.shot_is_active, real.frame_is_active, real_marked, real),
+        (
+            "fallback",
+            fallback.shot_is_active,
+            fallback.frame_is_active,
+            entity_is_marked,
+            fallback,
+        ),
+    )
+    rows = _heil_value_table()
     assert rows
     caplog.set_level(logging.WARNING)
     differences: list[object] = []
-    callers = (
-        ("real.shot", real.shot_is_active, real),
-        ("real.frame", real.frame_is_active, real),
-        ("fallback.shot", _fallback_shot_is_active, fallback),
-        ("fallback.frame", _fallback_frame_is_active, fallback),
-    )
-    for mark, value, expected in rows:
-        payload = _payload(mark, value)
-        expect_warn = isinstance(value, str) and value.strip() == "-"
-        seen: dict[str, list[str]] = {}
-        for label, fn, module in callers:
+    for mark, value, expected_active in rows:
+        payload = {} if mark is _MISSING else {mark: value}
+        entity = SimpleNamespace(attrs=dict(payload))
+        expect_marked = mark == DELETED_MARK and not expected_active
+        expect_warn = value == "-"
+        seen: dict[str, tuple[tuple[bool, bool, bool], list[str]]] = {}
+        for label, shot, frame, marked, module in sides:
             module._WARNED_VALUES.clear()
             caplog.clear()
-            got = fn(payload)
-            messages = _warnings()
-            seen[label] = messages
-            if got is not expected or bool(messages) is not expect_warn or (
-                expect_warn and len(messages) != 1
-            ):
-                differences.append((label, mark, value, got, expected, messages))
-        if seen["real.shot"] != seen["fallback.shot"] or seen["real.frame"] != seen[
-            "fallback.frame"
-        ]:
-            differences.append(("warn", mark, value, seen))
+            got = (shot(payload), frame(payload), marked(entity))
+            messages = warnings()
+            seen[label] = (got, messages)
+            if got != (expected_active, expected_active, expect_marked):
+                differences.append((label, mark, value, got, expected_active, expect_marked))
+            if expect_warn and len(messages) != 1:
+                differences.append((label, mark, value, "warn", messages))
+            if not expect_warn and messages:
+                differences.append((label, mark, value, "warn", messages))
+        if seen["real"] != seen["fallback"]:
+            differences.append(("mismatch", mark, value, seen))
     assert differences == []
