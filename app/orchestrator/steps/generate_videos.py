@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from aiogram import Bot
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 # Chrome CDP сессия для видео полностью отключена: генерация идёт строго через HTTP API.
 def _video_http_primary() -> bool:
@@ -22,7 +24,6 @@ def _video_http_primary() -> bool:
 async def _optional_browser_session(need_cdp: bool = False) -> AsyncIterator[Any]:
     yield None
 from app.generation_options import (
-    ASPECT_RATIOS_BY_ID,
     DEFAULTS,
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS_BY_ID,
@@ -45,6 +46,7 @@ from app.services.artifact_recovery import (
     recover_scene_images_from_disk,
     recover_scene_videos_from_disk,
 )
+from app.services.frame_tombstones import PaidFrameSkipped, log_paid_frame_skip, paid_frame_skip_reason
 from app.services.gpt_client import get_gpt_client
 from app.services.hitl import send_hitl_text
 from app.services.img_streams import (
@@ -273,6 +275,8 @@ async def _claim_shot1_video_batch(
     claimed: list[Frame] = []
     dirty = False
     for fr in frames:
+        if log_paid_frame_skip(fr, where="generate_videos"):
+            continue
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
             continue
@@ -334,6 +338,8 @@ async def _claim_shot2_video_batch(
 
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
+        if log_paid_frame_skip(fr, where="generate_videos"):
+            continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
             continue
@@ -393,6 +399,8 @@ async def _generate_shot1_one(
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
 ) -> Path:
+    if log_paid_frame_skip(fr, where="generate_videos"):
+        raise PaidFrameSkipped(paid_frame_skip_reason(fr) or "кадр помечен")
     if not fr.animation_prompt:
         raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
     start = await _shot1_start_frame(session, project, fr, scenes_dir)
@@ -466,6 +474,8 @@ async def _generate_shot2_one(
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
 ) -> Path:
+    if log_paid_frame_skip(fr, where="generate_videos"):
+        raise PaidFrameSkipped(paid_frame_skip_reason(fr) or "кадр помечен")
     short_uuid = uuid.uuid4().hex[:8]
     file_path = out_dir / f"clip_{fr.number:03d}_s2_{short_uuid}.mp4"
     async with clips_lock:
@@ -519,7 +529,7 @@ async def _note_video_fail_db(
 ) -> int:
     """+1 счётчик ошибок в БД; ≥5 подряд → video_gen_skip (кадр больше не claim)."""
     if session_maker is None:
-        from app.project_db import get_project_sessionmaker, get_project_data_dir
+        from app.project_db import get_project_data_dir, get_project_sessionmaker
 
         p_dir = await get_project_data_dir(project_id)
         if p_dir:
@@ -555,7 +565,7 @@ async def _reset_video_fail_db(
 ) -> None:
     """Клип сгенерировался — сбросить счётчик ошибок кадра."""
     if session_maker is None:
-        from app.project_db import get_project_sessionmaker, get_project_data_dir
+        from app.project_db import get_project_data_dir, get_project_sessionmaker
 
         p_dir = await get_project_data_dir(project_id)
         if p_dir:
@@ -602,6 +612,8 @@ async def _shot1_job(
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
+                return False
+            if log_paid_frame_skip(fr, where="generate_videos"):
                 return False
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
@@ -719,6 +731,8 @@ async def _shot2_job(
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
+                return False
+            if log_paid_frame_skip(fr, where="generate_videos"):
                 return False
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
@@ -842,6 +856,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if streams == 0:
         missing = []
         for fr in frames:
+            if log_paid_frame_skip(fr, where="generate_videos"):
+                continue
             clip = await _scene_video_file_on_disk(session, project.id, fr.id, shot=1)
             if clip is None and (fr.animation_prompt or "").strip():
                 missing.append(fr.number)

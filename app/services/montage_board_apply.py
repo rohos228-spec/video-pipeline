@@ -28,8 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Entity, Frame, Project
 from app.project_db import (
     project_db_session_scope as _isolated_project_scope,
+)
+from app.project_db import (
     sync_project_row_to_master_db,
 )
+from app.services.frame_tombstones import PaidFrameSkipped
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
@@ -449,6 +452,12 @@ async def _run_op_with_short_sessions(
             fr = await _frame_by_number(session, project.id, frame_number)
             if fr is None:
                 raise RuntimeError(f"кадр {frame_number} не найден")
+            from app.services.frame_tombstones import log_paid_frame_skip
+
+            if log_paid_frame_skip(fr, where="montage_ai_change"):
+                raise PaidFrameSkipped(
+                    f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
+                )
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
@@ -770,6 +779,18 @@ async def _run_ops_phase(
             try:
                 result = await _run_op_with_short_sessions(project_id, op, board)
                 await _finish_op(idx, True, result)
+            except PaidFrameSkipped as exc:
+                logger.warning(
+                    "WARN montage apply #{} кадр {} пропущен: {}",
+                    project_id,
+                    frame,
+                    exc,
+                )
+                await _finish_op(
+                    idx,
+                    True,
+                    {"ok": True, "skipped": str(exc), "op": op},
+                )
             except Exception as exc:  # noqa: BLE001
                 msg = str(exc)
                 logger.warning(

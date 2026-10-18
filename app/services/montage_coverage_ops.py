@@ -1075,6 +1075,8 @@ async def delete_coverage_child(
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     quarantine_frame_media(project, int(frame.number))
+    from app.services.frame_tombstones import remember_deleted
+
     sid = coverage_shot_id(frame)
     attrs = dict(getattr(frame, "attrs", None) or {})
     attrs["активен"] = False
@@ -1084,6 +1086,7 @@ async def delete_coverage_child(
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(frame, leftover=True)
+    remember_deleted(project, int(frame.number))
     logger.warning(
         "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
         frame.number,
@@ -1435,6 +1438,21 @@ async def apply_coverage_op(
             parent_number=parent_number,
         )
     elif op_type == "coverage_delete":
+        parent = _vo_parent_frame(frames, frame)
+        is_child = parent is not None and int(parent.number) != int(frame.number)
+        if not (is_shot_child(frame) or is_child):
+            logger.warning(
+                "WARN coverage_delete: кадр #{} не дочерний — отказ, без пометки и без отвязки",
+                frame.number,
+            )
+            return {
+                "ok": False,
+                "refused": "not_child",
+                "highlight": slot_key_from_op(op),
+                "frame_number": frame_number,
+                "op": op,
+                "regen_image": False,
+            }
         await delete_coverage_child(session, project, frame, frames)
 
     await session.flush()
