@@ -379,3 +379,96 @@ def test_add_shot_with_name_key_passes() -> None:
     except PreservationRejected as exc:
         wrapped = exc.violations
     assert all(item.code != "shot_dropped" for item in wrapped)
+
+
+def _shot_dropped_ids(violations: list) -> set[str]:
+    return {item.id for item in violations if item.code == "shot_dropped"}
+
+
+def test_null_kadry_rejects_voiced_shots() -> None:
+    """``кадры: None`` у шотов с закадром — отказ, не прятание id."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза.",
+                "кадры": [{"id": "k1", "закадр": "Первая фраза."}],
+            }
+        ]
+    }
+    after = copy.deepcopy(before)
+    after["сцены"][0]["кадры"] = None
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="reject")
+    assert "k1" in _shot_dropped_ids(raised.value.violations)
+
+
+def test_scene_row_with_number_is_not_shot_dropped() -> None:
+    """Строка сцены с номером не шот: появление ``кадры`` не даёт shot_dropped."""
+
+    uid = "03ecb474-7628-4a21-b794-fef914ca3505"
+    before = {"сцены": [{"id": uid, "номер": 1}]}
+    after = {
+        "сцены": [
+            {
+                "id": uid,
+                "номер": 1,
+                "кадры": [{"id": "k1", "закадр": "текст"}],
+            }
+        ]
+    }
+    try:
+        violations = run_preservation_validators(before, after, mode="reject")
+    except PreservationRejected as exc:
+        violations = exc.violations
+    assert uid not in _shot_dropped_ids(violations)
+
+
+def test_character_name_is_not_shot_dropped() -> None:
+    """Персонаж с ``имя`` не становится shot_dropped."""
+
+    before = {
+        "сцены": [{"id": "s1", "номер": 1, "кадры": [{"id": "k1", "закадр": "а"}]}],
+        "персонажи": [{"id": "c01", "имя": "Анна"}, {"id": "c02", "code": "c02", "имя": "Борис"}],
+    }
+    after = copy.deepcopy(before)
+    after["персонажи"] = [{"id": "c01", "имя": "Анна"}]
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="reject")
+    assert any(
+        item.code == "character_deleted" and item.id == "c02" for item in raised.value.violations
+    )
+    assert _shot_dropped_ids(raised.value.violations) == set()
+
+
+def test_frames_attrs_replace_and_null_kadry_reject() -> None:
+    """``frames[].attrs.кадры``: замена шота и ``кадры: None`` — отказ."""
+
+    before = {
+        "frames": [
+            {
+                "id": "u1",
+                "attrs": {
+                    "кадры": [
+                        {"id": "k1", "закадр": "а"},
+                        {"id": "k2", "закадр": "б"},
+                    ]
+                },
+            }
+        ]
+    }
+    replaced = {
+        "frames": [
+            {"id": "u1", "attrs": {"кадры": [{"id": "k1", "закадр": "а"}]}},
+        ]
+    }
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, replaced, mode="reject")
+    assert "k2" in _shot_dropped_ids(raised.value.violations)
+
+    nulled = {"frames": [{"id": "u1", "attrs": {"кадры": None}}]}
+    with pytest.raises(PreservationRejected) as raised_null:
+        run_preservation_validators(before, nulled, mode="reject")
+    assert {"k1", "k2"} <= _shot_dropped_ids(raised_null.value.violations)
