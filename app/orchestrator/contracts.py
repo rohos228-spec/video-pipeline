@@ -91,10 +91,14 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
     ),
     (
         "ws3-r3.5",
-        "Событие partial_write (WARN, change_ids) защищено колпаком orch_events. "
+        "Поверх ws3-r3.4. Событие partial_write (WARN, change_ids) в EventType и retention. "
         "stop_key — имя файла project_{id}.stop, не pending. "
+        "GET /api/orchestrator/chat/{session}/status отдаёт resume_allowed. "
         "GET /api/orchestrator/chat/{session}/partial-changes отдаёт change_id шагов partial. "
+        "resume_allowed истинен только для paused, waiting_approval или critic_review, "
+        "если чекпоинт есть и прогон не живой. "
         "partial_write → waiting_approval. "
+        "skipped_without_partial хранит change_id и не повторяет execute. "
         "deletion_forbidden: кадр без soft_delete не исполняется даже после grant.",
     ),
 )
@@ -1206,11 +1210,80 @@ def action_name_rejected(action: str) -> bool:
     return _ACTION_NAME.fullmatch(text) is None
 
 
+def _registry_owners(registry: Any) -> list[Any]:
+    owners: list[Any] = []
+    inner = getattr(registry, "inner", None)
+    module = None
+    if inner is not None:
+        module = getattr(inner, "_module", None)
+    if module is None:
+        module = getattr(registry, "_module", None)
+    for owner in (registry, inner, module):
+        if owner is not None and all(owner is not seen for seen in owners):
+            owners.append(owner)
+    return owners
+
+
+def _listed_names(values: Any) -> set[str]:
+    names: set[str] = set()
+    if isinstance(values, dict):
+        pairs = list(values.items())
+    elif isinstance(values, (list, tuple, set, frozenset)):
+        pairs = [(None, item) for item in values]
+    else:
+        return names
+    for key, item in pairs:
+        if isinstance(item, str):
+            names.add(item)
+            continue
+        field = _meta_field(item, "name", None)
+        if field:
+            names.add(str(field))
+        elif isinstance(key, str):
+            names.add(key)
+    return names
+
+
+def explicit_action_names(registry: Any) -> set[str] | None:
+    """Имена из ``metadata_registry()`` / ``action_names``. ``None`` — списка нет."""
+    for owner in _registry_owners(registry):
+        values: Any = _MISSING
+        fn = getattr(owner, "metadata_registry", None)
+        if callable(fn):
+            try:
+                values = fn()
+            except Exception:
+                return set()
+        else:
+            raw = getattr(owner, "action_names", None)
+            if callable(raw):
+                try:
+                    values = raw()
+                except Exception:
+                    return set()
+            elif isinstance(raw, (list, tuple, set, frozenset, dict)):
+                values = raw
+        if values is _MISSING or values is None:
+            continue
+        return _listed_names(values)
+    return None
+
+
+def _name_listed(action: str, listed: set[str]) -> bool:
+    if action in listed:
+        return True
+    folded = canonical_action_name(action)
+    if folded in listed:
+        return True
+    return folded in {canonical_action_name(item) for item in listed}
+
+
 def not_in_whitelist(action: str, registry: Any | None) -> bool:
     """Имя нельзя ни одобрить, ни выполнить.
 
-    Разрешено только явное metadata реестра. Нет ``metadata_of``, ``KeyError``,
-    ``@`` и имя вне pattern — отказ. Denylist бьёт даже безопасную metadata.
+    Белый список — явный ``metadata_registry()`` / список имён, не сам факт
+    ответа ``metadata_of``. Пустая карточка и ``name``, не равное действию,
+    отказ. Карточка без поля ``name`` и без списка имён остаётся допустимой.
     ``allow_unlisted=True`` — только явный тестовый флаг; ``@`` и pattern
     он не открывает.
     """
@@ -1221,8 +1294,16 @@ def not_in_whitelist(action: str, registry: Any | None) -> bool:
         return True
     if getattr(registry, "allow_unlisted", False) is True:
         return False
+    listed = explicit_action_names(registry)
+    if listed is not None and not _name_listed(raw, listed):
+        return True
     kind, meta = lookup_action_metadata(action, registry)
-    return kind != "value" or meta is None
+    if kind != "value" or meta is None:
+        return True
+    if isinstance(meta, dict) and len(meta) == 0:
+        return True
+    meta_name = _meta_field(meta, "name", None)
+    return meta_name is not None and str(meta_name) != raw
 
 
 def _meta_field(meta: Any, key: str, default: Any = None) -> Any:
@@ -1301,9 +1382,26 @@ def load_risk_escalations() -> tuple[Any, ...]:
 
 
 def group_is_new(params: Any) -> bool:
-    """Параметр ``group_is_new is True``. Имя с ``@`` сюда не приходит."""
+    """Новая группа — по серверному ключу. Флаг планировщика только без ключа.
+
+    ``group`` / ``group_id`` / ``group_key``: нет записи или сбой lookup —
+    группа новая. Без ключа остаётся ``group_is_new is True``.
+    """
     if not isinstance(params, dict):
         return False
+    key = ""
+    for field in ("group", "group_id", "group_key"):
+        raw = params.get(field)
+        if isinstance(raw, str) and raw.strip():
+            key = raw.strip()
+            break
+    if key:
+        try:
+            from app.services.node_groups import get_node_group
+
+            return get_node_group(key) is None
+        except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
+            return True
     return params.get("group_is_new") is True
 
 

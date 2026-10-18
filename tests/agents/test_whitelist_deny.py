@@ -8,7 +8,9 @@ from httpx import ASGITransport, AsyncClient
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.supervisor import ApprovalGrantError, InvalidTransition
+from app.orchestrator.agents.wiring import ActionsBridge
 from app.orchestrator.auth import OrchestratorAuthMiddleware
+from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
     ACTION_DENYLIST,
     CheckpointData,
@@ -296,5 +298,95 @@ async def test_flagged_mock_still_runs_look(token: str) -> None:
         await runtime.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["look"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+class _Ws2Unknown:
+    """Как WS2 #378: неизвестное имя не KeyError, а карточка high. Список имён уже."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.known = {"look", "create_node"}
+
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {
+            name: {"name": name, "risk": "none", "read_only": True, "destructive": False, "paid": False}
+            for name in self.known
+        }
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        listed = self.metadata_registry()
+        if name in listed:
+            return listed[name]
+        return {"name": name, "risk": "high", "read_only": False, "destructive": False, "paid": False}
+
+    async def execute(self, name: str, params: dict, task_ctx: dict) -> dict:
+        del params, task_ctx
+        self.calls.append(name)
+        return {"ok": True, "data": {}, "change_id": None, "cost": 0.0}
+
+
+def test_bridge_with_ws2_metadata_of_refuses_unknown() -> None:
+    registry = _Ws2Unknown()
+    for name in ("frobnicate", "exec", "edit_file"):
+        assert not_in_whitelist(name, registry) is True
+    assert not_in_whitelist("look", registry) is False
+    assert not_in_whitelist("look", _Nameless()) is False
+    assert not_in_whitelist("look", _EmptyMeta()) is True
+    assert not_in_whitelist("look", _Mismatch()) is True
+
+
+class _Nameless:
+    def metadata_of(self, name: str) -> dict[str, object]:
+        del name
+        return {"risk": "high", "read_only": False, "destructive": True, "paid": False, "soft_delete": True}
+
+
+class _EmptyMeta:
+    def metadata_of(self, name: str) -> dict[str, object]:
+        del name
+        return {}
+
+
+class _Mismatch:
+    def metadata_of(self, name: str) -> dict[str, object]:
+        del name
+        return {"name": "other", "risk": "none", "read_only": True, "destructive": False, "paid": False}
+
+
+@pytest.mark.asyncio
+async def test_bridge_execute_does_not_call_inner_for_unlisted() -> None:
+    registry = _Ws2Unknown()
+    bridge = ActionsBridge(registry)
+    for name in ("frobnicate", "exec", "edit_file"):
+        await bridge.execute(name, {}, {})
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_of_look_then_frobnicate_executes_nothing(token: str) -> None:
+    del token
+    actions = _Ws2Unknown()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([]),
+    )
+    set_runtime(runtime)
+    session = "wl-resume"
+    try:
+        steps = [
+            PlanStep(action="look", risk="none"),
+            PlanStep(action="frobnicate", risk="none"),
+        ]
+        task_id = runtime.tasks.insert(session, "план", TaskStatus.paused.value, project_id=13)
+        runtime.tasks.save_plan(task_id, steps, position=0)
+        CheckpointStore().save(task_id, session, CheckpointData(plan=steps, position=0))
+        await runtime.supervisor.resume(task_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
     finally:
         set_runtime(None)

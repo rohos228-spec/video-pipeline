@@ -22,6 +22,7 @@ from app.orchestrator.contracts import (
     Risk,
     ValidatorResult,
     coerce_risk,
+    not_in_whitelist,
 )
 
 _ROUTING = "app.orchestrator.routing"
@@ -192,7 +193,7 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1 #379 ``63be300a``.
+    """Мягкий импорт WS1 #379 ``9820d123``.
 
     ``run_preservation_validators(before, after, ops=None, *, mode)``.
     ``PreservationRejected`` — отказ, ``after`` не меняется.
@@ -228,7 +229,12 @@ class FunctionValidators:
         if name != "preservation" or not callable(fn):
             return result
         try:
-            fn(payload.get("before"), payload.get("after"), payload.get("ops"))
+            fn(
+                payload.get("before"),
+                payload.get("after"),
+                payload.get("ops"),
+                mode=payload.get("mode", "reject"),
+            )
         except Exception as exc:
             if rejected is not None and isinstance(exc, rejected):
                 return _blocking_preservation(name, exc)
@@ -261,6 +267,12 @@ class ModuleActions:
             raise KeyError(name)
         return fn(name)
 
+    def metadata_registry(self) -> Any:
+        fn = getattr(self._module, "metadata_registry", None)
+        if not callable(fn):
+            return None
+        return fn()
+
 
 class ActionsBridge:
     """Будущий ``metadata_of``: dict или ``KeyError``. Approval-id действиям не отдаём."""
@@ -274,6 +286,13 @@ class ActionsBridge:
             raise KeyError(name)
         return fn(name)
 
+    def metadata_registry(self) -> Any:
+        for owner in (self.inner, getattr(self.inner, "_module", None)):
+            fn = getattr(owner, "metadata_registry", None)
+            if callable(fn):
+                return fn()
+        return None
+
     def risk_of(self, name: str) -> Risk:
         try:
             meta = self.metadata_of(name)
@@ -285,6 +304,8 @@ class ActionsBridge:
         return coerce_risk(raw)
 
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> Any:
+        if not_in_whitelist(name, self):
+            return ActionResult(ok=False, data={"error": "not_in_whitelist"}, change_id=None, cost=0.0)
         result = self.inner.execute(name, params, task_ctx)
         if inspect.isawaitable(result):
             result = await result

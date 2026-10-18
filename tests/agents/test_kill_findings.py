@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -13,8 +14,14 @@ from app.orchestrator.agents.planner import RouterPlanner
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.checkpoints import CheckpointStore
-from app.orchestrator.contracts import ActionResult, CheckpointData, PlanStep, TaskStatus
-from app.services.step_cancel import abort_if_cancelled, clear_stop, is_stop_requested
+from app.orchestrator.contracts import (
+    ActionResult,
+    ApprovalDecision,
+    CheckpointData,
+    PlanStep,
+    TaskStatus,
+)
+from app.services.step_cancel import abort_if_cancelled, clear_stop, is_stop_requested, request_stop
 from app.web.routers.orchestrator_chat import router as chat_router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
@@ -123,6 +130,7 @@ async def test_kill_records_real_change_id_after_mutating_release(token: str) ->
     )
     set_runtime(runtime)
     session = "kill-late-id"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
         await actions.started.wait()
@@ -138,10 +146,68 @@ async def test_kill_records_real_change_id_after_mutating_release(token: str) ->
         assert [call["name"] for call in actions.calls] == ["write"]
         assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-write-1"]
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
     finally:
         actions.release.set()
         set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_inner_done_before_kill_keeps_change_id_and_resume_does_not_rewrite(token: str) -> None:
+    """K1: inner уже done, callback ещё не видит _shield_orphaned. partial с реальным id."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False),
+                PlanStep(action="later", mutating=True, paid=False),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-k1"
+    supervisor = runtime.supervisor
+    original = supervisor._on_mutating_done
+
+    def _kill_as_soon_as_inner_finishes(done, **kwargs):
+        original(done, **kwargs)
+        supervisor.request_kill(session)
+
+    supervisor._on_mutating_done = _kill_as_soon_as_inner_finishes
+    try:
+        task_id = await supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        actions.release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await supervisor.wait(task_id, timeout=5)
+        saved = await _partial_row(runtime, task_id)
+        assert saved["status"] == "partial"
+        assert saved["change_id"] == "chg-write-1"
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["change_ids"] == ["chg-write-1"]
+        await supervisor.resume(task_id)
+        await supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["write"]
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+def _delay_partial_publish(runtime) -> None:
+    """publish partial_write уступает циклу: пустой WARN не должен обогнать id."""
+    original = runtime.bus.publish
+
+    async def publish(session_id, event_type, payload, **kwargs):
+        if event_type == "partial_write":
+            await asyncio.sleep(0.05)
+        return await original(session_id, event_type, payload, **kwargs)
+
+    runtime.bus.publish = publish
 
 
 async def _partial_row(runtime, task_id: int) -> dict:
@@ -225,6 +291,88 @@ async def test_grant_clears_project_stop(token: str) -> None:
         set_runtime(None)
 
 
+@pytest.mark.asyncio
+async def test_user_stop_survives_grant_and_resume(token: str) -> None:
+    """Чужой user_stop не снимается grant/resume задачи того же проекта."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    try:
+        clear_stop(13)
+        request_stop(13, reason="user_stop")
+        task_id = await runtime.supervisor.start_task("user-stop", "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill("user-stop")
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("user-stop")
+        assert is_stop_requested(13) is True
+        clear_stop(13)
+        request_stop(13, reason="user_stop")
+        task_resume = await runtime.supervisor.start_task("user-stop-2", "рви", project_id=13)
+        await _until_calls(actions, 2)
+        published = runtime.supervisor.request_kill("user-stop-2")
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_resume, timeout=5)
+        await runtime.supervisor.resume(task_resume)
+        assert is_stop_requested(13) is True
+    finally:
+        actions.release.set()
+        clear_stop(13)
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_resume_of_one_kill_leaves_the_other_kill_stop(token: str) -> None:
+    """kill A + kill B: resume A не снимает stop, пока B ещё держит его."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    try:
+        clear_stop(13)
+        task_a = await runtime.supervisor.start_task("kill-a", "рви", project_id=13)
+        await actions.started.wait()
+        task_b = await runtime.supervisor.start_task("kill-b", "рви", project_id=13)
+        await _until_calls(actions, 2)
+        published = runtime.supervisor.request_kill("kill-a")
+        if published is not None:
+            await published
+        published_b = runtime.supervisor.request_kill("kill-b")
+        if published_b is not None:
+            await published_b
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_a, timeout=5)
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_b, timeout=5)
+        assert is_stop_requested(13)
+        await runtime.supervisor.resume(task_a)
+        assert is_stop_requested(13) is True
+    finally:
+        actions.release.set()
+        clear_stop(13)
+        set_runtime(None)
+
+
 async def _until_calls(actions: MockActions, count: int) -> None:
     for _ in range(50):
         if len(actions.calls) >= count:
@@ -248,6 +396,7 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
     )
     set_runtime(runtime)
     session = "kill-1b"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
         await actions.started.wait()
@@ -264,6 +413,7 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
         checkpoint = runtime.checkpoints.load_latest(task_id)
         assert checkpoint is not None
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["level"] == "WARN"
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
@@ -305,6 +455,85 @@ async def test_kill_then_resume_is_not_rejected(token: str) -> None:
         assert [call["name"] for call in actions.calls] == ["write"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         assert runtime.supervisor._block_reason.get(task_id) == "partial_write"
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_approve_partial_closes_step_and_runs_the_next(token: str) -> None:
+    """approve принимает partial: write один раз, следующий шаг идёт, задача done."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False),
+                PlanStep(action="later", mutating=True, paid=False),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session = "partial-accept"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
+        assert saved["change_id"] == "chg-write-1"
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["write", "later"]
+        rows = runtime.tasks.list_steps(task_id)
+        write_row = next(row for row in rows if row["action_name"] == "write")
+        assert write_row["status"] == "done"
+        assert write_row["change_id"] == "chg-write-1"
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_deny_partial_fails_task_and_keeps_the_row(token: str) -> None:
+    """deny на partial_write валиден и не стирает change_id."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "partial-deny"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        saved = await _partial_row(runtime, task_id)
+        assert saved["change_id"] == "chg-write-1"
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.deny)
+        assert [call["name"] for call in actions.calls] == ["write"]
+        rows = runtime.tasks.list_steps(task_id)
+        assert rows[0]["status"] == "partial"
+        assert rows[0]["change_id"] == "chg-write-1"
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
     finally:
         actions.release.set()
         set_runtime(None)
@@ -405,6 +634,98 @@ async def test_cancelled_task_does_not_take_another_tasks_partial_cost(token: st
         set_runtime(None)
 
 
+class _NoTaskPlanner:
+    """Зовёт router.call без task_id: стоимость не должна теряться."""
+
+    def __init__(self, router: Any) -> None:
+        self.router = router
+        self.last_response = None
+
+    async def make_plan(self, goal: str, context: str = "", **kwargs: Any) -> list[PlanStep]:
+        del goal, context, kwargs
+        await self.router.call("strong", [])
+        return [PlanStep(action="look", risk="none")]
+
+
+class _BareCostRouter:
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.started = asyncio.Event()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        assert kwargs.get("task_id") in (None, "")
+        self.partial_cost_usd = 0.21
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_without_task_id_keeps_partial_cost(token: str) -> None:
+    del token
+    router = _BareCostRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=_NoTaskPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("cost-bare", "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) > 0
+    finally:
+        set_runtime(None)
+
+
+class _DualCostRouter:
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.seen = [asyncio.Event(), asyncio.Event()]
+        self.n = 0
+        self.lock = asyncio.Lock()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        async with self.lock:
+            idx = self.n
+            self.n += 1
+            self.partial_cost_usd = 0.2 if idx == 0 else 0.5
+            self.seen[idx].set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_two_cancelled_llm_calls_do_not_swap_partial_cost(token: str) -> None:
+    del token
+    router = _DualCostRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=_NoTaskPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_a = await runtime.supervisor.start_task("cost-a2", "план")
+        await router.seen[0].wait()
+        task_b = await runtime.supervisor.start_task("cost-b2", "план")
+        await router.seen[1].wait()
+        runtime.supervisor._runs[task_a].cancel()
+        runtime.supervisor._runs[task_b].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_a, timeout=5)
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_b, timeout=5)
+        assert float(runtime.tasks.get(task_a)["spend_internal"] or 0) == pytest.approx(0.2)
+        assert float(runtime.tasks.get(task_b)["spend_internal"] or 0) == pytest.approx(0.5)
+    finally:
+        set_runtime(None)
+
+
 @pytest.mark.asyncio
 async def test_rerun_after_cancelled_mutating_step_is_idempotent(token: str) -> None:
     del token
@@ -454,6 +775,7 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
     )
     set_runtime(runtime)
     session = "kill-2"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "частично", project_id=13)
         await actions.started.wait()
@@ -481,6 +803,7 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
         assert listed.json()["change_ids"] == ["chg-write-1"]
         assert TEST_TOKEN not in listed.text
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
     finally:
         actions.release.set()

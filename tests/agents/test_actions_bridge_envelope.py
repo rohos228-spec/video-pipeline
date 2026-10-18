@@ -14,6 +14,10 @@ class _Inner:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
 
+    def metadata_of(self, name: str) -> dict:
+        del name
+        return {"risk": "none", "read_only": True, "destructive": False, "paid": False}
+
     async def execute(self, name: str, params: dict, task_ctx: dict) -> dict:
         del name, params, task_ctx
         return self.payload
@@ -54,7 +58,12 @@ async def test_load_actions_bridge_strips_orch_appr() -> None:
         del name, params, task_ctx
         return {"status": "ok", "result": {"change_id": "orch-appr-2-3", "snapshot_id": "snap"}}
 
+    def metadata_of(name: str) -> dict:
+        del name
+        return {"risk": "none", "read_only": False, "destructive": True, "paid": False}
+
     module.execute = execute
+    module.metadata_of = metadata_of
     previous = sys.modules.get("app.orchestrator.actions")
     sys.modules["app.orchestrator.actions"] = module
     try:
