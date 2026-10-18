@@ -5,6 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   bearerTargetAllowed,
   envOrchApiBase,
+  normalizedOrchEnvApi,
   isSameOriginApiBase,
   orchAuthHeaders,
   orchTestModeEnabled,
@@ -20,6 +21,12 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("хвостовые слэши в NEXT_PUBLIC_ORCH_API снимаются все", () => {
+  expect(normalizedOrchEnvApi("https://api.example.com/orch//")).toBe("https://api.example.com/orch");
+  expect(normalizedOrchEnvApi("https://api.example.com/orch/")).toBe("https://api.example.com/orch");
+  expect(normalizedOrchEnvApi("http://127.0.0.1:8799/")).toBe("http://127.0.0.1:8799");
+});
 
 test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает один раз", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_API;

@@ -119,7 +119,7 @@ export function normalizedOrchEnvApi(value: string): string | null {
   if (url.username || url.password) return null;
   const loopback = url.protocol === "http:" && isLoopbackHost(url.hostname);
   if (url.protocol !== "https:" && !loopback) return null;
-  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
   return `${url.origin}${path}`;
 }
 
@@ -166,7 +166,7 @@ function queryApiOverrideEnabled(): boolean {
 }
 
 function normalizeBase(value: string): string {
-  return value.trim().replace(/\/$/, "");
+  return value.trim().replace(/\/+$/, "");
 }
 
 /** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
