@@ -40,3 +40,26 @@ async def test_execute_returns_r22_action_result(env) -> None:
         project = await session.get(Project, pid)
     assert project is not None
     assert project.status == "paused"
+
+
+def test_metadata_of_covers_registry() -> None:
+    """Метаданные контракта есть у каждого из 102 имён живого реестра."""
+
+    from app.orchestrator.action_contracts.contracts import ActionMetadata
+    from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
+    from app.orchestrator.actions.executor import metadata_of
+    from app.services.action_layer.spec import registry
+
+    ensure_builtin_actions()
+    specs = registry.list()
+    assert len(specs) == 102
+    for spec in specs:
+        meta = metadata_of(spec.id)
+        assert isinstance(meta, ActionMetadata)
+        assert meta.name == spec.id
+        assert meta.risk in {"none", "low", "medium", "high"}
+        assert meta == contract_metadata(spec.id)
+    raised = metadata_of("create_node@new_group")
+    assert raised.risk == "high"
+    assert raised.destructive is True
+    assert raised.needs_approval is True

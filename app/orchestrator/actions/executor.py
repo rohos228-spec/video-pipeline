@@ -10,7 +10,9 @@ from typing import Any
 
 from pydantic import ConfigDict
 
+from app.orchestrator.action_contracts.contracts import ActionMetadata
 from app.orchestrator.action_contracts.contracts import ActionResult
+from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.services.redact import redact_text
@@ -64,6 +66,12 @@ def _refusal(raw: dict) -> str | None:
         detail = raw.get("error") or raw.get("detail") or raw.get("message") or "отказ"
         return str(detail)
     return None
+
+
+def metadata_of(name: str) -> ActionMetadata:
+    """Флаги риска из audit_metadata.json, включая create_node@new_group."""
+
+    return contract_metadata(str(name))
 
 
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
