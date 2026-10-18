@@ -17,7 +17,7 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1229,6 +1229,79 @@ def metadata_call_gate(action: str, registry: Any | None) -> str | None:
     if bool(_meta_field(meta, "paid", False)):
         return "paid"
     return None
+
+
+class _RiskEscalation(NamedTuple):
+    """Локальный фолбэк, если пакета WS2 ``action_contracts`` нет в базе."""
+
+    action: str
+    when: str
+    risk: str
+    read_only: bool
+    destructive: bool
+    paid: bool
+
+
+# create_node в новую группу. Имя действия не меняется, «@» в action запрещён.
+_FALLBACK_RISK_ESCALATIONS: tuple[_RiskEscalation, ...] = (
+    _RiskEscalation("create_node", "group_is_new", "high", False, True, False),
+)
+
+
+def load_risk_escalations() -> tuple[Any, ...]:
+    """``RISK_ESCALATIONS`` WS2, иначе локальный фолбэк.
+
+    Импорт мягкий: ветка WS2 не становится зависимостью ядра.
+    """
+    try:
+        from app.orchestrator.action_contracts.contracts import RISK_ESCALATIONS
+    except Exception:  # noqa: BLE001 — модуля нет в базе #370
+        return _FALLBACK_RISK_ESCALATIONS
+    return tuple(RISK_ESCALATIONS)
+
+
+def group_is_new(params: Any) -> bool:
+    """Параметр ``group_is_new is True``. Имя с ``@`` сюда не приходит."""
+    if not isinstance(params, dict):
+        return False
+    return params.get("group_is_new") is True
+
+
+def escalation_for(action: str, params: Any) -> Any | None:
+    """Правило повышения, если условие сошлось. Иначе ``None``."""
+    if not action or "@" in action or not group_is_new(params):
+        return None
+    for rule in load_risk_escalations():
+        if getattr(rule, "action", None) == action and getattr(rule, "when", None) == "group_is_new":
+            return rule
+    return None
+
+
+def approval_view(
+    action: str,
+    params: Any,
+    registry: Any | None,
+    *,
+    fallback_risk: str,
+) -> dict[str, Any]:
+    """Риск и destructive для ``context['approval']``.
+
+    База — ``metadata_of``. Сработавшее ``RISK_ESCALATIONS`` ужесточает.
+    Нет карточки — ``fallback_risk`` (max реестра и плана), destructive false.
+    """
+    kind, meta = lookup_action_metadata(action, registry)
+    risk = fallback_risk
+    destructive = False
+    if kind == "value" and meta is not None:
+        raw = _meta_field(meta, "risk", None)
+        if raw:
+            risk = str(getattr(raw, "value", raw))
+        destructive = bool(_meta_field(meta, "destructive", False))
+    rule = escalation_for(action, params)
+    if rule is not None:
+        risk = str(rule.risk)
+        destructive = bool(rule.destructive)
+    return {"risk": risk, "destructive": destructive}
 
 
 def _has_field(obj: Any, key: str) -> bool:

@@ -79,13 +79,16 @@ from app.orchestrator.contracts import (
     budget_exhausted_response,
     can_transition,
     ceiling_blocks,
+    coerce_risk,
     envelope_change_id,
     envelope_skipped,
     envelope_status,
     envelope_warnings,
+    escalation_for,
     forecast_cost,
     forecast_unknown,
     grant_forbidden,
+    max_risk,
     metadata_call_gate,
     not_in_whitelist,
     orch_run_id,
@@ -1450,6 +1453,9 @@ class Supervisor:
                 await self._fail_closed(task_id, session_id, "parallel_risk")
                 return
             risk = effective_risk(self.actions, step)
+            rule = escalation_for(step.action, step.params)
+            if rule is not None:
+                risk = max_risk(risk, coerce_risk(getattr(rule, "risk", "high")))
             if risk in APPROVAL_RISKS and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
                 await self._escalate(
@@ -1460,6 +1466,10 @@ class Supervisor:
                 )
                 return
             gate = metadata_call_gate(step.action, self.actions)
+            if rule is not None and bool(getattr(rule, "destructive", False)) and gate is None:
+                gate = "destructive"
+            elif rule is not None and bool(getattr(rule, "paid", False)) and gate is None:
+                gate = "paid"
             if gate and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
                 reason = "paid" if gate == "paid" else "destructive"
