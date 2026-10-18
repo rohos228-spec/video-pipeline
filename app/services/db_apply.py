@@ -1700,8 +1700,9 @@ async def apply_ops(
             blank = raw_attr is None or (
                 isinstance(raw_attr, str) and not raw_attr.strip()
             )
-            empty_box = attr_key in {"кадры", "биты"} and _structured_container_empty(
-                raw_attr
+            empty_text = isinstance(raw_attr, str) and raw_attr.strip() in {"[]", "{}"}
+            empty_box = attr_key in {"кадры", "биты"} and (
+                _structured_container_empty(raw_attr) or empty_text
             )
             if blank or empty_box:
                 logger.warning(
