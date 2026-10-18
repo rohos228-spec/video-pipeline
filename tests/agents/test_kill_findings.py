@@ -186,7 +186,43 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
         assert warned[-1].payload["level"] == "WARN"
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.supervisor.resume_allowed(task_id) is True
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_kill_then_resume_is_not_rejected(token: str) -> None:
+    """partial после kill — waiting_approval, resume не 409."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-resume"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        actions.release.set()
+        await _partial_row(runtime, task_id)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.supervisor.resume_allowed(task_id) is True
+        await runtime.supervisor.resume(task_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["write"]
     finally:
         actions.release.set()
         set_runtime(None)

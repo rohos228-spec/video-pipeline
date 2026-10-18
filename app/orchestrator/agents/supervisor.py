@@ -2021,8 +2021,9 @@ class Supervisor:
             task_id=task_id,
         )
         current = self._status(task_id)
-        if current not in TERMINAL_STATUSES:
-            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
+        if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
+            await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
+            self._block_reason[task_id] = "partial_write"
 
     async def _hold_executor_approval(
         self,
