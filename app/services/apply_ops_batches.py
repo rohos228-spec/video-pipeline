@@ -88,22 +88,23 @@ SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 # пережидаем, а не долбим); недостающие ячейки — 2 добора.
 SHOTS_UNITS_PER_BATCH = 3
 SHOTS_PARALLEL = 16  # 2026-10-15: все пачки сразу (38 ячеек / 3 = 13)
-SHOTS_STAGGER_SEC = 3.0
+SHOTS_STAGGER_SEC = 0.0
 SHOTS_PACK_TIMEOUT_S = 900.0
 SHOTS_NET_RETRIES = 3
 SHOTS_MISSING_ROUNDS = 2
 # Пауза перед повтором пачки после сетевой/LLM ошибки, по номеру попытки.
 SHOTS_NET_RETRY_BACKOFF_S = (20.0, 60.0, 120.0)
-# Площадка: весь набор тремя пачками, старт через 30 с.
+# Площадка: весь набор тремя пачками, без сдвига старта.
 ACTION_TARGET_BATCHES = 3
-ACTION_STAGGER_SEC = 4.0  # 2026-10-15: было 30 с, пользователь: стаггер 2–5 с
+ACTION_STAGGER_SEC = 0.0
 FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 8
 FW_FRAMES_PARALLEL_BATCHES = 8
-VO_STAGGER_SEC = 5.0
+# Как в main: явный stagger_sec камеры/script_frames_qc. Сам старт пачек — 0.
+VO_STAGGER_SEC = 1.0
 # Жёсткий потолок отправки: и первая волна, и разрезанные половины.
 PACK_IN_FLIGHT_MAX = 8
-PACK_SEND_GAP_S = 5.0
+PACK_SEND_GAP_S = 0.0
 SHOT_VO_MIN_CHARS = SHOT_VO_MIN
 SHOT_VO_MAX_CHARS = SHOT_VO_MAX
 # Жирная ячейка кадров: длинная цепь действия → соло-пачка (не схлопывать в 1–5).
@@ -2864,11 +2865,11 @@ async def run_apply_ops_batched(
         packs = split_frames(pending, size)
     else:
         packs = [pending]
-    # В полёте не больше 8. Между отправками несколько секунд.
+    # В полёте не больше 8. Старт пачек без сдвига.
     # Разрезанные половины идут через тот же семафор.
     asked = int(parallel_max) if parallel_max and int(parallel_max) > 0 else PACK_IN_FLIGHT_MAX
     wave_n = min(PACK_IN_FLIGHT_MAX, max(1, asked), max(1, len(packs)))
-    # Боевой вызов приходит с 5 с. Тест может передать свою короткую паузу.
+    # По умолчанию gap 0. Тест может передать свою короткую паузу.
     if stagger_sec is None:
         delay_s = PACK_SEND_GAP_S
     else:
@@ -3146,7 +3147,7 @@ async def run_apply_ops_batched(
                 except Exception as e:  # noqa: BLE001
                     return f"{type(e).__name__}: {e}"
 
-            res = await asyncio.gather(*[_stag(k * 5.0, _cell(fr)) for k, fr in enumerate(todo)])
+            res = await asyncio.gather(*[_cell(fr) for fr in todo])
             nxt = []
             for fr, r in zip(todo, res):
                 if r is not None:
@@ -3279,7 +3280,7 @@ async def run_apply_ops_batched(
                 len(chunk),
                 len(parts),
             )
-            await asyncio.gather(*[_stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(parts)])  # 2026-10-11 parallel
+            await asyncio.gather(*[_run_adaptive(part, nxt, under_retries=2) for part in parts])
             return
         if not missing:
             return
@@ -3359,12 +3360,7 @@ async def run_apply_ops_batched(
             nxt,
         )
         _halves = list(split_in_half(missing))
-        await asyncio.gather(*[_run_pack(k * 5.0, part) if False else _stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(_halves)])
-
-    async def _stag(delay: float, coro: Any) -> Any:
-        if delay > 0:
-            await asyncio.sleep(delay)
-        return await coro
+        await asyncio.gather(*[_run_adaptive(part, nxt, under_retries=2) for part in _halves])
 
     async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
         if delay > 0:

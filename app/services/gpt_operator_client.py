@@ -761,15 +761,11 @@ async def _run_check_vision_batched(
             )
         return bi, res
 
-    # 2026-10-11 user: always parallel, ~5s apart
+    # Пачки параллельно, без сдвига старта.
     streams = max(streams, len(batches))
 
-    async def _stag_batch(bi: int, batch: Any) -> tuple[int, OperatorApiResult]:
-        await asyncio.sleep((bi - 1) * 5.0)
-        return await _one_batch(bi, batch)
-
     gathered = await asyncio.gather(
-        *[_stag_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
+        *[_one_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
     )
     ordered = sorted(gathered, key=lambda x: x[0])
 
