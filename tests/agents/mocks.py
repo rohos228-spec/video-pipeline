@@ -1,0 +1,216 @@
+"""Моки соседних потоков: actions.execute, validators.run, ScriptedRouter."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from app.orchestrator.contracts import (
+    ActionResult,
+    ClassifyResult,
+    LLMResponse,
+    LLMUsage,
+    MessageMode,
+    PlanStep,
+    Risk,
+    ValidatorResult,
+    registry_risk,
+    require_internal_run_id,
+)
+
+
+class ScriptedRouter:
+    """Детерминированные ответы LLM без сети (D7)."""
+
+    def __init__(self) -> None:
+        self.delay = 0.0
+        self.gate: asyncio.Event | None = None
+        self.answer = "быстрый ответ"
+        self.mode = MessageMode.append
+        self.tier = "fast"
+        self.classify_calls = 0
+        self.call_count = 0
+        self.started = asyncio.Event()
+        self.fail_if_called = False
+        self.last_call: dict[str, Any] = {}
+        self.deltas: list[str] = []
+        self.call_delay = 0.0
+        self.call_started = asyncio.Event()
+        self.seen_messages: list[list[dict[str, Any]]] = []
+        self.script: list[str] = []
+        self.responses: list[LLMResponse] = []
+        self.seen_calls: list[dict[str, Any]] = []
+        self.kill_switch = False
+        self.last_classify: dict[str, Any] = {}
+
+    async def classify(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+    ) -> ClassifyResult:
+        del message
+        self.last_classify = {"run_id": run_id, "task_id": task_id}
+        self.classify_calls += 1
+        self.started.set()
+        if self.fail_if_called:
+            raise AssertionError("classifier should not be called")
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.gate is not None:
+            await self.gate.wait()
+        return ClassifyResult(
+            tier=self.tier,
+            mode=self.mode,
+            deterministic=False,
+            confidence=0.9,
+            kill_switch=self.kill_switch,
+        )
+
+    async def call(
+        self,
+        tier: str,
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+        on_delta: Any = None,
+    ) -> LLMResponse:
+        require_internal_run_id(run_id, budget_scope)
+        self.seen_messages.append([dict(item) for item in messages])
+        self.seen_calls.append(
+            {
+                "tier": tier,
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_role": agent_role,
+                "budget_scope": budget_scope,
+            }
+        )
+        self.call_count += 1
+        self.call_started.set()
+        self.last_call = {
+            "tier": tier,
+            "stream": stream,
+            "run_id": run_id,
+            "task_id": task_id,
+            "agent_role": agent_role,
+            "budget_scope": budget_scope,
+            "reasoning_effort": reasoning_effort,
+            "on_delta": on_delta,
+        }
+        if self.deltas and on_delta is not None:
+            for piece in self.deltas:
+                on_delta(piece)
+        if self.call_delay:
+            await asyncio.sleep(self.call_delay)
+        if self.responses:
+            return self.responses.pop(0)
+        text = self.script.pop(0) if self.script else self.answer
+        return LLMResponse(
+            text=text,
+            call_id="scripted-call",
+            model="scripted",
+            provider="52pay",
+            tier=tier or "fast",
+            finish_reason="stop",
+            usage=LLMUsage(),
+            cost_usd=0.0,
+            latency_ms=1,
+            fallback_index=0,
+            deterministic=True,
+            fixture_key="scripted",
+        )
+
+
+class MockActions:
+    def __init__(self, risks: dict[str, str] | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.ticks = 0
+        self.on_execute = None
+        # None — открытый мок: все имена известны как none, старые тесты не эскалируют.
+        # Словарь — закрытый реестр: нет ключа → high.
+        self.risks = dict(risks) if risks is not None else None
+        # Явный тестовый флаг: без metadata_of прод-реестр закрыт.
+        self.allow_unlisted = True
+
+    def risk_of(self, action_name: str) -> Risk:
+        if self.risks is None:
+            return Risk.none
+        return registry_risk(action_name, self.risks)
+
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
+        self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
+        self.started.set()
+        if self.on_execute is not None:
+            await self.on_execute(name, params, task_ctx)
+        if params.get("_wait"):
+            await self.release.wait()
+        elif params.get("_block"):
+            await asyncio.sleep(float(params.get("_seconds", 30)))
+        ticks = int(params.get("_tick") or 0)
+        if ticks:
+            dt = float(params.get("_dt", 0.05))
+            for _ in range(ticks):
+                await asyncio.sleep(dt)
+                self.ticks += 1
+        return ActionResult(
+            ok=True,
+            data={"name": name},
+            change_id=params.get("_change_id") or f"chg-{name}-{len(self.calls)}",
+            cost=float(params.get("_cost", 0) or 0),
+        )
+
+
+class MockValidators:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
+        self.calls.append({"name": name, "project_id": project_id, "context": dict(context)})
+        return ValidatorResult(name=name, passed=True, details="ok", blocking=False)
+
+
+class FixedPlanner:
+    def __init__(self, steps: list[PlanStep]) -> None:
+        self.steps = list(steps)
+
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        del goal, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
+        return list(self.steps)
+
+
+class ScriptedCritic:
+    def __init__(self, verdicts: list[str]) -> None:
+        self.verdicts = list(verdicts)
+
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        del plan, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
+        return self.verdicts.pop(0)
