@@ -63,11 +63,12 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
     seen: set[tuple[str, str, str]] = set()
     before_scenes = _scene_nodes(before)
     before_inactive = _inactive_pairs(before_scenes)
-    before_active = _active_pairs(before_scenes)
+    before_active = _active_counts(before_scenes)
     inactive_ids = {shot_id for _owner, shot_id in before_inactive}
     before_by_id, before_by_number = _index_scenes(before_scenes)
     activated = _activated_pairs(operations, before_inactive)
     deactivated = [fid for op in operations if (fid := _targeted(op, False))]
+    after_active: Counter[tuple[str, str]] = Counter()
 
     for scene in _scene_nodes(after):
         raw = scene.get("кадры")
@@ -87,22 +88,8 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
             if not isinstance(shot, dict) or id(shot) not in active_mark:
                 continue
             fid = frame_id(shot) or ""
-            # Id был неактивен в любом кадре. Копия в другом кадре — тоже revived,
-            # пока restore не разрешил именно эту пару (кадр, shot_id).
-            # Пара, которая в before уже была активной, — не оживление.
-            if (
-                fid
-                and fid in inactive_ids
-                and (entity, fid) not in activated
-                and (entity, fid) not in before_active
-            ):
-                _add(
-                    violations,
-                    seen,
-                    "inactive_shot_revived",
-                    _shot_path(entity, fid),
-                    fid,
-                )
+            if fid:
+                after_active[(entity, fid)] += 1
         scene_text = _scene_text(scene)
         # Покрытие, не равенство склейки: живые фрагменты обязательны и
         # собираются в любом порядке, неактивные закрывают пропуски без
@@ -129,6 +116,23 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
                         _shot_path(entity, fid),
                         fid,
                     )
+    # Живых копий пары (кадр, id) стало больше, и в before была неактивная
+    # копия этой пары или этого id. Явный restore этой пары — не оживление.
+    # Уже живая пара с тем же числом копий не оживает от правки соседа.
+    for (entity, fid), after_n in after_active.items():
+        if after_n <= before_active[(entity, fid)]:
+            continue
+        if (entity, fid) in activated:
+            continue
+        if (entity, fid) not in before_inactive and fid not in inactive_ids:
+            continue
+        _add(
+            violations,
+            seen,
+            "inactive_shot_revived",
+            _shot_path(entity, fid),
+            fid,
+        )
     return sorted_violations(violations)
 
 
@@ -170,21 +174,23 @@ def _inactive_pairs(scenes: list[dict[str, Any]]) -> set[tuple[str, str]]:
     return found
 
 
-def _active_pairs(scenes: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Уже живые шоты как (кадр, shot_id). Тот же id в другом кадре их не оживляет."""
+def _active_counts(scenes: list[dict[str, Any]]) -> Counter[tuple[str, str]]:
+    """Число живых копий пары (кадр, shot_id). Множество прячет вторую копию."""
 
-    found: set[tuple[str, str]] = set()
+    found: Counter[tuple[str, str]] = Counter()
     for scene in scenes:
         raw = scene.get("кадры")
         if not isinstance(raw, list):
             continue
         entity = scene_id(scene) or scene_number(scene) or ""
+        active = list(shots_of({"shots": raw}) or [])
+        active_mark = {id(item) for item in active}
         for shot in raw:
-            if not isinstance(shot, dict) or not shot_counts_as_active(shot):
+            if not isinstance(shot, dict) or id(shot) not in active_mark:
                 continue
             fid = frame_id(shot)
             if fid:
-                found.add((entity, fid))
+                found[(entity, fid)] += 1
     return found
 
 

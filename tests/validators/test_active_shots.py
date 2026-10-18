@@ -427,6 +427,42 @@ def test_same_id_active_elsewhere_before_is_not_revived(mode: str) -> None:
     )
 
 
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_same_frame_duplicate_id_inactive_copy_revived(mode: str) -> None:
+    """Один кадр, две копии id: неактивная стала живой без op — revived."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "A",
+                "номер": 1,
+                "кадры": [
+                    {"id": "k1", "активен": False, "закадр": ""},
+                    {"id": "k1", "активен": True, "закадр": "живой"},
+                ],
+            }
+        ]
+    }
+    after = {
+        "сцены": [
+            {
+                "id": "A",
+                "номер": 1,
+                "кадры": [
+                    {"id": "k1", "активен": True, "закадр": ""},
+                    {"id": "k1", "активен": True, "закадр": "живой"},
+                ],
+            }
+        ]
+    }
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode=mode)
+    assert any(
+        item.code == "inactive_shot_revived" and item.id == "k1"
+        for item in raised.value.violations
+    )
+
+
 def test_restore_scoped_to_frame_does_not_revive_copy() -> None:
     """Один shot_id в двух кадрах: restore по frame_uuid оживляет только свой."""
 
