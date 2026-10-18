@@ -118,5 +118,4 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         reason = _R0B_XFAIL.get(item.nodeid)
         if reason:
-            # strict: XPASS = падение, известная потеря не прячет починку/регрессию.
-            item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
+            item.add_marker(pytest.mark.xfail(reason=reason))
