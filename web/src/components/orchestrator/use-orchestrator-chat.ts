@@ -343,6 +343,18 @@ export function useOrchestratorChat() {
         }
         setSendError("");
       } catch (error) {
+        if (error instanceof OrchApiError && error.status === 409) {
+          try {
+            const snap = await getOrchSessionStatus(cfg);
+            dispatch({
+              type: "snapshot",
+              taskId: snap.task_id == null ? null : String(snap.task_id),
+              status: snap.status,
+            });
+          } catch {
+            /* отказ остаётся на карточке, повтор сам не уходит */
+          }
+        }
         if (!noteAuth(error)) {
           const raw = error instanceof Error ? error.message : "не записалось решение";
           const denied = error instanceof OrchApiError && error.status === 403;

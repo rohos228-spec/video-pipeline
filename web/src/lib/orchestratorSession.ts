@@ -289,6 +289,7 @@ export type OrchScreenAction =
   | { type: "task-status"; taskId: string; status: TaskStatus; resumeAllowed?: boolean }
   | { type: "session-snapshot"; taskId: string; status: TaskStatus; resumeAllowed: boolean }
   | { type: "whitelist-denied"; approvalId: string; taskId: string | null }
+  | { type: "snapshot"; taskId: string | null; status: string }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -721,6 +722,19 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       },
     };
   }
+  if (action.type === "snapshot") {
+    const status = asTaskStatus(action.status);
+    if (!status) return state;
+    const wanted = action.taskId;
+    const known = wanted != null && state.tasks.some((task) => task.id === wanted);
+    const target = known ? wanted : state.tasks.at(-1)?.id;
+    if (!target) return state;
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => (task.id === target ? { ...task, status } : task)),
+    };
+  }
+
   if (action.type === "approval-resolved") {
     return {
       ...state,
