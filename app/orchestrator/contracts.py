@@ -1244,8 +1244,31 @@ def _listed_names(values: Any) -> set[str]:
     return names
 
 
+def _whitelist_names(registry: Any) -> set[str] | None:
+    """Имена из ``whitelist()``. ``None`` — метода нет. Сбой и пустой ответ — отказ."""
+    for owner in _registry_owners(registry):
+        fn = getattr(owner, "whitelist", None)
+        if not callable(fn):
+            continue
+        try:
+            values = fn()
+        except Exception:
+            return set()
+        if values is None:
+            continue
+        return _listed_names(values)
+    return None
+
+
 def explicit_action_names(registry: Any) -> set[str] | None:
-    """Имена из ``metadata_registry()`` / ``action_names``. ``None`` — списка нет."""
+    """``whitelist()``, иначе ``metadata_registry()`` / ``action_names``.
+
+    ``None`` — ни одного списка нет: дальше решает ``metadata_of``.
+    Пустой ``whitelist()`` и исключение из него — отказ, не открытый мок.
+    """
+    listed = _whitelist_names(registry)
+    if listed is not None:
+        return listed
     for owner in _registry_owners(registry):
         values: Any = _MISSING
         fn = getattr(owner, "metadata_registry", None)
@@ -1281,9 +1304,11 @@ def _name_listed(action: str, listed: set[str]) -> bool:
 def not_in_whitelist(action: str, registry: Any | None) -> bool:
     """Имя нельзя ни одобрить, ни выполнить.
 
-    Белый список — явный ``metadata_registry()`` / список имён, не сам факт
-    ответа ``metadata_of``. Пустая карточка и ``name``, не равное действию,
-    отказ. Карточка без поля ``name`` и без списка имён остаётся допустимой.
+    Белый список — ``whitelist()``, если метод есть, иначе
+    ``metadata_registry()`` / список имён. Это не сам факт ответа
+    ``metadata_of``. Пустой список и сбой ``whitelist()`` — отказ.
+    Пустая карточка и ``name``, не равное действию, отказ. Карточка без
+    поля ``name`` и без списка имён остаётся допустимой.
     ``allow_unlisted=True`` — только явный тестовый флаг; ``@`` и pattern
     он не открывает.
     """
