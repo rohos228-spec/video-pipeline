@@ -189,7 +189,8 @@ async def test_montage_chain_and_count_use_live_shots() -> None:
             assert "МЁРТВЫЙ" not in report["chain"]
             assert "живой шаг" in report["chain"]
             assert report["shots"] == 1
-            assert parent.voiceover_text == "Живой закадр кадра."
+            assert parent.voiceover_text == "Живой закадр кадра. Второй кусок."
+            assert "Чужой" not in (parent.voiceover_text or "")
             stored = (parent.attrs or {}).get("кадры") or []
             assert [s["id"] for s in stored] == ["4-K1", "4-K2", "4-K9"]
             assert stored[2]["закадр"] == "Чужой закадр."

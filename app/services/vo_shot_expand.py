@@ -2368,9 +2368,19 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        # Живые шоты раскладывают закадр. Если живых нет, лестница остаётся
-        # целиком: пустой active-срез не подменяет кадры[] пустыми словарями.
-        planned = active_planned_shots(parent) or planned_shots_from_attrs(parent)
+        # Полная лестница держит неактивный шот на своём слоте. Закадр
+        # режется только по живым: помеченный кусок на кадр не садится.
+        # Если живых нет, лестница остаётся целиком — пустой срез не
+        # подменяет кадры[] пустыми словарями. Если кадров меньше, чем
+        # шотов, раскладываем живые, а неактивные дописываются на родителя.
+        stored = planned_shots_from_attrs(parent)
+        live = [shot for shot in stored if shot_is_active(shot)]
+        if stored and live and len(members) < len(stored):
+            planned = live
+            parked = [shot for shot in stored if not shot_is_active(shot)]
+        else:
+            planned = stored
+            parked = []
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2381,11 +2391,23 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 parent.voiceover_text = full
             updated += 1
             continue
-        parts = (
-            kadry_vo_pieces(planned, full, main_action_text(parent))
-            if planned
+        voice_source = [shot for shot in planned if shot_is_active(shot)] or planned
+        voiced = (
+            kadry_vo_pieces(voice_source, full, main_action_text(parent))
+            if voice_source
             else _vo_parts_without_empty(full, n_planned)
         )
+        if len(voice_source) != len(planned):
+            parts = []
+            cursor = 0
+            for shot in planned:
+                if shot_is_active(shot) and cursor < len(voiced):
+                    parts.append(voiced[cursor])
+                    cursor += 1
+                else:
+                    parts.append("")
+        else:
+            parts = list(voiced)
         if len(parts) < n_planned:
             parts = list(parts) + [""] * (n_planned - len(parts))
         extra.extend(members[n_planned:])
@@ -2430,7 +2452,9 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     shot = {}
                 sid = str(shot.get("id") or "").strip()
                 shot["порядок"] = pos + 1
-                shot["закадр"] = pieces[pos]
+                # Неактивный шот остаётся в лестнице со своим закадром.
+                if shot_is_active(shot):
+                    shot["закадр"] = pieces[pos]
                 pid = str(shot.get("parent_id") or "").strip()
                 if pos == 0 and (not pid or pid == sid or pid in shot_ids):
                     # Первый кадр сцены — master: parent только кросс-ячеечный
@@ -2514,9 +2538,11 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     attrs.pop("площадка", None)
                 fr.attrs = attrs
                 _flag_attrs(fr)
-                if (getattr(fr, "voiceover_text", None) or "") != piece:
-                    fr.voiceover_text = piece
-                fr.duration_seconds = vo_duration_sec(piece, shots=1)
+                # Помеченный шот не отдаёт закадр живому кадру.
+                if not isinstance(shot, dict) or shot_is_active(shot):
+                    if (getattr(fr, "voiceover_text", None) or "") != piece:
+                        fr.voiceover_text = piece
+                    fr.duration_seconds = vo_duration_sec(piece, shots=1)
                 if fr is scene_parent:
                     _set_cs(
                         fr,
@@ -2539,6 +2565,24 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     )
                 _apply_shot_meta(fr, shot)
                 updated += 1
+        if parked:
+            attrs = dict(getattr(parent, "attrs", None) or {})
+            current = list(attrs.get("кадры") or [])
+            have = {
+                str(row.get("id") or "")
+                for row in current
+                if isinstance(row, dict) and str(row.get("id") or "")
+            }
+            for shot in parked:
+                sid = str(shot.get("id") or "")
+                if sid and sid in have:
+                    continue
+                current.append(dict(shot))
+                if sid:
+                    have.add(sid)
+            attrs["кадры"] = current
+            parent.attrs = attrs
+            _flag_attrs(parent)
     seen_extra = {id(fr) for fr in extra}
     for fr in duplicate_scene_ladder_frames(frames):
         if id(fr) in seen_extra:

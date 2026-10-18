@@ -175,13 +175,12 @@ async def test_edit_and_clear_voiceover(
     assert live is not None and live.voiceover_text == ""
     left = (
         await session.execute(
-            select(FrameText).where(
-                FrameText.frame_id == fr.id, FrameText.kind == "voiceover"
-            )
+            select(FrameText).where(FrameText.frame_id == fr.id)
         )
     ).scalars().all()
     assert len(left) == 1
-    assert left[0].text == ""
+    assert left[0].kind == "vo_archived"
+    assert left[0].text == "стало"
 
 
 @pytest.mark.asyncio
