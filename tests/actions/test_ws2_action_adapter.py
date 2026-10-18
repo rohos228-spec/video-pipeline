@@ -85,3 +85,62 @@ def test_registry_populated_on_import() -> None:
         cwd="/workspace",
     )
     assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_risk_mapping_read_local_safe_paid_destructive() -> None:
+    """read→none, local_safe→low, paid→medium, destructive→high.
+
+    Опубликованные флаги не слабее этой шкалы и не слабее audit_metadata.json.
+    prompt.create_master остаётся destructive, хотя в коде ярус local_safe.
+    """
+
+    from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
+    from app.orchestrator.actions.executor import map_nikita_risk, metadata_of
+    from app.services.action_layer.spec import registry
+
+    read = map_nikita_risk("read", name="tier.read")
+    assert read.risk == "none"
+    assert read.read_only is True
+    assert read.destructive is False
+    assert read.paid is False
+    assert read.needs_approval is False
+
+    local = map_nikita_risk("local_safe", name="tier.local")
+    assert local.risk == "low"
+    assert local.read_only is False
+    assert local.destructive is False
+    assert local.paid is False
+    assert local.needs_approval is False
+
+    paid = map_nikita_risk("paid", name="tier.paid")
+    assert paid.risk == "medium"
+    assert paid.paid is True
+    assert paid.read_only is False
+    assert paid.needs_approval is True
+
+    destructive = map_nikita_risk("destructive", name="tier.destructive")
+    assert destructive.risk == "high"
+    assert destructive.destructive is True
+    assert destructive.needs_approval is True
+
+    rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    ensure_builtin_actions()
+    master_spec = registry.find("prompt.create_master")
+    assert master_spec is not None
+    assert master_spec.risk == "local_safe"
+    master = metadata_of("prompt.create_master")
+    assert master.destructive is True
+    assert master.needs_approval is True
+    assert master == contract_metadata("prompt.create_master")
+
+    for spec in registry.list():
+        floor = map_nikita_risk(spec.risk, name=spec.id)
+        published = metadata_of(spec.id)
+        assert published == contract_metadata(spec.id)
+        assert rank[published.risk] >= rank[floor.risk]
+        if floor.destructive:
+            assert published.destructive is True
+        if floor.paid:
+            assert published.paid is True
+        if floor.read_only:
+            assert published.read_only is True

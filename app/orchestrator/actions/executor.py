@@ -68,10 +68,60 @@ def _refusal(raw: dict) -> str | None:
     return None
 
 
-def metadata_of(name: str) -> ActionMetadata:
-    """Флаги риска из audit_metadata.json, включая create_node@new_group."""
+_NIKITA_TO_CONTRACT: dict[str, tuple[str, bool, bool, bool]] = {
+    "read": ("none", True, False, False),
+    "local_safe": ("low", False, False, False),
+    "paid": ("medium", False, False, True),
+    "destructive": ("high", False, True, False),
+}
 
-    return contract_metadata(str(name))
+_RISK_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def map_nikita_risk(nikita_risk: str, *, name: str) -> ActionMetadata:
+    """Пол яруса Никиты на шкале контракта.
+
+    paid → medium и флаг paid: при одобрении нужна оценка больше нуля.
+    destructive → high, destructive и подтверждение.
+    """
+
+    try:
+        risk, read_only, destructive, paid = _NIKITA_TO_CONTRACT[nikita_risk]
+    except KeyError as exc:
+        raise ValueError(f"неизвестный ярус {nikita_risk}") from exc
+    return ActionMetadata(
+        name=name,
+        risk=risk,  # type: ignore[arg-type]
+        read_only=read_only,
+        destructive=destructive,
+        paid=paid,
+    )
+
+
+def _raise_to_floor(published: ActionMetadata, floor: ActionMetadata) -> ActionMetadata:
+    """Совпадение или ужесточение. Ослабить json или пол яруса нельзя."""
+
+    risk = published.risk if _RISK_RANK[published.risk] >= _RISK_RANK[floor.risk] else floor.risk
+    return ActionMetadata(
+        name=published.name,
+        risk=risk,
+        read_only=published.read_only and floor.read_only,
+        destructive=published.destructive or floor.destructive,
+        paid=published.paid or floor.paid,
+    )
+
+
+def metadata_of(name: str) -> ActionMetadata:
+    """Флаги из audit_metadata.json, не слабее пола яруса Никиты.
+
+    create_node@new_group и prompt.create_master остаются destructive.
+    """
+
+    published = contract_metadata(str(name))
+    spec = registry.find(str(name))
+    if spec is None:
+        return published
+    return _raise_to_floor(published, map_nikita_risk(spec.risk, name=published.name))
 
 
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
