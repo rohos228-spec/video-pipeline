@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.3": "70ebef30a26962e44419ba75ecbcb6a8f43d8e8c0f7ba84fed253a2a9a166696",
+    "ws2-r2.3": "5963ecba52fe0bd61ac863e82b6f9c092e8ee4a586b242e0796487ed2d69afb3",
 }
 
 

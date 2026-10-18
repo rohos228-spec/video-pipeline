@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.models import Project
 from app.orchestrator.action_contracts.contracts import CONTRACT_VERSION
 from app.services.action_layer.spec import ensure_builtin_actions
@@ -695,11 +697,39 @@ def _action_names(node, key=None):
     return found
 
 
+_ENVELOPE_KEYS = {"status", "result", "error", "warnings", "cost", "cc_change_id"}
+_CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
+
+
+def _assert_core_envelope(payload: dict) -> None:
+    """Конверт ядра #370: ровно эти поля, без data, cc_change_id не orch-appr."""
+
+    from app.orchestrator.action_contracts.contracts import ActionResult
+
+    assert type(payload) is dict
+    assert set(payload) == _ENVELOPE_KEYS
+    assert "data" not in payload
+    assert payload["status"] in {"ok", "approval_required", "failed"}
+    assert payload["result"] is None or isinstance(payload["result"], dict)
+    assert payload["error"] is None or isinstance(payload["error"], str)
+    assert isinstance(payload["warnings"], list)
+    assert all(isinstance(item, str) for item in payload["warnings"])
+    cost = payload["cost"]
+    assert cost is None or isinstance(cost, (int, float)) and not isinstance(cost, bool)
+    cc = payload["cc_change_id"]
+    assert cc is None or isinstance(cc, str)
+    if isinstance(cc, str):
+        assert _CORE_CHANGE_ID.fullmatch(cc) is None
+    parsed = ActionResult.model_validate(payload)
+    assert parsed.cc_change_id == cc
+    assert parsed.status == payload["status"]
+
+
 async def test_execute_wire_validates_and_keeps_cc_change_id(env) -> None:
-    """Словарь для ядра проходит ActionResult.model_validate, cc_change_id остаётся."""
+    """Конверт execute совпадает с формой ядра: result, cost, cc_change_id."""
 
     from app.models import Frame
-    from app.orchestrator.action_contracts.contracts import ActionResult
+    from app.orchestrator.action_contracts.contracts import ActionResult, SoftDeleteResult
     from app.orchestrator.actions.executor import execute
 
     pid = await env.add_project(frames=1)
@@ -724,12 +754,42 @@ async def test_execute_wire_validates_and_keeps_cc_change_id(env) -> None:
             },
         },
     )
-    assert type(done) is dict
+    _assert_core_envelope(done)
     parsed = ActionResult.model_validate(done)
-    assert parsed.status == "ok"
+    assert isinstance(parsed.result, SoftDeleteResult)
     assert parsed.result.action == "montage.delete_frame"
-    assert parsed.cc_change_id == "cc-wire-1"
+    body = done["result"]
+    assert "data" not in body
+    assert isinstance(body["partial"], bool)
+    assert isinstance(body["skipped"], list)
+    assert _CORE_CHANGE_ID.fullmatch(body["change_id"])
+    assert body["snapshot_id"]
     assert done["cc_change_id"] == "cc-wire-1"
+
+    refused = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        {
+            "app": env.app,
+            "operator": "adapter-test",
+            "approval": {
+                "change_id": "orch-appr-12-2",
+                "action": "montage.delete_frame",
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": "orch-appr-12-9",
+            },
+        },
+    )
+    _assert_core_envelope(refused)
+    assert refused["cc_change_id"] is None
+
+    held = await execute("frame.restore", {}, {})
+    _assert_core_envelope(held)
+    assert held["status"] == "approval_required"
+    assert isinstance(held["result"], dict)
+    assert "data" not in held["result"]
 
 
 async def test_adapter_result_matches_contract_schema(env) -> None:
