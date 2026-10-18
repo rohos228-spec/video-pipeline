@@ -781,6 +781,95 @@ def test_promote_child_without_shot_keeps_old_kadry(
     assert "кадры[] оставлены" in caplog.text
 
 
+def test_promote_child_merges_old_shots_and_writes_idless_shot() -> None:
+    """Шот ребёнка сливается со старыми кадрами, в том числе без id."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    full = "Первая фраза целиком. Вторая тоже на месте."
+
+    def _pair(pu: str, cu: str, second: dict, old_id: str):
+        parent = SimpleNamespace(
+            uuid=pu,
+            voiceover_text=full,
+            image_prompt="",
+            animation_prompt="",
+            duration_seconds=4.0,
+            attrs={
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "сцена": 1,
+                        "закадр": "Первая фраза целиком.",
+                        "действие": "шаг",
+                        "место": "двор",
+                    },
+                    dict(second),
+                ],
+                "vo_cell_full": full,
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": pu,
+                    "shot_index": 1,
+                },
+            },
+        )
+        child = SimpleNamespace(
+            uuid=cu,
+            voiceover_text="",
+            image_prompt="",
+            animation_prompt="",
+            duration_seconds=2.0,
+            attrs={
+                "кадры": [
+                    {"id": old_id, "закадр": "нельзя потерять", "активен": True}
+                ],
+                "camera_subdivide": {
+                    "role": "shot",
+                    "parent_uuid": pu,
+                    "shot_index": 2,
+                },
+            },
+        )
+        return parent, child
+
+    parent, child = _pair(
+        "aa" * 12,
+        "bb" * 12,
+        {
+            "id": "1-K2",
+            "сцена": 1,
+            "закадр": "Вторая тоже на месте.",
+            "действие": "жест",
+        },
+        "old-child",
+    )
+    promote_shots_to_vo_cells([parent, child])
+    ids = [s.get("id") for s in child.attrs["кадры"]]
+    assert ids[0] == "1-K2"
+    assert "old-child" in ids
+    kept = next(s for s in child.attrs["кадры"] if s.get("id") == "old-child")
+    assert kept["закадр"] == "нельзя потерять"
+    assert kept["активен"] is False
+
+    parent_b, child_b = _pair(
+        "cc" * 12,
+        "dd" * 12,
+        {
+            "сцена": 1,
+            "закадр": "Вторая тоже на месте.",
+            "действие": "жест",
+        },
+        "old-b",
+    )
+    promote_shots_to_vo_cells([parent_b, child_b])
+    rows = child_b.attrs["кадры"]
+    assert rows[0].get("id") in (None, "")
+    assert "Вторая тоже на месте." in str(rows[0].get("закадр") or "")
+    assert any(s.get("id") == "old-b" for s in rows)
+
+
 def test_promote_parent_id_keeps_shot_children() -> None:
     """Без ``сцена``, но с parent_id: K2 остаётся shot той же ячейки."""
     from types import SimpleNamespace
