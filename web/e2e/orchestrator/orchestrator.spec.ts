@@ -10,6 +10,7 @@ import {
   orchAuthHeaders,
   orchTestModeEnabled,
   postOrchKill,
+  postOrchMessage,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
@@ -229,6 +230,19 @@ test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает о�
     envOrchApiBase();
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
     else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
+test("JSON не-объект в ответе message не называется пустым", async () => {
+  const previous = globalThis.fetch;
+  const cfg = { apiBase: "", session: "s", token: "t", scenario: "idle" };
+  try {
+    globalThis.fetch = async () => new Response("[]", { status: 200 });
+    await expect(postOrchMessage(cfg, { text: "hi" })).rejects.toThrow("ответ не объект");
+    globalThis.fetch = async () => new Response("  ", { status: 200 });
+    await expect(postOrchMessage(cfg, { text: "hi" })).rejects.toThrow("пустой ответ");
+  } finally {
+    globalThis.fetch = previous;
   }
 });
 

@@ -284,13 +284,16 @@ export type OrchHttpResult<T> = {
 async function readJsonObject<T>(res: Response): Promise<T | null> {
   const text = await res.text();
   if (!text.trim()) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(text) as T;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed;
+    parsed = JSON.parse(text);
   } catch {
     throw new OrchApiError(res.status, text.slice(0, 300));
   }
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OrchApiError(res.status, "ответ не объект");
+  }
+  return parsed as T;
 }
 
 async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<OrchHttpResult<T>> {
