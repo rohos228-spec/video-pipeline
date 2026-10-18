@@ -6,17 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Artifact,
     Frame,
-    FrameEdge,
     FrameStatus,
-    FrameText,
     Project,
-    PromptVersion,
 )
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
@@ -1071,6 +1067,7 @@ async def delete_coverage_child(
     frame: Frame,
     frames: list[Frame],
 ) -> None:
+    """Мягкая пометка дочернего кадра. Строка Frame и тексты остаются."""
     parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):

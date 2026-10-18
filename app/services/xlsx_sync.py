@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
 from app.services.content_locks import is_ui_locked
+from app.services.frame_tombstones import seal_import_skip
 from app.storage.project_sheet import (
     ROW_FRAME_LOGIC,
     ROW_HEADER,
@@ -132,6 +133,11 @@ async def reload_from_xlsx(
         for col, fnum in col_to_frame.items():
             if fnum in by_number:
                 continue
+            skip = seal_import_skip(project, None, fnum)
+            if skip:
+                logger.warning("WARN xlsx_sync: {}", skip)
+                summary.setdefault("frames_kept_marked", []).append(fnum)
+                continue
             if _has_rows:
                 summary.setdefault("frames_create_skipped", []).append(fnum)
                 continue
@@ -157,6 +163,10 @@ async def reload_from_xlsx(
         for col, fnum in col_to_frame.items():
             fr = by_number.get(fnum)
             if fr is None:
+                continue
+            skip = seal_import_skip(project, fr, fnum)
+            if skip:
+                logger.warning("WARN xlsx_sync: {}", skip)
                 continue
             new_voice = _to_str(ws_f.cell(row=ROW_VOICEOVER, column=col).value)
             new_meaning = _to_str(ws_f.cell(row=ROW_FRAME_LOGIC, column=col).value)

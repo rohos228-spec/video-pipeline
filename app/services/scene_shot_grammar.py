@@ -715,14 +715,16 @@ def merge_gpt_shots_with_action(
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # убрать наследие авто-«общий вид …»
-    cleaned = [
-        s
-        for s in dict_shots
-        if not str(s.get("действие") or "").casefold().startswith("общий вид")
-    ]
-    if not cleaned:
-        cleaned = dict_shots
+    # Наследие авто-«общий вид …» помечаем, но не выкидываем.
+    cleaned: list[dict[str, Any]] = []
+    for shot in dict_shots:
+        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
+            _mark_shot_kept(
+                shot,
+                "наследие авто-«общий вид» — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+        cleaned.append(shot)
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
