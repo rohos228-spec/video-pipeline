@@ -470,7 +470,16 @@ def test_frame_text_and_edge_loss_is_error() -> None:
 
 def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
     before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
-    same = _scene([{"действие": "фраза на месте"}])
+    # Две копии одного текста: пропала одна — frames_cleared, даже если вторая осталась.
+    fewer = _scene([{"действие": "фраза на месте"}])
+    with pytest.raises(PreservationRejected) as fewer_exc:
+        run_preservation_validators(before, fewer, mode="reject")
+    assert any(
+        item.code == "frames_cleared" and item.id == "фраза на месте"
+        for item in fewer_exc.value.violations
+    )
+    # Тот же текст и то же число копий, другой ключ — не потеря.
+    same = _scene([{"действие": "фраза на месте"}, {"текст": "фраза на месте"}])
     assert run_preservation_validators(before, same, mode="reject") == []
 
     gone = _scene([{"id": "k1", "закадр": "другой"}])
@@ -491,7 +500,7 @@ def test_non_list_kadry_is_error() -> None:
     """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
     Шим даёт error ``kadry_invalid`` и, для живого id, error ``shot_dropped``.
-    Модуль #379 @ 1ef07735 рядом кладёт warn ``frames_no_data``.
+    Модуль #379 @ fb09550b рядом кладёт warn ``frames_no_data``.
     Точный набор и число не фиксируем: нужен error по сцене или шоту.
     """
 
@@ -619,7 +628,7 @@ def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
 
 
 def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
-    """Поведение шима как у #379 @ 1ef07735: F1b, F1c, пустой закадр, ``кадры: None``."""
+    """Поведение шима как у #379 @ fb09550b: F1b, F1c, пустой закадр, ``кадры: None``."""
 
     before = {
         "сцены": [
@@ -723,7 +732,7 @@ def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
     assert all(item.code != "shot_dropped" for item in char_exc.value.violations)
 
 
-_WS1_SHA = "1ef07735d94fb2bd7133fad65c0d651c5f008103"
+_WS1_SHA = "fb09550bb98324a4db5ae2782489c371b39ee097"
 
 
 def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
@@ -771,7 +780,44 @@ def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
     assert any(item.code == "inactive_shot_revived" and item.id == "k" for item in scoped.value.violations)
 
 
-def test_idless_loss_and_named_description_match_1ef07735() -> None:
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_same_id_active_elsewhere_before_is_not_revived(mode: str) -> None:
+    """A/k1 неактивен, B/k1 уже активен. Правка B и запись без изменений проходят.
+
+    Копия неактивного A/k1 в новый кадр как активный — ``inactive_shot_revived``.
+    """
+
+    before = {
+        "сцены": [
+            {"id": "A", "номер": 1, "кадры": [{"id": "k1", "активен": False, "закадр": ""}]},
+            {
+                "id": "B",
+                "номер": 2,
+                "кадры": [
+                    {"id": "k1", "закадр": "живой"},
+                    {"id": "k2", "закадр": "сосед"},
+                ],
+            },
+        ]
+    }
+    unchanged = run_preservation_validators(before, copy.deepcopy(before), mode=mode)
+    assert all(item.code != "inactive_shot_revived" for item in unchanged)
+
+    edited = copy.deepcopy(before)
+    edited["сцены"][1]["кадры"][1]["закадр"] = "другой сосед"
+    touched = run_preservation_validators(before, edited, mode=mode)
+    assert all(item.code != "inactive_shot_revived" for item in touched)
+
+    copied = copy.deepcopy(before)
+    copied["сцены"].append(
+        {"id": "C", "номер": 3, "кадры": [{"id": "k1", "активен": True, "закадр": ""}]}
+    )
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, copied, mode=mode)
+    assert any(item.code == "inactive_shot_revived" and item.id == "k1" for item in raised.value.violations)
+
+
+def test_idless_loss_and_named_description_match_fb09550b() -> None:
     """Пустой id даёт ``frames_cleared``, ``описание`` и ``attrs.кадры`` не прячут шот."""
 
     kept = {"id": "k1", "закадр": "а"}
@@ -818,9 +864,39 @@ def test_idless_loss_and_named_description_match_1ef07735() -> None:
         )
     assert any(item.code == "shot_dropped" and item.id == "k2" for item in wrapper.value.violations)
 
+    def wrapped_shots(shots: list[dict]) -> dict:
+        return {"frames": [{"id": "cell1", "сцена": 1, "attrs": {"shots": shots}}]}
+
+    with pytest.raises(PreservationRejected) as shots_wrapper:
+        run_preservation_validators(
+            wrapped_shots([{"id": "k1", "закадр": "а"}, {"id": "k2", "закадр": "б"}]),
+            wrapped_shots([{"id": "k1", "закадр": "а"}]),
+            mode="reject",
+        )
+    assert any(item.code == "shot_dropped" and item.id == "k2" for item in shots_wrapper.value.violations)
+
+    one = {"id": "", "закадр": "кусок"}
+    two = [{"id": "", "закадр": "кусок"}, {"id": "", "закадр": "кусок"}]
+
+    def packed(shots: list[dict]) -> dict:
+        return {"cells": [{"id": "c", "сцена": "1", "кадры": shots}]}
+
+    with pytest.raises(PreservationRejected) as duplicate:
+        run_preservation_validators(packed(two), packed([one]), mode="reject")
+    assert any(item.code == "frames_cleared" and item.id == "кусок" for item in duplicate.value.violations)
+
+    moved = {
+        "cells": [
+            {"id": "c1", "сцена": "1", "кадры": [one]},
+            {"id": "c2", "сцена": "1", "кадры": [dict(one)]},
+        ]
+    }
+    moved_out = run_preservation_validators(packed(two), moved, mode="reject")
+    assert all(item.code != "frames_cleared" for item in moved_out)
+
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Двенадцать точек вызова на настоящем preservation.py из 1ef07735.
+    """Двенадцать точек вызова на настоящем preservation.py из fb09550b.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -839,7 +915,7 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
         tar.extractall(extracted, filter="data")
     module_dir = extracted / "app" / "orchestrator" / "validators"
     assert (module_dir / "preservation.py").is_file()
-    # #379 @ 1ef07735 не содержит activity_flags: его читает наш код, не preservation.
+    # #379 @ fb09550b не содержит activity_flags: его читает наш код, не preservation.
     flags = module_dir / "activity_flags.py"
     if not flags.is_file():
         flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())
