@@ -72,8 +72,8 @@ async def remember_soft_delete(
     """Снимок прежнего значения. id строкой, как snapshot_id в SoftDeleteResult."""
 
     sid = await store.save_snapshot(
-        plan_id=getattr(ctx, "plan_id", None) or "",
-        step_index=getattr(ctx, "step_index", None),
+        plan_id=ctx.plan_id or "",
+        step_index=ctx.step_index,
         action_id=action_id,
         project_id=project_id,
         kind=kind,
@@ -82,7 +82,7 @@ async def remember_soft_delete(
         after={"marked": True},
         restorable=True,
         note="мягкое удаление: восстановление отдельным действием",
-        actor=getattr(ctx, "operator", None) or "",
+        actor=ctx.operator or "",
     )
     return str(sid)
 
@@ -156,6 +156,25 @@ def _edit_result(
         reversible=True,
     )
     return ActionResult(status="ok", result=payload, error=None).model_dump(mode="json")
+
+
+async def capture_frame_by_number(project_id: int, number: int) -> dict | None:
+    """Кадр по номеру, затем тот же снимок, что у capture_frame."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+    from app.services.action_layer.store import sessions
+
+    async with sessions()() as session:
+        frame_id = await session.scalar(
+            select(Frame.id).where(
+                Frame.project_id == int(project_id),
+                Frame.number == int(number),
+            )
+        )
+    if frame_id is None:
+        return None
+    return await capture_frame(int(project_id), int(frame_id))
 
 
 async def capture_frame(project_id: int, frame_id: int) -> dict | None:

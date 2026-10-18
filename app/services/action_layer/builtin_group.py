@@ -4,7 +4,7 @@ import re
 
 from app.services.action_layer.context import ActionCallError, ActionContext
 from app.services.action_layer.soft_restore import (
-    group_restore, precondition_restore_ref, restore_params_schema)
+    group_restore, precondition_restore_ref, remember_soft_delete, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec,
     CostEstimate, JobState, Precondition)
@@ -234,7 +234,23 @@ async def _has_group_patch(ctx: ActionContext, params: dict) -> str | None:
 
 
 async def _group_delete(ctx: ActionContext, params: dict) -> dict:
-    return await ctx.call("DELETE", f"/node-groups/{params['group_id']}")
+    from app.services.node_groups import _group_to_dict, get_node_group
+
+    gid = str(params["group_id"])
+    group = get_node_group(gid)
+    before = _group_to_dict(group) if group is not None else {"group_id": gid, "absent": True}
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="group.delete",
+        project_id=None,
+        kind="group",
+        target={"group_id": gid},
+        before=before,
+    )
+    data = await ctx.call("DELETE", f"/node-groups/{gid}")
+    if isinstance(data, dict):
+        return {**data, "snapshot_id": snap}
+    return {"deleted": gid, "snapshot_id": snap}
 
 
 async def _group_shots_report(ctx: ActionContext, params: dict) -> dict:

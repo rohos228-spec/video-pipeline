@@ -206,3 +206,83 @@ async def test_soft_delete_restore_roundtrip(env, prompts_root, monkeypatch) -> 
     _assert_restore(back_prompt, "prompt.restore_master", prompt_snap)
     assert prompt_path.read_text(encoding="utf-8") == "текст до удаления"
     assert (prompts_root / "01_plan" / "default.md").read_text(encoding="utf-8") == "старый текст"
+
+
+async def test_production_delete_snapshot_restores_without_test_helper(
+    env, prompts_root, monkeypatch
+) -> None:
+    """snapshot_id приходит из исполнителя удаления, тест хелперы не зовёт."""
+    monkeypatch.setattr(ng, "custom_groups_dir", lambda: env.tmp_path / "node_groups")
+    pid = await env.add_project(frames=3)
+    ids = await env.frame_ids(pid)
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[2])
+        voice = frame.voiceover_text
+        frame.attrs = {"кадры": [dict(shot) for shot in _SHOTS]}
+        await session.commit()
+
+    deleted = await _run(env, [{
+        "action_id": "montage.delete_frame",
+        "params": {"project_id": pid, "frame_id": ids[2]},
+    }])
+    assert deleted["status"] == "succeeded", deleted
+    result = deleted["steps"][0]["result"]
+    assert result["deleted"] == 1
+    snap = result["snapshot_id"]
+    assert isinstance(snap, str) and snap.strip()
+    restored = await _run(env, [{
+        "action_id": "frame.restore",
+        "params": {"project_id": pid, "snapshot_id": snap},
+    }])
+    _assert_restore(restored, "frame.restore", snap)
+    async with env.factory() as session:
+        row = await session.scalar(
+            select(Frame).where(Frame.project_id == pid, Frame.number == 2)
+        )
+        assert row is not None
+        assert row.voiceover_text == voice
+        assert row.attrs["кадры"] == _SHOTS
+
+    spec = {
+        "group_id": "n4live",
+        "title": "Группа до удаления",
+        "category": "planning",
+        "nodes": [{"local_key": "hero", "label": "Герой", "node_type": "excel_gpt"}],
+    }
+    save_custom_group(spec)
+    gone_group = await _run(env, [{
+        "action_id": "group.delete",
+        "params": {"group_id": "n4live"},
+    }])
+    assert gone_group["status"] == "succeeded", gone_group
+    group_snap = gone_group["steps"][0]["result"]["snapshot_id"]
+    assert isinstance(group_snap, str) and group_snap.strip()
+    assert get_node_group("n4live") is None
+    back_group = await _run(env, [{
+        "action_id": "group.restore",
+        "params": {"snapshot_id": group_snap},
+    }])
+    _assert_restore(back_group, "group.restore", group_snap)
+    group = get_node_group("n4live")
+    assert group is not None and group.title == "Группа до удаления"
+
+    created = await _run(env, [{
+        "action_id": "prompt.create_master",
+        "params": {"step_code": "plan", "name": "livedel", "content": "текст до удаления"},
+    }])
+    assert created["status"] == "succeeded", created
+    prompt_path = prompts_root / "01_plan" / "livedel.md"
+    gone_prompt = await _run(env, [{
+        "action_id": "prompt.delete_master",
+        "params": {"step_code": "plan", "name": "livedel"},
+    }])
+    assert gone_prompt["status"] == "succeeded", gone_prompt
+    prompt_snap = gone_prompt["steps"][0]["result"]["snapshot_id"]
+    assert isinstance(prompt_snap, str) and prompt_snap.strip()
+    assert not prompt_path.exists()
+    back_prompt = await _run(env, [{
+        "action_id": "prompt.restore_master",
+        "params": {"snapshot_id": prompt_snap},
+    }])
+    _assert_restore(back_prompt, "prompt.restore_master", prompt_snap)
+    assert prompt_path.read_text(encoding="utf-8") == "текст до удаления"

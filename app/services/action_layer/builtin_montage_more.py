@@ -8,7 +8,8 @@ from app.services.action_layer.builtin_montage import (
     _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
 from app.services.action_layer.context import ActionCallError, ActionContext
 from app.services.action_layer.soft_restore import (
-    frame_restore, precondition_restore_ref, restore_params_schema)
+    capture_frame, capture_frame_by_number, frame_restore, remember_soft_delete,
+    precondition_restore_ref, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
     ActionSpec, CostEstimate, JobState, Precondition)
@@ -523,9 +524,25 @@ async def _pre_vo_span_args(ctx, params):
 
 
 async def _delete_child(ctx, params):
-    data = await ctx.call("POST", f"{_base(params['project_id'])}/coverage", json={
-        "type": "coverage_delete", "frame_number": params["frame_number"]})
-    return {"ok": bool(data.get("ok")), "deleted_frame_number": params["frame_number"]}
+    project_id = int(params["project_id"])
+    number = int(params["frame_number"])
+    before = await capture_frame_by_number(project_id, number)
+    snap = None
+    if before is not None:
+        snap = await remember_soft_delete(
+            ctx,
+            action_id="montage.delete_child_frame",
+            project_id=project_id,
+            kind="frame",
+            target={"frame_id": before["frame_id"], "number": before["number"]},
+            before=before,
+        )
+    data = await ctx.call("POST", f"{_base(project_id)}/coverage", json={
+        "type": "coverage_delete", "frame_number": number})
+    out = {"ok": bool(data.get("ok")), "deleted_frame_number": number}
+    if snap is not None:
+        out["snapshot_id"] = snap
+    return out
 
 
 
@@ -566,8 +583,24 @@ async def _explode_scene(ctx, params):
 
 
 async def _delete_frame(ctx, params):
-    data = await ctx.call("DELETE", f"{_base(params['project_id'])}/frames/{params['frame_id']}")
-    return {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
+    project_id = int(params["project_id"])
+    frame_id = int(params["frame_id"])
+    before = await capture_frame(project_id, frame_id)
+    snap = None
+    if before is not None:
+        snap = await remember_soft_delete(
+            ctx,
+            action_id="montage.delete_frame",
+            project_id=project_id,
+            kind="frame",
+            target={"frame_id": frame_id, "number": before["number"]},
+            before=before,
+        )
+    data = await ctx.call("DELETE", f"{_base(project_id)}/frames/{frame_id}")
+    out = {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
+    if snap is not None:
+        out["snapshot_id"] = snap
+    return out
 
 
 

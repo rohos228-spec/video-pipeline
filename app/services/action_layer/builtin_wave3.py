@@ -12,7 +12,8 @@ from app.services.action_layer.builtin_montage_more import (
 from app.services.action_layer.context import (
     ActionCallError, ActionContext, source_to_upload, validate_source_params)
 from app.services.action_layer.soft_restore import (
-    precondition_restore_ref, prompt_restore_master, restore_params_schema)
+    precondition_restore_ref, prompt_restore_master, remember_soft_delete,
+    restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec, CostEstimate,
     JobState, Precondition)
@@ -327,10 +328,19 @@ async def _delete_master(ctx, params):
     old = await _read_prompt(ctx, params)
     if old is None:
         raise RuntimeError("промт не найден")
-    prev = _digest(str(old.get("content") or ""))
+    content = str(old.get("content") or "")
+    prev = _digest(content)
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="prompt.delete_master",
+        project_id=None,
+        kind="master_prompt",
+        target={"step_code": params["step_code"], "name": params["name"]},
+        before={"step_code": params["step_code"], "name": params["name"], "content": content},
+    )
     await ctx.call("DELETE", _prompt_path(params))
     return {"removed": True, "previous_sha256": prev["sha256"], "previous_chars": prev["chars"],
-            "scope": "global"}
+            "scope": "global", "snapshot_id": snap}
 
 
 
