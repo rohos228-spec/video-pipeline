@@ -405,11 +405,7 @@ async def test_incoming_inactive_shot_stays_inactive(session: AsyncSession) -> N
 async def test_garbage_kadry_returns_old_unchanged(
     session: AsyncSession, warn_log: list[str]
 ) -> None:
-    """``{}`` и не-JSON не список: поле не меняется, живой шот не гаснет.
-
-    Явный ``null`` по-прежнему становится пустым списком и помечает шоты
-    неактивными — это отдельная семантика, не мусор.
-    """
+    """``{}``, не-JSON и явный ``null`` не список: поле не меняется, живой шот не гаснет."""
     project = Project(slug="ws1-nonspec", topic="t", status=None)  # type: ignore[arg-type]
     session.add(project)
     await session.flush()
@@ -446,11 +442,11 @@ async def test_garbage_kadry_returns_old_unchanged(
     )
 
     await session.refresh(as_null)
-    null_shots = as_null.attrs["кадры"]
-    assert isinstance(null_shots, list)
-    null_by_id = {shot["id"]: shot for shot in null_shots}
-    assert set(null_by_id) == {"a", "b"}
-    assert shot_is_active(null_by_id["a"]) is False
+    assert as_null.attrs["кадры"] == [dict(shot) for shot in stored]
+    null_by_id = {shot["id"]: shot for shot in as_null.attrs["кадры"]}
+    assert null_by_id["a"].get("активен") is not False
+    assert shot_is_active(null_by_id["a"]) is True
+    assert null_by_id["b"]["активен"] is False
     assert shot_is_active(null_by_id["b"]) is False
 
     for fr in (as_obj, as_text):
@@ -652,6 +648,57 @@ async def test_two_identical_old_shots_both_kept_inactive(session: AsyncSession)
     assert all(shot["описание"] == "то же" for shot in inactive)
     assert all(shot["активен"] is False for shot in inactive)
     assert sum(1 for shot in second if shot_is_active(shot)) == 1
+
+
+@pytest.mark.asyncio
+async def test_null_kadry_keeps_old_shots_active(
+    session: AsyncSession, warn_log: list[str]
+) -> None:
+    """``null`` и пустая строка не трогают непустой список. Скрывает только ``[]``."""
+    project = Project(slug="ws1-null-kadry", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    stored = [
+        {"id": "a", "закадр": "альфа", "порядок": 1},
+        {"id": "b", "закадр": "бета", "порядок": 2, "активен": False},
+    ]
+
+    async def _frame(uuid: str, number: int) -> Frame:
+        return await _frame_with_kadry(
+            session, project, uuid, [dict(shot) for shot in stored], number=number
+        )
+
+    as_null = await _frame("null-keep", 1)
+    as_blank = await _frame("blank-keep", 2)
+    as_empty = await _frame("empty-hide", 3)
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {"frame_uuid": as_null.uuid, "fields": {"кадры": None}},
+            {"frame_uuid": as_blank.uuid, "fields": {"кадры": ""}},
+            {"frame_uuid": as_empty.uuid, "fields": {"кадры": []}},
+        ],
+        export_xlsx=False,
+    )
+
+    for fr in (as_null, as_blank):
+        await session.refresh(fr)
+        assert fr.attrs["кадры"] == [dict(shot) for shot in stored]
+        by_id = {shot["id"]: shot for shot in fr.attrs["кадры"]}
+        assert shot_is_active(by_id["a"]) is True
+        assert by_id["a"]["закадр"] == "альфа"
+        assert shot_is_active(by_id["b"]) is False
+
+    await session.refresh(as_empty)
+    empty_by_id = {shot["id"]: shot for shot in as_empty.attrs["кадры"]}
+    assert set(empty_by_id) == {"a", "b"}
+    assert shot_is_active(empty_by_id["a"]) is False
+    assert empty_by_id["a"]["активен"] is False
+    assert shot_is_active(empty_by_id["b"]) is False
+    assert any("WARN" in line and "кадры" in line for line in warn_log)
 
 
 _TOMBSTONE = {

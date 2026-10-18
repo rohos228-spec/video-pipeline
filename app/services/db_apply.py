@@ -395,7 +395,8 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     переносит ``удалён``, ``пометка``, ``карантин`` и ``активен`` на каждую
     входящую копию с тем же id или текстом.
     ``{}``, не-JSON и прочий не-список — мусор: поле не меняется.
-    Явный ``null`` до этого уже стал пустым списком и помечает шоты.
+    ``null`` и пустая строка при непустом старом списке тоже не трогают поле.
+    Скрыть все шоты можно только явным ``[]``.
     """
     if not isinstance(new, list):
         from loguru import logger
@@ -475,6 +476,13 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         marked["активен"] = False
         kept.append(marked)
     return [*incoming, *kept]
+
+
+def _kadry_blank_means_untouched(value: Any) -> bool:
+    """``null`` и пустая ячейка — не команда скрыть шоты."""
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
 
 
 def _coerce_structured_attr(value: Any) -> Any:
@@ -1736,7 +1744,17 @@ async def apply_ops(
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            value = _coerce_structured_attr(fields[attr_key])
+            raw_value = fields[attr_key]
+            if attr_key == "кадры" and _kadry_blank_means_untouched(raw_value):
+                old_kadry = attrs.get("кадры")
+                if isinstance(old_kadry, list) and old_kadry:
+                    from loguru import logger
+
+                    logger.warning(
+                        "WARN apply-ops кадры: null или пустая строка — поле не меняется"
+                    )
+                    continue
+            value = _coerce_structured_attr(raw_value)
             if attr_key == "кадры":
                 value = _merge_kadry_keep_missing(attrs.get("кадры"), value)
             attrs[attr_key] = value
