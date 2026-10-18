@@ -223,6 +223,11 @@ export interface OrchScreenState {
   killNotice: KillNoticeView | null;
 }
 
+/** Истина, если по этому change_id уже был 409: повторное решение из UI не отправляем. */
+export function isDecisionLocked(locked: ReadonlySet<string>, changeId: string | null): boolean {
+  return changeId != null && locked.has(changeId);
+}
+
 export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }

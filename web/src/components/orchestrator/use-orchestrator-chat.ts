@@ -21,6 +21,7 @@ import {
 } from "@/lib/orchestratorApi";
 import {
   initialOrchScreen,
+  isDecisionLocked,
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
@@ -49,13 +50,15 @@ export function useOrchestratorChat() {
   const [sendError, setSendError] = useState("");
   const [pending, setPending] = useState(false);
   const [decisionPendingId, setDecisionPendingId] = useState<string | null>(null);
-  const [decisionError, setDecisionError] = useState<{ id: string; message: string } | null>(null);
+  const [decisionError, setDecisionError] = useState<{ id: string; message: string; locked?: boolean } | null>(null);
   const [ackMs, setAckMs] = useState<number | null>(null);
   const [state, dispatch] = useReducer(reduceOrchScreen, undefined, initialOrchScreen);
   const lastSeq = useRef(0);
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);
   const decisionLock = useRef(false);
+  /** change_id, по которым сервер вернул 409: решение уже зафиксировано, повторный POST запрещён. */
+  const lockedChangeIds = useRef(new Set<string>());
 
   useEffect(() => {
     setToken(readOrchToken());
@@ -211,12 +214,21 @@ export function useOrchestratorChat() {
         setDecisionError({ id: approvalId, message: "нет change_id формата orch-appr" });
         return;
       }
+      const changeId = card.changeId;
+      if (isDecisionLocked(lockedChangeIds.current, changeId)) {
+        setDecisionError({
+          id: approvalId,
+          message: "решение по этому change_id уже зафиксировано на сервере — ждём обновлённую карточку",
+          locked: true,
+        });
+        return;
+      }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
-      setDecisionError(null);
+      setDecisionError((prev) => (prev?.locked ? prev : null));
       try {
         const result = await postOrchDecision(cfg, {
-          change_id: card.changeId,
+          change_id: changeId,
           decision: decision === "approved" ? "approve" : decision === "retry_step" ? "retry_step" : "deny",
           ...(decision === "retry_step" ? { retry_grant: true } : {}),
         });
@@ -232,6 +244,12 @@ export function useOrchestratorChat() {
         setSendError("");
       } catch (error) {
         if (error instanceof OrchApiError && error.status === 409) {
+          lockedChangeIds.current.add(changeId);
+          setDecisionError({
+            id: approvalId,
+            message: error.message || "решение уже зафиксировано на сервере — карточка заблокирована",
+            locked: true,
+          });
           try {
             const snap = await getOrchSessionStatus(cfg);
             dispatch({
@@ -242,6 +260,7 @@ export function useOrchestratorChat() {
           } catch {
             /* отказ остаётся на карточке, повтор сам не уходит */
           }
+          return;
         }
         if (!noteAuth(error)) {
           setDecisionError({

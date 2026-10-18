@@ -276,6 +276,7 @@ export function OrchestratorWorkspace() {
                   key={approval.id}
                   approval={approval}
                   pending={chat.decisionPendingId === approval.id}
+                  locked={chat.decisionError?.id === approval.id && chat.decisionError?.locked === true}
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
@@ -625,6 +626,7 @@ function NodeResultCard({ step }: { step: StepView }) {
 function ApprovalCard({
   approval,
   pending,
+  locked,
   error,
   onApprove,
   onReject,
@@ -634,6 +636,7 @@ function ApprovalCard({
 }: {
   approval: ApprovalView;
   pending: boolean;
+  locked: boolean;
   error: string;
   onApprove: () => void;
   onReject: () => void;
@@ -693,17 +696,17 @@ function ApprovalCard({
         ) : approval.changeId && buttons.length > 0 ? (
           <>
             {buttons.includes("approve") ? (
-              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending || locked} onClick={onApprove}>
                 Approve
               </Button>
             ) : null}
             {buttons.includes("retry_step") ? (
-              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending || locked} onClick={onRetry}>
                 Перезапустить шаг
               </Button>
             ) : null}
             {buttons.includes("deny") ? (
-              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending || locked} onClick={onReject}>
                 Reject
               </Button>
             ) : null}
