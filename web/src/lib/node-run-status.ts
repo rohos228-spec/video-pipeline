@@ -73,6 +73,18 @@ function projectImpliesNodeDone(
   return false;
 }
 
+/** Известные NodeRun.status. Неизвестный статус канвас рисует как pending. */
+const KNOWN_NODE_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "queued",
+  "running",
+  "waiting_hitl",
+  "waiting_approval",
+  "done",
+  "failed",
+  "skipped",
+]);
+
 /**
  * Статус ноды на канвасе = NodeRun.status, с минимальным sync от Project
  * для линейных media: не рисовать «прервано», пока Project.generating_*
@@ -80,7 +92,7 @@ function projectImpliesNodeDone(
  */
 export function reconcileNodeRunStatus(
   nodeType: string,
-  runStatus: NodeRunStatus,
+  runStatus: NodeRunStatus | string,
   projectStatus?: ProjectStatus | unknown,
   opts?: {
     slotIndex?: number;
@@ -89,6 +101,7 @@ export function reconcileNodeRunStatus(
     completedExcelGptKeys?: string[];
   },
 ): NodeRunStatus {
+  if (!KNOWN_NODE_RUN_STATUSES.has(runStatus)) return "pending";
   const ps = projectStatus as ProjectStatus | undefined;
   if (
     (ps === "paused" || ps === "failed") &&
@@ -134,7 +147,7 @@ export function reconcileNodeRunStatus(
   ) {
     return "done";
   }
-  return runStatus;
+  return runStatus as NodeRunStatus;
 }
 
 /** Без node_run в ответе API — pending, кроме активного media-шага Project. */
