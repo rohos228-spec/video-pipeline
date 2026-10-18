@@ -200,7 +200,6 @@ async def analyze_style_images(
     # 1) Пачки → заметки по общим критериям
     notes: list[dict[str, Any]] = []
     async def _ask(i: int, batch: Any) -> Any:
-        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
         return await _paid_ask(
             budget,
             "Проанализируй эту пачку референсов по критериям из system-промпта.",
@@ -374,7 +373,6 @@ async def build_style_agent(
     notes: list[dict[str, Any]] = []
     last_err = ""
     async def _ask2(i: int, batch: Any) -> Any:
-        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
         return await _paid_ask(
             budget,
             "Проанализируй эту пачку референсов по критериям из system-промпта.",

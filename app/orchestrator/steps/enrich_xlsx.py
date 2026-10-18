@@ -615,7 +615,7 @@ async def _run_four_node_markup_pass(
         force_full=True,
         target_batches=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         parallel_max=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
-        stagger_sec=VO_STAGGER_SEC,
+        stagger_sec=None,
         chunk_by_vo_unit=False,
         footer_kind=footer_kind,
         on_progress=_locked_progress,
@@ -2875,10 +2875,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 DENSE_PARALLEL_MAX,
                 DENSE_TARGET_BATCHES,
                 FW_FRAMES_PER_BATCH,
-                ACTION_STAGGER_SEC,
                 ACTION_TARGET_BATCHES,
                 SHOTS_PARALLEL,
-                SHOTS_STAGGER_SEC,
                 SHOTS_UNITS_PER_BATCH,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
@@ -3027,19 +3025,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 elif fw_frames:
                     batch_label = (
                         f"fw_frames по {FW_FRAMES_PER_BATCH} кадров, "
-                        f"параллельно {VO_PARALLEL_MAX}, "
-                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                        f"параллельно {VO_PARALLEL_MAX}"
                     )
                 elif action_node:
-                    batch_label = (
-                        f"площадка {ACTION_TARGET_BATCHES} пачки, "
-                        f"сдвиг {ACTION_STAGGER_SEC:g}с"
-                    )
+                    batch_label = f"площадка {ACTION_TARGET_BATCHES} пачки"
                 elif shots_node:
                     batch_label = (
                         f"шоты по {SHOTS_UNITS_PER_BATCH} ячеек, "
-                        f"параллельно {SHOTS_PARALLEL}, "
-                        f"сдвиг {SHOTS_STAGGER_SEC:g}с"
+                        f"параллельно {SHOTS_PARALLEL}"
                     )
                 elif script_frames_qc:
                     batch_label = (
@@ -3054,8 +3047,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else:
                     batch_label = (
                         f"dense shot fill {DENSE_TARGET_BATCHES} пачек, "
-                        f"параллельно {DENSE_PARALLEL_MAX}, "
-                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                        f"параллельно {DENSE_PARALLEL_MAX}"
                     )
                 logger.info(
                     "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
@@ -3142,19 +3134,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     stagger_sec=(
-                        SHOTS_STAGGER_SEC
-                        if shots_node
-                        else (
-                            ACTION_STAGGER_SEC
-                            if action_node
-                            else (
-                                VO_STAGGER_SEC
-                                if fw_camera_menu_only
-                                or script_frames_qc
-                                or dense_shot_fill
-                                else None
-                            )
-                        )
+                        VO_STAGGER_SEC
+                        if fw_camera_menu_only or script_frames_qc
+                        else None
                     ),
                     chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),
                     footer_kind=(

@@ -441,6 +441,7 @@ async def _generate_shot1_one(
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
         duplicate_check_paths=dups,
     )
+    sub_line = getattr(result, "model_substitution", None)
     session.add(
         Artifact(
             project_id=project.id,
@@ -448,9 +449,13 @@ async def _generate_shot1_one(
             kind=ArtifactKind.scene_video,
             uuid=uuid.uuid4().hex,
             path=str(result.file_path),
-            meta={"shot": 1},
+            meta={"shot": 1, **({"model_substitution": str(sub_line)} if sub_line else {})},
         )
     )
+    if sub_line:
+        from app.services.model_substitution import frame_card_with_substitution
+
+        fr.attrs = frame_card_with_substitution(fr.attrs, str(sub_line))
     fr.status = FrameStatus.video_generated
     await session.flush()
     out = Path(result.file_path)
