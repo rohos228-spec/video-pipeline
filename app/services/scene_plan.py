@@ -601,12 +601,20 @@ def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
             max_k = max(max_k, int(m.group(2)))
         except ValueError:
             pass
+    first_real: dict[str, dict[str, Any]] = {}
+    for shot in owned:
+        if shot.get("_inserted"):
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid not in first_real:
+            first_real[sid] = shot
+    seen = set(first_real)
     prev_id = ""
     for shot in owned:
         sid = str(shot.get("id") or "")
-        if sid and sid not in seen:
-            seen.add(sid)
+        if shot is first_real.get(sid):
             prev_id = sid
+            shot.pop("_inserted", None)
             continue
         while True:
             max_k += 1
@@ -615,15 +623,20 @@ def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
                 break
         shot["id"] = new_id
         seen.add(new_id)
-        if prev_id:
-            shot["parent_id"] = prev_id
-        prev_id = new_id
+        anchor = sid if sid in first_real else prev_id
+        if anchor:
+            shot["parent_id"] = anchor
+        shot.pop("_inserted", None)
         for key in (
             "image_prompt",
             "animation_prompt",
             "промт_картинки",
             "промт_видео",
             "промт",
+            "media",
+            "png",
+            "video",
+            "child_prompts",
         ):
             shot.pop(key, None)
         logger.warning(
@@ -1450,6 +1463,7 @@ class _Sim:
         m = _ID_RE.match(sid)
         if sid and not m:
             new["id"] = f"{sid}-порог"
+        new["_inserted"] = True
         prev["закадр"] = halves[0]
         cur = self.shots[i]
         if self.owned(cur):

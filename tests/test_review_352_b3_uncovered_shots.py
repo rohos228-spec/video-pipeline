@@ -82,6 +82,25 @@ def test_ensure_wide_keeps_ids_and_clears_insert_prompts() -> None:
     assert inserted[0]["id"] not in {"1-S1-K1", "1-S1-K2"}
 
 
+def test_renumber_scene_keeps_real_shot_when_insert_is_first() -> None:
+    shots = [
+        {
+            "id": "1-S1-K1",
+            "_inserted": True,
+            "image_prompt": "copy",
+            "media": "clip",
+        },
+        {"id": "1-S1-K1", "image_prompt": "real", "parent_id": None},
+    ]
+    _renumber_scene(shots, "1-S1")
+    assert shots[1]["id"] == "1-S1-K1"
+    assert shots[1]["image_prompt"] == "real"
+    assert shots[0]["id"] == "1-S1-K2"
+    assert "image_prompt" not in shots[0]
+    assert "media" not in shots[0]
+    assert shots[0]["parent_id"] == "1-S1-K1"
+
+
 def test_renumber_scene_does_not_rewrite_unique_ids() -> None:
     shots = [
         {"id": "1-S1-K2", "parent_id": None, "image_prompt": "a"},
