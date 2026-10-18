@@ -563,7 +563,7 @@ def read_node_reasoning_effort(node: dict[str, Any] | None) -> str | None:
     raw = str(data.get("reasoningEffort") or data.get("reasoning_effort") or "").strip().lower()
     if not raw:
         return "high"
-    return _UI_EFFORT_TO_API.get(raw)
+    return _UI_EFFORT_TO_API.get(raw, "high")
 
 
 def resolve_image_generator_id(

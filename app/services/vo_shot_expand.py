@@ -21,6 +21,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
 from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.camera_expand import (
     already_subdivided,
@@ -40,21 +41,6 @@ _MAX_SHOTS = 3
 def is_shot_child(frame: Any) -> bool:
     """Визуальный дочерний кадр покрытия, не VO-родитель."""
     return str(_cs(frame).get("role") or "") == "shot"
-
-
-def shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
-
-    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
-    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
-    """
-    if not isinstance(shot, dict):
-        return False
-    if shot.get("удалён") or shot.get("карантин"):
-        return False
-    if shot.get("активен") is False:
-        return False
-    return True
 
 
 def parent_still_suppressed(frame: Any) -> bool:
@@ -215,6 +201,18 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def active_planned_shots(frame: Any) -> list[dict[str, Any]]:
+    """Живые шоты лестницы: скрытые в раскладку закадра не входят."""
+    return [shot for shot in planned_shots_from_attrs(frame) if shot_is_active(shot)]
+
+
+def _frame_row_hidden(frame: Any) -> bool:
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return not frame_is_active(attrs)
+
+
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
     """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
     for item in planned or []:
@@ -283,15 +281,51 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
-    planned = planned_shots_from_attrs(frame)
-    if not planned or kadry_are_scene_shots(planned):
-        return False
+    """Фейковые Bnn-K1 не сцена: снять с активной лестницы в архив.
+
+    Активный список очищается, чтобы шаг «Кадры» писал лестницу с нуля.
+    Архив идемпотентный: повторный вызов не плодит дубли по id.
+    """
     attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs.pop("кадры", None)
-    attrs.pop("shots", None)
+    kadry_rows = attrs.get("кадры") if isinstance(attrs.get("кадры"), list) else []
+    shots_rows = attrs.get("shots") if isinstance(attrs.get("shots"), list) else []
+    planned = planned_shots_from_attrs(frame)
+    live = [shot for shot in planned if shot_is_active(shot)]
+    if not live or kadry_are_scene_shots(live):
+        return False
+    archived = [
+        dict(row) if isinstance(row, dict) else {"value": row}
+        for row in (attrs.get("кадры_archived") or [])
+    ]
+    seen = {
+        str(row.get("id") or "").strip()
+        for row in archived
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+    added = 0
+    for shot in [*kadry_rows, *shots_rows]:
+        row = dict(shot) if isinstance(shot, dict) else {"value": shot}
+        sid = str(row.get("id") or "").strip()
+        if sid and sid in seen:
+            continue
+        if shot_is_active(row):
+            row["активен"] = False
+            row["карантин"] = True
+            row["пометка"] = "не сцена — в архиве"
+        archived.append(row)
+        if sid:
+            seen.add(sid)
+        added += 1
+    attrs["кадры"] = []
+    if "shots" in attrs:
+        attrs["shots"] = []
+    attrs["кадры_archived"] = archived
     frame.attrs = attrs
     _flag_attrs(frame)
+    logger.warning(
+        "WARN strip_non_scene_kadry: {} шотов в архиве, активная лестница пуста",
+        added,
+    )
     return True
 
 
@@ -565,7 +599,7 @@ def merge_flattened_coverage_members(
     parts: list[str] = []
     parent_sid = ""
     for i, fr in enumerate(members):
-        planned = planned_shots_from_attrs(fr)
+        planned = active_planned_shots(fr) or planned_shots_from_attrs(fr)
         shot = copy.deepcopy(planned[0]) if planned else {}
         if not isinstance(shot, dict):
             shot = {}
@@ -584,7 +618,9 @@ def merge_flattened_coverage_members(
         parent.voiceover_text = full
         parent.duration_seconds = vo_duration_sec(full, shots=1)
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = shots
+    from app.services.db_apply import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), shots)
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
@@ -1755,7 +1791,7 @@ def relink_shot_roles_by_scene(
         shots: list[dict[str, Any]] = []
         master_id = ""
         for i, fr in enumerate(members):
-            planned = planned_shots_from_attrs(fr)
+            planned = active_planned_shots(fr) or planned_shots_from_attrs(fr)
             shot = copy.deepcopy(planned[0]) if planned else {}
             if not isinstance(shot, dict):
                 shot = {}
@@ -1787,6 +1823,9 @@ def relink_shot_roles_by_scene(
             existing = planned_shots_from_attrs(parent)
             if len(existing) > len(shots):
                 shots = existing
+        from app.services.db_apply import merge_kadry_keep_missing
+
+        shots = merge_kadry_keep_missing(pattrs.get("кадры"), shots)
         pattrs["кадры"] = shots
         if full:
             pattrs["vo_cell_full"] = full
@@ -2096,22 +2135,54 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
-        parts = _vo_parts_without_empty(full, len(members))
+        stored = planned_shots_from_attrs(parent)
+        hidden_zakadr = [
+            (item, str(item.get("закадр") or ""))
+            for item in stored
+            if not shot_is_active(item)
+        ]
+        planned = [item for item in stored if shot_is_active(item)]
+        live_members = [fr for fr in members if not _frame_row_hidden(fr)] or list(members)
+        ladder_parts: list[str] | None = None
+        if planned:
+            ladder_parts = kadry_vo_pieces(planned, full, main_action_text(parent))
+        parts = _vo_parts_without_empty(full, len(live_members))
+        if ladder_parts:
+            from app.services.scene_design.camera_expand import vo_chunk_is_dangling
+
+            usable = list(ladder_parts)
+            n_live = len(live_members)
+            if n_live and len(usable) > n_live:
+                tail = " ".join(
+                    piece for piece in usable[n_live - 1 :] if piece
+                ).strip()
+                usable = usable[: n_live - 1] + [tail]
+            elif n_live and len(usable) < n_live:
+                usable = usable + [""] * (n_live - len(usable))
+            head = [piece for piece in usable[:n_live] if piece]
+            if head and not any(vo_chunk_is_dangling(piece) for piece in head):
+                parts = usable[:n_live]
+        assigned = [str(piece or "").strip() for piece in parts[: len(live_members)]]
+        if live_members and _norm_words(" ".join(p for p in assigned if p)) != _norm_words(full):
+            parts = _vo_parts_without_empty(full, len(live_members))
+            while len(parts) < len(live_members):
+                parts.append("")
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
-        if planned:
+        if planned and ladder_parts:
             for i, item in enumerate(planned):
-                piece = parts[i] if i < len(parts) else ""
+                piece = ladder_parts[i] if i < len(ladder_parts) else ""
                 if not piece:
                     continue
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = list(planned)
+            attrs["кадры"] = list(stored)
+        for item, text in hidden_zakadr:
+            item["закадр"] = text
         parent.attrs = attrs
         _flag_attrs(parent)
-        for i, fr in enumerate(members):
+        for i, fr in enumerate(live_members):
             piece = parts[i] if i < len(parts) else ""
             if not piece:
                 continue
@@ -2168,7 +2239,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
+        planned = active_planned_shots(parent)
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2281,7 +2352,21 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 else:
                     # Дочерний шот сцены: свой кадр, свой кусок закадра.
                     # shot2-промт не трогаем — картинка из PNG родителя.
-                    attrs["кадры"] = [shot] if shot else []
+                    # Пустой шот не затирает уже лежащие кадры[].
+                    shot_id = ""
+                    if isinstance(shot, dict):
+                        shot_id = str(
+                            shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
+                        ).strip()
+                    if shot and shot_id:
+                        from app.services.db_apply import merge_kadry_keep_missing
+
+                        attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), [shot])
+                    else:
+                        logger.warning(
+                            "WARN promote_shots_to_vo_cells: у кадра {} нет шота, кадры[] оставлены",
+                            uid[:8] or "?",
+                        )
                     attrs["vo_cell_full"] = piece
                     attrs.pop("биты", None)
                     attrs.pop("bits", None)
@@ -2330,7 +2415,7 @@ async def rebuild_vo_cells_from_shots(
     frames: list[Any],
 ) -> tuple[list[Any], dict[str, Any]]:
     """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete."""
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
     from app.models import FrameEdge, FrameText
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
@@ -2376,22 +2461,42 @@ async def rebuild_vo_cells_from_shots(
     if archived:
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
-    work = [f for f in ordered if _is_pipeline_frame(f)]
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            FrameEdge.type == "next",
-        )
-    )
-    for a, b in zip(work, work[1:]):
-        session.add(
-            FrameEdge(
-                project_id=project.id,
-                from_frame_id=a.id,
-                to_frame_id=b.id,
-                type="next",
+    work = [
+        f
+        for f in ordered
+        if _is_pipeline_frame(f)
+        and frame_is_active(getattr(f, "attrs", None) or {})
+    ]
+    edges = list(
+        (
+            await session.execute(
+                select(FrameEdge).where(
+                    FrameEdge.project_id == project.id,
+                    FrameEdge.type == "next",
+                )
             )
+        ).scalars().all()
+    )
+    existing_next = {
+        (int(edge.from_frame_id), int(edge.to_frame_id)): edge for edge in edges
+    }
+    wanted: set[tuple[int, int]] = set()
+    for a, b in zip(work, work[1:]):
+        pair = (int(a.id), int(b.id))
+        wanted.add(pair)
+        if pair in existing_next:
+            continue
+        edge = FrameEdge(
+            project_id=project.id,
+            from_frame_id=a.id,
+            to_frame_id=b.id,
+            type="next",
         )
+        session.add(edge)
+        existing_next[pair] = edge
+    for pair, edge in existing_next.items():
+        if pair not in wanted:
+            edge.type = "next_stale"
     await session.flush()
     work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
     existing_vo: dict[int, Any] = {}

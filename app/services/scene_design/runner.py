@@ -993,7 +993,6 @@ async def run_assembler_chunked(
             raise
 
     async def _asm_one(i: int, batch: Any) -> Any:
-        await asyncio.sleep((i - 1) * 5.0)  # 2026-10-11: parallel, 5s stagger
         label = f"p{i}"
         cached = load_chunk_checkpoint(project, ag.ASSEMBLER, label)
         if cached is not None:

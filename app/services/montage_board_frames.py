@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Artifact, Frame, FrameEdge, FrameStatus, FrameText, Project, PromptVersion
+from app.models import Frame, FrameStatus, FrameText, Project
 from app.services.db_v2 import insert_frame_after
 from app.services.montage_coverage_ops import (
     _children_of,
@@ -39,7 +39,7 @@ async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str)
     ).scalars().first()
     if not vo:
         if existing is not None:
-            await session.delete(existing)
+            existing.text = ""
         return
     if existing is None:
         session.add(
@@ -156,26 +156,50 @@ async def _drop_frame_rows(
     project: Project,
     frames_to_drop: list[Frame],
 ) -> None:
-    drop_ids = [int(fr.id) for fr in frames_to_drop if getattr(fr, "id", None)]
-    if not drop_ids:
+    """Пометить кадры. Строки, тексты, промты и связи не стираются."""
+    pending = [fr for fr in frames_to_drop if getattr(fr, "id", None)]
+    if not pending:
         return
-    await session.execute(
-        update(Artifact).where(Artifact.frame_id.in_(drop_ids)).values(frame_id=None)
-    )
-    await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(drop_ids)))
-    await session.execute(delete(FrameText).where(FrameText.frame_id.in_(drop_ids)))
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            or_(
-                FrameEdge.from_frame_id.in_(drop_ids),
-                FrameEdge.to_frame_id.in_(drop_ids),
-            ),
-        )
-    )
-    for fr in frames_to_drop:
-        await session.delete(fr)
+    for fr in pending:
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs["активен"] = False
+        attrs["удалён"] = True
+        attrs["карантин"] = True
+        attrs["пометка"] = "_drop_frame_rows: кадр скрыт, не удалён"
+        fr.attrs = attrs
+        _flag_attrs(fr)
     await session.flush()
+    logger.warning(
+        "WARN _drop_frame_rows: кадры {} скрыты, строки сохранены",
+        [int(fr.number) for fr in pending],
+    )
+
+
+def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
+    """Лестница головы плюс шоты ребёнка. Совпадающий id не дублируется."""
+    out: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+
+    def _take(raw: Any, *, child: bool) -> None:
+        if not isinstance(raw, list):
+            return
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or "").strip()
+            item = dict(row)
+            if sid and sid in index:
+                if child:
+                    merged = dict(out[index[sid]])
+                    merged.update(item)
+                    out[index[sid]] = merged
+                continue
+            index[sid or f"#{len(out)}"] = len(out)
+            out.append(item)
+
+    _take(parent_rows, child=False)
+    _take(child_rows, child=True)
+    return out
 
 
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
@@ -186,9 +210,15 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     head = ordered[0]
     src = dict(getattr(parent, "attrs", None) or {})
     dst = dict(getattr(head, "attrs", None) or {})
+    import copy
+
     for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
         if src.get(key) and not dst.get(key):
-            dst[key] = src[key]
+            val = src[key]
+            dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+    for key in ("кадры", "shots"):
+        if src.get(key) or dst.get(key):
+            dst[key] = _merge_ladders_by_id(src.get(key), dst.get(key))
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(
@@ -310,6 +340,18 @@ async def merge_montage_scenes(
                 coverage_parent_id="",
                 coverage_parent_number=None,
             )
+            chain_attrs = dict(getattr(member, "attrs", None) or {})
+            chain = str(
+                chain_attrs.get("главное_действие") or chain_attrs.get("main_action") or ""
+            ).strip()
+            if chain:
+                chain_attrs["главное_действие_архив"] = chain
+                member.attrs = chain_attrs
+                _flag_attrs(member)
+                logger.warning(
+                    "WARN merge_montage_scenes: цепь правой сцены #{} сохранена в архиве",
+                    member.number,
+                )
             _clear_child_scene_chain(member)
             attrs = dict(getattr(member, "attrs", None) or {})
             if "vo_cell_full" in attrs:
@@ -390,6 +432,7 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
     else:
         attrs.pop("vo_cell_full", None)
     place = frame_place(parent)
+    old_kadry = attrs.get("кадры")
     kadry: list[dict[str, Any]] = []
     chain: list[dict[str, Any]] = []
     for i, member in enumerate(members):
@@ -406,7 +449,9 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
-    attrs["кадры"] = kadry
+    from app.services.db_apply import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(old_kadry, kadry)
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

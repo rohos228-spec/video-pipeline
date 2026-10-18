@@ -291,9 +291,47 @@ class KeyUpdate(BaseModel):
     value: str
 
 
+def _origin_host(request: Request) -> str:
+    origin = (request.headers.get("origin") or "").strip()
+    if not origin or origin.lower() == "null":
+        return ""
+    rest = origin.split("://", 1)[-1]
+    return rest.split("/", 1)[0].split(":", 1)[0].lower()
+
+
+def _client_host(request: Request) -> str:
+    client = request.client
+    return str(getattr(client, "host", "") or "").strip().lower()
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("127.")
+
+
+def _origin_allowed_for_keys(request: Request) -> bool:
+    """Чужой Origin не даёт права писать ключи.
+
+    Без Origin пускаем только loopback-клиента. Удалённый клиент без Origin — 403.
+    """
+    host = _origin_host(request)
+    if not host:
+        return _is_loopback_host(_client_host(request))
+    if _is_loopback_host(host):
+        return True
+    allowed: set[str] = set()
+    for raw in (settings.fleet_public_url, settings.fleet_local_web_url):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        allowed.add(text.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower())
+    return host in allowed
+
+
 @router.put("/keys/{key_id}")
 async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
     token = await require_web_user(request)
+    if not _origin_allowed_for_keys(request):
+        raise HTTPException(403, "Только администратор студии")
     if settings.web_auth_enabled and not _caller_is_studio_admin(token):
         raise HTTPException(403, "Только администратор студии")
     match = next((k for k in _KEYS if k[0] == key_id), None)

@@ -48,18 +48,46 @@ export function montageOpSelectKey(op: {
 /**
  * Короткий серверный список принимаем, только если это хвост локальной очереди
  * (сделанные ops сняты). Чужой короткий снимок локальную очередь не затирает.
- * Пустой серверный список — все локальные ops уже сняты.
+ * Пустой серверный снимок локальную очередь и её данные не затирает:
+ * без сигнала sentKeys это не «все ops уже сняты».
  */
 export function serverQueueReplacesLocal<T>(
   local: readonly T[],
   restored: readonly T[],
   keyOf: (op: T) => string,
 ): boolean {
+  if (local.length > 0 && restored.length === 0) return false;
   if (restored.length >= local.length) return true;
   const localKeys = local.map(keyOf);
   const restoredKeys = restored.map(keyOf);
   const suffix = localKeys.slice(localKeys.length - restoredKeys.length);
   return restoredKeys.every((key, index) => key === suffix[index]);
+}
+
+/**
+ * done/idle: пустой сервер снимает ops, которые уже ушли в apply
+ * (sentKeys или pending_ops job), даже если эту вкладку не сабмитили.
+ * Новые dirty-ops остаются. Без сигнала пустой снимок очередь не трогает.
+ */
+export function reconcileIdleQueue<T>(
+  local: readonly T[],
+  server: readonly T[],
+  keyOf: (op: T) => string,
+  appliedKeys: ReadonlySet<string>,
+): T[] {
+  if (appliedKeys.size === 0) {
+    if (server.length === 0 && local.length > 0) return local.slice();
+    if (serverQueueReplacesLocal(local, server, keyOf)) return server.slice();
+    return local.slice();
+  }
+  const serverKeys = new Set(server.map(keyOf));
+  const kept = local.filter((op) => {
+    const key = keyOf(op);
+    return !(appliedKeys.has(key) && !serverKeys.has(key));
+  });
+  const keptKeys = new Set(kept.map(keyOf));
+  const extra = server.filter((op) => !keptKeys.has(keyOf(op)));
+  return [...kept, ...extra];
 }
 
 export function queueAfterApply<T>(

@@ -115,7 +115,7 @@ function buildMediaPatch(
 export type ReasoningEffortUi = "low" | "med" | "high" | "ultra";
 const EFFORTS: { id: ReasoningEffortUi; label: string; note: string }[] = [
   { id: "low", label: "low", note: "быстро, дёшево" },
-  { id: "med", label: "med", note: "середина" },
+  { id: "med", label: "med", note: "короче" },
   { id: "high", label: "high", note: "по умолчанию" },
   { id: "ultra", label: "ultra", note: "максимум (xhigh)" },
 ];
@@ -125,9 +125,8 @@ export function normalizeEffort(v?: string | null): ReasoningEffortUi {
   const x = (v || "").trim().toLowerCase();
   if (!x) return "high";
   if (x === "low") return "low";
-  if (x === "high") return "high";
-  if (x === "ultra" || x === "xhigh") return "ultra";
   if (x === "med" || x === "medium") return "med";
+  if (x === "ultra" || x === "xhigh") return "ultra";
   return "high";
 }
 
