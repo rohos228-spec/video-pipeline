@@ -375,6 +375,15 @@ export function approvalWireChangeId(body: Record<string, unknown>): string | nu
   return approvalChangeId((nested as Record<string, unknown>).change_id);
 }
 
+/** `change_id` события для карточки и закрытия. `step_change_id` не подставляется. */
+function approvalEventChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
+}
+
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
   if (value === "approved" || value === "approve") return "approved";
   if (value === "rejected" || value === "reject") return "rejected";
@@ -542,7 +551,7 @@ function absorbLlmSignal(
     state.approvals.push({
       id,
       serverId: fromServer != null,
-      changeId: approvalWireChangeId(body),
+      changeId: approvalEventChangeId(body),
       sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
@@ -673,7 +682,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   const taskId = taskKey(event.task_id);
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const changeId = approvalWireChangeId(payload);
+    const changeId = approvalEventChangeId(payload);
     if (decided && changeId) closeServerApproval(next, changeId, decided);
   }
 
@@ -819,7 +828,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id,
         serverId: fromServer != null,
-        changeId: approvalWireChangeId(body),
+        changeId: approvalEventChangeId(body),
         sessionId,
         taskId,
         title: str(body.title, "Нужно подтверждение"),
