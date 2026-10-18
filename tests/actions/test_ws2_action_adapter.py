@@ -219,7 +219,21 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
     spec = make_spec("adapter.probe_cc", _nikita, risk="local_safe")
     registry.register(spec)
     try:
-        probed = await execute("adapter.probe_cc", {}, {**ctx, "approved": True})
+        probed = await execute(
+            "adapter.probe_cc",
+            {},
+            {
+                **ctx,
+                "approval": {
+                    "change_id": "orch-appr-7-1",
+                    "action": "adapter.probe_cc",
+                    "risk": "high",
+                    "destructive": True,
+                    "granted": True,
+                    "cc_change_id": "cc-proposal-1",
+                },
+            },
+        )
     finally:
         registry.unregister("adapter.probe_cc")
     assert probed.status == "ok"
@@ -228,6 +242,67 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
     assert "orch-appr-" not in json.dumps(dumped)
     assert dumped["result"].get("change_id") is None
     assert dumped["result"].get("proposal_id") == "cc-proposal-1"
+
+
+async def test_execute_requires_matching_granted_approval(env) -> None:
+    """risk high или destructive: исполнитель только после совпавшего granted."""
+
+    from app.orchestrator.action_contracts.contracts import ApprovalRequired
+    from app.orchestrator.actions.executor import execute
+    from app.services.action_layer.spec import registry
+    from tests.action_layer_support import make_spec
+
+    calls = {"n": 0}
+
+    async def _run(_ctx, _params):
+        calls["n"] += 1
+        return {"ok": True, "marker": "ran"}
+
+    spec = make_spec("adapter.approval_probe", _run, risk="local_safe")
+    registry.register(spec)
+    base = {"app": env.app, "operator": "adapter-test"}
+    form = {
+        "change_id": "orch-appr-4-2",
+        "action": "adapter.approval_probe",
+        "risk": "high",
+        "destructive": True,
+        "granted": True,
+        "cc_change_id": "cc-from-core",
+    }
+    try:
+        missing = await execute("adapter.approval_probe", {}, base)
+        assert "approval" not in base
+        denied = await execute(
+            "adapter.approval_probe",
+            {},
+            {**base, "approval": {**form, "granted": False}},
+        )
+        foreign = await execute(
+            "adapter.approval_probe",
+            {},
+            {**base, "approval": {**form, "action": "other.action"}},
+        )
+        for held in (missing, denied, foreign):
+            assert held.status == "approval_required"
+            assert held.error is None
+            assert isinstance(held.result, ApprovalRequired)
+            assert "change_id" not in held.result.model_dump()
+            assert "orch-appr-" not in held.model_dump_json()
+        assert calls["n"] == 0
+
+        done = await execute(
+            "adapter.approval_probe",
+            {},
+            {**base, "approval": form},
+        )
+        assert done.status == "ok"
+        assert calls["n"] == 1
+        assert done.result["marker"] == "ran"
+        assert done.cc_change_id == "cc-from-core"
+        assert "orch-appr-" not in done.model_dump_json()
+        assert done.model_dump()["result"].get("change_id") is None
+    finally:
+        registry.unregister("adapter.approval_probe")
 
 
 def test_whitelist_built_from_registry_matches_audit() -> None:
@@ -279,24 +354,36 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
     assert held.status == "approval_required"
     assert "orch-appr-" not in held.model_dump_json()
 
+    def grant(action: str, change_id: str = "orch-appr-7-1") -> dict:
+        return {
+            **bare,
+            "approval": {
+                "change_id": change_id,
+                "action": action,
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": None,
+            },
+        }
+
     missing_id = await execute(
         "montage.delete_frame",
         {"project_id": pid, "frame_id": ids[1]},
-        {**bare, "approved": True},
+        grant("montage.delete_frame", change_id=""),
     )
     assert missing_id.status == "failed"
     assert "orch-appr-" not in (missing_id.error or "")
 
-    ctx = {**bare, "approved": True, "change_id": "orch-appr-7-1"}
     deleted = await execute(
         "montage.delete_frame",
         {"project_id": pid, "frame_id": ids[1]},
-        ctx,
+        grant("montage.delete_frame"),
     )
     child = await execute(
         "montage.delete_child_frame",
         {"project_id": pid, "frame_number": 2},
-        ctx,
+        grant("montage.delete_child_frame"),
     )
     for result, action in (
         (deleted, "montage.delete_frame"),
@@ -326,5 +413,5 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
             assert by_id[kept]["текст"] == ("второй" if kept == "s2" else "первый")
 
     assert list(env.tmp_path.rglob("deleted-*")) == []
-    restore = await execute("frame.restore", {"project_id": pid, "frame_id": ids[1]}, ctx)
+    restore = await execute("frame.restore", {"project_id": pid, "frame_id": ids[1]}, bare)
     assert restore.status == "failed"

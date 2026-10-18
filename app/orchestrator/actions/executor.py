@@ -177,12 +177,37 @@ def metadata_of(name: str, *, group_is_new: bool = False) -> ActionMetadata:
     )
 
 
-def _approved(ctx: Any) -> bool:
-    if not isinstance(ctx, dict):
-        return False
-    if ctx.get("approved") is True:
+def _group_is_new(params: dict, ctx: Any) -> bool:
+    if params.get("group_is_new") is True or params.get("new_group") is True:
         return True
-    return ctx.get("approval") == "granted"
+    return isinstance(ctx, dict) and ctx.get("group_is_new") is True
+
+
+def _core_approval(name: str, ctx: Any) -> dict | None:
+    """Одобрение ядра. Нет ключа, granted не True или чужой action — отказа нет."""
+
+    if not isinstance(ctx, dict):
+        return None
+    raw = ctx.get("approval")
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("granted") is not True:
+        return None
+    if raw.get("action") != name:
+        return None
+    return raw
+
+
+def _attach_cc(result: ActionResult, approval: dict | None) -> ActionResult:
+    if not isinstance(approval, dict):
+        return result
+    cc = approval.get("cc_change_id")
+    if not isinstance(cc, str) or not cc.strip():
+        return result
+    if _CORE_CHANGE_ID.fullmatch(cc.strip()) is not None:
+        return result
+    object.__setattr__(result, "cc_change_id", cc.strip())
+    return result
 
 
 def _preview_change(spec: Any, params: dict) -> str:
@@ -217,22 +242,6 @@ async def _paid_estimate(spec: Any, params: dict, meta: ActionMetadata) -> float
     if float(high) <= 0:
         return None
     return float(high)
-
-
-def _detach_cc(body: dict) -> str | None:
-    """Идентификатор контроля изменений Никиты. orch-appr-* в ответ не попадает."""
-
-    cc: str | None = None
-    proposal = body.get("proposal_id")
-    if isinstance(proposal, str) and proposal.strip() and _CORE_CHANGE_ID.match(proposal.strip()) is None:
-        cc = proposal.strip()
-    change = body.get("change_id")
-    if isinstance(change, str) and change.strip():
-        token = change.strip()
-        if cc is None and _CORE_CHANGE_ID.match(token) is None:
-            cc = token
-    body.pop("change_id", None)
-    return cc
 
 
 async def _approval_required(spec: Any, params: dict, meta: ActionMetadata) -> ActionResult:
@@ -309,10 +318,10 @@ def _marked_shot(shots: list, number: int) -> list:
     return marked
 
 
-async def _soft_delete_frame(spec: Any, params: dict, ctx: Any) -> ActionResult:
+async def _soft_delete_frame(spec: Any, params: dict, ctx: Any, approval: dict | None) -> ActionResult:
     """Пометить кадр. Строку, сцену и файлы адаптер не удаляет. frame.restore не реализован."""
 
-    change_id = str(ctx.get("change_id") or "") if isinstance(ctx, dict) else ""
+    change_id = str((approval or {}).get("change_id") or "")
     if _CORE_CHANGE_ID.fullmatch(change_id) is None:
         return _failed("ядро не передало change_id")
     project_id = int(params["project_id"])
@@ -364,7 +373,7 @@ async def _soft_delete_frame(spec: Any, params: dict, ctx: Any) -> ActionResult:
         restore_action=SOFT_DELETE_RESTORE[spec.id],
         snapshot_id=str(snapshot_id),
     )
-    return ActionResult(status="ok", result=body, error=None, warnings=[])
+    return _attach_cc(ActionResult(status="ok", result=body, error=None, warnings=[]), approval)
 
 
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
@@ -378,11 +387,15 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     problems = registry.validate_params(spec.id, params)
     if problems:
         return _failed("; ".join(problems))
-    meta = metadata_of(spec.id)
-    if meta.needs_approval and not _approved(ctx):
+    try:
+        meta = metadata_of(spec.id, group_is_new=_group_is_new(params, ctx))
+    except ValueError as exc:
+        return _failed(str(exc))
+    approval = _core_approval(spec.id, ctx)
+    if (meta.risk == "high" or meta.destructive) and approval is None:
         return await _approval_required(spec, params, meta)
     if spec.id in _SOFT_FRAME_DELETE:
-        return await _soft_delete_frame(spec, params, ctx)
+        return await _soft_delete_frame(spec, params, ctx, approval)
     try:
         action_ctx = _action_context(ctx)
         if spec.risk == "read":
@@ -401,11 +414,9 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     if refusal:
         return _failed(refusal, warnings)
     body = {key: value for key, value in raw.items() if key not in {"warnings", "warning"}}
-    cc_change_id = _detach_cc(body)
+    body.pop("change_id", None)
     result = BoundResult(status="ok", result=body, error=None, warnings=warnings)
-    if cc_change_id:
-        object.__setattr__(result, "cc_change_id", cc_change_id)
-    return result
+    return _attach_cc(result, approval)
 
 
 ensure_builtin_actions()
