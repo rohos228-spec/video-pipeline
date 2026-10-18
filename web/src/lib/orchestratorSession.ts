@@ -232,6 +232,8 @@ export interface OrchScreenState {
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
+  /** Сессия этого клиента. Чужая не занимает `task.status`, даже если пришла первой. */
+  ownSession: string | null;
 }
 
 export type OrchScreenAction =
@@ -254,7 +256,7 @@ const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
   detail: "",
 }));
 
-export function initialOrchScreen(): OrchScreenState {
+export function initialOrchScreen(ownSession?: string | null): OrchScreenState {
   return {
     messages: [],
     agents: IDLE_AGENTS.map((agent) => ({ ...agent })),
@@ -263,6 +265,7 @@ export function initialOrchScreen(): OrchScreenState {
     ack: null,
     classification: null,
     killNotice: null,
+    ownSession: ownSession || null,
   };
 }
 
@@ -380,6 +383,7 @@ function applyTaskStatus(
   sessionId: string | null,
 ): TaskView {
   const task = ensureTask(state.tasks, taskId);
+  if (state.ownSession && !task.statusSession) task.statusSession = state.ownSession;
   if (!sessionId) {
     if (task.status !== status) task.status = status;
     return task;
@@ -559,7 +563,7 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 }
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
-  if (action.type === "reset") return initialOrchScreen();
+  if (action.type === "reset") return initialOrchScreen(state.ownSession);
   if (action.type === "user-message") {
     return {
       ...state,

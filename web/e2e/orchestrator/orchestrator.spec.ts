@@ -23,6 +23,33 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("чужая сессия, пришедшая первой, не занимает статус своей", () => {
+  let seq = 0;
+  let state = initialOrchScreen("own");
+  const push = (session: string, status: string) => {
+    seq += 1;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: {
+        type: "agent_status",
+        task_id: 1,
+        seq,
+        session_id: session,
+        payload: { agent: "supervisor", status: "running", task_status: status },
+      },
+    });
+  };
+  push("foreign", "executing");
+  expect(state.tasks[0]?.status).toBe("queued");
+  expect(state.tasks[0]?.statusSession).toBe("own");
+  expect(state.tasks[0]?.statusBySession.foreign).toBe("executing");
+  expect(state.tasks[0]?.statusBySession.own).toBeUndefined();
+  push("own", "paused");
+  expect(state.tasks[0]?.status).toBe("paused");
+  expect(state.tasks[0]?.statusSession).toBe("own");
+  expect(state.tasks[0]?.statusBySession.own).toBe("paused");
+});
+
 test("чужая сессия не съедает переход статуса своей задачи", () => {
   let seq = 0;
   let state = initialOrchScreen();
