@@ -292,7 +292,6 @@ class RagEngine:
             else:
                 ordered = rerank_ids
         rank_scores = rerank_scores if rerank_scores else fused
-        ordered, rank_scores = _collapse_to_parents(ordered, rank_scores, by_id)
         if family_boost != 1:
             rank_scores = boost_scores(rank_scores, by_id, query, family_boost)
             ordered = [
@@ -455,13 +454,9 @@ def _doc_key(chunk: Chunk) -> str:
     return f"chunk:{chunk.chunk_id}"
 
 
-def _is_section_window(chunk: Chunk) -> bool:
-    return bool(str(chunk.metadata.get("parent_part_key") or ""))
-
-
 def _pool_parent_key(chunk: Chunk) -> tuple[str, str, str]:
-    """Окно и его секция — один родитель. Чужая секция — другой."""
-    part = str(chunk.metadata.get("parent_part_key") or chunk.metadata.get("part_key") or "")
+    """Чанки одной секции — один родитель. Чужая секция — другой."""
+    part = str(chunk.metadata.get("part_key") or "")
     if not part:
         return (chunk.corpus, chunk.source_id, chunk.chunk_id)
     return (chunk.corpus, chunk.source_id, part)
@@ -501,36 +496,6 @@ def _unique_parent_pool(
     return kept
 
 
-def _collapse_to_parents(
-    ordered: list[str],
-    scores: dict[str, float],
-    by_id: dict[str, Chunk],
-) -> tuple[list[str], dict[str, float]]:
-    """Окно секции отдаёт оценку родительскому part_key. Gold id не меняется."""
-    parents = {
-        (chunk.corpus, chunk.source_id, str(chunk.metadata.get("part_key") or "")): chunk.chunk_id
-        for chunk in by_id.values()
-        if not _is_section_window(chunk)
-    }
-    collapsed = dict(scores)
-    best: dict[str, float] = {}
-    for chunk_id in ordered:
-        chunk = by_id.get(chunk_id)
-        if chunk is None:
-            continue
-        target = chunk_id
-        parent_key = str(chunk.metadata.get("parent_part_key") or "")
-        if parent_key:
-            target = parents.get((chunk.corpus, chunk.source_id, parent_key), chunk_id)
-        score = float(scores.get(chunk_id, 0.0))
-        previous = best.get(target)
-        if previous is None or score > previous:
-            best[target] = score
-            collapsed[target] = score
-    ranked = sorted(best, key=lambda chunk_id: (-best[chunk_id], chunk_id))
-    return ranked, collapsed
-
-
 def _expand_tail(
     ordered: list[str],
     scores: dict[str, float],
@@ -549,14 +514,14 @@ def _expand_tail(
     doc_score: dict[str, float] = {}
     for chunk_id in head:
         chunk = by_id.get(chunk_id)
-        if chunk is None or chunk.corpus != "prompts" or _is_section_window(chunk):
+        if chunk is None or chunk.corpus != "prompts":
             continue
         key = _doc_key(chunk)
         score = float(scores.get(chunk_id, 0.0))
         doc_score[key] = score if key not in doc_score else max(doc_score[key], score)
     members: dict[str, list[str]] = {key: [] for key in doc_score}
     for chunk in by_id.values():
-        if chunk.corpus != "prompts" or _is_section_window(chunk):
+        if chunk.corpus != "prompts":
             continue
         bucket = members.get(_doc_key(chunk))
         if bucket is not None and chunk.chunk_id not in seen:
@@ -592,7 +557,7 @@ def _expanded_prompt_passage(chunk: Chunk, by_id: dict[str, Chunk]) -> str:
     parts = [
         other
         for other in by_id.values()
-        if other.corpus == "prompts" and other.source_id == chunk.source_id and not _is_section_window(other)
+        if other.corpus == "prompts" and other.source_id == chunk.source_id
     ]
     parts.sort(key=lambda other: (str(other.metadata.get("part_key") or ""), other.chunk_id))
     title = (chunk.title or "").strip()
@@ -672,8 +637,6 @@ def _aggregate_parts(
     if mode == "prompt_expand":
         members: dict[str, list[str]] = {key: [] for key in doc_score}
         for chunk in by_id.values():
-            if _is_section_window(chunk):
-                continue
             key = _doc_key(chunk)
             bucket = members.get(key)
             if bucket is not None and chunk.chunk_id not in bucket:

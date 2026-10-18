@@ -16,22 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from app.orchestrator.rag.chunking import (
-    section_windows,
-    split_history_text,
-    split_prompt,
-    split_rules,
-    window_messages,
-)
-
-# Длинные секции сборки и скелета тонут в одном чанке. Окна не заменяют s0–s7.
-_SECTION_WINDOW_NODES = frozenset(
-    {
-        "n_excel_gpt_sd_asm",
-        "n_excel_gpt_sd_cd_asm",
-        "n_excel_gpt_sd_cd_skeleton",
-    }
-)
+from app.orchestrator.rag.chunking import split_history_text, split_prompt, split_rules, window_messages
 from app.orchestrator.rag.node_store import (
     NODE_KEY_RE,
     MemoryNodeStore,
@@ -489,7 +474,6 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
     parts = split_prompt(template, max_parts=8)
     docs: list[SourceDoc] = []
     for part_key, body in parts:
-        meta = _node_metadata(node, prompt_path=node.prompt_path)
         docs.append(
             SourceDoc(
                 corpus="prompts",
@@ -497,24 +481,9 @@ def _prompt_docs(node: ResolvedNode) -> list[SourceDoc]:
                 title=f"{node.title} · промпт",
                 text=f"{header}\n{body}",
                 part_key=part_key,
-                metadata=meta,
+                metadata=_node_metadata(node, prompt_path=node.prompt_path),
             )
         )
-        if node.node_key not in _SECTION_WINDOW_NODES:
-            continue
-        for index, window in enumerate(section_windows(body)):
-            child_meta = dict(meta)
-            child_meta["parent_part_key"] = part_key
-            docs.append(
-                SourceDoc(
-                    corpus="prompts",
-                    source_id=node.node_key,
-                    title=f"{node.title} · промпт",
-                    text=f"{header}\n{window}",
-                    part_key=f"{part_key}~{index}",
-                    metadata=child_meta,
-                )
-            )
     return docs
 
 
