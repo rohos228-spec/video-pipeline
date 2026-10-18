@@ -5,9 +5,10 @@
 Иначе остаётся шим с той же сигнатурой и теми же формами
 ``Violation`` / ``PreservationRejected``.
 
-Шим не повторяет три ложных отказа #379 @ ``40da86ed``: закадр на
-неактивном шоте, смена номера при том же id, возврат неактивного в
-активные без отдельной операции. Закадр при пометке не переносится.
+Шим не ставит ``inactive_shot_revived`` за возврат неактивного шота
+без отдельной операции (P3 у WS1 ещё не закрыт). Закадр при пометке
+не переносится. Потеря FrameText / FrameEdge, кадра без id (сверка
+по тексту) и несписковые ``кадры`` (``kadry_invalid``) — error.
 """
 
 from __future__ import annotations
@@ -20,6 +21,12 @@ from loguru import logger
 _IMPL = "shim"
 
 
+def _rows_payload(rows: Any) -> Any:
+    if rows is None or isinstance(rows, list):
+        return [] if rows is None else rows
+    return rows
+
+
 def keep_soft_kadry(
     before_rows: Any,
     after_rows: Any,
@@ -30,14 +37,11 @@ def keep_soft_kadry(
 ) -> Any:
     """``mode="soft"`` для одного списка ``кадры``. Живой пропавший кадр возвращается."""
 
-    if not isinstance(after_rows, list):
-        return after_rows
     sid = str(scene_id or "cell")
     num = 0 if number is None else number
-    before_list = before_rows if isinstance(before_rows, list) else []
     run_preservation_validators(
-        {"сцены": [{"id": sid, "номер": num, "кадры": before_list}]},
-        {"сцены": [{"id": sid, "номер": num, "кадры": after_rows}]},
+        {"сцены": [{"id": sid, "номер": num, "кадры": _rows_payload(before_rows)}]},
+        {"сцены": [{"id": sid, "номер": num, "кадры": _rows_payload(after_rows)}]},
         ops,
         mode="soft",
     )
@@ -101,9 +105,9 @@ else:
 
         ``mode="reject"`` — любой error поднимает ``PreservationRejected``,
         ``after`` не меняется. ``mode="soft"`` — пропавший живой кадр
-        дописывается в ``кадры[]`` с ``активен: False`` и warn
-        ``kept_inactive``. Закадр остаётся на кадре. Сцена и персонаж
-        по-прежнему отказ.
+        с id дописывается в ``кадры[]`` с ``активен: False`` и warn
+        ``kept_inactive``. Закадр остаётся на кадре. Сцена, персонаж,
+        текст, ребро, кадр без id и несписковые ``кадры`` по-прежнему отказ.
         """
 
         if mode not in {"reject", "soft"}:
@@ -142,6 +146,8 @@ else:
         found.extend(_check_scenes(before, after))
         found.extend(_check_frames(before, after))
         found.extend(_check_characters(before, after))
+        found.extend(_check_frame_links(before, after))
+        found.extend(_check_kadry_invalid(before, after))
         return _sorted(found)
 
     def _keep_missing_shots(before: Any, after: Any) -> list[tuple[str, str]]:
@@ -232,20 +238,7 @@ else:
             status, frames = _kadry(scene)
             match = _match_scene(sid, number, after_by_id, after_by_number)
             after_status, after_frames = _kadry(match) if match is not None else ("absent", None)
-            if status == "nodata" or after_status == "nodata":
-                key = ("frames_no_data", entity)
-                if key not in seen:
-                    seen.add(key)
-                    found.append(
-                        Violation(
-                            code="frames_no_data",
-                            severity="warn",
-                            path=f"scenes/{entity}/кадры" if entity else "кадры",
-                            id=entity,
-                        )
-                    )
-                continue
-            if status != "list":
+            if status == "nodata" or after_status == "nodata" or status != "list":
                 continue
             if not isinstance(after_frames, list):
                 after_frames = []
@@ -266,6 +259,21 @@ else:
                         severity="error",
                         path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
                         id=fid,
+                    )
+                )
+            path = f"scenes/{entity}/кадры" if entity else "кадры"
+            lost_text = _anonymous_texts(frames) - _anonymous_texts(after_frames)
+            for text in sorted(lost_text):
+                key = ("frame_deleted", text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    Violation(
+                        code="frame_deleted",
+                        severity="error",
+                        path=path,
+                        id=text,
                     )
                 )
         return found
@@ -377,6 +385,169 @@ else:
         from app.services.frame_tombstones import shot_is_active
 
         return not shot_is_active(frame)
+
+    def _check_kadry_invalid(before: Any, after: Any) -> list[Violation]:
+        """Несписковые ``кадры`` — error ``kadry_invalid``, не warn."""
+
+        found: list[Violation] = []
+        seen: set[tuple[str, str, str]] = set()
+        for side in (before, after):
+            for scene in _scenes(side):
+                if "кадры" not in scene:
+                    continue
+                value = scene.get("кадры")
+                if isinstance(value, list):
+                    continue
+                entity = _scene_id(scene) or _scene_number(scene) or ""
+                path = f"scenes/{entity}/кадры" if entity else "кадры"
+                key = ("kadry_invalid", path, entity)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    Violation(
+                        code="kadry_invalid",
+                        severity="error",
+                        path=path,
+                        id=entity,
+                    )
+                )
+        return found
+
+    def _anonymous_texts(frames: list[Any]) -> set[str]:
+        """Уникальный текст кадров без id. Число копий одного текста не важно."""
+
+        found: set[str] = set()
+        for frame in frames:
+            if _frame_id(frame) is not None or _exempt(frame):
+                continue
+            found.add(_anonymous_text(frame))
+        return found
+
+    def _anonymous_text(frame: Any) -> str:
+        if isinstance(frame, dict):
+            for key in ("закадр", "voiceover", "vo", "text", "текст", "действие"):
+                text = _plain(frame.get(key))
+                if text:
+                    return text
+            return ""
+        return _plain(frame)
+
+    def _plain(value: Any) -> str:
+        return " ".join(str(value or "").split())
+
+    def _check_frame_links(before: Any, after: Any) -> list[Violation]:
+        """Потеря FrameText / FrameEdge — error. ``voiceover`` → ``vo_archived`` остаётся."""
+
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return []
+        return _sorted(_missing_texts(before, after) + _missing_edges(before, after))
+
+    def _link_rows(side: dict[str, Any], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+        for key in keys:
+            value = side.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _link_id(row: dict[str, Any]) -> str:
+        raw = row.get("id")
+        if raw in (None, ""):
+            return ""
+        return str(raw)
+
+    def _missing_texts(before: dict[str, Any], after: dict[str, Any]) -> list[Violation]:
+        before_rows = _link_rows(before, ("frame_texts", "texts"))
+        after_rows = _link_rows(after, ("frame_texts", "texts"))
+        if not before_rows:
+            return []
+        after_ids = {rid for row in after_rows if (rid := _link_id(row))}
+        found: list[Violation] = []
+        for row in before_rows:
+            rid = _link_id(row)
+            if rid and rid in after_ids:
+                continue
+            if _voiceover_archived(row, after_rows):
+                continue
+            if not rid and _same_text_row(row, after_rows):
+                continue
+            token = rid or _text_token(row)
+            found.append(
+                Violation(
+                    code="frame_text_deleted",
+                    severity="error",
+                    path=f"frame_texts/{token}",
+                    id=rid,
+                )
+            )
+        return found
+
+    def _missing_edges(before: dict[str, Any], after: dict[str, Any]) -> list[Violation]:
+        before_rows = _link_rows(before, ("frame_edges", "edges"))
+        after_rows = _link_rows(after, ("frame_edges", "edges"))
+        if not before_rows:
+            return []
+        after_ids = {rid for row in after_rows if (rid := _link_id(row))}
+        after_keys = {_edge_key(row) for row in after_rows}
+        found: list[Violation] = []
+        for row in before_rows:
+            rid = _link_id(row)
+            if rid and rid in after_ids:
+                continue
+            if not rid and _edge_key(row) in after_keys:
+                continue
+            token = rid or _edge_token(row)
+            found.append(
+                Violation(
+                    code="frame_edge_deleted",
+                    severity="error",
+                    path=f"frame_edges/{token}",
+                    id=rid,
+                )
+            )
+        return found
+
+    def _voiceover_archived(row: dict[str, Any], after_rows: list[dict[str, Any]]) -> bool:
+        if str(row.get("kind") or "") != "voiceover":
+            return False
+        text = _plain(row.get("text"))
+        frame = str(row.get("frame_id") or "")
+        for item in after_rows:
+            if str(item.get("kind") or "") != "vo_archived":
+                continue
+            if _plain(item.get("text")) == text and str(item.get("frame_id") or "") == frame:
+                return True
+        return False
+
+    def _text_token(row: dict[str, Any]) -> str:
+        return "|".join(
+            (
+                str(row.get("frame_id") or ""),
+                str(row.get("kind") or ""),
+                _plain(row.get("text")),
+            )
+        )
+
+    def _same_text_row(row: dict[str, Any], after_rows: list[dict[str, Any]]) -> bool:
+        token = _text_token(row)
+        archived = ""
+        if str(row.get("kind") or "") == "voiceover":
+            archived = _text_token({**row, "kind": "vo_archived"})
+        return any(
+            _text_token(item) == token or (archived and _text_token(item) == archived)
+            for item in after_rows
+        )
+
+    def _edge_key(row: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(row.get("from_frame_id") if row.get("from_frame_id") is not None else row.get("from") or ""),
+            str(row.get("to_frame_id") if row.get("to_frame_id") is not None else row.get("to") or ""),
+            str(row.get("type") or row.get("kind") or "next"),
+        )
+
+    def _edge_token(row: dict[str, Any]) -> str:
+        left, right, kind = _edge_key(row)
+        return f"{left}>{right}:{kind}"
 
     def _sorted(items: list[Violation]) -> list[Violation]:
         return sorted(items, key=lambda item: (item.code, item.path, item.id, item.severity))

@@ -414,3 +414,209 @@ def test_montage_mirror_soft_keeps_dropped_shot() -> None:
     assert [row["id"] for row in soft] == ["k1", "k2"]
     assert soft[1]["активен"] is False
     assert soft[1]["закадр"] == "фраза на месте"
+
+
+def test_frame_text_and_edge_loss_is_error() -> None:
+    text = {"frame_id": "f1", "kind": "voiceover", "text": "фраза на месте"}
+    edge = {"from_frame_id": "f1", "to_frame_id": "f2", "type": "next"}
+    before = {"сцены": [], "frame_texts": [dict(text)], "frame_edges": [dict(edge)]}
+    archived = {"сцены": [], "frame_texts": [{**text, "kind": "vo_archived"}], "frame_edges": [dict(edge)]}
+    assert run_preservation_validators(before, archived, mode="soft") == []
+
+    lost_text = {"сцены": [], "frame_texts": [], "frame_edges": [dict(edge)]}
+    frozen = copy.deepcopy(lost_text)
+    with pytest.raises(PreservationRejected) as text_exc:
+        run_preservation_validators(before, lost_text, mode="soft")
+    assert any(item.code == "frame_text_deleted" and item.severity == "error" for item in text_exc.value.violations)
+    assert lost_text == frozen
+
+    lost_edge = {"сцены": [], "frame_texts": [dict(text)], "frame_edges": []}
+    with pytest.raises(PreservationRejected) as edge_exc:
+        run_preservation_validators(before, lost_edge, mode="reject")
+    assert any(item.code == "frame_edge_deleted" and item.severity == "error" for item in edge_exc.value.violations)
+
+
+def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
+    before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
+    same = _scene([{"действие": "фраза на месте"}])
+    assert run_preservation_validators(before, same, mode="reject") == []
+
+    gone = _scene([{"id": "k1", "закадр": "другой"}])
+    frozen = copy.deepcopy(gone)
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, gone, mode="soft")
+    assert any(
+        item.code == "frame_deleted" and item.severity == "error" and item.id == "фраза на месте"
+        for item in raised.value.violations
+    )
+    assert gone == frozen
+
+    quiet = _scene([{"закадр": "фраза на месте", "активен": False}])
+    assert run_preservation_validators(quiet, _scene([]), mode="soft") == []
+
+
+def test_non_list_kadry_is_error() -> None:
+    before = _scene([{"id": "k1", "закадр": "а"}])
+    after = {"сцены": [{"id": "s1", "номер": 1, "кадры": "не список"}]}
+    frozen = copy.deepcopy(after)
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="soft")
+    assert any(
+        item.code == "kadry_invalid" and item.severity == "error" for item in raised.value.violations
+    )
+    assert all(item.code != "frames_no_data" for item in raised.value.violations)
+    assert after == frozen
+
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    with pytest.raises(PreservationRejected):
+        keep_soft_kadry([{"id": "k1"}], {"id": "k1"}, scene_id="s1", number=1)
+
+
+_WS1_SHA = "7eb55c28d753f678583d12fc63ce7879d688566c"
+
+
+def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
+    """Десять точек вызова на настоящем preservation.py из 7eb55c28.
+
+    Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
+    """
+    import importlib
+    import io
+    import sys
+    import tarfile
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    sha = _ensure_ws1_commit(repo)
+    extracted = tmp_path / "ws1"
+    extracted.mkdir()
+    archive = _git(repo, "archive", sha, "app/orchestrator/validators")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        tar.extractall(extracted, filter="data")
+    module_dir = extracted / "app" / "orchestrator" / "validators"
+    assert (module_dir / "preservation.py").is_file()
+
+    import app.orchestrator.validators as validators_pkg
+    import app.pipeline.no_deletions_guard as guard
+
+    old_path = list(validators_pkg.__path__)
+    saved = {
+        name: sys.modules[name]
+        for name in list(sys.modules)
+        if name.startswith("app.orchestrator.validators.")
+    }
+    validators_pkg.__path__ = [str(module_dir)]
+    try:
+        for name in saved:
+            del sys.modules[name]
+        real = importlib.import_module("app.orchestrator.validators.preservation")
+        monkeypatch.setattr(guard, "run_preservation_validators", real.run_preservation_validators)
+        monkeypatch.setattr(guard, "PreservationRejected", real.PreservationRejected)
+        rejected = _run_call_sites(real.PreservationRejected, tmp_path / "sites")
+    finally:
+        validators_pkg.__path__ = old_path
+        for name in list(sys.modules):
+            if name.startswith("app.orchestrator.validators.") and name not in saved:
+                del sys.modules[name]
+        sys.modules.update(saved)
+
+    revived = [row for row in rejected if row["revived"]]
+    assert not rejected, {
+        "rejected": rejected,
+        "inactive_shot_revived": revived,
+    }
+
+
+def _run_call_sites(rejected_type: type, root) -> list[dict]:
+    from _pytest.monkeypatch import MonkeyPatch
+
+    from tests.test_montage_board_frames import test_rewrite_vo_cell_soft_keeps_dropped_shot_and_inactive_vo
+    from tests.test_nii67_card import test_insert_duplicate_delete_reorder_stay_on_one_door
+    from tests.test_no_deletions_guard import (
+        test_coalesce_soft_keeps_frame_shot_and_inactive_vo,
+        test_fill_catalog_keeps_shot_builder_dropped_and_inactive_vo,
+        test_grammar_soft_keeps_dropped_shot_and_inactive_vo,
+        test_montage_mirror_soft_keeps_dropped_shot,
+        test_pack_soft_keeps_missing_shot_and_soft_delete_passes,
+        test_qc_candidate_keeps_dropped_shot_and_inactive_vo,
+        test_repair_vo_keeps_inactive_zakadr,
+    )
+    from tests.test_vo_shot_expand import test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo
+
+    calls = [
+        ("coalesce_cell_shot_ops", lambda _mp, _path: test_coalesce_soft_keeps_frame_shot_and_inactive_vo()),
+        (
+            "fill_kadry_from_catalog",
+            lambda mp, _path: test_fill_catalog_keeps_shot_builder_dropped_and_inactive_vo(mp),
+        ),
+        ("stage_qc", lambda _mp, _path: test_qc_candidate_keeps_dropped_shot_and_inactive_vo()),
+        (
+            "scene_shot_grammar",
+            lambda mp, _path: test_grammar_soft_keeps_dropped_shot_and_inactive_vo(mp),
+        ),
+        ("apply_ops_batches", lambda _mp, _path: test_pack_soft_keeps_missing_shot_and_soft_delete_passes()),
+        ("repair_shot_vo_ops", lambda _mp, _path: test_repair_vo_keeps_inactive_zakadr()),
+        ("montage_coverage_ops", lambda _mp, _path: test_montage_mirror_soft_keeps_dropped_shot()),
+        ("nii67_card", lambda _mp, _path: test_insert_duplicate_delete_reorder_stay_on_one_door()),
+        (
+            "vo_shot_expand",
+            lambda mp, path: test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo(mp, path),
+        ),
+        (
+            "montage_board_frames",
+            lambda mp, _path: test_rewrite_vo_cell_soft_keeps_dropped_shot_and_inactive_vo(mp),
+        ),
+    ]
+    rejected: list[dict] = []
+    for name, fn in calls:
+        site = root / name
+        site.mkdir(parents=True)
+        with MonkeyPatch.context() as mp:
+            try:
+                fn(mp, site)
+            except rejected_type as exc:
+                codes = [
+                    {"code": item.code, "id": item.id, "severity": item.severity}
+                    for item in exc.violations
+                ]
+                rejected.append(
+                    {
+                        "call_site": name,
+                        "revived": any(item.code == "inactive_shot_revived" for item in exc.violations),
+                        "violations": codes,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 — отчёт точки, которая не прошла
+                rejected.append(
+                    {
+                        "call_site": name,
+                        "revived": False,
+                        "violations": [{"code": type(exc).__name__, "id": str(exc), "severity": "error"}],
+                    }
+                )
+    return rejected
+
+
+def _ensure_ws1_commit(repo) -> str:
+    probe = _git(repo, "rev-parse", "--verify", f"{_WS1_SHA}^{{commit}}", check=False)
+    if probe:
+        return _WS1_SHA
+    _git(repo, "fetch", "origin", "cursor/ws1-r1-validators")
+    return _WS1_SHA
+
+
+def _git(repo, *args: str, check: bool = True) -> bytes:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=check,
+        capture_output=True,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+    if result.returncode != 0:
+        return b""
+    return result.stdout
