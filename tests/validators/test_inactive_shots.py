@@ -57,7 +57,9 @@ def test_merge_keeps_inactive_shot_and_its_voiceover() -> None:
     shots = [_shot(id="a"), _shot(id="b", действие="сидит дальше"), dead]
     notes = local_merge_trivial_shots(shots)
     assert any("b склеен в a" in note for note in notes)
-    assert [shot["id"] for shot in shots] == ["a", "dead"]
+    # Как R0a (#386): склеенный b не выкидывается, а остаётся с активен False.
+    assert [shot["id"] for shot in shots] == ["a", "b", "dead"]
+    assert shots[1]["активен"] is False
     assert dead == frozen_dead
     assert shots[0].get("закадр", "") == ""
 

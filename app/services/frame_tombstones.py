@@ -74,34 +74,52 @@ def forget_deleted(project, number: int | None = None) -> None:
     _touch(project)
 
 
+def _frame_attrs(frame: Any) -> dict[str, Any] | None:
+    if isinstance(frame, dict):
+        return frame
+    attrs = getattr(frame, "attrs", None)
+    return attrs if isinstance(attrs, dict) else None
+
+
 def frame_marked_deleted(frame: Any) -> bool:
-    """Кадр помечен «удалён» и должен остаться неактивным."""
+    """Кадр помечен «удалён» (матрица activity_flags) и должен остаться неактивным."""
+    from app.orchestrator.validators.activity_flags import flag_is_true
+
     if frame is None:
         return False
-    attrs = getattr(frame, "attrs", None)
-    if not isinstance(attrs, dict):
+    attrs = _frame_attrs(frame)
+    if attrs is None:
         return False
-    return bool(attrs.get(DELETED_MARK))
+    return flag_is_true(attrs.get(DELETED_MARK), mark=DELETED_MARK)
 
 
 def frame_is_active(frame: Any) -> bool:
-    if frame is None or frame_marked_deleted(frame):
+    """Кадр или его attrs. Единственный предикат — activity_flags (вкл. карантин)."""
+    from app.orchestrator.validators.activity_flags import frame_is_active as _active
+
+    if frame is None:
         return False
-    attrs = getattr(frame, "attrs", None) or {}
-    if isinstance(attrs, dict) and attrs.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    return _active(_frame_attrs(frame) or {})
 
 
 def shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
-    if not isinstance(shot, dict):
-        return False
-    if shot.get(DELETED_MARK) or shot.get("карантин"):
-        return False
-    if shot.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    """Живой элемент ``кадры[]`` — тот же предикат, что activity_flags."""
+    from app.orchestrator.validators.activity_flags import shot_is_active as _active
+
+    return _active(shot)
+
+
+_HIDE_KEYS = (ACTIVE_MARK, DELETED_MARK, "удален", "карантин", REASON_MARK)
+
+
+def _carry_hide_marks(old: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Пометки скрытого старого шота переходят на входящую копию: он не оживает."""
+    if shot_is_active(old):
+        return
+    for key in _HIDE_KEYS:
+        if key in old and key not in (ACTIVE_MARK,):
+            incoming[key] = old[key]
+    incoming[ACTIVE_MARK] = False
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
@@ -180,8 +198,7 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             if sid in seen_ids:
-                if shot.get(ACTIVE_MARK) is False:
-                    incoming_by_id[sid][ACTIVE_MARK] = False
+                _carry_hide_marks(shot, incoming_by_id[sid])
                 continue
         else:
             ident = _shot_content_identity(shot)
@@ -190,10 +207,9 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 and old_content_counts.get(ident) == 1
                 and new_content_counts.get(ident) == 1
             ):
-                if shot.get(ACTIVE_MARK) is False:
-                    matched = incoming_by_content.get(ident) or []
-                    if len(matched) == 1:
-                        matched[0][ACTIVE_MARK] = False
+                matched = incoming_by_content.get(ident) or []
+                if len(matched) == 1:
+                    _carry_hide_marks(shot, matched[0])
                 continue
             if ident is None and any(
                 isinstance(item, dict) and _shot_id(item) is None and item == shot
@@ -230,7 +246,7 @@ def mark_shots_inactive(shots: Any, *, where: str) -> Any:
             out.append(shot)
             continue
         item = dict(shot)
-        if item.get(ACTIVE_MARK) is not False:
+        if shot_is_active(item):
             labels.append(_shot_id(item) or "?")
         item[ACTIVE_MARK] = False
         out.append(item)

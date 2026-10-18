@@ -178,8 +178,15 @@ async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str)
 
         async with session_scope(project_id) as session:
             fr = await _frame_by_number(session, project_id, frame_number)
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception as exc:  # noqa: BLE001
+        # Не смогли проверить пометку — платный вызов не делаем (fail closed).
+        logger.warning(
+            "WARN {}: сессия кадра #{} не открылась ({}), платная генерация пропущена",
+            where,
+            frame_number,
+            type(exc).__name__,
+        )
+        return True
     if fr is None:
         return False
     if frame_is_active(getattr(fr, "attrs", None) or {}):

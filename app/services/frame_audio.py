@@ -479,8 +479,10 @@ async def build_assembly_timeline(
         raw_sum = sum(c.duration for c in clips)
         if raw_sum <= 0:
             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
+        # Пометка, не задевшая ни одного клипа, не отменяет пересборку voice_full.
+        omit_hit = {int(n) for n in (omit_numbers or ())} & {int(c.frame_number) for c in clips}
 
-        if abs(raw_sum - master) > 0.05 and not omit_numbers:
+        if abs(raw_sum - master) > 0.05 and not omit_hit:
             logger.info(
                 "voice_full {:.2f}s != clips {:.2f}s — пересборка из frame_*.mp3",
                 master,
@@ -498,7 +500,7 @@ async def build_assembly_timeline(
             )
             master = raw_sum
 
-        if clips and abs(clips[-1].end_ts - master) > 0.01 and not omit_numbers:
+        if clips and abs(clips[-1].end_ts - master) > 0.01 and not omit_hit:
             clips[-1].end_ts = round(master, 3)
             clips[-1].duration = round(clips[-1].end_ts - clips[-1].start_ts, 3)
 

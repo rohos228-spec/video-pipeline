@@ -187,23 +187,30 @@ def _merge_active_neighbors(shots: list[Any]) -> list[str]:
 def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
     """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить.
 
-    Неактивный шот не склеивается и не меняет ``порядок`` живых. Из списка
-    он не выкидывается и его поля не пишутся заново.
+    Как R0a: склеиваются только живые соседи; склеенный шот не выкидывается,
+    а остаётся в списке с ``активен: False`` (merge_kadry_keep_missing).
+    Неактивный шот не склеивается и остаётся неактивным.
     """
 
     if not isinstance(shots, list) or len(shots) < 2:
         return []
-    if all(shot_counts_as_active(shot) for shot in shots):
-        return _merge_active_neighbors(shots)
-    original = list(shots)
-    live = [shot for shot in original if shot_counts_as_active(shot)]
+    inactive_ids = {
+        str(shot.get("id"))
+        for shot in shots
+        if isinstance(shot, dict) and shot.get("id") and not shot_counts_as_active(shot)
+    }
+    live = [shot for shot in shots if isinstance(shot, dict) and shot_counts_as_active(shot)]
+    if len(live) < 2:
+        return []
     notes = _merge_active_neighbors(live)
-    survived = {id(shot) for shot in live}
-    shots[:] = [
-        shot
-        for shot in original
-        if (not shot_counts_as_active(shot)) or id(shot) in survived
-    ]
+    if not notes:
+        return []
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    shots[:] = merge_kadry_keep_missing(list(shots), live)
+    for row in shots:
+        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+            row["активен"] = False
     return notes
 
 

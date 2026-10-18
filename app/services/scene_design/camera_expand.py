@@ -878,13 +878,15 @@ def _group_frames_into_scenes(
     # chrono_dyn: сцена = id_scene из shot_plan (не parent_uuid после «1 шота»).
     # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
     if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
-        frames_sorted = [
-            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(getattr(f, "attrs", None) or {})
-        ]
+        # Индекс zip считается по всем кадрам с uuid: помеченный кадр держит
+        # свой слот шота, иначе живые кадры съезжают в чужие сцены.
+        frames_sorted = [f for f in sorted(frames, key=_sort_key) if f.uuid]
         by_scene: dict[str, list[Frame]] = {}
         scene_order: list[str] = []
         scene_beat: dict[str, dict[str, Any]] = {}
         for i, fr in enumerate(frames_sorted):
+            if not frame_is_active(getattr(fr, "attrs", None) or {}):
+                continue
             beat: dict[str, Any] = {}
             if i < len(shots) and str(shots[i].get("id_scene") or "").strip():
                 beat = shots[i]
@@ -1015,7 +1017,17 @@ def _retain_missing_scenes(
             if not isinstance(kid, dict):
                 continue
             ident = _kadry_identity(kid)
-            if not ident or all(token in present_ids for token in ident):
+            if not ident:
+                # Шот без id сверяется целиком: если такого нет ни в одной сцене,
+                # он не выпадает, а остаётся помеченным.
+                if any(
+                    isinstance(cur, dict) and cur == kid
+                    for scene in scenes
+                    if isinstance(scene, dict)
+                    for cur in (scene.get("кадры") or [])
+                ):
+                    continue
+            elif all(token in present_ids for token in ident):
                 continue
             item = copy.deepcopy(kid)
             item["активен"] = False

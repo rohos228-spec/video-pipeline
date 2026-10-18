@@ -1084,18 +1084,12 @@ def _write_frame_shot_id(
     planned = planned_shots_from_attrs(frame)
     if not planned:
         return
-    from app.services.frame_tombstones import merge_kadry_keep_missing
 
     old_rows = (
         [dict(item) if isinstance(item, dict) else item for item in raw]
         if isinstance(raw, list)
         else [dict(shot) for shot in planned]
     )
-    inactive_ids = {
-        str(shot.get("id"))
-        for shot in planned
-        if shot.get("id") and not shot_is_active(shot)
-    }
     active = [shot for shot in planned if shot_is_active(shot)]
     if not active:
         frame.attrs = attrs
@@ -1107,13 +1101,26 @@ def _write_frame_shot_id(
     if parent_sid is not None:
         live["parent_id"] = parent_sid or None
     rest = [dict(shot) for shot in active[1:]]
-    merged = merge_kadry_keep_missing(old_rows, [live, *rest])
-    for row in merged:
-        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
-            row["активен"] = False
+    merged = _merge_live_keep_dead(old_rows, [live, *rest])
     attrs["кадры"] = merged
     frame.attrs = attrs
     _flag_attrs(frame)
+
+
+def _merge_live_keep_dead(old_rows: list[Any], live_rows: list[Any]) -> list[Any]:
+    """Живые сливаются со старыми живыми; неактивные строки идут в хвост как есть.
+
+    Неактивный шот сверяется по самой строке, а не по id: живой шот, получивший
+    после перенумерации id архивного, не гаснет, а архивный не оживает.
+    """
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    old_live = [row for row in old_rows if not isinstance(row, dict) or shot_is_active(row)]
+    old_dead = [dict(row) for row in old_rows if isinstance(row, dict) and not shot_is_active(row)]
+    merged = merge_kadry_keep_missing(old_live, live_rows)
+    if not isinstance(merged, list):
+        merged = list(live_rows)
+    return [*merged, *old_dead]
 
 
 def sync_live_coverage_ids(frames: list[Any]) -> int:
@@ -1162,11 +1169,6 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
         planned = planned_shots_from_attrs(parent)
         old_planned = [dict(shot) for shot in planned]
 
-        inactive_ids = {
-            str(shot.get("id"))
-            for shot in old_planned
-            if shot.get("id") and not shot_is_active(shot)
-        }
         live_planned = [shot for shot in planned if shot_is_active(shot)]
         for i, fr in enumerate(ordered, start=1):
             sid = f"{pno}-S{int(scene)}-K{i}"
@@ -1202,13 +1204,9 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
             if before != after:
                 changed += 1
         if planned:
-            from app.services.frame_tombstones import merge_kadry_keep_missing
 
             attrs = dict(getattr(parent, "attrs", None) or {})
-            merged = merge_kadry_keep_missing(old_planned, live_planned)
-            for row in merged:
-                if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
-                    row["активен"] = False
+            merged = _merge_live_keep_dead(old_planned, live_planned)
             attrs["кадры"] = merged
             parent.attrs = attrs
             _flag_attrs(parent)

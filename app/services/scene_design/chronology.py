@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 from app.models import Frame, Project, SceneDesignCell
-from app.orchestrator.validators.activity_flags import shot_is_active
+from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
 from app.services.scene_design.context_builder import frame_seconds
 
 
@@ -125,10 +125,8 @@ def _append_missing_kadry(previous: list[Any], current: list[Any]) -> None:
             continue
         ident = _kadry_identity(item)
         if ident and all(token in present for token in ident):
-            if not shot_is_active(item):
-                for kid in current:
-                    if isinstance(kid, dict) and set(_kadry_identity(kid)) & set(ident):
-                        kid["активен"] = False
+            # Кадр есть в новой раскладке: его активность берётся из БД, а не
+            # из прошлой раскладки (иначе восстановленный кадр снова гаснет).
             continue
         if not ident and any(
             isinstance(kid, dict) and kid == item for kid in current
@@ -170,6 +168,8 @@ def assign_frames_to_scenes(
             "закадр": (fr.voiceover_text or "").strip(),
             "время_сек": sec,
         }
+        if not frame_is_active(getattr(fr, "attrs", None) or {}):
+            frame_row["активен"] = False
         target = None
         if offset is not None:
             for sp in spans:
@@ -184,7 +184,8 @@ def assign_frames_to_scenes(
                 left = [sp for sp in spans if sp["start"] != -1 and sp["start"] <= offset]
                 target = left[-1] if left else (spans[0] if spans else None)
         if target is None:
-            unassigned.append(frame_row)
+            if shot_is_active(frame_row):
+                unassigned.append(frame_row)
         else:
             target["row"]["кадры"].append(frame_row)
     for sp in spans:
