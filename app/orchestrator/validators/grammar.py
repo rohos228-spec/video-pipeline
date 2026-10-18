@@ -32,15 +32,25 @@ def _external_shot_is_active() -> Any:
     return _SHOT_IS_ACTIVE
 
 
+def _xlsx_flag_is_inactive(value: Any) -> bool:
+    """``активен`` из xlsx: False, 0, ``false`` / ``0`` / ``нет``."""
+
+    if value is False or value == 0:
+        return True
+    if isinstance(value, str):
+        return value.strip().casefold() in {"false", "0", "нет"}
+    return False
+
+
 def shot_counts_as_active(shot: Any) -> bool:
-    """Живой шот: импорт ``shot_is_active``, иначе ``активен is not False``."""
+    """Живой шот: импорт ``shot_is_active``, иначе флаг ``активен`` не выключен."""
 
     checker = _external_shot_is_active()
     if checker is not None:
         return bool(checker(shot))
     if not isinstance(shot, dict):
         return True
-    return shot.get("активен") is not False
+    return not _xlsx_flag_is_inactive(shot.get("активен"))
 
 
 def active_shots(shots: list[Any] | None) -> list[Any] | None:

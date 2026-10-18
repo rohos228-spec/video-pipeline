@@ -150,6 +150,25 @@ def test_tombstone_lookup_does_not_swallow_runtime_errors(monkeypatch: pytest.Mo
         grammar._SHOT_IS_ACTIVE = grammar._re
 
 
+def test_xlsx_false_and_zero_are_inactive() -> None:
+    """Из xlsx ``активен`` приходит строкой ``false``/``нет`` или числом 0."""
+
+    import app.orchestrator.validators.grammar as grammar
+
+    grammar._SHOT_IS_ACTIVE = None
+    try:
+        assert grammar.shot_counts_as_active({"активен": "false"}) is False
+        assert grammar.shot_counts_as_active({"активен": "FALSE"}) is False
+        assert grammar.shot_counts_as_active({"активен": 0}) is False
+        assert grammar.shot_counts_as_active({"активен": "0"}) is False
+        assert grammar.shot_counts_as_active({"активен": "нет"}) is False
+        assert grammar.shot_counts_as_active({"активен": False}) is False
+        assert grammar.shot_counts_as_active({"активен": True}) is True
+        assert grammar.shot_counts_as_active({"id": "a"}) is True
+    finally:
+        grammar._SHOT_IS_ACTIVE = grammar._re
+
+
 def test_merge_skips_order_held_by_middle_inactive() -> None:
     """Склейка живых соседей не ставит им порядок, который уже занят неактивным."""
 
