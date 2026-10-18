@@ -679,6 +679,12 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("action с хвостовым пробелом отвергается", () => {
+  const payload = structuredClone(EXAMPLE_NODE_CREATE);
+  (payload.result as { action: string }).action = "create_node ";
+  expect(readActionEnvelope(payload, 1)).toBeNull();
+});
+
 test("result.action сверяется с metadata.name", () => {
   const payload = structuredClone(EXAMPLE_PAID_APPROVAL);
   const result = payload.result as { action: string };

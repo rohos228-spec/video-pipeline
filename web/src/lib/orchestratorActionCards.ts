@@ -198,9 +198,8 @@ export function needsApproval(metadata: ActionMetadata): boolean {
 
 function badActionName(value: unknown): boolean {
   if (typeof value !== "string") return false;
-  const name = value.trim();
-  if (!name) return false;
-  return !ACTION_NAME.test(name);
+  if (value.trim() === "") return false;
+  return !ACTION_NAME.test(value);
 }
 
 /** Имя вне таблицы — платное и деструктивное. Сырые флаги конверта не доверяем. */
