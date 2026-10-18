@@ -15,6 +15,7 @@ class _Frames:
     def __init__(self, *, soft: bool) -> None:
         self.soft = soft
         self.calls: list[str] = []
+        self.contexts: list[dict] = []
 
     def metadata_of(self, name: str) -> dict[str, object]:
         if name not in _NAMES:
@@ -28,8 +29,9 @@ class _Frames:
         }
 
     async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
-        del params, task_ctx
+        del params
         self.calls.append(name)
+        self.contexts.append(dict(task_ctx))
         return ActionResult(ok=True, data={"name": name}, change_id=f"chg-{name}", cost=0.0)
 
 
@@ -91,6 +93,20 @@ async def test_frame_delete_runs_only_with_soft_delete_and_grant(token: str, nam
         await runtime.supervisor.wait(task_id, timeout=5)
         assert actions.calls == [name]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+        approval = actions.contexts[0]["approval"]
+        assert actions.metadata_of(name)["soft_delete"] is True
+        assert approval["action"] == name
+        assert approval["risk"] == "high"
+        assert approval["destructive"] is True
+        assert approval["granted"] is True
+        seen = [
+            call["context"]["approval"]
+            for call in runtime.supervisor.validators.calls
+            if call["name"] == "plan_sanity"
+            and call["context"].get("phase") == "before"
+            and "approval" in call["context"]
+        ]
+        assert seen[-1] == approval
     finally:
         set_runtime(None)
 

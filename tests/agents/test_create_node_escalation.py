@@ -165,6 +165,31 @@ async def test_create_node_new_group_needs_approval_then_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_node_unknown_group_key_is_new_without_planner_flag() -> None:
+    """Новизна группы решается на сервере. Флаг планировщика не нужен."""
+    actions = _Registry(risk="low")
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="create_node", params={"group": "g_new"}, mutating=True, risk="none")]
+        ),
+        critic=ScriptedCritic(["approve"]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("cn-server", "новая группа", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        opened = [event for event in runtime.bus.replay("cn-server", 0) if event.type == "approval_required"]
+        assert opened[-1].payload["risk"] == "high"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
 async def test_create_node_existing_group_follows_base_risk() -> None:
     runtime, actions, task_id = await _run({"group_is_new": False})
     assert [call["name"] for call in actions.calls] == ["create_node"]

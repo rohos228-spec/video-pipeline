@@ -42,6 +42,8 @@ Read-only и удаление смотрит реестр; флаги плана
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import re
 from typing import Any
@@ -153,6 +155,10 @@ def _coerce_decision(decision: ApprovalDecision | str | None) -> ApprovalDecisio
     return ApprovalDecision(str(decision))
 
 
+_LLM_TASK: contextvars.ContextVar[int | None] = contextvars.ContextVar("orch_llm_task", default=None)
+_LLM_SLOT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("orch_llm_slot", default=None)
+
+
 class Supervisor:
     def __init__(
         self,
@@ -211,6 +217,10 @@ class Supervisor:
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
+        self._mutating_result: dict[int, str] = {}
+        self._partial_announced: set[tuple[int, int]] = set()
+        self._stop_holders: dict[int, set[int]] = {}
+        self._stop_external: set[int] = set()
         self._bind_partial_llm_cost()
 
     async def start_task(
@@ -447,6 +457,22 @@ class Supervisor:
                 await self._emit_decision(task_id, session_id, decided)
                 return await self._arm_paid_retry_forecast(task_id, session_id)
             raise InvalidTransition(f"неизвестное decision {decided.value}")
+        if reason == "partial_write" and decided is ApprovalDecision.approve:
+            await self._emit_decision(task_id, session_id, decided)
+            await self._accept_partial_write(task_id, session_id)
+            return {
+                "executed": False,
+                "decision": ApprovalDecision.approve.value,
+                "retry_armed": False,
+            }
+        if reason == "partial_write" and decided is ApprovalDecision.deny:
+            await self._emit_decision(task_id, session_id, decided)
+            await self._deny_partial_write(task_id, session_id)
+            return {
+                "executed": False,
+                "decision": ApprovalDecision.deny.value,
+                "retry_armed": False,
+            }
         if decided in {ApprovalDecision.retry_step, ApprovalDecision.deny}:
             raise InvalidTransition("retry_step и deny только для paid_outcome_unknown")
         await self._emit_decision(task_id, session_id, decided)
@@ -526,13 +552,40 @@ class Supervisor:
         self._clear_project_stop(task_id)
 
     def _clear_project_stop(self, task_id: int) -> None:
-        """Снять ``project_{id}.stop``, который поставил kill этой задачи."""
+        """Снять stop только если его поставил kill этой задачи и держателей больше нет.
+
+        ``user_stop``, stop другой сессии и файл, который уже был до нашего
+        kill, остаются.
+        """
         project_id = self._task_project_id(task_id)
-        if project_id is None:
+        if project_id is None or project_id in self._stop_external:
             return
+        holders = self._stop_holders.get(project_id)
+        if not holders or int(task_id) not in holders:
+            return
+        holders.discard(int(task_id))
+        if holders:
+            return
+        self._stop_holders.pop(project_id, None)
         from app.services.step_cancel import clear_stop
 
         clear_stop(project_id)
+
+    def _note_kill_stop(self, project_id: int, task_id: int | None) -> None:
+        """Записать, что kill этой задачи поставил stop, либо что stop чужой."""
+        from app.services.step_cancel import is_stop_requested, request_stop
+
+        if project_id in self._stop_external:
+            return
+        holders = self._stop_holders.setdefault(project_id, set())
+        if not holders and is_stop_requested(project_id):
+            self._stop_external.add(project_id)
+            self._stop_holders.pop(project_id, None)
+            return
+        if not is_stop_requested(project_id):
+            request_stop(project_id, reason="orchestrator_kill")
+        if task_id is not None:
+            holders.add(int(task_id))
 
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
@@ -960,6 +1013,29 @@ class Supervisor:
         await asyncio.to_thread(self.checkpoints.save, task_id, session_id, stamped)
         return stamped
 
+    async def _accept_partial_write(self, task_id: int, session_id: str) -> None:
+        """Принять partial: строка done с тем же change_id, execute этого шага нет."""
+        data, step = await self._checkpoint_step(task_id)
+        row = self._open_partial_row(task_id, step, list(data.plan), int(data.position))
+        if row is not None:
+            raw = row.get("change_id")
+            change_id = str(raw) if raw else None
+            self.tasks.finish_step(int(row["id"]), "done", change_id, float(row.get("cost") or 0))
+        self._block_reason.pop(task_id, None)
+        await self._continue_from_checkpoint(task_id, session_id, data)
+
+    async def _deny_partial_write(self, task_id: int, session_id: str) -> None:
+        """Отказ partial: задача failed, строка и change_id остаются."""
+        _data, step = await self._checkpoint_step(task_id)
+        self._block_reason.pop(task_id, None)
+        await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="partial_write")
+        await self.bus.publish(
+            session_id,
+            "task_failed",
+            {"error": "partial_write", "action": step.action},
+            task_id=task_id,
+        )
+
     async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""
         self._retry_armed.pop(task_id, None)
@@ -1106,21 +1182,78 @@ class Supervisor:
                 continue
             owner.call = self._partial_cost_call(owner, original)
             owner._orch_partial_bound = True
+            self._install_partial_meter(owner)
+
+    def _install_partial_meter(self, owner: Any) -> None:
+        """Присваивание partial_cost_usd сразу плюсуется задаче из contextvar.
+
+        Общий атрибут больше не единственная копилка: два call не затирают
+        суммы. Ноль (сброс после снятия) в копилку не идёт.
+        """
+        if getattr(owner, "_orch_meter", False) or not hasattr(owner, "partial_cost_usd"):
+            return
+        try:
+            visible = float(getattr(owner, "partial_cost_usd", 0) or 0)
+        except (TypeError, ValueError):
+            visible = 0.0
+        with contextlib.suppress(AttributeError):
+            delattr(owner, "partial_cost_usd")
+        supervisor = self
+
+        class _Metered(owner.__class__):
+            @property
+            def partial_cost_usd(self) -> float:
+                return float(getattr(self, "_orch_visible_partial", 0) or 0)
+
+            @partial_cost_usd.setter
+            def partial_cost_usd(self, value: Any) -> None:
+                try:
+                    number = float(value or 0)
+                except (TypeError, ValueError):
+                    number = 0.0
+                self._orch_visible_partial = number
+                if number == 0:
+                    return
+                slot = _LLM_SLOT.get()
+                if not slot or slot.get("task") is None:
+                    return
+                task_key = int(slot["task"])
+                slot["credit"] = float(slot.get("credit") or 0) + number
+                supervisor._partial_llm_cost[task_key] = (
+                    supervisor._partial_llm_cost.get(task_key, 0.0) + number
+                )
+
+        owner.__class__ = _Metered
+        owner._orch_visible_partial = visible
+        owner._orch_meter = True
 
     def _partial_cost_call(self, owner: Any, original: Any) -> Any:
         async def _call(*args: Any, **kwargs: Any) -> Any:
             raw_task = kwargs.get("task_id")
             try:
-                task_key = int(raw_task) if raw_task is not None else None
+                task_key = int(raw_task) if raw_task not in (None, "") else None
             except (TypeError, ValueError):
                 task_key = None
+            if task_key is None:
+                task_key = _LLM_TASK.get()
+            slot = {"credit": 0.0, "task": task_key}
+            token = _LLM_SLOT.set(slot)
             try:
-                return await original(*args, **kwargs)
+                result = await original(*args, **kwargs)
             except asyncio.CancelledError:
-                cost = self._take_partial_cost(owner)
-                if task_key is not None and cost > 0:
-                    self._partial_llm_cost[task_key] = cost
+                self._take_partial_cost(owner)
                 raise
+            else:
+                if task_key is not None and slot["credit"]:
+                    left = self._partial_llm_cost.get(task_key, 0.0) - float(slot["credit"])
+                    if left > 0:
+                        self._partial_llm_cost[task_key] = left
+                    else:
+                        self._partial_llm_cost.pop(task_key, None)
+                self._take_partial_cost(owner)
+                return result
+            finally:
+                _LLM_SLOT.reset(token)
 
         return _call
 
@@ -1177,9 +1310,9 @@ class Supervisor:
         }
         project_id = self._task_project_id(task_id) if task_id is not None else None
         if project_id is not None:
-            from app.services.step_cancel import request_stop, stop_flag_path
+            from app.services.step_cancel import stop_flag_path
 
-            request_stop(project_id, reason="orchestrator_kill")
+            self._note_kill_stop(project_id, task_id)
             payload["stop_key_set"] = True
             payload["stop_key"] = stop_flag_path(project_id).name
         await self.bus.publish(session_id, "kill_switch", payload, task_id=task_id)
@@ -1266,9 +1399,9 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = [
-            step_with_registry_paid(step, self.actions)
-            for step in await self._cancellable(
+        token = _LLM_TASK.set(int(task_id))
+        try:
+            drafted = await self._cancellable(
                 session_id,
                 self.planner.make_plan(
                     goal,
@@ -1276,7 +1409,9 @@ class Supervisor:
                     **self._llm_kwargs(task_id, AgentRole.planner.value),
                 ),
             )
-        ]
+        finally:
+            _LLM_TASK.reset(token)
+        plan = [step_with_registry_paid(step, self.actions) for step in drafted]
         self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None
@@ -1292,16 +1427,20 @@ class Supervisor:
         if task_id in self._budget_stop:
             await self._settle_stopped(task_id, session_id)
             return None
-        verdict = str(
-            await self._cancellable(
-                session_id,
-                self.critic.review(
-                    plan,
-                    context=context,
-                    **self._llm_kwargs(task_id, AgentRole.critic.value),
-                ),
+        token = _LLM_TASK.set(int(task_id))
+        try:
+            verdict = str(
+                await self._cancellable(
+                    session_id,
+                    self.critic.review(
+                        plan,
+                        context=context,
+                        **self._llm_kwargs(task_id, AgentRole.critic.value),
+                    ),
+                )
             )
-        )
+        finally:
+            _LLM_TASK.reset(token)
         if await self._absorb_budget(task_id, session_id, getattr(self.critic, "last_response", None)):
             return None
         return verdict
@@ -1495,6 +1634,9 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        if any(not_in_whitelist(step.action, self.actions) for step in plan[start:]):
+            await self._apply_block(task_id, session_id, "not_in_whitelist")
+            return
         if forecast_unknown(plan):
             await self._apply_block(task_id, session_id, "unknown_cost")
             return
@@ -1980,8 +2122,12 @@ class Supervisor:
         step_id: int,
         index: int,
     ) -> None:
-        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``."""
-        if done.cancelled() or task_id not in self._shield_orphaned:
+        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``.
+
+        Событие публикуется один раз, уже после записи id: опрос строки не
+        обгоняет WARN. Уже сохранённый id событие не отменяет.
+        """
+        if done.cancelled():
             return
         try:
             exc = done.exception()
@@ -1990,39 +2136,17 @@ class Supervisor:
         if exc is not None:
             return
         change_id = envelope_change_id(done.result())
-        if not change_id or self._stored_change_id(task_id, step_id):
+        if change_id:
+            self._mutating_result[int(step_id)] = change_id
+        if task_id not in self._shield_orphaned:
             return
-        row = next(
-            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
-            None,
-        )
-        status = str(row.get("status")) if row is not None else "running"
-        if status == "done":
+        # Уже записанный id не отменяет событие: WARN всё равно один, с этим id.
+        resolved = change_id or self._stored_change_id(task_id, step_id)
+        if not resolved:
             return
-        if status == "running":
-            self.tasks.note_running_outcome(step_id, change_id, 0.0)
-        else:
-            self.tasks.finish_step(step_id, "partial", change_id, 0.0)
-        bucket = self._change_ids.setdefault(task_id, [])
-        if change_id not in bucket:
-            bucket.append(change_id)
-        loop = asyncio.get_running_loop()
-        job = loop.create_task(
-            self.bus.publish(
-                session_id,
-                "partial_write",
-                {
-                    "level": "WARN",
-                    "change_ids": [change_id],
-                    "position": index,
-                    "task_id": task_id,
-                },
-                task_id=task_id,
-            ),
-            name=f"orch-partial-{task_id}",
+        self._spawn(
+            self._announce_partial_once(task_id, session_id, step_id, index, resolved)
         )
-        self._shield_jobs.add(job)
-        job.add_done_callback(self._shield_jobs.discard)
 
     async def _pause_after_shield(
         self,
@@ -2072,26 +2196,68 @@ class Supervisor:
         index: int,
         started: list[tuple[PlanStep, int]],
     ) -> None:
-        """Отмена mutating-шага: чекпоинт, WARN ``partial_write``, change_id на месте."""
-        kept: list[str] = []
+        """Отмена mutating-шага: чекпоинт и waiting_approval.
+
+        WARN уходит из ``_announce_partial_once``, когда id уже известен.
+        Пустой ``change_ids`` отсюда не публикуется: он обгонял поздний id.
+        """
+        known: list[str] = []
         for done_step, step_id in started:
-            existing = self._stored_change_id(task_id, step_id)
-            status = "partial" if done_step.mutating else "cancelled"
-            self.tasks.finish_step(step_id, status, existing, 0.0)
-            if done_step.mutating and existing:
-                kept.append(existing)
+            if not done_step.mutating:
+                self.tasks.finish_step(step_id, "cancelled", None, 0.0)
+                continue
+            existing = self._stored_change_id(task_id, step_id) or self._mutating_result.get(int(step_id))
+            if existing:
+                known.append(existing)
+                await self._announce_partial_once(task_id, session_id, step_id, index, existing)
+            else:
+                # partial без id: resume не повторяет запись. id и WARN — когда inner кончится.
+                self.tasks.finish_step(step_id, "partial", None, 0.0)
         await self._checkpoint(task_id, session_id, plan, index)
-        logger.warning("orch partial_write task {} change_ids {}", task_id, kept)
-        await self.bus.publish(
-            session_id,
-            "partial_write",
-            {"level": "WARN", "change_ids": kept, "position": index, "task_id": task_id},
-            task_id=task_id,
-        )
+        logger.warning("orch partial_write task {} change_ids {}", task_id, known)
         current = self._status(task_id)
         if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
             await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
             self._block_reason[task_id] = "partial_write"
+
+    async def _announce_partial_once(
+        self,
+        task_id: int,
+        session_id: str,
+        step_id: int,
+        index: int,
+        change_id: str | None,
+    ) -> None:
+        """Одно ``partial_write`` с id. Строка получает id только после события."""
+        key = (int(task_id), int(step_id))
+        if key in self._partial_announced:
+            return
+        resolved = change_id or self._mutating_result.get(int(step_id)) or self._stored_change_id(task_id, step_id)
+        if not resolved:
+            return
+        self._partial_announced.add(key)
+        await self.bus.publish(
+            session_id,
+            "partial_write",
+            {
+                "level": "WARN",
+                "change_ids": [resolved],
+                "position": index,
+                "task_id": task_id,
+            },
+            task_id=task_id,
+        )
+        row = next(
+            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
+            None,
+        )
+        status = str(row.get("status")) if row is not None else "running"
+        if status != "done":
+            cost = float((row or {}).get("cost") or 0)
+            self.tasks.finish_step(int(step_id), "partial", resolved, cost)
+        bucket = self._change_ids.setdefault(task_id, [])
+        if resolved not in bucket:
+            bucket.append(resolved)
 
     async def _hold_executor_approval(
         self,
@@ -2137,9 +2303,14 @@ class Supervisor:
         if problem is None and ok:
             problem = r21_result_problem(result)
         if problem:
-            self.tasks.finish_step(step_id, problem, None, cost)
+            kept = envelope_change_id(result) if problem == "skipped_without_partial" else None
+            self.tasks.finish_step(step_id, problem, kept, cost)
+            if kept:
+                bucket = self._change_ids.setdefault(task_id, [])
+                if str(kept) not in bucket:
+                    bucket.append(str(kept))
             self._charge_step_cost(task_id, step, cost)
-            return problem, None
+            return problem, kept
         change_id = (core_id or envelope_change_id(result)) if ok else None
         self.tasks.finish_step(step_id, "done" if ok else "failed", change_id, cost)
         if ok and change_id:
@@ -2390,9 +2561,10 @@ class Supervisor:
     ) -> bool:
         """Повтор шага, у которого в ``orch_steps.change_id`` уже есть сдача.
 
-        Параметр ``_change_id`` плана не источник. Считаются done и cancelled
-        с непустым change_id и теми же публичными params. ``partial`` сюда
-        не входит: его решает человек через ``partial_write``.
+        Параметр ``_change_id`` плана не источник. Считаются done, cancelled
+        и ``skipped_without_partial`` с непустым change_id и теми же
+        публичными params. ``partial`` сюда не входит: его решает человек
+        через ``partial_write``.
         """
         ident = _public_params(step.params)
         prior = sum(
@@ -2400,7 +2572,9 @@ class Supervisor:
         )
         done = 0
         for row in self._rows_for_step(task_id, step):
-            if str(row.get("status")) not in {"done", "cancelled"} or not row.get("change_id"):
+            if str(row.get("status")) not in {"done", "cancelled", "skipped_without_partial"}:
+                continue
+            if not row.get("change_id"):
                 continue
             done += 1
         return done > prior
