@@ -220,14 +220,50 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     const posted = page.waitForRequest(
-      (req) => req.method() === "POST" && req.url().includes("/approvals/chg-budget-d4/approve"),
+      (req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/orchestrator/chat/budget-grant/approve",
     );
     await page.getByTestId("orch-approve").click();
-    const body = (await posted).postDataJSON() as { approval_id?: string };
-    expect(body.approval_id).toBe("chg-budget-d4");
+    const body = (await posted).postDataJSON() as { change_id?: string; decision?: string };
+    expect(body).toEqual({ change_id: "chg-budget-d4", decision: "approve" });
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     await expect(page.getByTestId("orch-transcript")).toContainText("Суб-бюджет добавлен");
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+  });
+
+  test("approve и deny уходят на chat/approve телом ApproveIn", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      const pathname = new URL(req.url()).pathname;
+      if (!pathname.endsWith("/approve") && !pathname.endsWith("/reject")) return;
+      posts.push({ url: req.url(), body: (req.postDataJSON() ?? {}) as Record<string, unknown> });
+    });
+
+    await openWithToken(page, "budget", "wire-ok");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const approve = posts[0];
+    expect(approve).toBeTruthy();
+    expect(new URL(approve!.url).pathname).toBe("/api/orchestrator/chat/wire-ok/approve");
+    expect(approve!.body).toEqual({ change_id: "chg-budget-d4", decision: "approve" });
+    expect(approve!.body).not.toHaveProperty("approval_id");
+    expect(approve!.body).not.toHaveProperty("task_id");
+
+    posts.length = 0;
+    await openWithToken(page, "budget", "wire-no");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const deny = posts[0];
+    expect(deny).toBeTruthy();
+    expect(new URL(deny!.url).pathname).toBe("/api/orchestrator/chat/wire-no/approve");
+    expect(deny!.body).toEqual({ change_id: "chg-budget-d4", decision: "deny" });
+    expect(Object.keys(deny!.body).sort()).toEqual(["change_id", "decision"]);
   });
 
   test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
