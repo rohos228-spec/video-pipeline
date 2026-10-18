@@ -81,6 +81,8 @@ async def test_paid_outcome_grant_does_not_replan(token: str) -> None:
     set_runtime(runtime)
     try:
         task_id = await runtime.supervisor.start_task("fp-paid", "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("fp-paid")
         await actions.started.wait()
         runtime.supervisor.request_cancel("fp-paid")
         actions.release.set()

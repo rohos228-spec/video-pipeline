@@ -41,7 +41,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.orchestrator.agents.executor import effective_risk, run_many
+from app.orchestrator.agents.executor import effective_risk, run_many, tighten_paid_step
 from app.orchestrator.agents.stubs import (
     ActionBackedExecutor,
     StubCritic,
@@ -544,8 +544,9 @@ class Supervisor:
             await self._settle_stopped(task_id, session_id)
             return None
         await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = list(
-            await self._cancellable(
+        plan = [
+            tighten_paid_step(self.actions, step)
+            for step in await self._cancellable(
                 session_id,
                 self.planner.make_plan(
                     goal,
@@ -553,7 +554,7 @@ class Supervisor:
                     **self._llm_kwargs(task_id, AgentRole.planner.value),
                 ),
             )
-        )
+        ]
         self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None
@@ -746,6 +747,7 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        plan = [tighten_paid_step(self.actions, step) for step in plan]
         if forecast_unknown(plan):
             await self._apply_block(task_id, session_id, "unknown_cost")
             return
@@ -777,6 +779,10 @@ class Supervisor:
             if len(batch) > 1 and any(not step_is_readonly(item, self.actions) for item in batch):
                 await self._fail_closed(task_id, session_id, "parallel_risk")
                 return
+            if len(batch) == 1 and step.paid and self._running_paid_row(task_id, step) is not None:
+                await self._hold_paid_unknown(task_id, session_id, step)
+                return
+
             risk = effective_risk(self.actions, step)
             if risk in APPROVAL_RISKS and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
@@ -786,10 +792,6 @@ class Supervisor:
                     "risk",
                     extra={"action": step.action, "risk": risk.value, "plan_risk": step.risk},
                 )
-                return
-
-            if len(batch) == 1 and step.paid and self._running_paid_row(task_id, step) is not None:
-                await self._hold_paid_unknown(task_id, session_id, step)
                 return
 
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None

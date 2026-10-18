@@ -597,11 +597,14 @@ class ActionMetadata(BaseModel):
     ``read_only=True`` — явное разрешение. Нет метаданных или нет явного
     ``read_only`` — действие потенциально разрушительное.
     ``destructive=True`` — жёсткий запрет, approval его не снимает.
+    ``paid=True`` — шаг платный, даже если план сказал ``paid=False``.
+    План может только добавить платность, не снять её.
     """
 
     risk: str = "high"
     read_only: bool | None = None
     destructive: bool = False
+    paid: bool = False
 
 
 class ActionExecutor(Protocol):

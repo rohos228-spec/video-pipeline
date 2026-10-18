@@ -176,6 +176,8 @@ async def test_paid_step_is_kept_when_budget_trips(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("r3-pay", "оплатить", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-pay")
+        await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         row = rt.tasks.list_steps(task_id)[0]
         assert row["status"] == "done"
@@ -881,6 +883,8 @@ async def test_failed_action_is_not_done_or_paid(token: str) -> None:
     set_runtime(rt)
     try:
         task_id = await rt.supervisor.start_task("r3-ok-false", "сбой", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-ok-false")
         await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["bad"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value

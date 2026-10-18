@@ -263,6 +263,8 @@ async def test_kill_switch_pauses_paid_step_at_boundary(token: str) -> None:
     try:
         notes = rt.bus.subscribe("r3-kill-paid")
         task_id = await rt.supervisor.start_task("r3-kill-paid", "платный", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-kill-paid")
         await actions.started.wait()
         rt.supervisor.request_kill("r3-kill-paid")
         seen: dict[str, Any] = {}
@@ -461,6 +463,10 @@ async def test_verify_code_state_required_before_run_node(token: str) -> None:
     try:
         task_id = await good.supervisor.start_task("r3-verify-ok", "запусти", project_id=13)
         await good.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in allowed.calls] == ["verify_code_state"]
+        assert good.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        await good.supervisor.grant_approval("r3-verify-ok")
+        await good.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in allowed.calls] == ["verify_code_state", "run_node"]
         assert good.tasks.get(task_id)["status"] == TaskStatus.done.value
     finally:
@@ -487,6 +493,9 @@ async def test_read_and_get_node_satisfy_rule_nine(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("r3-verify-pair", "запусти", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["read_pipeline_code", "get_node"]
+        await rt.supervisor.grant_approval("r3-verify-pair")
+        await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["read_pipeline_code", "get_node", "run_node"]
     finally:
         set_runtime(None)
@@ -511,6 +520,11 @@ async def test_paid_retry_guard_skips_second_payment(token: str) -> None:
     set_runtime(rt)
     try:
         task_id = await rt.supervisor.start_task("r3-paid", "ещё раз", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-paid")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["paid_mock"]
+        await rt.supervisor.grant_approval("r3-paid")
         await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["paid_mock"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
