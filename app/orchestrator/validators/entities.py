@@ -240,13 +240,12 @@ def _walk_shots(node: Any, found: list[dict[str, Any]], seen: set[int], depth: i
         if marker in seen:
             return
         seen.add(marker)
-        if node and all(_is_shot(item) for item in node):
-            for item in node:
-                if isinstance(item, dict):
-                    found.append(item)
-            return
+        # Поэлементно: сосед без id не прячет остальные шоты списка.
         for item in node:
-            _walk_shots(item, found, seen, depth + 1)
+            if _is_shot(item):
+                found.append(item)
+            else:
+                _walk_shots(item, found, seen, depth + 1)
         return
     if isinstance(node, dict):
         for value in node.values():

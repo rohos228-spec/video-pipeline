@@ -293,3 +293,24 @@ def test_add_shot_without_vo_key_passes() -> None:
     assert empty == []
     assert missing == []
     assert all(item.code != "shot_dropped" for item in missing)
+
+
+def test_add_idless_child_shot_passes() -> None:
+    """Элемент без id не прячет список. reject и soft не дают shot_dropped."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "s9",
+                "номер": 9,
+                "закадр": "кусок",
+                "кадры": [{"id": "9-K1", "сцена": 9, "действие": "а", "закадр": "кусок"}],
+            }
+        ]
+    }
+    after = copy.deepcopy(before)
+    after["сцены"][0]["кадры"].append({"id": "", "parent_id": "9-K1"})
+    rejected = run_preservation_validators(before, copy.deepcopy(after), mode="reject")
+    softened = run_preservation_validators(before, copy.deepcopy(after), mode="soft")
+    assert rejected == []
+    assert all(item.code != "shot_dropped" for item in softened)
