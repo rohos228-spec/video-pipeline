@@ -635,9 +635,7 @@ async def _download_via_curl(url: str, out_path: Path) -> bool:
     curl = shutil.which("curl")
     if not curl:
         return False
-    from app.services.spend_guard import guard_paid_spend
-
-    guard_paid_spend("outsee_download_curl")
+    # Результат уже оплачен на создании: скачивание не режется бюджетом.
     try:
         proc = await asyncio.create_subprocess_exec(
             curl,
