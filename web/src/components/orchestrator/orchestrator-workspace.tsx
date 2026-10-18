@@ -18,15 +18,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { ActionResultCard } from "@/components/orchestrator/action-result-card";
 import {
   AGENT_LABEL,
+  approvalButtons,
   resumeButtonVisible,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
   NOT_IN_WHITELIST,
   NOT_IN_WHITELIST_TEXT,
-  PAID_DECISION_LABEL,
-  paidDecisionsOf,
-  partialDecisionsOf,
   TASK_STATUS_LABEL,
   type ApprovalView,
   type KillNoticeView,
@@ -381,7 +379,8 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
-                  onDecision={(decision) => void chat.decidePaid(approval.id, approval.taskId, decision)}
+                  onRetry={() => void chat.decide(approval.id, approval.taskId, "retry_step")}
+                  onBindProject={(projectId) => void chat.bindProject(approval.id, projectId)}
                   onClose={() => chat.dismissBlock(approval.id)}
                 />
               ))}
@@ -763,7 +762,8 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
-  onDecision,
+  onRetry,
+  onBindProject,
   onClose,
 }: {
   approval: ApprovalView;
@@ -771,14 +771,17 @@ function ApprovalCard({
   error: string;
   onApprove: () => void;
   onReject: () => void;
-  onDecision: (decision: keyof typeof PAID_DECISION_LABEL) => void;
+  onRetry: () => void;
+  onBindProject: (projectId: number) => void;
   onClose: () => void;
 }) {
+  const [projectDraft, setProjectDraft] = useState("");
   const copy = BLOCK_COPY[approval.reason];
   const terminal = isTerminalBlock(approval.reason);
-  const decisions = paidDecisionsOf(approval) ?? partialDecisionsOf(approval);
+  const buttons = approvalButtons(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
+  const projectId = Number(projectDraft);
   return (
     <div
       data-testid="orch-approval"
@@ -802,29 +805,43 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : decisions && approval.changeId ? (
-          decisions.map((decision) => (
-            <Button
-              key={decision}
-              type="button"
-              size="sm"
-              variant={decision === "approve" ? "default" : "outline"}
-              data-testid="orch-decision"
-              data-decision={decision}
-              disabled={pending}
-              onClick={() => onDecision(decision)}
-            >
-              {PAID_DECISION_LABEL[decision]}
+        ) : approval.reason === MISSING_PROJECT ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (Number.isInteger(projectId) && projectId >= 1) onBindProject(projectId);
+            }}
+          >
+            <Input
+              value={projectDraft}
+              inputMode="numeric"
+              data-testid="orch-project-id"
+              className="h-8 w-24"
+              placeholder="project"
+              onChange={(event) => setProjectDraft(event.target.value)}
+            />
+            <Button type="submit" size="sm" data-testid="orch-bind-project" disabled={pending}>
+              Привязать проект
             </Button>
-          ))
-        ) : approval.changeId ? (
+          </form>
+        ) : approval.changeId && buttons.length > 0 ? (
           <>
-            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-              Approve
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-              Reject
-            </Button>
+            {buttons.includes("approve") ? (
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+                Approve
+              </Button>
+            ) : null}
+            {buttons.includes("retry_step") ? (
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+                Перезапустить шаг
+              </Button>
+            ) : null}
+            {buttons.includes("deny") ? (
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+                Reject
+              </Button>
+            ) : null}
           </>
         ) : (
           <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
