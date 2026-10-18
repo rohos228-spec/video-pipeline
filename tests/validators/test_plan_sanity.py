@@ -222,6 +222,24 @@ def test_montage_delete_blocked_with_soft_delete_without_approval(
     assert result.details["errors"][0]["reason"] == "deletion_forbidden"
 
 
+def test_unnormalized_delete_name_is_forbidden_even_with_matching_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сырое имя должно совпасть с нормализованным; approval сверяется с этой же строкой."""
+    raw = "Montage.Delete_Frame"
+    _install_meta(monkeypatch, {"montage.delete_frame": {"soft_delete": True}})
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": raw, "params": {"frame_id": "f1"}}],
+            "approval": _core_approval(raw),
+        },
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
 @pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
 def test_montage_delete_passes_with_soft_delete_and_approval(
     action: str, monkeypatch: pytest.MonkeyPatch

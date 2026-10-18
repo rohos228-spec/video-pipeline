@@ -9,10 +9,11 @@
 множество. Имя вне реестра из context не становится разрешённым.
 
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
-``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе:
+``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе,
+и только если сырое имя шага уже равно нормализованному токену:
 ``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
 ``context["approval"]`` с ``risk == "high"`` (без strip и lower), ``destructive is True``,
-``granted is True`` и ``action``, равным имени шага.
+``granted is True`` и ``approval["action"]``, строго равным сырому имени шага.
 Нет поля ``soft_delete`` или нет ``metadata_of`` у серверного реестра модуля —
 это false. ``context["registry"]`` для решения об удалении не читается.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
@@ -231,9 +232,9 @@ def _soft_delete_granted(action: str, context: dict[str, Any], registry: Any) ->
     """Мягкое удаление кадра монтажа: пометка и одобрение ядра, иначе блок."""
 
     token = action.strip().lower().replace("-", "_")
-    if token not in _SOFT_FRAME_DELETES:
+    if action != token or token not in _SOFT_FRAME_DELETES:
         return False
-    if not _metadata_soft_delete(token, registry):
+    if not _metadata_soft_delete(action, registry):
         return False
     return _core_approved_high_destructive(context, action)
 
@@ -263,8 +264,8 @@ def _core_approved_high_destructive(context: dict[str, Any], action: str) -> boo
 
     ``context["approval"]`` — форма WS3: ``change_id``, ``action``, ``risk``,
     ``destructive``, ``granted``, ``cc_change_id``. Обязательны ``risk == "high"``
-    без strip и lower, ``destructive is True``, ``granted is True`` и ``action``,
-    равный имени шага.
+    без strip и lower, ``destructive is True``, ``granted is True`` и
+    ``approval["action"]``, строго равный сырому имени шага.
     """
 
     approval = context.get("approval")
