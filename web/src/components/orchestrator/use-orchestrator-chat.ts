@@ -6,11 +6,14 @@ import {
   isAbortError,
   orchTaskModeEnabled,
   OrchApiError,
-  postOrchApprove,
+  getOrchSessionStatus,
+  postOrchDecision,
   postOrchKill,
+  postOrchActionMessage,
   postOrchMessage,
+  postOrchProject,
+  readOrchLiveVersion,
   readOrchProjectId,
-  postOrchReject,
   probeOrchAuth,
   readOrchBoot,
   readOrchToken,
@@ -18,6 +21,7 @@ import {
   writeOrchToken,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
+import { conflictRetryBody, reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
 import {
   initialOrchScreen,
   reduceOrchScreen,
@@ -55,6 +59,7 @@ export function useOrchestratorChat() {
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);
   const decisionLock = useRef(false);
+  const conflictRefresh = useRef(new Set<string>());
 
   useEffect(() => {
     setToken(readOrchToken());
@@ -202,30 +207,152 @@ export function useOrchestratorChat() {
     [blocked, cfg, noteAuth, state.messages.length, token],
   );
 
+  const sendReportEdit = useCallback(
+    async (reportId: number, instruction: string) => {
+      const body = reportEditBody(reportId, instruction);
+      if (!body.text || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-report-${reportId}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: null });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "правка отчёта не ушла");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
+  const sendRestore = useCallback(
+    async (restoreAction: string, snapshotId: string | null, archiveRef: string | null) => {
+      const body = restoreBody(restoreAction, snapshotId, archiveRef);
+      if (!body.text || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-restore-${snapshotId ?? archiveRef ?? restoreAction}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: null });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "восстановление не ушло");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
+  const sendConflictRetry = useCallback(
+    async (actionName: string, baseVersion: number | null, staleBase: number | null) => {
+      const body = conflictRetryBody(actionName, baseVersion, staleBase);
+      if (!body || !token || blocked) return false;
+      dispatch({
+        type: "user-message",
+        id: `user-conflict-${body.action.name}-${state.messages.length}`,
+        text: body.text,
+        taskId: null,
+      });
+      dispatch({ type: "user-action", name: body.action.name, baseVersion: body.action.base_version ?? null });
+      try {
+        await postOrchActionMessage(cfg, body);
+        setSendError("");
+        return true;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setSendError(error instanceof Error ? error.message : "повтор правки не ушёл");
+        }
+        return false;
+      }
+    },
+    [blocked, cfg, noteAuth, state.messages.length, token],
+  );
+
+  useEffect(() => {
+    if (!token || blocked) return;
+    const cards = state.actionResults.filter(
+      (card) => card.conflict && card.kind !== "invalid" && card.retryBaseVersion == null && !conflictRefresh.current.has(card.id),
+    );
+    if (!cards.length) return;
+    const ids = cards.map((card) => card.id);
+    for (const id of ids) conflictRefresh.current.add(id);
+    const snapshotUrl = cards.find((card) => card.snapshotUrl)?.snapshotUrl ?? null;
+    const ac = new AbortController();
+    void (async () => {
+      try {
+        const version = await readOrchLiveVersion(cfg, snapshotUrl, ac.signal);
+        if (ac.signal.aborted) {
+          for (const id of ids) conflictRefresh.current.delete(id);
+          return;
+        }
+        if (version == null) return;
+        dispatch({ type: "conflict-refresh", ids, version });
+      } catch {
+        if (ac.signal.aborted) {
+          for (const id of ids) conflictRefresh.current.delete(id);
+        }
+      }
+    })();
+    return () => {
+      ac.abort();
+      for (const id of ids) conflictRefresh.current.delete(id);
+    };
+  }, [blocked, cfg, state.actionResults, token]);
+
   const decide = useCallback(
-    async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
+    async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected" | "retry_step") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+      if (!card?.changeId || !/^orch-appr-[0-9]+-[0-9]+$/.test(card.changeId)) {
+        setDecisionError({ id: approvalId, message: "нет change_id формата orch-appr" });
         return;
       }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        const body = { approval_id: approvalId, task_id: taskId };
-        const result =
-          decision === "approved"
-            ? await postOrchApprove(cfg, body)
-            : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
+        const result = await postOrchDecision(cfg, {
+          change_id: card.changeId,
+          decision: decision === "approved" ? "approve" : decision === "retry_step" ? "retry_step" : "deny",
+          ...(decision === "retry_step" ? { retry_grant: true } : {}),
+        });
         if (!approvalPostAccepted(result, approvalId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }
-        dispatch({ type: "approval-resolved", id: approvalId, decision });
+        dispatch({
+          type: "approval-resolved",
+          id: approvalId,
+          decision: decision === "retry_step" ? "retried" : decision,
+        });
         setSendError("");
       } catch (error) {
+        if (error instanceof OrchApiError && error.status === 409) {
+          try {
+            const snap = await getOrchSessionStatus(cfg);
+            dispatch({
+              type: "snapshot",
+              taskId: snap.task_id == null ? null : String(snap.task_id),
+              status: snap.status,
+            });
+          } catch {
+            /* отказ остаётся на карточке, повтор сам не уходит */
+          }
+        }
         if (!noteAuth(error)) {
           setDecisionError({
             id: approvalId,
@@ -238,6 +365,35 @@ export function useOrchestratorChat() {
       }
     },
     [cfg, noteAuth, state.approvals],
+  );
+
+  const bindProject = useCallback(
+    async (approvalId: string, projectId: number) => {
+      if (decisionLock.current) return;
+      if (!Number.isInteger(projectId) || projectId < 1) {
+        setDecisionError({ id: approvalId, message: "нужен целый project_id" });
+        return;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        await postOrchProject(cfg, projectId);
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        setSendError("");
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "проект не привязался",
+          });
+        }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
   );
 
   const dismissBlock = useCallback((approvalId: string) => {
@@ -320,7 +476,11 @@ export function useOrchestratorChat() {
     state: state as OrchScreenState,
     submitToken,
     sendMessage,
+    sendReportEdit,
+    sendRestore,
+    sendConflictRetry,
     decide,
+    bindProject,
     dismissBlock,
     kill,
   };

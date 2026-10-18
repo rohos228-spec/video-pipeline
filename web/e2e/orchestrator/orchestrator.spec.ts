@@ -184,8 +184,8 @@ test.describe("orchestrator chat", () => {
 
   test("approve 404 и 409 оставляют карточку", async ({ page }) => {
     const cases = [
-      ["approve404", "approval not found"],
-      ["approve409", "approval conflict"],
+      ["approve404", "неизвестный change_id"],
+      ["approve409", "change_id не текущий"],
     ] as const;
     for (const [scenario, detail] of cases) {
       await openWithToken(page, scenario, scenario);
@@ -220,14 +220,237 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     const posted = page.waitForRequest(
-      (req) => req.method() === "POST" && req.url().includes("/approvals/chg-budget-d4/approve"),
+      (req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/orchestrator/chat/budget-grant/approve",
     );
     await page.getByTestId("orch-approve").click();
-    const body = (await posted).postDataJSON() as { approval_id?: string };
-    expect(body.approval_id).toBe("chg-budget-d4");
+    const body = (await posted).postDataJSON() as { change_id?: string; decision?: string };
+    expect(body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     await expect(page.getByTestId("orch-transcript")).toContainText("Суб-бюджет добавлен");
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+  });
+
+  test("решения approval зависят от причины", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      const pathname = new URL(req.url()).pathname;
+      if (!pathname.endsWith("/approve") && !pathname.endsWith("/project")) return;
+      posts.push({ url: req.url(), body: (req.postDataJSON() ?? {}) as Record<string, unknown> });
+    });
+
+    await openWithToken(page, "risk", "reason-risk");
+    await page.getByTestId("orch-composer").fill("риск");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-5-1", decision: "approve" });
+
+    posts.length = 0;
+    await openWithToken(page, "destructive", "reason-destructive");
+    await page.getByTestId("orch-composer").fill("разрушение");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-2-1", decision: "deny" });
+
+    posts.length = 0;
+    await openWithToken(page, "partialwrite", "reason-partial");
+    await page.getByTestId("orch-composer").fill("частичная запись");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-8-1", decision: "approve" });
+
+    posts.length = 0;
+    await openWithToken(page, "paidunknown", "reason-paid");
+    await page.getByTestId("orch-composer").fill("платный исход");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-retry")).toBeVisible();
+    await page.getByTestId("orch-retry").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({
+      change_id: "orch-appr-3-1",
+      decision: "retry_step",
+      retry_grant: true,
+    });
+    expect(JSON.stringify(posts[0]?.body)).not.toContain("cc-step-88");
+
+    posts.length = 0;
+    await openWithToken(page, "paidunknown", "reason-paid-deny");
+    await page.getByTestId("orch-composer").fill("платный исход");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-3-1", decision: "deny" });
+
+    posts.length = 0;
+    await openWithToken(page, "missingproject", "reason-missing");
+    await page.getByTestId("orch-composer").fill("нет проекта");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-bind-project").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(new URL(posts[0]!.url).pathname).toBe("/api/orchestrator/chat/reason-missing/project");
+    expect(posts[0]?.body).toEqual({ project_id: 13 });
+  });
+
+  test("step_change_id не подставляется в /approve", async ({ page }) => {
+    const posts: Record<string, unknown>[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      if (!new URL(req.url()).pathname.endsWith("/approve")) return;
+      posts.push((req.postDataJSON() ?? {}) as Record<string, unknown>);
+    });
+
+    await openWithToken(page, "stepchange", "step-only");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approval-noid")).toContainText("orch-appr");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    expect(posts).toEqual([]);
+
+    posts.length = 0;
+    await openWithToken(page, "stepchangeboth", "step-both");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.change_id).toBe("orch-appr-9-3");
+    expect(posts[0]?.decision).toBe("deny");
+    expect(JSON.stringify(posts[0])).not.toContain("cc-step-88");
+  });
+
+  test("коды approve: отказ без автоповтора, 409 читает snapshot", async ({ page }) => {
+    const cases = [
+      [401, "нет токена или токен неверный"],
+      [400, "плохой session_id"],
+      [422, "тело не по схеме"],
+      [404, "неизвестный change_id"],
+      [403, "not_in_whitelist"],
+      [409, "change_id не текущий"],
+    ] as const;
+    for (const [status, text] of cases) {
+      let posts = 0;
+      let snapshots = 0;
+      await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        posts += 1;
+        await route.fulfill({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "raw" }),
+        });
+      });
+      await page.route("**/api/orchestrator/chat/*/status", async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        snapshots += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            session: "snap",
+            task_id: 1,
+            status: "failed",
+            resume_allowed: false,
+          }),
+        });
+      });
+      await openWithToken(page, "budget", `code-${status}`);
+      await page.getByTestId("orch-composer").fill("ещё кадры");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approve")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByText(text).first()).toBeVisible();
+      await expect.poll(() => posts).toBe(1);
+      if (status === 409) {
+        await expect.poll(() => snapshots).toBeGreaterThan(0);
+        await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+      } else {
+        expect(snapshots).toBe(0);
+      }
+      await page.unroute("**/api/orchestrator/chat/*/approve");
+      await page.unroute("**/api/orchestrator/chat/*/status");
+    }
+  });
+
+  test("approve 204 не успех: нужен JSON 200", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      await route.fulfill({ status: 204, body: "" });
+    });
+    await openWithToken(page, "budget", "approve-204");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    expect(posts).toBe(1);
+  });
+
+  test("approve и deny уходят на chat/approve телом ApproveIn", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      const pathname = new URL(req.url()).pathname;
+      if (!pathname.endsWith("/approve") && !pathname.endsWith("/reject")) return;
+      posts.push({ url: req.url(), body: (req.postDataJSON() ?? {}) as Record<string, unknown> });
+    });
+
+    await openWithToken(page, "budget", "wire-ok");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const approve = posts[0];
+    expect(approve).toBeTruthy();
+    expect(new URL(approve!.url).pathname).toBe("/api/orchestrator/chat/wire-ok/approve");
+    expect(approve!.body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
+    expect(approve!.body).not.toHaveProperty("approval_id");
+    expect(approve!.body).not.toHaveProperty("task_id");
+
+    posts.length = 0;
+    await openWithToken(page, "budget", "wire-no");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const deny = posts[0];
+    expect(deny).toBeTruthy();
+    expect(new URL(deny!.url).pathname).toBe("/api/orchestrator/chat/wire-no/approve");
+    expect(deny!.body).toEqual({ change_id: "orch-appr-4-1", decision: "deny" });
+    expect(Object.keys(deny!.body).sort()).toEqual(["change_id", "decision"]);
   });
 
   test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
@@ -594,8 +817,9 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-missing-project")).toContainText(
       "Не выбран проект: план содержит платный или изменяющий шаг",
     );
-    await expect(page.getByTestId("orch-approve")).toBeVisible();
-    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+    await expect(page.getByTestId("orch-bind-project")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
