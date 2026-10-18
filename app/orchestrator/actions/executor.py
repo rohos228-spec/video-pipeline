@@ -36,6 +36,26 @@ _IMPLEMENTED_RESTORES = frozenset({"frame.restore"})
 _HELD_UNTIL_R2 = frozenset({"group.delete", "prompt.delete_master"})
 
 
+class WireEnvelope(dict):
+    """dict для wiring #370. Атрибуты читают модель r2.3.
+
+    Схема #378 не содержит cc_change_id (extra=forbid). Ключ лежит рядом
+    с конвертом, чтобы ядро его не потеряло при model_validate.
+    """
+
+    def __init__(self, model: ActionResult) -> None:
+        cc = getattr(model, "cc_change_id", None)
+        payload = model.model_dump(mode="json")
+        if isinstance(cc, str) and cc.strip():
+            payload["cc_change_id"] = cc.strip()
+        super().__init__(payload)
+        self._model = model
+
+    def __getattr__(self, name: str) -> Any:
+        model = object.__getattribute__(self, "_model")
+        return getattr(model, name)
+
+
 class BoundResult(ActionResult):
     """Обычный ответ ActionSpec: свободный dict не входит в союз r2.3.
 
@@ -531,8 +551,14 @@ async def _frame_restore(params: dict, ctx: Any) -> ActionResult:
     return _attach_cc(result, approval)
 
 
-async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
-    """Один ActionSpec. Исключения и отказы — status=failed."""
+async def execute(name: str, params: dict | None, ctx: Any) -> WireEnvelope:
+    """Один ActionSpec. Ответ — dict конверта r2.3, ядро его валидирует."""
+
+    return WireEnvelope(await _execute(name, params, ctx))
+
+
+async def _execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
+    """Исключения и отказы — status=failed. Наружу уходит WireEnvelope."""
 
     ensure_builtin_actions()
     params = dict(params or {})

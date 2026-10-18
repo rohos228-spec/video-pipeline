@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.models import Project
-from app.orchestrator.action_contracts.contracts import CONTRACT_VERSION, ActionResult
+from app.orchestrator.action_contracts.contracts import CONTRACT_VERSION
 from app.services.action_layer.spec import ensure_builtin_actions
 from tests.action_layer_support import env
 
@@ -20,7 +20,7 @@ async def test_execute_returns_r22_action_result(env) -> None:
     ctx = {"app": env.app, "operator": "adapter-test"}
 
     read = await execute("history.list_snapshots", {"limit": 5}, ctx)
-    assert isinstance(read, ActionResult)
+    assert isinstance(read, dict)
     assert read.status == "ok"
     assert read.error is None
     assert isinstance(read.warnings, list)
@@ -30,7 +30,7 @@ async def test_execute_returns_r22_action_result(env) -> None:
 
     pid = await env.add_project()
     write = await execute("project.pause", {"project_id": pid}, ctx)
-    assert isinstance(write, ActionResult)
+    assert isinstance(write, dict)
     assert write.status == "ok"
     assert write.error is None
     assert isinstance(write.result, dict)
@@ -686,6 +686,44 @@ def _action_names(node, key=None):
     elif isinstance(node, str) and key in {"action", "restore_action", "name"}:
         found.append(node)
     return found
+
+
+async def test_execute_wire_validates_and_keeps_cc_change_id(env) -> None:
+    """Словарь для ядра проходит ActionResult.model_validate, cc_change_id остаётся."""
+
+    from app.models import Frame
+    from app.orchestrator.action_contracts.contracts import ActionResult
+    from app.orchestrator.actions.executor import execute
+
+    pid = await env.add_project(frames=1)
+    ids = await env.frame_ids(pid)
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.attrs = {"кадры": [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]}
+        await session.commit()
+    done = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        {
+            "app": env.app,
+            "operator": "adapter-test",
+            "approval": {
+                "change_id": "orch-appr-12-1",
+                "action": "montage.delete_frame",
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": "cc-wire-1",
+            },
+        },
+    )
+    assert isinstance(done, dict)
+    assert done["cc_change_id"] == "cc-wire-1"
+    body = {key: value for key, value in done.items() if key != "cc_change_id"}
+    parsed = ActionResult.model_validate(body)
+    assert parsed.status == "ok"
+    assert parsed.result.action == "montage.delete_frame"
+    assert done["cc_change_id"] == "cc-wire-1"
 
 
 async def test_adapter_result_matches_contract_schema(env) -> None:
