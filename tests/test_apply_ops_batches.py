@@ -632,9 +632,74 @@ async def test_run_apply_ops_splits_2_to_4_on_second_error(
         project_id=1,
         dense=True,
     )
-    # 160 fail, 80 fail → 40+40, other 80 fail → 40+40
-    assert calls == [160, 80, 40, 40, 80, 40, 40]
+    # Те же вызовы: 160, две половины по 80, четыре по 40.
+    # Обе половины стартуют вместе, поэтому вторая 80 идёт сразу за первой.
+    assert calls == [160, 80, 80, 40, 40, 40, 40]
     assert len(res.apply_ops["ops"]) == 160
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_batches_no_stagger_sleep(tmp_path, monkeypatch) -> None:
+    """Несколько пачек стартуют вместе: sleep сдвига не вызывается."""
+    import json
+    import time
+
+    from app.services import apply_ops_batches as batches
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    sleeps: list[float] = []
+    starts: list[float] = []
+    inflight = 0
+    max_inflight = 0
+    real_sleep = batches.asyncio.sleep
+
+    async def spy_sleep(delay: float = 0, *args, **kwargs):
+        sleeps.append(float(delay))
+
+    monkeypatch.setattr(batches.asyncio, "sleep", spy_sleep)
+
+    async def fake_run(**kwargs):
+        nonlocal inflight, max_inflight
+        inflight += 1
+        max_inflight = max(max_inflight, inflight)
+        starts.append(time.monotonic())
+        await real_sleep(0)
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        inflight -= 1
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {"frame_uuid": fr["uuid"], "fields": {"main_action": "x"}}
+                    for fr in frames
+                ]
+            },
+        )
+
+    monkeypatch.setattr(batches, "run_operator_api", fake_run)
+    frames = [_frame(i) for i in range(9)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_2",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=3,
+        parallel_max=3,
+    )
+    assert len(res.apply_ops["ops"]) == 9
+    assert max_inflight >= 2
+    assert starts and max(starts) - min(starts) < 0.5
+    assert sleeps == []
 
 
 @pytest.mark.asyncio

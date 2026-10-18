@@ -384,6 +384,32 @@ export function assistantRefHandle(index: number): string {
 }
 
 /** Сырой запрос без ответа LLM — в генератор картинки слать нельзя. */
+/** Заглушка агента, не любой ручной промпт, где встретилась фраза из гайда. */
+export function isStyleGuideStub(text: string): boolean {
+  const p = text.trim().toLowerCase();
+  if (!p.includes("not example objects from the style guide")) return false;
+  return p.length < 400 && p.includes("aspect ratio:");
+}
+
+/** Готовые промпты остаются на своих draftId, пустые слоты не сдвигают индексы. */
+export function pairAssistantPrompts(
+  texts: readonly string[],
+  draftIds: readonly string[] | undefined,
+  unfilled: (text: string) => boolean,
+): { ready: { text: string; draftId?: string }[]; unused: string[] } {
+  const ready: { text: string; draftId?: string }[] = [];
+  const used = new Set<string>();
+  texts.forEach((raw, index) => {
+    const text = raw.trim();
+    if (!text || unfilled(text)) return;
+    const draftId = draftIds?.[index];
+    if (draftId) used.add(draftId);
+    ready.push(draftId ? { text, draftId } : { text });
+  });
+  const unused = (draftIds || []).filter((id) => !used.has(id));
+  return { ready, unused };
+}
+
 export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean {
   const p = prompt.trim();
   const req = request.trim();

@@ -171,7 +171,7 @@ def send_mail(to: str, subject: str, text: str) -> bool:
     """Send via SMTP_* env if configured. Never log or print the message body."""
     host = os.environ.get("SMTP_HOST")
     if not host:
-        log.warning("SMTP_HOST is unset; mail to=%s was not sent", to)
+        log.warning("[VIA auth dev-mail] SMTP_HOST is unset; mail to=%s was not sent", to)
         return False
     try:
         msg = EmailMessage()

@@ -103,7 +103,7 @@ def test_shot_vo_fill_calls_merge_spread_wide() -> None:
     assert "spread_vo_sentences" in block
     assert "ensure_wide_before_dialogue" in block
     assert SHOTS_PARALLEL == 16
-    assert 2 <= ACTION_STAGGER_SEC <= 5
+    assert ACTION_STAGGER_SEC == 0.0
 
 
 def _shot(sid: str, action: str, vo: str) -> dict:

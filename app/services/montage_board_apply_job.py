@@ -114,6 +114,7 @@ def spawn_apply_job(
                         "finished_at": None,
                         "total_ops": total_ops,
                         "done_ops": 0,
+                        "pending_ops": list(pending_ops),
                     },
                 )
             await _publish(project_id, "running", extra={"total_ops": total_ops, "done_ops": 0})

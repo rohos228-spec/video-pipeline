@@ -797,8 +797,7 @@ export function NodeStudio({
             {!NO_LLM_NODE_TYPES.has(nodeType) ? (
             <div className="flex items-center gap-3 rounded-[10px] border border-white/[0.06] px-4 py-3">
               <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">Модель</span>
-              {true ? (
-                <div className="min-w-0 font-mono text-[12px] [&_*]:!font-mono [&_*]:!text-[12px]">
+              <div className="min-w-0 font-mono text-[12px] [&_*]:!font-mono [&_*]:!text-[12px]">
                   <NodeModelPicker
                     nodeKey={nodeKey}
                     nodeType={nodeType}
@@ -809,7 +808,6 @@ export function NodeStudio({
                     reasoningEffort={ds.reasoningEffort || undefined}
                   />
                 </div>
-              ) : null}
               <span className="flex-1" />
               {STREAM_NODE_TYPES.has(nodeType) && projectId ? <StreamsPicker projectId={projectId} /> : null}
             </div>

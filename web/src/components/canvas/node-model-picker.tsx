@@ -123,6 +123,7 @@ const ACC = "#2fd5b5";
 
 export function normalizeEffort(v?: string | null): ReasoningEffortUi {
   const x = (v || "").trim().toLowerCase();
+  if (!x) return "high";
   if (x === "low") return "low";
   if (x === "med" || x === "medium") return "med";
   if (x === "ultra" || x === "xhigh") return "ultra";
