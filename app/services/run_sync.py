@@ -767,7 +767,17 @@ async def prepare_node_for_step_start(
             nr.node_key,
         )
 
-    if not queue_node_for_start(nr, project_id=project.id, initiator="api"):
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    approved = meta.get("approval_status") == "approved"
+    if nr.status == NodeRunStatus.waiting_approval and not approved:
+        logger.info(
+            "[#{}] prepare_node: {} ждёт одобрения, старт не снимает парковку",
+            project.id,
+            nr.node_key,
+        )
+        return False
+    queue_initiator = "approval" if nr.status == NodeRunStatus.waiting_approval else "api"
+    if not queue_node_for_start(nr, project_id=project.id, initiator=queue_initiator):
         pass
     if not start_node_running(nr, project_id=project.id, initiator="api"):
         if strict:

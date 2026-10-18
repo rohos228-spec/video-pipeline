@@ -145,34 +145,32 @@ async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None
     async def _wf(_session=None):
         return wf_id
 
+    async def _queue_ok(_session, _project):
+        return None
+
     monkeypatch.setattr("app.services.run_sync._get_default_workflow_id", _wf)
+    monkeypatch.setattr("app.services.gen_queue.assert_can_start_in_queue", _queue_ok)
     async with mem() as session:
         project = await session.get(Project, project_id)
         project.status = ProjectStatus.plan_ready
+        project.meta = {"approval_status": "waiting_approval", "approval_reason": "budget_exhausted"}
         node = await session.get(NodeRun, ids[0])
         node.node_type = "plan"
         node.node_key = "n_plan"
         run = await session.get(WorkflowRun, node.workflow_run_id)
         run.nodes_snapshot = [{"id": "n_plan", "type": "plan", "data": {}}]
-        for target in (
-            NodeRunStatus.queued,
-            NodeRunStatus.failed,
-            NodeRunStatus.pending,
-        ):
-            node.status = NodeRunStatus.waiting_approval
-            assert transition_node_status(
-                node, target, initiator="api", project_id=project.id
-            )
-            node.status = NodeRunStatus.waiting_approval
-        assert transition_node_status(
-            node,
-            NodeRunStatus.running,
-            initiator="api",
-            project_id=project.id,
-        )
-        node.status = NodeRunStatus.waiting_approval
         await session.commit()
-        await start_step(session, project, "plan", skip_queue_guard=True)
+        await start_step(session, project, "plan")
+        await session.commit()
+        parked = await session.get(NodeRun, ids[0])
+        assert parked.status is NodeRunStatus.waiting_approval
+
+        project.meta = {
+            **(project.meta or {}),
+            "approval_status": "approved",
+        }
+        await session.commit()
+        await start_step(session, project, "plan")
         await session.commit()
         fresh = await session.get(NodeRun, ids[0])
         assert fresh.status is NodeRunStatus.running

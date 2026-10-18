@@ -342,8 +342,15 @@ def transition_node_status(
     return True
 
 
+_APPROVAL_INITIATORS = frozenset({"approval", "approved"})
+
+
 def queue_node_for_start(nr: NodeRun, *, project_id: int | None, initiator: str = "api") -> bool:
-    """pending | failed → queued перед запуском шага."""
+    """pending | failed → queued перед запуском шага.
+
+    waiting_approval снимается только инициатором одобрения. Обычный api-старт
+    парковку бюджета не трогает.
+    """
     if nr.status == NodeRunStatus.failed:
         return transition_node_status(
             nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
@@ -353,6 +360,8 @@ def queue_node_for_start(nr: NodeRun, *, project_id: int | None, initiator: str 
             nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
         )
     if nr.status == NodeRunStatus.waiting_approval:
+        if initiator not in _APPROVAL_INITIATORS:
+            return False
         return transition_node_status(
             nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
         )
