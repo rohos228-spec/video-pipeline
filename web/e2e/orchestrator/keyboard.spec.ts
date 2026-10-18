@@ -83,6 +83,9 @@ test("клавиатура: Enter во время стрима шлёт одно
   await expect(composer).toHaveValue("");
   await expect.poll(() => posts.length).toBe(2);
   expect(posts[1]?.text).toBe("добавка посреди");
+  const ack = page.getByTestId("orch-ack");
+  await expect(ack).toHaveAttribute("data-ack-echo", "добавка посреди");
+  await expect(ack).toContainText("принял, разбираю");
   await expect(assistant).not.toContainText("КОНЕЦ-ПОТОКА");
   const released = await page.request.post(`${MOCK}/api/orchestrator/test/release-stream`, {
     headers: { Authorization: `Bearer ${TOKEN}` },

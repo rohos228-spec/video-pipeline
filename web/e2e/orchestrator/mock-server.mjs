@@ -294,7 +294,8 @@ async function runStreamHold(session, taskId) {
 }
 
 function runStreamHoldFollowup(session, taskId, text) {
-  emit(session, "ack", taskId, { text, accepted: true });
+  session.lastEcho = text;
+  emit(session, "ack", taskId, ackPayload(session));
   emit(session, "classification", taskId, {
     mode: "append",
     deterministic: true,
