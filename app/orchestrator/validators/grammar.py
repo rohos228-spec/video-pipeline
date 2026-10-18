@@ -198,6 +198,38 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
     return notes
 
 
+def _reserved_by_inactive(shots: list[Any]) -> tuple[set[int], set[str]]:
+    """Номера и id, которые неактивные шоты не отдают под перенумерацию."""
+
+    numbers: set[int] = set()
+    ids: set[str] = set()
+    for shot in shots:
+        if not isinstance(shot, dict) or shot_counts_as_active(shot):
+            continue
+        sid = str(shot.get("id") or "")
+        if sid:
+            ids.add(sid)
+        order = shot.get("порядок")
+        if isinstance(order, int) and not isinstance(order, bool):
+            numbers.add(order)
+        matched = _KID_RE.match(sid)
+        if matched:
+            numbers.add(int(matched.group(2)))
+    return numbers, ids
+
+
+def _next_free_k(
+    start: int,
+    numbers: set[int],
+    ids: set[str],
+    prefix: str | None,
+) -> int:
+    k = start
+    while k in numbers or (prefix is not None and f"{prefix}{k}" in ids):
+        k += 1
+    return k
+
+
 def _previous_active(shots: list[Any], index: int) -> Any | None:
     cursor = index - 1
     while cursor >= 0:
@@ -263,20 +295,24 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
         i = j
     if notes:
         idmap: dict[str, str] = {}
+        reserved_numbers, reserved_ids = _reserved_by_inactive(shots)
         k = 0
         for s in shots:
             if not isinstance(s, dict) or not shot_counts_as_active(s):
                 continue
-            k += 1
             old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
+            matched = _KID_RE.match(old)
+            prefix = matched.group(1) if matched else None
+            k = _next_free_k(k + 1, reserved_numbers, reserved_ids, prefix)
+            if matched and prefix is not None:
+                new = f"{prefix}{k}"
                 if old and old not in idmap:
                     idmap[old] = new
                 s["id"] = new
+                reserved_ids.add(new)
             if "порядок" in s:
                 s["порядок"] = k
+            reserved_numbers.add(k)
         for s in shots:
             if not isinstance(s, dict) or not shot_counts_as_active(s):
                 continue

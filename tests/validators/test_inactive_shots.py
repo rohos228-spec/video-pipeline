@@ -112,3 +112,30 @@ def test_run_keeps_inactive_shot_and_no_deletions_stays_quiet() -> None:
     assert removed.blocking is True
     assert removed.details["frames"]["missing_ids"] == ["dead"]
 
+
+def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
+    """Неактивный шот в середине держит свои id и порядок: живые их не повторяют."""
+
+    dead = _shot(id="s-K2", план="КРУПНЫЙ", действие="молчит")
+    dead["активен"] = False
+    dead["порядок"] = 2
+    frozen = copy.deepcopy(dead)
+    shots = [
+        _shot(id="s-K1", план="КРУПНЫЙ", действие="молчит"),
+        dead,
+        _shot(id="s-K3", реплика="один", говорит="Анна", кто="c01"),
+        _shot(id="s-K4", реплика="два", говорит="Борис", кто="c02"),
+    ]
+    shots[0]["порядок"] = 1
+    shots[2]["порядок"] = 3
+    shots[3]["порядок"] = 4
+
+    notes = local_ensure_wide_before_dialogue(shots)
+    assert notes
+    assert dead == frozen
+    assert dead in shots
+    ids = [shot["id"] for shot in shots if isinstance(shot, dict)]
+    orders = [shot["порядок"] for shot in shots if isinstance(shot, dict) and "порядок" in shot]
+    assert len(ids) == len(set(ids)), ids
+    assert len(orders) == len(set(orders)), orders
+
