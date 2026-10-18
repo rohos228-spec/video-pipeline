@@ -601,7 +601,7 @@ function openMessageBubble(
   const existing = bubbleByMessageId(state, messageId);
   if (existing) return existing;
   const created: ChatMessage = {
-    id: `asst-mid-${messageId}`,
+    id: `${role === "user" ? "user" : "asst"}-mid-${messageId}`,
     role,
     text: "",
     taskId,

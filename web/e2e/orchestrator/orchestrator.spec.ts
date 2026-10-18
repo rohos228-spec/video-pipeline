@@ -41,6 +41,21 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("message_start пользователя не получает id ассистента", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "message_start",
+      task_id: 1,
+      seq: 1,
+      session_id: "s",
+      payload: { message_id: 3, role: "user" },
+    },
+  });
+  expect(opened.messages[0]?.role).toBe("user");
+  expect(opened.messages[0]?.id).toBe("user-mid-3");
+});
+
 test("дробный message_id не открывает пузырь", () => {
   const fractional = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
