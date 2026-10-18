@@ -27,6 +27,7 @@ import {
   EXAMPLE_REPORT,
   EXAMPLE_UNKNOWN_APPROVAL,
   conflictRetryBody,
+  metadataFrom,
   metadataOf,
   needsApproval,
   readActionEnvelope,
@@ -76,13 +77,56 @@ test("схема ws2-r2.3 закреплена sha256", () => {
   expect(source).toContain("app/orchestrator/action_contracts");
   expect(source).toContain("#378");
   expect(source).toContain("fdd8591499004d8c3c8c6f0b6f788ef708aec370");
+  expect(source).not.toContain("create_node@new_group");
 
-  const fresh = metadataOf("create_node@new_group");
-  expect(fresh).toMatchObject({ risk: "high", read_only: false, destructive: true, paid: false });
-  expect(needsApproval(fresh)).toBe(true);
-  const sameGroup = metadataOf("create_node");
-  expect(sameGroup).toMatchObject({ risk: "medium", destructive: false, paid: false });
-  expect(needsApproval(sameGroup)).toBe(false);
+  const elevated = metadataFrom({
+    name: "create_node",
+    risk: "high",
+    read_only: false,
+    destructive: true,
+    paid: false,
+  });
+  expect(elevated).toMatchObject({ name: "create_node", risk: "high", destructive: true, paid: false });
+  expect(elevated && needsApproval(elevated)).toBe(true);
+  const sameGroup = metadataFrom({
+    name: "create_node",
+    risk: "medium",
+    read_only: false,
+    destructive: false,
+    paid: false,
+  });
+  expect(sameGroup && needsApproval(sameGroup)).toBe(false);
+  expect(
+    metadataFrom({ name: "create_node@new_group", risk: "high", read_only: false, destructive: true, paid: false }),
+  ).toBeNull();
+
+  const atName = structuredClone(EXAMPLE_NODE_CREATE);
+  (atName.result as { action: string }).action = "create_node@new_group";
+  expect(readActionEnvelope(atName, 8)?.kind).toBe("invalid");
+
+  const policy = structuredClone(EXAMPLE_PAID_APPROVAL);
+  const policyResult = policy.result as { action: string; metadata: Record<string, unknown> };
+  policyResult.action = "create_node";
+  policyResult.metadata = {
+    name: "create_node",
+    risk: "high",
+    read_only: false,
+    destructive: true,
+    paid: false,
+  };
+  const card = readActionEnvelope(policy, 9);
+  expect(card?.kind).toBe("waiting");
+  expect(card?.action).toBe("create_node");
+  expect(card?.metadata).toMatchObject({ risk: "high", destructive: true, paid: false });
+  expect(card && needsApproval(card.metadata)).toBe(true);
+  expect(metadataOf("create_node").destructive).toBe(false);
+
+  const partial = EXAMPLE_PARTIAL_EDIT.result as { skipped?: string[]; partial?: boolean };
+  expect(partial.skipped?.length).toBeGreaterThan(0);
+  expect(partial.partial).toBe(true);
+  const conflict = EXAMPLE_R21_CONFLICT.result as { skipped?: string[]; partial?: boolean };
+  expect(conflict.skipped).toEqual(["group"]);
+  expect(conflict.partial).toBe(true);
 
   expect(readActionEnvelope(EXAMPLE_PROMPT_EDIT, 1)?.version).toBe(2);
   expect(readActionEnvelope(EXAMPLE_REPORT, 2)?.kind).toBe("report");
@@ -341,8 +385,9 @@ test("ApprovalRequired без события ядра не даёт кнопки
 
   await emit(page, "act-wait", "step_finished", EXAMPLE_UNKNOWN_APPROVAL);
   const unknown = page.getByTestId("orch-action-wait").filter({ hasText: "widget.spin" });
-  await expect(unknown).toContainText("платно");
-  await expect(unknown).toContainText("деструктивно");
+  await expect(unknown).toContainText("риск none");
+  await expect(unknown).not.toContainText("платно");
+  await expect(unknown).not.toContainText("деструктивно");
   await expect(page.getByTestId("orch-approve")).toHaveCount(0);
 
   await emit(page, "act-wait", "approval_required", EXAMPLE_CORE_APPROVAL);

@@ -9,7 +9,8 @@
  * Формат результатов тот же, что у r2.2. version строго больше base_version;
  * пустой snapshot_id и archive_ref недействительны; непустой skipped включает
  * partial. Иначе карточка «Некорректный ответ действия», интерфейс не падает.
- * create_node@new_group — риск high, destructive, нужно подтверждение.
+ * Риск и approval карточки берутся из metadata, не из имени действия.
+ * Имя с «@» — некорректный ответ. Отдельной строки name@… в таблице нет.
  *
  * Моки — JSON этой версии (#378).
  * Обязательны: version и base_version у правки, before или snapshot_id,
@@ -135,13 +136,6 @@ const R2_METADATA: Record<string, ActionMetadata> = {
   stop_node: { name: "stop_node", risk: "medium", read_only: false, destructive: false, paid: false },
   resume_node: { name: "resume_node", risk: "high", read_only: false, destructive: true, paid: true },
   create_node: { name: "create_node", risk: "medium", read_only: false, destructive: false, paid: false },
-  "create_node@new_group": {
-    name: "create_node@new_group",
-    risk: "high",
-    read_only: false,
-    destructive: true,
-    paid: false,
-  },
   edit_node_prompt: { name: "edit_node_prompt", risk: "medium", read_only: false, destructive: true, paid: false },
   edit_node_params: { name: "edit_node_params", risk: "medium", read_only: false, destructive: true, paid: false },
   create_report: { name: "create_report", risk: "low", read_only: false, destructive: false, paid: false },
@@ -170,9 +164,34 @@ export function isKnownActionName(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(R2_METADATA, name);
 }
 
-/** Платное или деструктивное действие ждёт подтверждения. Имя вне таблицы — оба флага. */
+const RISK_NAMES = new Set(["none", "low", "medium", "high"]);
+
+/** Риск из объекта metadata. Имя с «@» и неполная метадата не принимаются. */
+export function metadataFrom(raw: unknown): ActionMetadata | null {
+  const obj = plainObject(raw);
+  if (!obj) return null;
+  const name = str(obj.name).trim();
+  const risk = str(obj.risk);
+  if (!name || name.includes("@") || !RISK_NAMES.has(risk)) return null;
+  if (typeof obj.read_only !== "boolean" || typeof obj.destructive !== "boolean" || typeof obj.paid !== "boolean") {
+    return null;
+  }
+  return {
+    name,
+    risk: risk as ActionMetadata["risk"],
+    read_only: obj.read_only,
+    destructive: obj.destructive,
+    paid: obj.paid,
+  };
+}
+
+/** Платное или деструктивное по metadata, не по имени действия. */
 export function needsApproval(metadata: ActionMetadata): boolean {
   return metadata.paid || metadata.destructive;
+}
+
+function badActionName(value: unknown): boolean {
+  return str(value).includes("@");
 }
 
 /** Имя вне таблицы — платное и деструктивное. Сырые флаги конверта не доверяем. */
@@ -440,12 +459,19 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   const status = payload.status;
   if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
   const result = plainObject(payload.result);
+  if (
+    result &&
+    (badActionName(result.action) || badActionName(result.edit_action) || badActionName(result.restore_action))
+  ) {
+    return invalidView(seq);
+  }
+  const metaRaw = result ? plainObject(result.metadata) : null;
+  if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);
   if (status === "approval_required") {
-    const metaRaw = result ? plainObject(result.metadata) : null;
-    const name = str(metaRaw?.name).trim() || "unknown";
-    const metadata = metadataOf(name, metaRaw);
+    const metadata = metadataFrom(metaRaw);
+    if (!metadata) return invalidView(seq);
     const view = blankView(`wait-${seq}`, metadata, "waiting");
-    view.action = metadata.name;
+    view.action = str(result?.action).trim() || metadata.name;
     applyEnvelopeExtras(view, payload, result);
     view.estimate = readEstimate(result);
     view.changeId = null;
@@ -771,8 +797,6 @@ export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт 
   status: "failed",
   status_code: 409,
   warnings: ["черновик устарел"],
-  skipped: ["group"],
-  partial: true,
   result: {
     action: "edit_node_prompt",
     change_id: "orch-appr-13-2",
@@ -785,6 +809,8 @@ export const EXAMPLE_R21_CONFLICT = stepPayload("s-conflict", "конфликт 
     diff: { unified: "--- a/prompt\n+++ b/prompt\n@@\n-было\n+стало\n" },
     open_url: "/api/projects/13",
     reversible: false,
+    partial: true,
+    skipped: ["group"],
   },
   error: "конфликт версий",
 });
