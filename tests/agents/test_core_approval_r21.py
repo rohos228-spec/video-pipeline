@@ -437,7 +437,7 @@ async def test_unapproved_ok_is_not_counted(token: str) -> None:
 @pytest.mark.asyncio
 async def test_unversioned_edit_is_not_done(token: str) -> None:
     del token
-    action = "edit_loose"
+    action = "revert_node_to_git"
     meta = _meta(action, risk="none", read_only=False, destructive=True, paid=False)
 
     def _loose(name: str) -> dict:

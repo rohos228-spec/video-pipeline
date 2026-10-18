@@ -660,8 +660,9 @@ class ActionMetadata(BaseModel):
 
     ``read_only=True`` — явное разрешение. Нет метаданных или нет явного
     ``read_only`` — действие потенциально разрушительное.
-    ``destructive=True`` — вызов только после одобренного ядром ``change_id``.
-    Имя с маркером удаления остаётся ``deletion_blocked``: approval его не снимает.
+    ``destructive=True`` само по себе не открывает approval. Одобряемый
+    destructive — только ``APPROVABLE_DESTRUCTIVE`` (не трогает медиа).
+    Остальной destructive и имя с маркером удаления — ``deletion_blocked``.
     Поле ``paid`` в эту модель не добавляется: его читает ``registry_marks_paid``
     из dict будущего реестра.
     """
@@ -860,6 +861,8 @@ DELETION_ACTIONS: frozenset[str] = frozenset(
     }
 )
 APPROVAL_RISKS: frozenset[str] = frozenset({"medium", "high"})
+# Destructive без медиа. Другие имена с destructive=True остаются deletion_blocked.
+APPROVABLE_DESTRUCTIVE = frozenset({"revert_node_to_git", "prompt.retire_master"})
 PIPELINE_FORECAST_LIMIT_USD = 40.0
 _RISK_RANK: dict[Risk, int] = {Risk.none: 0, Risk.low: 1, Risk.medium: 2, Risk.high: 3}
 
@@ -1397,6 +1400,8 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     kind, _meta = lookup_action_metadata(action, registry)
     if kind == "miss":
         return None
+    if _destructive_blocked(action, registry):
+        return "name"
     if metadata_call_gate(action, registry) in {"paid", "destructive"}:
         return None
     if not explicitly_safe(action, registry):
@@ -1419,9 +1424,21 @@ def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
     kind, _meta = lookup_action_metadata(step.action, registry)
     if kind == "miss":
         return False
+    if _destructive_blocked(step.action, registry):
+        return True
     if metadata_call_gate(step.action, registry) in {"paid", "destructive"}:
         return False
     return not explicitly_safe(step.action, registry)
+
+
+def _destructive_blocked(action: str, registry: Any | None) -> bool:
+    """destructive вне закрытого списка — запрет, не карточка approval."""
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind != "value" or meta is None:
+        return False
+    if not bool(_meta_field(meta, "destructive", False)):
+        return False
+    return action not in APPROVABLE_DESTRUCTIVE
 
 
 def registry_is_readonly(action: str, registry: Any | None) -> bool:
