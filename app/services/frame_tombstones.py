@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from loguru import logger
@@ -21,6 +22,67 @@ _KEY = "deleted_frame_numbers"
 DELETED_MARK = "удалён"
 REASON_MARK = "пометка"
 ACTIVE_MARK = "активен"
+QUARANTINE_MARK = "карантин"
+
+# Та же матрица, что у WS1 ``activity_flags``. WARN — stdlib logging,
+# чтобы его видел caplog; остальные предупреждения модуля остаются на loguru.
+_activity_log = logging.getLogger(__name__)
+_FALSE_TOKENS = frozenset({"0", "false", "нет", "no", "off"})
+
+
+def flag_is_false(value: object) -> bool:
+    """False, 0, ``0.0`` и строки ``0`` / ``false`` / ``нет`` / ``no`` / ``off``.
+
+    Регистр и крайние пробелы у строк не важны.
+    """
+
+    if value is False or value == 0:
+        return True
+    if isinstance(value, str):
+        return value.strip().casefold() in _FALSE_TOKENS
+    return False
+
+
+def flag_is_true(value: object) -> bool:
+    """«удалён» и «карантин»: None, пустая строка и ложные флаги — не удалено."""
+
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if flag_is_false(value):
+        return False
+    return bool(value)
+
+
+def _record_is_active(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if flag_is_true(record.get(DELETED_MARK)) or flag_is_true(record.get(QUARANTINE_MARK)):
+        return False
+    if ACTIVE_MARK not in record:
+        return True
+    value = record[ACTIVE_MARK]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return True
+    if flag_is_false(value):
+        return False
+    if isinstance(value, str):
+        _activity_log.warning(
+            "неизвестное значение «активен» %r — считаем активным",
+            value,
+        )
+    return True
+
+
+def _activity_flags():
+    """Модуль WS1, если он уже в дереве. Неудачный импорт не кэшируем."""
+
+    try:
+        from app.orchestrator.validators import activity_flags
+    except ImportError:
+        return None
+    return activity_flags
 
 
 def _touch(project) -> None:
@@ -89,27 +151,36 @@ def frame_marked_deleted(frame: Any) -> bool:
     attrs = getattr(frame, "attrs", None)
     if not isinstance(attrs, dict):
         return False
-    return bool(attrs.get(DELETED_MARK))
+    flags = _activity_flags()
+    is_true = flags.flag_is_true if flags is not None else flag_is_true
+    return bool(is_true(attrs.get(DELETED_MARK)))
+
+
+def _frame_attrs(frame: Any) -> object:
+    """``frame_is_active`` принимает кадр, матрица WS1 — словарь ``attrs``."""
+    attrs = getattr(frame, "attrs", None)
+    if attrs is None:
+        return {}
+    return attrs
 
 
 def frame_is_active(frame: Any) -> bool:
-    if frame is None or frame_marked_deleted(frame):
+    """Живой кадр. Нет ключа ``активен`` — активен. Карантин гасит кадр так же, как шот."""
+    if frame is None:
         return False
-    attrs = getattr(frame, "attrs", None) or {}
-    if isinstance(attrs, dict) and attrs.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    attrs = _frame_attrs(frame)
+    flags = _activity_flags()
+    if flags is not None:
+        return flags.frame_is_active(attrs)
+    return _record_is_active(attrs)
 
 
 def shot_is_active(shot: Any) -> bool:
     """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
-    if not isinstance(shot, dict):
-        return False
-    if shot.get(DELETED_MARK) or shot.get("карантин"):
-        return False
-    if shot.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    flags = _activity_flags()
+    if flags is not None:
+        return flags.shot_is_active(shot)
+    return _record_is_active(shot)
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
@@ -379,7 +450,7 @@ def mark_frame_deleted(
         return
     attrs[DELETED_MARK] = True
     attrs[REASON_MARK] = reason
-    attrs["карантин"] = True
+    attrs[QUARANTINE_MARK] = True
     attrs[ACTIVE_MARK] = False
     frame.attrs = attrs
     _flag_frame(frame)
