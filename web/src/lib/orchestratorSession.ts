@@ -383,7 +383,10 @@ function closeServerApproval(state: OrchScreenState, key: string, decision: "app
   item.resolved = decision;
 }
 
-/** Карточка без change_id закрывается только сменой статуса своей задачи и сессии. */
+/**
+ * Карточка без change_id закрывается только сменой статуса своей задачи и сессии.
+ * Если сервер не прислал session_id, карточку не закрываем: нельзя понять, чья это сессия.
+ */
 function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, sessionId: string | null): void {
   if (!taskId || !sessionId) return;
   for (const item of state.approvals) {

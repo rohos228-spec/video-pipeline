@@ -48,6 +48,32 @@ test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает о�
   }
 });
 
+test("карточка без change_id и без session_id не закрывается сменой статуса", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 1,
+      payload: { approval_id: "appr-nosession", reason: "budget_exhausted", title: "Бюджет" },
+    },
+  });
+  expect(opened.approvals[0]?.sessionId).toBeNull();
+  expect(opened.approvals[0]?.changeId).toBeNull();
+  const moved = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 2,
+      session_id: "own",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(moved.tasks[0]?.status).toBe("executing");
+  expect(moved.approvals[0]?.resolved).toBeNull();
+});
+
 test("поздний stop_key_set=false говорит, что остановка не случилась", () => {
   const stopped = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
