@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import flag_is_false, flag_is_true
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -339,9 +340,27 @@ def _shot_row_id(row: Any) -> str:
     return str(row.get("id") or "").strip()
 
 
+def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
+    """Пометки скрытия старой строки переживают входящее обновление."""
+    marks: dict[str, Any] = {}
+    if flag_is_false(row.get("активен")):
+        marks["активен"] = row.get("активен")
+    for key in ("удалён", "удален"):
+        if flag_is_true(row.get(key), mark=key):
+            marks[key] = row[key]
+    if flag_is_true(row.get("карантин"), mark="карантин"):
+        marks["карантин"] = row["карантин"]
+    note = row.get("пометка")
+    if str(note or "").strip():
+        marks["пометка"] = note
+    return marks
+
+
 def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
     """Короткий список не выкидывает старые шоты: их хвост с активен False.
 
+    Строка без id остаётся. Совпадающий id сливается как {**old, **new},
+    но пометки скрытия старой строки не стираются.
     Пустой incoming не подменяет лестницу — это делает вызывающий код.
     """
     old_rows = (
@@ -356,17 +375,34 @@ def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
     )
     if not new_rows:
         return old_rows
-    seen = {_shot_row_id(row) for row in new_rows}
-    seen.discard("")
-    out = list(new_rows)
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[dict[str, Any]] = []
     for row in old_rows:
         sid = _shot_row_id(row)
-        if not sid or sid in seen:
+        if not sid:
+            old_without_id.append(dict(row))
+            continue
+        old_by_id.setdefault(sid, dict(row))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in new_rows:
+        sid = _shot_row_id(row)
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **row}
+            merged.update(_kept_hide_marks(old_by_id[sid]))
+            out.append(merged)
+            seen.add(sid)
+            continue
+        out.append(dict(row))
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
             continue
         kept = dict(row)
         kept["активен"] = False
         out.append(kept)
-        seen.add(sid)
+    out.extend(dict(row) for row in old_without_id)
     return out
 
 
@@ -834,26 +870,44 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
         raise ApplyOpsError("scenes: нужен список")
     if not scenes:
         return 0
-    normalized = [_normalize_scene_card(s) for s in scenes]
+    normalized_in = [_normalize_scene_card(s) for s in scenes]
     meta = dict(project.meta or {})
     old = meta.get("scene_registry")
-    seen = {
-        str(card.get("id_scene") or "").strip()
-        for card in normalized
-        if str(card.get("id_scene") or "").strip()
-    }
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[Any] = []
     if isinstance(old, list):
         for row in old:
             if not isinstance(row, dict):
+                old_without_id.append(row)
                 continue
             sid = str(row.get("id_scene") or row.get("id") or "").strip()
-            if not sid or sid in seen:
+            if not sid:
+                old_without_id.append(dict(row))
                 continue
-            kept = dict(row)
-            kept["id_scene"] = sid
-            kept["активен"] = False
-            normalized.append(kept)
+            old_by_id.setdefault(sid, dict(row))
+    normalized: list[Any] = []
+    seen: set[str] = set()
+    for card in normalized_in:
+        sid = str(card.get("id_scene") or "").strip()
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **card}
+            merged.update(_kept_hide_marks(old_by_id[sid]))
+            merged["id_scene"] = sid
+            normalized.append(merged)
             seen.add(sid)
+            continue
+        normalized.append(card)
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
+            continue
+        kept = dict(row)
+        kept["id_scene"] = sid
+        kept["активен"] = False
+        normalized.append(kept)
+        seen.add(sid)
+    normalized.extend(old_without_id)
     meta["scene_registry"] = normalized
     project.meta = meta
     return len(normalized)
@@ -1647,8 +1701,9 @@ async def apply_ops(
             blank = raw_attr is None or (
                 isinstance(raw_attr, str) and not raw_attr.strip()
             )
-            empty_box = attr_key in {"кадры", "биты"} and _structured_container_empty(
-                raw_attr
+            empty_text = isinstance(raw_attr, str) and raw_attr.strip() in {"[]", "{}"}
+            empty_box = attr_key in {"кадры", "биты"} and (
+                _structured_container_empty(raw_attr) or empty_text
             )
             if blank or empty_box:
                 logger.warning(
