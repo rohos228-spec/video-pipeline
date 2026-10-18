@@ -94,7 +94,7 @@ async def test_e2e_mutation_runs_only_with_grant(env, monkeypatch) -> None:
         ran.append("run")
         return {"ok": True, "marker": "ran"}
 
-    spec = make_spec("adapter.e2e_mutate", _run, risk="destructive")
+    spec = make_spec("adapter.e2e_mutate", _run, risk="local_safe")
     registry.register(spec)
     ctx = {"app": env.app, "operator": "e2e"}
     try:
