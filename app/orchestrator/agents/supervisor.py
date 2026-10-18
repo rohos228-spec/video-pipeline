@@ -104,6 +104,10 @@ from app.orchestrator.events import EventBus
 
 _DRY_RUN = ("plan_sanity", "no_deletions", "spend_guard")
 _RESUME_STATUSES = frozenset({TaskStatus.planning, TaskStatus.critic_review, TaskStatus.executing})
+# Кнопка resume у WS4. executing сюда не входит даже с мёртвым прогоном.
+_RESUME_ALLOWED_STATUSES = frozenset(
+    {TaskStatus.paused, TaskStatus.waiting_approval, TaskStatus.critic_review}
+)
 _HOLD_STATUSES = frozenset({TaskStatus.paused, TaskStatus.waiting_approval})
 _APPR_MARK = "\n\x1eorappr:"
 _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
@@ -570,6 +574,36 @@ class Supervisor:
         waiting_approval, отдельный статус не заводится.
         """
         self._approval[session_id] = reason
+
+    def resume_allowed(self, task_id: int) -> bool:
+        """true только для paused|waiting_approval|critic_review с чекпоинтом и без живого прогона."""
+        status = self._status(task_id)
+        if status not in _RESUME_ALLOWED_STATUSES:
+            return False
+        live = self._runs.get(task_id)
+        if live is not None and not live.done():
+            return False
+        return self.checkpoints.load_latest(task_id) is not None
+
+    def session_snapshot(self, session_id: str) -> dict[str, Any]:
+        """Снимок активной задачи сессии для GET статуса и сверки с agent_status."""
+        task_id = self._session_task.get(session_id)
+        if task_id is None:
+            task_id = self.active_task(session_id)
+        if task_id is None:
+            return {
+                "session": session_id,
+                "task_id": None,
+                "status": "",
+                "resume_allowed": False,
+            }
+        status = self._status(task_id)
+        return {
+            "session": session_id,
+            "task_id": task_id,
+            "status": status.value if status is not None else "",
+            "resume_allowed": self.resume_allowed(task_id),
+        }
 
     def active_task(self, session_id: str) -> int | None:
         task_id = self._session_task.get(session_id)
@@ -2555,7 +2589,12 @@ class Supervisor:
         await self.bus.publish(
             session_id,
             "agent_status",
-            {"status": status.value, "agent": "supervisor"},
+            {
+                "status": status.value,
+                "agent": "supervisor",
+                "task_id": task_id,
+                "resume_allowed": self.resume_allowed(task_id),
+            },
             task_id=task_id,
         )
         if status in TERMINAL_STATUSES:

@@ -1,6 +1,7 @@
 """Чат оркестратора: приём сообщения, SSE-поток и решение по approval.
 
 POST ``/api/orchestrator/chat/{session}/message``
+GET  ``/api/orchestrator/chat/{session}/status``
 GET  ``/api/orchestrator/chat/{session}/stream``  (Last-Event-ID)
 POST ``/api/orchestrator/chat/{session_id}/approve``
 GET  ``/api/orchestrator/chat/{session}/partial-changes``
@@ -199,6 +200,13 @@ async def post_resume(session: str) -> dict[str, object]:
         "task_id": task_id,
         "status": status.value if status is not None else "",
     }
+
+
+@router.get("/{session}/status")
+async def get_session_status(session: str) -> dict[str, object]:
+    """Снимок задачи сессии. ``resume_allowed`` совпадает с последним ``agent_status``."""
+    _check_session(session)
+    return get_runtime().supervisor.session_snapshot(session)
 
 
 @router.get("/{session}/partial-changes")
