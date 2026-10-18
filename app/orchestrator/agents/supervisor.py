@@ -2303,9 +2303,14 @@ class Supervisor:
         if problem is None and ok:
             problem = r21_result_problem(result)
         if problem:
-            self.tasks.finish_step(step_id, problem, None, cost)
+            kept = envelope_change_id(result) if problem == "skipped_without_partial" else None
+            self.tasks.finish_step(step_id, problem, kept, cost)
+            if kept:
+                bucket = self._change_ids.setdefault(task_id, [])
+                if str(kept) not in bucket:
+                    bucket.append(str(kept))
             self._charge_step_cost(task_id, step, cost)
-            return problem, None
+            return problem, kept
         change_id = (core_id or envelope_change_id(result)) if ok else None
         self.tasks.finish_step(step_id, "done" if ok else "failed", change_id, cost)
         if ok and change_id:
@@ -2556,9 +2561,10 @@ class Supervisor:
     ) -> bool:
         """Повтор шага, у которого в ``orch_steps.change_id`` уже есть сдача.
 
-        Параметр ``_change_id`` плана не источник. Считаются done и cancelled
-        с непустым change_id и теми же публичными params. ``partial`` сюда
-        не входит: его решает человек через ``partial_write``.
+        Параметр ``_change_id`` плана не источник. Считаются done, cancelled
+        и ``skipped_without_partial`` с непустым change_id и теми же
+        публичными params. ``partial`` сюда не входит: его решает человек
+        через ``partial_write``.
         """
         ident = _public_params(step.params)
         prior = sum(
@@ -2566,7 +2572,9 @@ class Supervisor:
         )
         done = 0
         for row in self._rows_for_step(task_id, step):
-            if str(row.get("status")) not in {"done", "cancelled"} or not row.get("change_id"):
+            if str(row.get("status")) not in {"done", "cancelled", "skipped_without_partial"}:
+                continue
+            if not row.get("change_id"):
                 continue
             done += 1
         return done > prior
