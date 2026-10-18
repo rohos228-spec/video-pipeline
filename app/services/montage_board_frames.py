@@ -265,7 +265,6 @@ async def delete_montage_frame(
     if is_shot_child(frame):
         parent = _vo_parent_frame(frames, frame)
         await delete_coverage_child(session, project, frame, frames)
-        await purge_frame_row(session, project, frame)
         if int(parent.id) != int(frame_id):
             leftover = await _load_frames(session, int(project.id))
             live = next((fr for fr in leftover if int(fr.id) == int(parent.id)), parent)
@@ -281,7 +280,7 @@ async def delete_montage_frame(
     kids = _children_of(frames, frame)
     new_head = _promote_first_child(frame, kids)
     quarantine_frame_media(project, number)
-    await purge_frame_row(session, project, frame)
+    await _drop_frame_rows(session, project, [frame])
     if new_head is not None:
         leftover = await _load_frames(session, int(project.id))
         live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)

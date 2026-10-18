@@ -491,9 +491,9 @@ async def test_exhausted_budget_parks_task_and_keeps_ready_scenes(
 async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> None:
     """Блок посреди ретрая не запускает следующую попытку.
 
-    Живой путь: первый HTTP — 500, потолок сразу ниже оценки. Наружу уходит
-    блок шлюза, HTTP ровно один, паузы 15·k с нет. Дальше те же пробросы
-    ApiEmergencyBlockedError и PaidCallBlocked из цикла call_opus.
+    Живой путь 52pay: первый POST — 500, потолок сразу ниже оценки. Повтор
+    внутри gpt_api упирается в шлюз, HTTP ровно один, паузы 15·k с нет. Дальше
+    те же пробросы ApiEmergencyBlockedError и PaidCallBlocked из цикла call_opus.
     """
     from app.services.api_tracker_hook import ApiEmergencyBlockedError
     from app.services.scene_boundaries import call_opus
@@ -507,7 +507,7 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(asyncio, "sleep", _fast)
 
-    # Живой путь: 500, затем потолок ниже оценки. Второй HTTP и второй sleep не стартуют.
+    # Живой путь 52pay: POST 500, затем потолок ниже оценки. Второй HTTP и 15·k sleep не стартуют.
     import httpx
 
     from app.services import gpt_api
@@ -542,11 +542,11 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
 
         def stream(self, *_a: object, **_k: object) -> _Http:
             _Http.n += 1
-            cap_state["daily"] = estimate * 0.5
             return self
 
         async def post(self, *_a: object, **_k: object) -> _Http:
             _Http.n += 1
+            cap_state["daily"] = estimate * 0.5
             self.status_code = 500
             self.text = "upstream down"
             return self
@@ -562,9 +562,12 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(spend_guard, "caps", _caps)
     monkeypatch.setattr(spend_guard, "conservative_sums", _sums)
     monkeypatch.setattr(spend_guard, "_record_block", _no_block)
-    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    # Только 52pay: без ключа vibecode запасного пути нет.
+    monkeypatch.setattr(settings, "vibecode_api_key", "")
+    monkeypatch.setattr(settings, "pay52_gpt_api_key", "pk-test")
     monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", _host_ok)
     monkeypatch.setattr(httpx, "AsyncClient", _Http)
+    _Http.n = 0
     from app.services import disk_guard, kill_switch
 
     async def _guard(_sessions: object) -> None:
@@ -574,16 +577,14 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(disk_guard, "check", lambda: None)
     spend_guard.reset_inflight()
     sleeps.clear()
-    from app.services.gpt_api import GptApiError
-
-    with pytest.raises(GptApiError) as raised:
+    with pytest.raises(spend_guard.BudgetExhausted) as raised:
         await call_opus("привет", "система", "http500", tmp_path / "http500")
-    blocked = raised.value
-    gate = blocked.context
-    assert gate.get("paid_gate_blocked") is True
-    assert gate.get("gate_code") in spend_guard.REFUSAL_CODES
+    gate = raised.value.__cause__
+    assert isinstance(gate, PaidCallBlocked)
+    assert gate.code in spend_guard.REFUSAL_CODES
     assert _Http.n == 1, sleeps
-    assert len([delay for delay in sleeps if delay >= 2]) == 0, sleeps
+    # Одна пауза бэкоффа внутри gpt_api до шлюза допустима; 15·k из call_opus — нет.
+    assert len(sleeps) <= 1, sleeps
     assert all(delay < 15 for delay in sleeps)
     sleeps.clear()
 

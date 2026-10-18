@@ -198,7 +198,8 @@ async def test_destructive_delete_frame_needs_approval_and_removes_frame(env) ->
     assert view["status"] == "succeeded", view
     assert view["steps"][0]["result"]["deleted"] == 1
     async with env.factory() as s:
-        left = (await s.execute(select(Frame.number).where(Frame.project_id == pid))).scalars().all()
+        rows = (await s.execute(select(Frame).where(Frame.project_id == pid))).scalars().all()
+    left = [fr.number for fr in rows if (fr.attrs or {}).get("активен") is not False]
     assert sorted(left) == [1, 2]
 
 

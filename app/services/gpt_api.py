@@ -2624,6 +2624,8 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     return text, finish, out
 
 
+@_gpt_seam
+@observe_model
 async def _chat_completions_nostream(
     *,
     url: str,

@@ -363,6 +363,8 @@ def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     for fr in frames:
         if int(fr.number) == int(parent.number):
             continue
+        if (getattr(fr, "attrs", None) or {}).get("активен") is False:
+            continue
         if str(_cs(fr).get("parent_uuid") or "") == puid and is_shot_child(fr):
             out.append(fr)
     return out
@@ -1085,24 +1087,28 @@ async def delete_coverage_child(
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     quarantine_frame_media(project, int(frame.number))
+    drop_id = int(frame.id)
     sid = coverage_shot_id(frame)
     attrs = dict(getattr(frame, "attrs", None) or {})
     attrs["активен"] = False
     attrs["удалён"] = True
     attrs["карантин"] = True
-    attrs["пометка"] = "delete_coverage_child: кадр помечен, не удалён"
+    attrs["пометка"] = "delete_coverage_child: кадр скрыт, не удалён"
     frame.attrs = attrs
     _flag_attrs(frame)
-    _set_cs(frame, leftover=True)
-    logger.warning(
-        "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
-        frame.number,
-        frame.id,
-    )
     await session.flush()
+    from app.services.frame_tombstones import remember_deleted
+
+    remember_deleted(project, int(frame.number))
+    logger.info(
+        "delete_coverage_child: кадр #{} id={} скрыт пользователем, строка сохранена, номер в надгробиях",
+        frame.number,
+        drop_id,
+    )
     if parent is not None and int(parent.number) != int(frame.number):
+        remaining = [fr for fr in frames if int(fr.id) != drop_id]
         _mark_kadry_id_inactive(parent, sid, where="delete_coverage_child")
-        _refresh_shots_in_beat(frames, parent)
+        _refresh_shots_in_beat(remaining, parent)
 
 
 async def purge_frame_row(

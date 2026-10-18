@@ -205,7 +205,7 @@ def _api_key() -> str:
 
 
 async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
-    from app.services import gpt_api
+    from app.services import gpt_api, spend_guard
     from app.services.llm_override import NodeLlmOverride, use_override
     from app.services.pay52_routes import resolve_text
 
@@ -220,7 +220,19 @@ async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
         reasoning_effort="high",
     )
     with use_override(ov):
-        res = await gpt_api.chat(prompt=user, system=system, model=MODEL, auto_pack=False, max_retries=1)
+        try:
+            res = await gpt_api.chat(prompt=user, system=system, model=MODEL, auto_pack=False, max_retries=1)
+        except gpt_api.GptApiError as e:
+            # Шлюз оборачивает блок в GptApiError: потолок трат — BudgetExhausted, без ретрая.
+            blocked = e.__cause__
+            if isinstance(blocked, spend_guard.PaidCallBlocked) and blocked.code in spend_guard.REFUSAL_CODES:
+                raise spend_guard.BudgetExhausted(
+                    blocked.code,
+                    blocked.message_ru,
+                    provider=blocked.provider,
+                    what=blocked.what,
+                ) from blocked
+            raise
     txt = getattr(res, "text", None) or getattr(res, "content", None) or str(res)
     return txt, {"finish_reason": getattr(res, "finish_reason", None) or getattr(res, "status", None), "model": MODEL, "usage": getattr(res, "usage", None)}
 
@@ -252,6 +264,8 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
 
             if isinstance(e, ApiEmergencyBlockedError):
                 raise
+            if isinstance(e.__cause__, (PaidCallBlocked, ApiEmergencyBlockedError)):
+                raise
             ctx = getattr(e, "context", None)
             paid_blocked = isinstance(ctx, dict) and bool(ctx.get("paid_gate_blocked"))
             if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked) or paid_blocked:
@@ -261,6 +275,8 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             logger.warning("scene_boundaries {} try{} failed: {}", tag, k, msg[:500])
             (trace_dir / f"{tag}.err{k}.txt").write_text(msg, encoding="utf-8")
             if "HTTP 4" in msg and not any(x in msg for x in ("429", "408")):
+                raise
+            if "нет маршрута 52pay" in msg:
                 raise
             if k < tries - 1:
                 await asyncio.sleep(15 * (k + 1))

@@ -1,4 +1,4 @@
-"""Живой путь границ сцен: run_boundaries → call_opus → chat → _chat_completions_stream.
+"""Живой путь границ сцен: run_boundaries → call_opus → _kie_once → chat → 52pay.
 
 Исчерпанный бюджет, рубильник и диск останавливают запрос до HTTP.
 Повтор call_opus не делается. Проект встаёт на паузу, сцены не меняются.
@@ -48,18 +48,28 @@ def _block(monkeypatch: pytest.MonkeyPatch, code: str, message: str) -> dict[str
 
     async def limited(**_kwargs: object):
         seen["n"] += 1
-        raise spend_guard.PaidCallBlocked(code, message, provider="vibecode", what="chat completions stream")
+        raise spend_guard.PaidCallBlocked(code, message, provider="52pay", what="chat completions")
 
     def client(*_args: object, **_kwargs: object):
         seen["http"] += 1
         raise AssertionError("HTTP ушёл при закрытом шлюзе")
 
-    from app.services import api_tracker_hook
+    async def host_ok(_url: str) -> None:
+        return None
+
+    import httpx
+
+    from app.services import api_tracker_hook, pay52_routes
 
     monkeypatch.setattr(spend_guard, "paid_gate", limited)
-    monkeypatch.setattr(gpt_api, "_async_client", client)
-    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-not-real")
+    monkeypatch.setattr(gpt_api, "_async_client", client, raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", host_ok)
+    # Только 52pay: без ключа vibecode запасного пути нет.
+    monkeypatch.setattr(settings, "vibecode_api_key", "")
+    monkeypatch.setattr(settings, "pay52_gpt_api_key", "pk-test-not-real")
     monkeypatch.setattr(api_tracker_hook, "check_api_allowed", lambda **_kwargs: None)
+    assert pay52_routes.resolve_text(sb.MODEL) is not None
     return seen
 
 

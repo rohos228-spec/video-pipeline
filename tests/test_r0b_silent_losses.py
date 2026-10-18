@@ -236,7 +236,11 @@ async def test_delete_montage_frame_tombstones_both_paths(tmp_path, monkeypatch)
 
         await import_v8_xlsx(session, project, xlsx, keep_fields=True)
         await session.flush()
-        assert await _frame_numbers(session, project.id) == []
+        from sqlalchemy import select
+        from app.models import Frame
+
+        rows = (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars().all()
+        assert [fr.number for fr in rows if (fr.attrs or {}).get("активен") is not False] == []
     await engine.dispose()
 
 
@@ -259,7 +263,11 @@ async def test_delete_coverage_child_records_tombstone(tmp_path, monkeypatch) ->
         await delete_coverage_child(session, project, child, frames)
         await session.flush()
         assert 5 in deleted_numbers(project)
-        assert await _frame_numbers(session, project.id) == [4]
+        from sqlalchemy import select
+        from app.models import Frame
+
+        rows = (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars().all()
+        assert sorted(fr.number for fr in rows if (fr.attrs or {}).get("активен") is not False) == [4]
     await engine.dispose()
 
 
