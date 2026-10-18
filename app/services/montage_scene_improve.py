@@ -1742,6 +1742,20 @@ def qc_reasons(
     return hard, soft
 
 
+def _keep_qc_kadry(parent: Any, shots: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Перед подменой списка QC: живой кадр не выпадает, закадр остаётся на месте."""
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    before = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
+    kept = keep_soft_kadry(
+        before,
+        candidate,
+        scene_id=getattr(parent, "uuid", "") or "qc",
+        number=getattr(parent, "number", 0),
+    )
+    return kept if isinstance(kept, list) else candidate
+
+
 def build_improve_qc_prompt(
     *,
     parent: Frame,
@@ -1798,6 +1812,7 @@ async def stage_qc(
                 raw, cell_number=int(parent.number), place=place, anchors=len(units)
             )
             if candidate and len(candidate) == len(shots):
+                candidate = _keep_qc_kadry(parent, shots, candidate)
                 extra = repair_shots(candidate, units)
                 c_hard, c_soft = qc_reasons(candidate, units)
                 if len(c_hard) < len(hard):

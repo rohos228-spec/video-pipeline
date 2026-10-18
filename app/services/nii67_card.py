@@ -174,6 +174,8 @@ def _normalize_block(raw: Any) -> dict[str, Any]:
         block["пометка"] = note
     if _as_bool(src.get("карантин")):
         block["карантин"] = True
+    if src.get("активен") is False:
+        block["активен"] = False
     return block
 
 
@@ -390,7 +392,16 @@ def delete_block(card: dict[str, Any], door_id: str, block_id: str) -> dict[str,
     door = _with_door(out, door_id)
     if door is None:
         return out
+    before_blocks = [dict(block) for block in door["blocks"]]
     door["blocks"] = [block for block in door["blocks"] if block["id"] != block_id]
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    door["blocks"] = keep_soft_kadry(
+        before_blocks,
+        door["blocks"],
+        scene_id=door_id,
+        number=1,
+    )
     return out
 
 
@@ -566,6 +577,7 @@ def apply_generated_scenario(
             if kind is None:
                 continue
             pending[kind].append(beat)
+        before_blocks = [dict(block) for block in door["blocks"]]
         merged_blocks: list[dict[str, Any]] = []
         for block in list(door["blocks"]):
             queue = pending.get(str(block.get("kind") or ""))
@@ -581,7 +593,14 @@ def apply_generated_scenario(
         for kind, beats_left in pending.items():
             for beat in beats_left:
                 merged_blocks.append(_merge_generated_beat(new_block(kind), beat, scenario))
-        door["blocks"] = merged_blocks
+        from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+        door["blocks"] = keep_soft_kadry(
+            before_blocks,
+            merged_blocks,
+            scene_id=door_id,
+            number=1,
+        )
         side = "left" if door_id == "door1" else "right"
         out["portal"][f"{side}_design"] = str(scenario.get("door_design") or "")
         out["portal"][f"{side}_anim"] = str(scenario.get("door_anim") or "")
