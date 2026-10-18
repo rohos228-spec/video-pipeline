@@ -247,12 +247,17 @@ def test_align_keeps_same_place_coverage_and_drops_other_room() -> None:
     }]
     frames = [{"uuid": "u1", "number": 1, "attrs": {"главное_действие": action}}]
     assert align_shots_to_action_chain(ops, frames) == 1
-    shots = ops[0]["fields"]["кадры"]
-    ids = [s["id"] for s in shots]
-    assert ids == ["a", "mid", "b", "c"]
-    marked = next(s for s in shots if s["id"] == "b")
-    assert marked.get("карантин") is True
-    assert "чужое место" in str(marked.get("пометка") or "")
+    rows = ops[0]["fields"]["кадры"]
+    live = [s for s in rows if s.get("активен") is not False]
+    actions = [s["действие"] for s in live]
+    assert actions == [
+        "следователь открывает папку",
+        "следователь вынимает фото из папки",
+        "кладёт папку на стол",
+    ]
+    assert "лаборатор" not in " ".join(actions)
+    lab = next(s for s in rows if s["id"] == "b")
+    assert lab["активен"] is False
     assert align_shots_to_action_chain(ops, frames) == 0
 
 

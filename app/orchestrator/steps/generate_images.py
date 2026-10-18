@@ -539,6 +539,14 @@ async def _load_refs_for_frame(
     return refs[:_OUTSEE_MAX_REFS]
 
 
+def frame_hidden_from_paid_generation(fr: Frame) -> bool:
+    """Скрытый кадр не ставим в платную очередь."""
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+
+
 def requeue_failed_frames_without_png(
     frames: list[Frame],
     out_dir: Path,
@@ -548,7 +556,7 @@ def requeue_failed_frames_without_png(
     """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
     n = 0
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
+        if frame_hidden_from_paid_generation(fr):
             continue
         if fr.status is FrameStatus.failed and not disk_has_valid_frame_image(
             out_dir, fr.number
@@ -656,7 +664,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     queued = 0
     requeue_failed_frames_without_png(frames, out_dir, project_id=project.id)
     for fr in frames:
-        if log_paid_frame_skip(fr, where="generate_images"):
+        if frame_hidden_from_paid_generation(fr):
             continue
         if disk_has_valid_frame_image(out_dir, fr.number):
             if fr.status not in (

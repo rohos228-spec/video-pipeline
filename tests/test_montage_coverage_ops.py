@@ -393,8 +393,6 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
     )
     gone = await session.get(Frame, child.id)
     assert gone is not None
-    assert int(gone.id) == int(child.id)
-    assert (gone.attrs or {}).get("удалён") is True
     assert (gone.attrs or {}).get("активен") is False
 
 

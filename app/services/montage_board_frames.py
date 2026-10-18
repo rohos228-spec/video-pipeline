@@ -41,15 +41,7 @@ async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str)
     ).scalars().first()
     if not vo:
         if existing is not None:
-            # Было: ``await session.delete(existing)`` — пустой закадр стирал
-            # единственную строку FrameText. Текст остаётся, kind прячет её
-            # из живой выборки voiceover.
-            existing.kind = "vo_archived"
-            logger.warning(
-                "WARN montage: FrameText id={} не удалён, kind=vo_archived, "
-                "текст сохранён",
-                existing.id,
-            )
+            existing.text = ""
         return
     if existing is None:
         session.add(
@@ -166,72 +158,50 @@ async def _drop_frame_rows(
     project: Project,
     frames_to_drop: list[Frame],
 ) -> None:
-    """Пометить кадры. Строки, тексты, промты и связь артефакта не стираются."""
-    from app.services.frame_tombstones import mark_frame_deleted
-
+    """Пометить кадры. Строки, тексты, промты и связи не стираются."""
     pending = [fr for fr in frames_to_drop if getattr(fr, "id", None)]
     if not pending:
         return
     for fr in pending:
-        mark_frame_deleted(
-            fr,
-            project,
-            "_drop_frame_rows: кадр помечен, не удалён",
-        )
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs["активен"] = False
+        attrs["удалён"] = True
+        attrs["карантин"] = True
+        attrs["пометка"] = "_drop_frame_rows: кадр скрыт, не удалён"
+        fr.attrs = attrs
+        _flag_attrs(fr)
     await session.flush()
     logger.warning(
-        "WARN _drop_frame_rows: кадры {} помечены, строки сохранены",
+        "WARN _drop_frame_rows: кадры {} скрыты, строки сохранены",
         [int(fr.number) for fr in pending],
     )
 
 
-_HEAD_ROLLBACK_KEY = "head_promotion_rollback"
+def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
+    """Лестница головы плюс шоты ребёнка. Совпадающий id не дублируется."""
+    out: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
 
+    def _take(raw: Any, *, child: bool) -> None:
+        if not isinstance(raw, list):
+            return
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or "").strip()
+            item = dict(row)
+            if sid and sid in index:
+                if child:
+                    merged = dict(out[index[sid]])
+                    merged.update(item)
+                    out[index[sid]] = merged
+                continue
+            index[sid or f"#{len(out)}"] = len(out)
+            out.append(item)
 
-def _store_head_rollback(parent: Frame, kids: list[Frame]) -> None:
-    """Запомнить голову и шоты до повышения, чтобы restore вернул роли."""
-    snap = {
-        "head_voiceover": parent.voiceover_text,
-        "head_attrs": copy.deepcopy(dict(getattr(parent, "attrs", None) or {})),
-        "members": [
-            {
-                "id": int(fr.id),
-                "voiceover_text": fr.voiceover_text,
-                "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
-            }
-            for fr in kids
-        ],
-    }
-    attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs[_HEAD_ROLLBACK_KEY] = snap
-    parent.attrs = attrs
-    _flag_attrs(parent)
-
-
-def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
-    """Вернуть голову и шоты к состоянию до повышения. False — снимка нет."""
-    raw = dict(getattr(frame, "attrs", None) or {})
-    snap = raw.get(_HEAD_ROLLBACK_KEY)
-    if not isinstance(snap, dict):
-        return False
-    by_id = {int(fr.id): fr for fr in frames if getattr(fr, "id", None)}
-    frame.voiceover_text = snap.get("head_voiceover")
-    frame.attrs = copy.deepcopy(snap.get("head_attrs") or {})
-    _flag_attrs(frame)
-    for member in snap.get("members") or []:
-        if not isinstance(member, dict):
-            continue
-        try:
-            mid = int(member.get("id"))
-        except (TypeError, ValueError):
-            continue
-        kid = by_id.get(mid)
-        if kid is None or kid is frame:
-            continue
-        kid.voiceover_text = member.get("voiceover_text")
-        kid.attrs = copy.deepcopy(member.get("attrs") or {})
-        _flag_attrs(kid)
-    return True
+    _take(parent_rows, child=False)
+    _take(child_rows, child=True)
+    return out
 
 
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
@@ -244,10 +214,13 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     dst = dict(getattr(head, "attrs", None) or {})
     import copy
 
-    for key in ("vo_cell_full", "главное_действие", "main_action", "биты", "кадры", "shots"):
+    for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
         if src.get(key) and not dst.get(key):
             val = src[key]
             dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+    for key in ("кадры", "shots"):
+        if src.get(key) or dst.get(key):
+            dst[key] = _merge_ladders_by_id(src.get(key), dst.get(key))
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(
@@ -540,20 +513,9 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
-    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.db_apply import merge_kadry_keep_missing
 
-    before_rows = (
-        [dict(row) if isinstance(row, dict) else row for row in old_kadry]
-        if isinstance(old_kadry, list)
-        else []
-    )
-    attrs["кадры"] = keep_soft_kadry(
-        before_rows,
-        merge_kadry_keep_missing(old_kadry, kadry),
-        scene_id=getattr(parent, "uuid", None) or "cell",
-        number=getattr(parent, "number", None) or 0,
-    )
+    attrs["кадры"] = merge_kadry_keep_missing(old_kadry, kadry)
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

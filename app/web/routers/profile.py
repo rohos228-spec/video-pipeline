@@ -318,7 +318,9 @@ def _origin_allowed_for_keys(request: Request) -> bool:
 @router.put("/keys/{key_id}")
 async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
     token = await require_web_user(request)
-    if not _caller_is_studio_admin(token) or not _origin_allowed_for_keys(request):
+    if not _origin_allowed_for_keys(request):
+        raise HTTPException(403, "Только администратор студии")
+    if settings.web_auth_enabled and not _caller_is_studio_admin(token):
         raise HTTPException(403, "Только администратор студии")
     match = next((k for k in _KEYS if k[0] == key_id), None)
     if match is None:

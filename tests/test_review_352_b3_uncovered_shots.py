@@ -17,12 +17,11 @@ from app.services.vo_shot_expand import (
 def test_strip_non_scene_kadry_archives_and_keeps_list() -> None:
     stub = SimpleNamespace(attrs={"кадры": [{"id": "B01-K1", "действие": "ищут"}]})
     assert strip_non_scene_kadry(stub) is True
-    ladder = stub.attrs.get("кадры") or []
-    assert len(ladder) == 1
-    assert ladder[0]["id"] == "B01-K1"
-    assert ladder[0].get("активен") is False
+    assert stub.attrs.get("кадры") == []
     archived = stub.attrs.get("кадры_archived") or []
-    assert archived and archived[0]["id"] == "B01-K1"
+    assert [row["id"] for row in archived] == ["B01-K1"]
+    assert strip_non_scene_kadry(stub) is False
+    assert [row["id"] for row in stub.attrs["кадры_archived"]] == ["B01-K1"]
 
 
 def test_apply_voiceover_keeps_qc_pieces_when_ladder_is_longer() -> None:
@@ -83,6 +82,47 @@ def test_ensure_wide_keeps_ids_and_clears_insert_prompts() -> None:
     assert inserted[0]["id"] not in {"1-S1-K1", "1-S1-K2"}
 
 
+def test_ensure_wide_insert_id_is_next_k_and_shifts_order() -> None:
+    shots = [
+        {
+            "id": "1-S1-K1",
+            "говорит": "Аня",
+            "реплика": "да",
+            "план": "КРУПНЫЙ",
+            "порядок": 4,
+        },
+        {
+            "id": "1-S1-K2",
+            "говорит": "Боря",
+            "реплика": "нет",
+            "план": "КРУПНЫЙ",
+            "порядок": 5,
+        },
+    ]
+    ensure_wide_before_dialogue(shots)
+    assert [shot["id"] for shot in shots] == ["1-S1-K3", "1-S1-K1", "1-S1-K2"]
+    assert [shot["порядок"] for shot in shots] == [4, 5, 6]
+
+
+def test_renumber_scene_keeps_real_shot_when_insert_is_first() -> None:
+    shots = [
+        {
+            "id": "1-S1-K1",
+            "_inserted": True,
+            "image_prompt": "copy",
+            "media": "clip",
+        },
+        {"id": "1-S1-K1", "image_prompt": "real", "parent_id": None},
+    ]
+    _renumber_scene(shots, "1-S1")
+    assert shots[1]["id"] == "1-S1-K1"
+    assert shots[1]["image_prompt"] == "real"
+    assert shots[0]["id"] == "1-S1-K2"
+    assert "image_prompt" not in shots[0]
+    assert "media" not in shots[0]
+    assert shots[0]["parent_id"] == "1-S1-K1"
+
+
 def test_renumber_scene_does_not_rewrite_unique_ids() -> None:
     shots = [
         {"id": "1-S1-K2", "parent_id": None, "image_prompt": "a"},
@@ -96,6 +136,37 @@ def test_renumber_scene_does_not_rewrite_unique_ids() -> None:
     _renumber_scene(dup, "1-S1")
     assert dup[0]["id"] == "1-S1-K1"
     assert dup[1]["id"] != "1-S1-K1"
+
+
+def test_promote_merges_nonempty_child_ladder_by_id() -> None:
+    from app.services.montage_board_frames import _promote_first_child
+
+    parent = SimpleNamespace(
+        number=1,
+        uuid="p" * 12,
+        sort_key=1.0,
+        voiceover_text="голова",
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "план": "ОБЩИЙ"},
+                {"id": "1-K2", "план": "СРЕДНИЙ"},
+            ]
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        uuid="c" * 12,
+        sort_key=2.0,
+        voiceover_text="",
+        attrs={"кадры": [{"id": "1-K2", "план": "КРУПНЫЙ"}]},
+    )
+    head = _promote_first_child(parent, [child])
+    ladder = (head.attrs or {}).get("кадры") or []
+    by_id = {row["id"]: row for row in ladder}
+    assert list(by_id) == ["1-K1", "1-K2"]
+    assert by_id["1-K1"]["план"] == "ОБЩИЙ"
+    assert by_id["1-K2"]["план"] == "КРУПНЫЙ"
+    assert by_id["1-K1"].get("активен") is not False
 
 
 def test_promote_first_child_keeps_head_kadry() -> None:

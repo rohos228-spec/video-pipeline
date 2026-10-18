@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 
 import html
@@ -514,24 +515,13 @@ def build_shots_report_model(
     }
 
 
-_SCRIPT_BLOCK_RE = re.compile(
-    r"<\s*script\b[^>]*>.*?<\s*/\s*script\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_SCRIPT_OPEN_RE = re.compile(r"<\s*script\b[^>]*/?\s*>", re.IGNORECASE)
-_ON_ATTR_RE = re.compile(
-    r"""\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
-    re.IGNORECASE,
-)
-
-
 def _safe_svg(raw: Any) -> str:
-    """Убрать script и обработчики из svg, не ломая разметку схемы."""
-    text = str(raw or "")
-    text = _SCRIPT_BLOCK_RE.sub("", text)
-    text = _SCRIPT_OPEN_RE.sub("", text)
-    text = _ON_ATTR_RE.sub("", text)
-    return text.replace("javascript:", "")
+    """SVG схемы — только data-URI в img, без разбора разметки в HTML отчёта."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return f'<img alt="" class="plan-svg" src="data:image/svg+xml;base64,{payload}">'
 
 
 def _plan_block(pl: dict[str, Any]) -> str:
