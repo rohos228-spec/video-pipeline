@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 from app.orchestrator.validators import VALIDATOR_CONTEXT_DRY_RUN, run
 from app.orchestrator.validators.plan_sanity import FALLBACK_WHITELIST
 
@@ -53,14 +55,89 @@ def test_edit_files_rejected_by_fallback_whitelist() -> None:
 
 
 def test_montage_delete_child_frame_is_blocked() -> None:
+    """Без soft_delete одобрение ядра (risk=high, destructive) кадр не отпускает."""
     plan = [{"action": "montage.delete_child_frame", "params": {"frame_id": "f1"}}]
     result = run(
         "plan_sanity",
         1,
-        {"plan": plan, "whitelist": ["montage.delete_child_frame"]},
+        {
+            "plan": plan,
+            "whitelist": ["montage.delete_child_frame"],
+            "approval": {"risk": "high", "destructive": True},
+            "registry": _meta_registry({"montage.delete_child_frame": {}}),
+        },
     )
     assert result.blocking is True
     assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
+def _meta_registry(meta: dict) -> object:
+    class Registry:
+        def names(self) -> list[str]:
+            return ["montage.delete_frame", "montage.delete_child_frame"]
+
+        def metadata_of(self, name: str) -> dict:
+            return dict(meta.get(name) or {})
+
+    return Registry()
+
+
+def _install_meta(monkeypatch: pytest.MonkeyPatch, meta: dict) -> None:
+    module = types.ModuleType("app.orchestrator.actions")
+    module.registry = _meta_registry(meta)
+    monkeypatch.setitem(sys.modules, "app.orchestrator.actions", module)
+
+
+def _core_approval() -> dict:
+    return {"risk": "high", "destructive": True}
+
+
+@pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
+def test_montage_delete_blocked_without_soft_delete_even_with_approval(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_meta(monkeypatch, {action: {}})
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+            "approval": _core_approval(),
+        },
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
+@pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
+def test_montage_delete_blocked_with_soft_delete_without_approval(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    result = run(
+        "plan_sanity",
+        1,
+        {"plan": [{"action": action, "params": {"frame_id": "f1"}}]},
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
+@pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
+def test_montage_delete_passes_with_soft_delete_and_approval(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+            "approval": _core_approval(),
+        },
+    )
+    assert result.passed is True
+    assert result.blocking is False
 
 
 def test_deletion_action_blocked_even_inside_whitelist() -> None:
