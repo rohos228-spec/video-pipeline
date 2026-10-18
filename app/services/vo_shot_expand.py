@@ -1329,13 +1329,16 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
                     mattrs["кадры"] = mark_shots_inactive(
                         raw, where="detach_duplicate_vo_replica_cells"
                     )
+                    mattrs["кадры_archived"] = [
+                        dict(row) if isinstance(row, dict) else {"value": row}
+                        for row in mattrs["кадры"]
+                    ]
                 if m is parent:
                     vo = str(getattr(parent, "voiceover_text", "") or "").strip()
                     if vo:
                         mattrs["vo_cell_full"] = vo
                 m.attrs = mattrs
                 _flag_attrs(m)
-            _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:
             first_parent_key = parent_key
@@ -2351,7 +2354,16 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
+        planned_all = planned_shots_from_attrs(parent)
+        from app.services.frame_tombstones import shot_is_active as _shot_active
+
+        active_planned = [s for s in planned_all if _shot_active(s)]
+        # Хвост длиннее ячейки не должен срывать разбиение по сценам.
+        # Если неактивный шот занимает уже существующий кадр — он остаётся в раскладке.
+        if planned_all and len(planned_all) > len(members) and active_planned:
+            planned = active_planned
+        else:
+            planned = planned_all
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2429,7 +2441,11 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 uid = str(getattr(fr, "uuid", "") or "")
                 attrs = dict(getattr(fr, "attrs", None) or {})
                 if fr is scene_parent:
-                    attrs["кадры"] = shots
+                    if fr is parent:
+                        inactive = [s for s in planned_all if not _shot_active(s)]
+                        attrs["кадры"] = merge_kadry_keep_missing(inactive, shots)
+                    else:
+                        attrs["кадры"] = shots
                     attrs["vo_cell_full"] = scene_chunk or piece
                     plan = _scene_plan_for(seed_plan, shots)
                     if plan:
@@ -2899,11 +2915,35 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             # Старый неактивный шот не оживает: если живых в зеркале не осталось — WARN.
             if fr is not parent and is_shot_child(fr):
                 cattrs = dict(getattr(fr, "attrs", None) or {})
+                incoming = dict(shot)
                 merged = merge_kadry_keep_missing(
                     cattrs.get("кадры"),
-                    [dict(shot)],
+                    [incoming],
                 )
-                cattrs["кадры"] = merged
+                # Зеркало — живой шот. Id, который уже есть на родителе,
+                # не копируется в хвост ребёнка. Свой хвост ребёнка и
+                # неактивный назначенный шот остаются.
+                parent_ids = {
+                    str(row.get("id") or "")
+                    for row in full
+                    if isinstance(row, dict) and str(row.get("id") or "")
+                }
+                if any(
+                    isinstance(item, dict) and shot_is_active(item) for item in merged
+                ):
+                    sid = str(incoming.get("id") or "")
+                    cattrs["кадры"] = [
+                        item
+                        for item in merged
+                        if isinstance(item, dict)
+                        and (
+                            shot_is_active(item)
+                            or str(item.get("id") or "") == sid
+                            or str(item.get("id") or "") not in parent_ids
+                        )
+                    ]
+                else:
+                    cattrs["кадры"] = merged
                 # раскладка already set by _apply_shot_meta on attrs
                 fr.attrs = cattrs
                 _flag_attrs(fr)

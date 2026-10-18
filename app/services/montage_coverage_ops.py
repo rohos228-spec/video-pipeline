@@ -323,34 +323,6 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
     _flag_attrs(frame)
 
 
-def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
-    """Совместимость вызовов: шот не вырезается, только помечается неактивным."""
-    _mark_kadry_id_inactive(frame, shot_id, where="_remove_kadry_id")
-
-
-def _mark_kadry_id_inactive(frame: Frame, shot_id: str, *, where: str) -> None:
-    sid = (shot_id or "").strip()
-    if not sid:
-        return
-    planned = [dict(item) for item in planned_shots_from_attrs(frame)]
-    hit = False
-    for item in planned:
-        if str(item.get("id") or "").strip() != sid:
-            continue
-        item["активен"] = False
-        item["карантин"] = True
-        item["пометка"] = "шот помечен, не вырезан"
-        hit = True
-    if not hit:
-        return
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs["кадры"] = planned
-    frame.attrs = attrs
-    _flag_attrs(frame)
-    logger.warning("WARN {}: шот {} помечен, лестница не сокращена", where, sid)
-
-
-
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")
@@ -1420,24 +1392,33 @@ async def apply_coverage_scene_action(
         )
 
     used = min(len(layout), len(group))
-    # Хвост закадра живых шотов клеится на последний кадр. Помеченный
-    # в layout не входит — его закадр не садится на живой кадр.
-    voiced = (
-        fold_excess_shot_voiceover(layout, used)
-        if used and len(layout) > used
-        else layout
-    )
     parent_sid = str(layout[0].get("id") or f"{int(parent.number)}-K1")
     for i, member in enumerate(group[:used]):
-        shot = voiced[i]
+        shot = layout[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 
         seed_end_still_prompt(member)
         piece = " ".join(str(shot.get("закадр") or "").split())
-        if piece:
+        existing_vo = " ".join(str(getattr(member, "voiceover_text", "") or "").split())
+        live_pieces = [
+            " ".join(str(row.get("закадр") or "").split())
+            for row in layout
+            if isinstance(row, dict) and str(row.get("закадр") or "").strip()
+        ]
+        # Ячейка уже держит закадр всех живых шотов — не сужаем её до одного куска.
+        # Чужой кусок помеченного шота в этот текст не входит и не дописывается.
+        keep_cell_vo = bool(
+            piece
+            and existing_vo
+            and all(part in existing_vo for part in live_pieces)
+            and len(existing_vo) >= len(piece)
+        )
+        if piece and not keep_cell_vo:
             member.voiceover_text = piece
             _set_cs(member, vo_shot=piece)
+        elif piece:
+            _set_cs(member, vo_shot=existing_vo)
         extra: dict[str, Any] = {
             "shot_id": str(shot.get("id") or ""),
             "shot_index": i + 1,
@@ -1507,7 +1488,7 @@ async def apply_coverage_scene_action(
         "shots": used,
         "frames": len(group),
         "inserted_frames": len(inserted),
-        "skipped_shots": max(0, len(layout) - used),
+        "skipped_shots": max(0, len(kadry) - used),
         "renumber": remap,
         "chain": chain_text,
     }
