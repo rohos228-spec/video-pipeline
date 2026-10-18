@@ -701,6 +701,17 @@ class Artifacts(unittest.IsolatedAsyncioTestCase):
         path.write_text(path.read_text().replace("0:00:00.80", "0:00:00.00"))
         self.assertEqual((await verify_artifact(path, root=self.root, kind="subtitles"))["status"], "failed")
 
+    def test_dynamic_linker_warning_does_not_reject_a_probe(self):
+        from app.services.artifact_verifier import probe_stderr_blocks
+        warning = (
+            b"ffprobe: /exec-daemon/tmux-root/lib/libncursesw.so.6: "
+            b"no version information available "
+            b"(required by /lib/x86_64-linux-gnu/libcaca.so.0)\n"
+        )
+        self.assertFalse(probe_stderr_blocks(warning + warning))
+        self.assertTrue(probe_stderr_blocks(
+            b"[mov,mp4,m4a,3gp,3g2,mj2 @ 0x1] moov atom not found\n"))
+
     @pytest.mark.slow
     async def test_video_audio_streams_and_duration(self):
         from app.services.artifact_verifier import verify_artifact
