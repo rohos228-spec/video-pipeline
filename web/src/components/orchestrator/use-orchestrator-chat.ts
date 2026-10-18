@@ -55,6 +55,10 @@ export function useOrchestratorChat() {
   const [state, dispatch] = useReducer(reduceOrchScreen, boot.session, (session: string) =>
     initialOrchScreen(session),
   );
+  useEffect(() => {
+    const session = readOrchBoot().session;
+    if (session) dispatch({ type: "own-session", session });
+  }, []);
   const lastSeq = useRef(0);
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);

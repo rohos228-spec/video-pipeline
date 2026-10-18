@@ -10,10 +10,31 @@ import {
   orchAuthHeaders,
   orchTestModeEnabled,
   postOrchKill,
+  readOrchBoot,
   postOrchMessage,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
+
+test("ownSession не замораживается первым рендером, boot.session не пустой", () => {
+  expect(readOrchBoot().session.length).toBeGreaterThan(0);
+  const first = initialOrchScreen(null);
+  expect(first.ownSession).toBeNull();
+  const next = reduceOrchScreen(first, { type: "own-session", session: "paid" });
+  expect(next.ownSession).toBe("paid");
+  const foreign = reduceOrchScreen(next, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 1,
+      session_id: "other",
+      payload: { agent: "supervisor", status: "running", task_status: "done" },
+    },
+  });
+  expect(foreign.ownSession).toBe("paid");
+  expect(foreign.tasks[0]?.status).not.toBe("done");
+});
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??

@@ -248,6 +248,7 @@ export type OrchScreenAction =
       sessionId?: string | null;
     }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
+  | { type: "own-session"; session: string }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -576,6 +577,11 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
   if (action.type === "reset") return initialOrchScreen(state.ownSession);
+  if (action.type === "own-session") {
+    const session = action.session.trim();
+    if (!session || state.ownSession === session) return state;
+    return { ...state, ownSession: session };
+  }
   if (action.type === "user-message") {
     return {
       ...state,
