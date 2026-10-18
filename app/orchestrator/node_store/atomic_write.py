@@ -35,18 +35,30 @@ def _versioned_payload(payload: object) -> dict | None:
     return payload
 
 
-def _stored_version(target: Path) -> int:
-    """Версия обёртки. Нет файла или старое тело без version — 0.
+def _read_legacy_text(target: Path) -> str:
+    """Сырое тело старого файла. Не-UTF-8 — VersionConflict, не ошибка allowlist."""
+    try:
+        raw_bytes = target.read_bytes()
+    except OSError:
+        raise
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VersionConflict("файл не в UTF-8") from exc
 
-    Ошибка чтения и битый JSON не превращаются в версию 0.
+
+def _stored_version(target: Path) -> int:
+    """Версия обёртки. Нет файла или сырое тело без обёртки — 0.
+
+    Ошибка чтения не превращается в версию 0. Байты не в UTF-8 — 409.
     """
     if not target.is_file():
         return 0
-    raw = target.read_text(encoding="utf-8")
+    raw = _read_legacy_text(target)
     try:
         payload = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise VersionConflict("прежний файл без читаемой версии") from exc
+    except json.JSONDecodeError:
+        return 0
     wrapped = _versioned_payload(payload)
     if wrapped is None:
         return 0
@@ -126,7 +138,7 @@ def _assert_allowlisted(dest: Path) -> Path:
 def read_override(dest: Path) -> str:
     """Читает override: text из обёртки или сырое тело старого файла."""
     target = _assert_allowlisted(Path(dest))
-    raw = target.read_text(encoding="utf-8")
+    raw = _read_legacy_text(target)
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
