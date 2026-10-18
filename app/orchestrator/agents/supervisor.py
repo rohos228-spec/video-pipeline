@@ -522,6 +522,16 @@ class Supervisor:
         if mark:
             self._approved[task_id] = mark
         self._remember_paid(task_id)
+        self._clear_project_stop(task_id)
+
+    def _clear_project_stop(self, task_id: int) -> None:
+        """Снять ``project_{id}.stop``, который поставил kill этой задачи."""
+        project_id = self._task_project_id(task_id)
+        if project_id is None:
+            return
+        from app.services.step_cancel import clear_stop
+
+        clear_stop(project_id)
 
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.

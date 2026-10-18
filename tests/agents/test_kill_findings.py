@@ -14,7 +14,7 @@ from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import ActionResult, CheckpointData, PlanStep, TaskStatus
-from app.services.step_cancel import clear_stop, is_stop_requested
+from app.services.step_cancel import abort_if_cancelled, clear_stop, is_stop_requested
 from app.web.routers.orchestrator_chat import router as chat_router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
@@ -151,6 +151,86 @@ async def _partial_row(runtime, task_id: int) -> dict:
             return row
         await asyncio.sleep(0.01)
     return runtime.tasks.list_steps(task_id)[0]
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_stop_and_other_session_keeps_running(token: str) -> None:
+    """Kill → resume снимает project_*.stop. Вторая сессия того же проекта жива."""
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    try:
+        clear_stop(13)
+        task_a = await runtime.supervisor.start_task("stop-a", "рви", project_id=13)
+        await actions.started.wait()
+        task_b = await runtime.supervisor.start_task("stop-b", "рядом", project_id=13)
+        await _until_calls(actions, 2)
+        published = runtime.supervisor.request_kill("stop-a")
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_a, timeout=5)
+        assert is_stop_requested(13)
+        assert runtime.tasks.get(task_b)["status"] == TaskStatus.executing.value
+        assert runtime.supervisor.resume_allowed(task_a) is True
+        await runtime.supervisor.resume(task_a)
+        await runtime.supervisor.wait(task_a, timeout=5)
+        assert is_stop_requested(13) is False
+        abort_if_cancelled(13)
+        assert runtime.tasks.get(task_b)["status"] == TaskStatus.executing.value
+    finally:
+        actions.release.set()
+        clear_stop(13)
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_grant_clears_project_stop(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "stop-grant"
+    try:
+        clear_stop(13)
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        published = runtime.supervisor.request_kill(session)
+        if published is not None:
+            await published
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert is_stop_requested(13)
+        await runtime.supervisor.grant_approval(session)
+        assert is_stop_requested(13) is False
+        abort_if_cancelled(13)
+    finally:
+        actions.release.set()
+        clear_stop(13)
+        set_runtime(None)
+
+
+async def _until_calls(actions: MockActions, count: int) -> None:
+    for _ in range(50):
+        if len(actions.calls) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(len(actions.calls))
 
 
 @pytest.mark.asyncio
