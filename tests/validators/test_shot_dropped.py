@@ -327,6 +327,43 @@ def test_attrs_kadry_wrapper_with_scene_is_not_a_shot() -> None:
         )
 
 
+def test_attrs_shots_and_cells_wrapper_is_not_a_shot() -> None:
+    """Обёртка с ``attrs.shots`` или ``attrs.cells`` не шот, даже с ``сцена``."""
+
+    shots = [
+        {"id": "k1", "закадр": "а"},
+        {"id": "k2", "закадр": "б"},
+    ]
+    replaced = [
+        {"id": "k1", "закадр": "а"},
+        {"id": "k9", "закадр": "б"},
+    ]
+
+    def wrapped(items: list[dict], *, key: str, attr_key: str) -> dict:
+        return {
+            key: [
+                {
+                    "id": "cell1",
+                    "сцена": 1,
+                    "attrs": {attr_key: items},
+                }
+            ]
+        }
+
+    for attr_key in ("shots", "cells"):
+        for key in ("cells", "frames"):
+            with pytest.raises(PreservationRejected) as raised:
+                run_preservation_validators(
+                    wrapped(shots, key=key, attr_key=attr_key),
+                    wrapped(replaced, key=key, attr_key=attr_key),
+                    mode="reject",
+                )
+            assert any(
+                item.code == "shot_dropped" and item.id == "k2"
+                for item in raised.value.violations
+            )
+
+
 def test_bare_named_shot_with_description_is_shot_dropped() -> None:
     """``{id, имя, описание}`` без ключей шота — всё равно шот. Замена того же числа — отказ."""
 
