@@ -84,7 +84,6 @@ _R0B_XFAIL = {
     'tests/test_r0c_b_keep_frames.py::test_delete_montage_frame_marks_parent_and_keeps_children': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_delete_then_rebuild_does_not_grow_active_frames': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_deleted_first_shot_stays_inactive_when_full_vo_lands': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
-    'tests/test_r0c_b_keep_frames.py::test_export_keeps_marked_frame_column_with_marker_r0b': 'waiting for WS1\'s single fix in #352 on export_project_xlsx',
     'tests/test_r0c_b_keep_frames.py::test_fill_kadry_keeps_later_scenes_when_chain_is_empty': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_fill_kadry_keeps_unmatched_shots_and_source_fields': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_marked_frame_is_not_revived_or_duplicated_by_xlsx_import': 'файлы WS1 возвращены к #352, ветка их не переопределяет',

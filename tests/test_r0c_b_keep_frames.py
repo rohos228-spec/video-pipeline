@@ -1420,9 +1420,9 @@ async def test_export_keeps_marked_frame_column_with_marker_r0b(
 ) -> None:
     """Колонка помеченного кадра остаётся на col = number + 2.
 
-    Очищать её нельзя: повторный импорт пропускает пустую R49 и сажает
-    данные соседа на номер помеченного кадра. Экспорт оставляет закадр
-    и промты на месте и пишет в строку «статус» (R14) маркер «неактивен».
+    Очищать её нельзя: повторный импорт сажает данные соседа на номер
+    помеченного кадра. Экспорт оставляет закадр и промты на месте и пишет
+    в R67 маркер «активен: False», в колонке A — подпись «активен».
     После импорта живые кадры те же, помеченный не оживает.
     """
     from openpyxl import Workbook, load_workbook
@@ -1430,14 +1430,13 @@ async def test_export_keeps_marked_frame_column_with_marker_r0b(
     from app.services.db_apply import export_project_xlsx
     from app.services.frame_tombstones import frame_is_active
     from app.services.xlsx_v8_import import (
+        INACTIVE_COLUMN_MARK,
+        ROW_FRAME_ACTIVITY_V8,
         ROW_IMAGE_PROMPT_V8,
         ROW_VIDEO_PROMPT_V8,
         ROW_VOICEOVER_V8,
         import_v8_xlsx,
     )
-
-    status_row = 14  # лист «план», подпись A: «статус»
-    inactive_marker = "неактивен"
     session.add(project)
     await session.flush()
     specs = (
@@ -1476,12 +1475,11 @@ async def test_export_keeps_marked_frame_column_with_marker_r0b(
     wb = Workbook()
     ws = wb.active
     ws.title = "план"
-    ws.cell(row=status_row, column=1, value="статус")
     for col in (3, 4, 5):
         ws.cell(row=ROW_VOICEOVER_V8, column=col, value=f"чужой-{col}")
         ws.cell(row=ROW_IMAGE_PROMPT_V8, column=col, value=f"чужой-img-{col}")
         ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col, value=f"чужой-vid-{col}")
-        ws.cell(row=status_row, column=col, value="готов")
+        ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col, value="готов")
     wb.save(path)
     wb.close()
 
@@ -1495,11 +1493,12 @@ async def test_export_keeps_marked_frame_column_with_marker_r0b(
         assert sheet.cell(ROW_VIDEO_PROMPT_V8, col).value == fr.animation_prompt
     marked_col = marked.number + 2
     assert sheet.cell(ROW_VOICEOVER_V8, marked_col).value == "секретный закадр"
-    assert sheet.cell(status_row, marked_col).value == inactive_marker
+    assert sheet.cell(ROW_FRAME_ACTIVITY_V8, 1).value == "активен"
+    assert sheet.cell(ROW_FRAME_ACTIVITY_V8, marked_col).value == INACTIVE_COLUMN_MARK
     for fr in frames:
         if fr.number == marked.number:
             continue
-        assert sheet.cell(status_row, fr.number + 2).value != inactive_marker
+        assert sheet.cell(ROW_FRAME_ACTIVITY_V8, fr.number + 2).value != INACTIVE_COLUMN_MARK
     wb2.close()
 
     await import_v8_xlsx(
