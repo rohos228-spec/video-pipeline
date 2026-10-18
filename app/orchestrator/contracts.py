@@ -21,7 +21,7 @@ from typing import Any, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONTRACT_VERSION = "ws3-r3.4"
+CONTRACT_VERSION = "ws3-r3.5"
 
 # Пин схемы результатов WS2. Версия и sha256 живут здесь: тесты читают
 # константу, следующий sha (запрет «@» в action) меняется одним коммитом.
@@ -89,6 +89,14 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "orch_messages; token остаётся эфемерным и получает тот же message_id. "
         "В экспорт входят ApprovalDecision, ApprovalDecisionBody и approval_decision_labels.",
     ),
+    (
+        "ws3-r3.5",
+        "Событие partial_write (WARN, change_ids) защищено колпаком orch_events. "
+        "stop_key — имя файла project_{id}.stop, не pending. "
+        "GET /api/orchestrator/chat/{session}/partial-changes отдаёт change_id шагов partial. "
+        "partial_write → waiting_approval. "
+        "deletion_forbidden: кадр без soft_delete не исполняется даже после grant.",
+    ),
 )
 
 # До подтверждения D6 классификатор и router.call оркестратора не уходят в fast.
@@ -105,7 +113,9 @@ EVENT_RETENTION_DAYS = 14
 SESSION_EVENT_CAP = 20_000
 
 EPHEMERAL_EVENT_TYPES = frozenset({"token"})
-RETAINED_EVENT_TYPES = frozenset({"checkpoint", "approval_required", "approval_decided"})
+RETAINED_EVENT_TYPES = frozenset(
+    {"checkpoint", "approval_required", "approval_decided", "partial_write"}
+)
 
 EVENT_TYPES = (
     "ack",
@@ -954,6 +964,8 @@ BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     "deletion_blocked": TaskStatus.failed,
     "missing_run_id": TaskStatus.failed,
     "empty_plan": TaskStatus.failed,
+    "partial_write": TaskStatus.waiting_approval,
+    "deletion_forbidden": TaskStatus.failed,
 }
 
 
@@ -2211,5 +2223,8 @@ def export_contract_schemas() -> dict[str, Any]:
             "block_outcomes": {reason: status.value for reason, status in BLOCK_OUTCOMES.items()},
             "default_block_outcome": TaskStatus.failed.value,
             "approval_decision_labels": dict(APPROVAL_DECISION_LABELS),
+            "retained_event_types": sorted(RETAINED_EVENT_TYPES),
+            "stop_key": "project_{id}.stop",
+            "partial_changes_path": "/api/orchestrator/chat/{session}/partial-changes",
         },
     }

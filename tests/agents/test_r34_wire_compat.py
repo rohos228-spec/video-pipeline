@@ -16,7 +16,8 @@ from app.web.routers.orchestrator_chat import MessageIn
 
 def test_r34_keeps_r33_payloads_and_adds_boundary_events() -> None:
     schema = export_contract_schemas()
-    assert schema["version"] == CONTRACT_VERSION == "ws3-r3.4"
+    assert schema["version"] == CONTRACT_VERSION == "ws3-r3.5"
+    assert any(item["version"] == "ws3-r3.4" for item in schema["changelog"])
     assert schema["enums"]["MessageMode"] == [mode.value for mode in MessageMode]
     assert "kill_switch" not in schema["enums"]["MessageMode"]
     assert schema["enums"]["ApprovalDecision"] == [item.value for item in ApprovalDecision]
