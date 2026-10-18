@@ -121,7 +121,6 @@ _APPR_MARK = "\n\x1eorappr:"
 _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
-
 def _router_visible_cost(owner: Any) -> float:
     """Цена, которую реальный router уже положил на себя или на ответ.
 
@@ -2340,7 +2339,7 @@ class Supervisor:
         if problem is None and ok:
             problem = r21_result_problem(result)
         if problem:
-            kept = envelope_change_id(result) if problem == "skipped_without_partial" else None
+            kept = envelope_change_id(result)
             self.tasks.finish_step(step_id, problem, kept, cost)
             if kept:
                 bucket = self._change_ids.setdefault(task_id, [])
