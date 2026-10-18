@@ -13,7 +13,24 @@ import copy
 import re
 from typing import Any
 
+from app.orchestrator.validators.activity_flags import shot_is_active
+
 _re = re
+
+
+def shot_counts_as_active(shot: Any) -> bool:
+    """Живой шот. Источник истины — activity_flags, не frame_tombstones."""
+
+    return shot_is_active(shot)
+
+
+def active_shots(shots: list[Any] | None) -> list[Any] | None:
+    """Оставить живые шоты. None — списка не было. Сами объекты не меняются."""
+
+    if shots is None:
+        return None
+    return [shot for shot in shots if shot_counts_as_active(shot)]
+
 
 # ---- временная копия предиката (r0a scene_shot_grammar, 2026-10-15) ----
 _POV_OBJ = {"взгляд"}
@@ -99,8 +116,11 @@ def _set_cam_text(s: dict[str, Any], plan: str, ang_sentence: str) -> None:
         s[k] = t
 
 
-def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
-    """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить."""
+def _merge_active_neighbors(
+    shots: list[Any],
+    reserved_numbers: set[int] | None = None,
+) -> list[str]:
+    """Склейка списка, в котором неактивных уже нет."""
 
     if not isinstance(shots, list) or len(shots) < 2:
         return []
@@ -128,19 +148,124 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
         chain = 1
     if not notes:
         return []
-    for k, s in enumerate(out, start=1):
-        if isinstance(s, dict):
-            if "порядок" in s:
-                s["порядок"] = k
-            pid = str(s.get("parent_id") or "")
-            if pid in merged_into:
-                s["parent_id"] = merged_into[pid]
+    reserved = set(reserved_numbers or ())
+    k = 0
+    for s in out:
+        if not isinstance(s, dict):
+            continue
+        k = _next_free_k(k + 1, reserved, set(), None)
+        if "порядок" in s:
+            s["порядок"] = k
+        pid = str(s.get("parent_id") or "")
+        if pid in merged_into:
+            s["parent_id"] = merged_into[pid]
+        reserved.add(k)
     shots[:] = out
     return notes
 
 
+def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
+    """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить.
+
+    Неактивный шот не склеивается и не меняет ``порядок`` живых. Из списка
+    он не выкидывается и его поля не пишутся заново.
+    """
+
+    if not isinstance(shots, list) or len(shots) < 2:
+        return []
+    if all(shot_counts_as_active(shot) for shot in shots):
+        return _merge_active_neighbors(shots)
+    original = list(shots)
+    live = [shot for shot in original if shot_counts_as_active(shot)]
+    reserved_numbers, _reserved_ids = _reserved_by_inactive(original)
+    notes = _merge_active_neighbors(live, reserved_numbers)
+    survived = {id(shot) for shot in live}
+    shots[:] = [
+        shot
+        for shot in original
+        if (not shot_counts_as_active(shot)) or id(shot) in survived
+    ]
+    return notes
+
+
+def _reserved_order(value: Any) -> int | None:
+    """``порядок`` из xlsx: целое, ``2.0``, ``numpy.int64``, ``\"2\"``, ``\"2,0\"``."""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        text = value.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        if number.is_integer():
+            return int(number)
+        return None
+    if type(value).__module__ == "numpy":
+        try:
+            return _reserved_order(value.item())
+        except Exception:
+            return None
+    return None
+
+
+def _reserved_by_inactive(shots: list[Any]) -> tuple[set[int], set[str]]:
+    """Номера и id, которые неактивные шоты не отдают под перенумерацию."""
+
+    numbers: set[int] = set()
+    ids: set[str] = set()
+    for shot in shots:
+        if not isinstance(shot, dict) or shot_counts_as_active(shot):
+            continue
+        sid = str(shot.get("id") or "")
+        if sid:
+            ids.add(sid)
+        order = _reserved_order(shot.get("порядок"))
+        if order is not None:
+            numbers.add(order)
+        matched = _KID_RE.match(sid)
+        if matched:
+            numbers.add(int(matched.group(2)))
+    return numbers, ids
+
+
+def _next_free_k(
+    start: int,
+    numbers: set[int],
+    ids: set[str],
+    prefix: str | None,
+) -> int:
+    k = start
+    while k in numbers or (prefix is not None and f"{prefix}{k}" in ids):
+        k += 1
+    return k
+
+
+def _previous_active(shots: list[Any], index: int) -> Any | None:
+    cursor = index - 1
+    while cursor >= 0:
+        shot = shots[cursor]
+        if shot_counts_as_active(shot):
+            return shot
+        cursor -= 1
+    return None
+
+
 def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
-    """Временная копия ``ensure_wide_before_dialogue``. TODO(R0a): удалить."""
+    """Временная копия ``ensure_wide_before_dialogue``. TODO(R0a): удалить.
+
+    Говорящие и предыдущий план смотрятся только у живых шотов. Неактивный
+    остаётся на своём месте, его id и ``порядок`` не переписываются.
+    """
 
     if not isinstance(shots, list) or not shots:
         return []
@@ -148,18 +273,30 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
     i = 0
     while i < len(shots):
         s = shots[i]
+        if not shot_counts_as_active(s):
+            i += 1
+            continue
+        prev = _previous_active(shots, i)
         if not (isinstance(s, dict) and _is_reply(s)) or (
-            i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])
+            isinstance(prev, dict) and _is_reply(prev)
         ):
             i += 1
             continue
         j = i
         speakers: set[str] = set()
-        while j < len(shots) and isinstance(shots[j], dict) and _is_reply(shots[j]):
-            speakers.add(_shot_s(shots[j], "говорит").casefold())
-            j += 1
-        prev = shots[i - 1] if i > 0 and isinstance(shots[i - 1], dict) else None
-        if len(speakers) >= 2 and not (prev is not None and _shot_s(prev, "план").upper() == "ОБЩИЙ"):
+        while j < len(shots):
+            current = shots[j]
+            if not shot_counts_as_active(current):
+                j += 1
+                continue
+            if isinstance(current, dict) and _is_reply(current):
+                speakers.add(_shot_s(current, "говорит").casefold())
+                j += 1
+                continue
+            break
+        if len(speakers) >= 2 and not (
+            isinstance(prev, dict) and _shot_s(prev, "план").upper() == "ОБЩИЙ"
+        ):
             w = copy.deepcopy(s)
             who = _shot_s(s, "кто") or "участники разговора"
             w["действие"] = f"{who} друг напротив друга перед разговором, видно, кто где."
@@ -178,22 +315,28 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
         i = j
     if notes:
         idmap: dict[str, str] = {}
+        reserved_numbers, reserved_ids = _reserved_by_inactive(shots)
         k = 0
         for s in shots:
-            if not isinstance(s, dict):
+            if not isinstance(s, dict) or not shot_counts_as_active(s):
                 continue
-            k += 1
             old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
+            matched = _KID_RE.match(old)
+            prefix = matched.group(1) if matched else None
+            k = _next_free_k(k + 1, reserved_numbers, reserved_ids, prefix)
+            if matched and prefix is not None:
+                new = f"{prefix}{k}"
                 if old and old not in idmap:
                     idmap[old] = new
                 s["id"] = new
+                reserved_ids.add(new)
             if "порядок" in s:
                 s["порядок"] = k
+            reserved_numbers.add(k)
         for s in shots:
-            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
+            if not isinstance(s, dict) or not shot_counts_as_active(s):
+                continue
+            if str(s.get("parent_id") or "") in idmap:
                 s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes
 
@@ -231,17 +374,26 @@ def wide_notes(shots: Any) -> list[str]:
 
 
 def shots_of(context: dict[str, Any]) -> list[Any] | None:
-    """Кадры из context. None — проверять нечего."""
+    """Кадры из context. None — проверять нечего.
+
+    Неактивные (``активен is False``) в проверку не входят и из context не
+    выкидываются: наружу уходит новый список.
+    """
 
     if "shots" in context:
         value = context.get("shots")
-        return value if isinstance(value, list) else []
-    after = context.get("after")
-    if isinstance(after, dict):
-        for key in ("shots", "frames", "кадры"):
-            if key in after and isinstance(after[key], list):
-                return after[key]
-    for key in ("frames", "кадры"):
-        if key in context and isinstance(context[key], list):
-            return context[key]
-    return None
+        raw = value if isinstance(value, list) else []
+    else:
+        raw = None
+        after = context.get("after")
+        if isinstance(after, dict):
+            for key in ("shots", "frames", "кадры"):
+                if key in after and isinstance(after[key], list):
+                    raw = after[key]
+                    break
+        if raw is None:
+            for key in ("frames", "кадры"):
+                if key in context and isinstance(context[key], list):
+                    raw = context[key]
+                    break
+    return active_shots(raw)
