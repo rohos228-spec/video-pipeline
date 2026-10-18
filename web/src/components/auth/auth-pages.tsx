@@ -258,7 +258,7 @@ export function VerifyEmailPage() {
   }
   async function resend() {
     setErr(null); setMsg(null);
-    try { const r = await authApi<{ mail_sent?: boolean }>("/verify/resend", {}); setMsg(r.mail_sent ? "Новый код отправлен" : "Код в интерфейс не выводится"); }
+    try { const r = await authApi<{ mail_sent: boolean }>("/verify/resend", {}); setMsg(r.mail_sent ? "Новый код отправлен" : "Новый код отправлен на почту, если она настроена"); }
     catch (x: any) { setErr(x.message); }
   }
   return (
@@ -278,7 +278,7 @@ export function VerifyEmailPage() {
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState(""); const [touched, setTouched] = useState(false); const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false); const [res, setRes] = useState<{ dev_note?: string | null; dev_link?: string | null } | null>(null);
+  const [loading, setLoading] = useState(false); const [res, setRes] = useState<{ dev_note?: string | null } | null>(null);
   const bad = !email ? "Введите email" : !EMAIL_RE.test(email) ? "Некорректный email" : null;
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setTouched(true); setErr(null);
@@ -291,7 +291,7 @@ export function ForgotPasswordPage() {
       <form onSubmit={submit} noValidate>
         {err ? <Alert kind="error">{err}</Alert> : null}
         {res ? <Alert kind="ok">Если аккаунт с таким email существует, мы отправили ссылку. Она действует 1 час.</Alert> : null}
-        {res?.dev_note ? <Alert kind="dev">Режим разработки: {res.dev_note}.{res.dev_link ? <> <a id="dev-reset-link" href={res.dev_link} className="underline">Открыть ссылку сброса</a></> : null}</Alert> : null}
+        {res?.dev_note ? <Alert kind="dev">Режим разработки: {res.dev_note}.</Alert> : null}
         <Field name="email" label="Email" icon={<Mail className="h-5 w-5" />} value={email} onChange={setEmail} type="email" autoComplete="email" placeholder="you@mail.com" error={touched ? bad : null} />
         <Submit loading={loading}>{res ? "Отправить ещё раз" : "Отправить ссылку"}</Submit>
       </form>

@@ -25,6 +25,8 @@ import re
 from contextvars import ContextVar
 from typing import Any
 
+from loguru import logger
+
 from app.services.scene_shot_grammar import (
     classify_object,
     visible_len,
@@ -584,17 +586,63 @@ def accusative(name: str) -> str:
 
 
 def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
-    """После вставки: K-номера сцены ``prefix`` по порядку, parent_id = K1."""
-    k = 0
-    first = f"{prefix}-K1"
+    """Уникальные id не переписываем. Дубль вставки получает новый K, без промтов."""
+    seen: set[str] = set()
+    max_k = 0
+    owned: list[dict[str, Any]] = []
     for shot in shots:
+        if not isinstance(shot, dict):
+            continue
         m = _ID_RE.match(str(shot.get("id") or ""))
         if not m or m.group(1) != prefix:
             continue
-        k += 1
-        shot["id"] = f"{prefix}-K{k}"
-        if k > 1:
-            shot["parent_id"] = first
+        owned.append(shot)
+        try:
+            max_k = max(max_k, int(m.group(2)))
+        except ValueError:
+            pass
+    first_real: dict[str, dict[str, Any]] = {}
+    for shot in owned:
+        if shot.get("_inserted"):
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid not in first_real:
+            first_real[sid] = shot
+    seen = set(first_real)
+    prev_id = ""
+    for shot in owned:
+        sid = str(shot.get("id") or "")
+        if shot is first_real.get(sid):
+            prev_id = sid
+            shot.pop("_inserted", None)
+            continue
+        while True:
+            max_k += 1
+            new_id = f"{prefix}-K{max_k}"
+            if new_id not in seen:
+                break
+        shot["id"] = new_id
+        seen.add(new_id)
+        anchor = sid if sid in first_real else prev_id
+        if anchor:
+            shot["parent_id"] = anchor
+        shot.pop("_inserted", None)
+        for key in (
+            "image_prompt",
+            "animation_prompt",
+            "промт_картинки",
+            "промт_видео",
+            "промт",
+            "media",
+            "png",
+            "video",
+            "child_prompts",
+        ):
+            shot.pop(key, None)
+        logger.warning(
+            "WARN _renumber_scene: вставке дан новый id {}, старые id не сдвинуты",
+            new_id,
+        )
 
 
 def _replace_open_adj(text: str) -> str:
@@ -1415,6 +1463,7 @@ class _Sim:
         m = _ID_RE.match(sid)
         if sid and not m:
             new["id"] = f"{sid}-порог"
+        new["_inserted"] = True
         prev["закадр"] = halves[0]
         cur = self.shots[i]
         if self.owned(cur):
@@ -1966,11 +2015,22 @@ def apply_scene_plan_cells(
     raws = [c.get("plan") for c in cells if c.get("plan")]
     plan = parse_plan(_merge_plans(raws)) if raws else ScenePlan()
     flat: list[dict[str, Any]] = []
+    held_by_key: dict[Any, list[Any]] = {}
     for c in cells:
-        rows = [s for s in c.get("shots") or [] if isinstance(s, dict)]
-        if c.get("owned"):
-            c["shots"][:] = rows
-        else:
+        raw_rows = list(c.get("shots") or [])
+        rows: list[dict[str, Any]] = []
+        held: list[Any] = []
+        for shot in raw_rows:
+            if isinstance(shot, dict):
+                rows.append(shot)
+            else:
+                held.append(shot)
+                logger.warning(
+                    "WARN apply_scene_plan_cells: элемент ячейки {} не словарь — сохранён",
+                    c.get("key"),
+                )
+        held_by_key[c.get("key")] = held
+        if not c.get("owned"):
             rows = copy.deepcopy(rows)
         for s in rows:
             s["_cell"] = c["key"]
@@ -1999,10 +2059,28 @@ def apply_scene_plan_cells(
             if not c.get("owned"):
                 continue
             mine = [s for s in flat if s.get("_cell") == c["key"]]
+            held = list(held_by_key.get(c.get("key")) or [])
             if len(mine) != len(c["shots"]) and any("порядок" in s for s in mine):
                 for n, s in enumerate(mine, start=1):
                     s["порядок"] = n
-            c["shots"][:] = mine
+            seen = {id(s) for s in mine}
+            for shot in list(c.get("shots") or []):
+                if (
+                    isinstance(shot, dict)
+                    and id(shot) not in seen
+                    and shot.get("_cell") == c["key"]
+                ):
+                    if shot.get("активен") is not False:
+                        shot["активен"] = False
+                        shot["карантин"] = True
+                        shot["пометка"] = "срез плана не забрал кадр — сохранён"
+                        logger.warning(
+                            "WARN apply_scene_plan_cells: кадр {} ячейки {} оставлен после среза",
+                            shot.get("id"),
+                            c.get("key"),
+                        )
+                    mine.append(shot)
+            c["shots"][:] = mine + held
         for it in sim.issues:
             shot = it.pop("_shot")
             key = str(shot.get("_cell"))

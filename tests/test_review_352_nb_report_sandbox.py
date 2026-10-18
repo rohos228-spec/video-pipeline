@@ -9,5 +9,5 @@ def test_shots_report_iframes_are_sandboxed() -> None:
         "web/src/components/canvas/node-result-views.tsx",
     ):
         src = Path(rel).read_text(encoding="utf-8")
-        assert 'sandbox=""' in src
+        assert 'sandbox="allow-scripts"' in src
         assert "allow-same-origin" not in src

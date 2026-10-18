@@ -25,18 +25,26 @@ async def _paid_ask(
     system: str,
     timeout: float,
     label: str,
+    project_id: int | None = None,
 ) -> str:
-    """Платный разбор стиля идёт через бюджет агента, не мимо него."""
+    """Платный разбор стиля: kill switch, маршрут 52pay, бюджет агента."""
+    from app.services.api_tracker_hook import check_api_allowed
+    from app.services.llm_override import use_override
+    from app.services.style_agent.job import _pipeline_text_override
     from app.services.style_agent.llm import ask
 
-    return await ask(
-        text,
-        files=list(files or []),
-        system=system,
-        budget=budget,
-        label=label,
-        timeout=timeout,
-    )
+    check_api_allowed(provider="52pay", model="gpt-5.6-sol")
+    route = _pipeline_text_override({"id": "gpt-5.6-sol"})
+    with use_override(route):
+        return await ask(
+            text,
+            files=list(files or []),
+            system=system,
+            budget=budget,
+            label=label,
+            timeout=timeout,
+            project_id=project_id,
+        )
 
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -180,6 +188,7 @@ async def analyze_style_images(
     paths: list[str | Path],
     *,
     name_hint: str | None = None,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     """Изображения → запись стиля {name, desc, category, prompt_core} + сырые заметки."""
     images = collect_image_paths(paths)
@@ -199,6 +208,7 @@ async def analyze_style_images(
             system=_NOTES_SYSTEM,
             timeout=240,
             label="style_notes",
+            project_id=project_id,
         )
 
     _raws = await asyncio.gather(*[_ask(i, b) for i, b in enumerate(batches)])
@@ -216,7 +226,13 @@ async def analyze_style_images(
     if name_hint:
         synth_user += f"\n\nПодсказка названия от пользователя: {name_hint}"
     raw = await _paid_ask(
-        budget, synth_user, [], system=_SYNTH_SYSTEM, timeout=240, label="style_synth"
+        budget,
+        synth_user,
+        [],
+        system=_SYNTH_SYSTEM,
+        timeout=240,
+        label="style_synth",
+        project_id=project_id,
     )
     data = parse_json_object(raw)
     if not data:
@@ -346,6 +362,7 @@ async def build_style_agent(
     *,
     user_request: str = "",
     name_hint: str | None = None,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     """Референсы (+ пожелание пользователя) → готовый текст агента стиля."""
     images = collect_image_paths(paths)
@@ -365,6 +382,7 @@ async def build_style_agent(
             system=_NOTES_SYSTEM,
             timeout=240,
             label="style_agent_notes",
+            project_id=project_id,
         )
 
     _raws2 = await asyncio.gather(*[_ask2(i, b) for i, b in enumerate(batches)], return_exceptions=True)
@@ -390,6 +408,7 @@ async def build_style_agent(
                 system=_NOTES_SYSTEM,
                 timeout=240,
                 label="style_agent_notes_retry",
+                project_id=project_id,
             )
             note = parse_json_object(raw)
             if note:
@@ -411,7 +430,13 @@ async def build_style_agent(
     await asyncio.sleep(2.0)
     try:
         raw = await _paid_ask(
-            budget, user, [], system=_AGENT_SYSTEM, timeout=300, label="style_agent"
+            budget,
+            user,
+            [],
+            system=_AGENT_SYSTEM,
+            timeout=300,
+            label="style_agent",
+            project_id=project_id,
         )
         entry = parse_agent_reply(raw, name_hint=name_hint)
     except Exception as e:  # noqa: BLE001 — шлюз часто рвёт второй вызов
@@ -433,7 +458,11 @@ async def build_style_agent(
     }
 
 
-async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:
+async def categorize_styles(
+    entries: list[dict[str, Any]],
+    *,
+    project_id: int | None = None,
+) -> dict[str, Any]:
     """Список записей стилей → категории по общим критериям."""
     if not entries:
         raise ValueError("Пустой список стилей")
@@ -456,6 +485,7 @@ async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:
         system=_CATEGORIES_SYSTEM,
         timeout=240,
         label="style_categories",
+        project_id=project_id,
     )
     data = parse_json_object(raw)
     cats = data.get("categories") if data else None
