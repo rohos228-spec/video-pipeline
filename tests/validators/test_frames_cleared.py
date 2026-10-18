@@ -144,6 +144,40 @@ def test_duplicate_idless_same_text_loss_is_frames_cleared() -> None:
     assert check_frames_cleared(wrapped(two, key="cells"), moved) == []
 
 
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+@pytest.mark.parametrize("form", ["cells", "frames"])
+def test_soft_deleted_idless_stays_while_id_moves_passes(mode: str, form: str) -> None:
+    """Мягко удалённый x остаётся в ячейке, k уехал в другой кадр той же сцены.
+
+    Список короче, но x на месте: это не ``frames_cleared``.
+    """
+
+    x = {"закадр": "x"}
+    k = {"id": "k", "закадр": "kk"}
+    z = {"id": "z", "закадр": "zz"}
+    x_off = {"закадр": "x", "активен": False}
+
+    def wrapped(c1: list[dict], c2: list[dict]) -> dict:
+        if form == "cells":
+            return {
+                "cells": [
+                    {"id": "c1", "сцена": "1", "кадры": c1},
+                    {"id": "c2", "сцена": "1", "кадры": c2},
+                ]
+            }
+        return {
+            "frames": [
+                {"id": "u1", "сцена": "1", "attrs": {"кадры": c1}},
+                {"id": "u2", "сцена": "1", "attrs": {"кадры": c2}},
+            ]
+        }
+
+    before = wrapped([x, k], [z])
+    after = wrapped([x_off], [z, k])
+    assert run_preservation_validators(before, after, mode=mode) == []
+    assert check_frames_cleared(before, after) == []
+
+
 def test_non_list_is_not_frames_cleared() -> None:
     before = _cells({"id": "child", "сцена": "1", "кадры": [{"id": "k1", "сцена": 1}]})
     after = _cells({"id": "child", "сцена": "1", "кадры": "нет"})

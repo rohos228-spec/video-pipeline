@@ -47,7 +47,7 @@ def check_frames_cleared(before: Any, after: Any, ops: Any = None) -> list[Viola
             token = _shot_token(shot)
             if token:
                 bucket.add(token)
-            _count_idless(idless_after, scene_key, shot)
+            _count_idless(idless_after, scene_key, shot, skip_exempt=False)
     idless_before: dict[str, Counter[str]] = {}
     for cell in before_cells:
         shots = cell.get("кадры")
@@ -89,10 +89,22 @@ def check_frames_cleared(before: Any, after: Any, ops: Any = None) -> list[Viola
     return sorted_violations(violations)
 
 
-def _count_idless(buckets: dict[str, Counter[str]], scene: str, shot: Any) -> None:
-    """Живые шоты без id считаются копиями, не множеством уникальных текстов."""
+def _count_idless(
+    buckets: dict[str, Counter[str]],
+    scene: str,
+    shot: Any,
+    *,
+    skip_exempt: bool = True,
+) -> None:
+    """Шоты без id считаются копиями, не множеством уникальных текстов.
 
-    if frame_is_exempt(shot) or frame_id(shot):
+    ``skip_exempt`` — для «до»: уже неактивный шот может уйти.
+    На «после» шот, оставшийся в списке, считается присутствующим.
+    """
+
+    if frame_id(shot):
+        return
+    if skip_exempt and frame_is_exempt(shot):
         return
     token = _idless_token(shot)
     if token:
