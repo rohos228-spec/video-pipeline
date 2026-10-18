@@ -213,7 +213,7 @@ def _registry_names(registry: Any) -> set[str]:
 
 def _action_deletes(action: str) -> bool:
     token = action.strip().lower().replace("-", "_")
-    if token in _DENY_EXACT:
+    if token in _DENY_EXACT or "delete_child_frame" in token:
         return True
     return _DELETE.search(token) is not None
 
