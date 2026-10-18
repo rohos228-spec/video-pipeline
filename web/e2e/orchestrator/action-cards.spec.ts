@@ -115,7 +115,8 @@ test("схема ws2-r2.3 закреплена sha256", () => {
   expect(readActionEnvelope(badEdit, 11)).toBeNull();
   const badRestore = structuredClone(EXAMPLE_GROUP_DELETE);
   (badRestore.result as { restore_action: string }).restore_action = "group.restore!";
-  expect(readActionEnvelope(badRestore, 12)).toBeNull();
+  expect(readActionEnvelope(badRestore, 12)?.kind).toBe("invalid");
+  expect(readActionEnvelope(badRestore, 12)?.error).toBe("пометка не подтверждена");
   expect(
     metadataFrom({ name: "CreateNode", risk: "high", read_only: false, destructive: true, paid: false }),
   ).toBeNull();
@@ -663,9 +664,13 @@ test("ok-карточки edit, delete и report не содержат риск"
   await emit(page, "act-norisk", "step_finished", EXAMPLE_REPORT);
   const cards = page.getByTestId("orch-action-card");
   await expect(cards).toHaveCount(3);
+  await expect(cards.filter({ hasText: "Правка промта" })).toHaveCount(1);
+  await expect(cards.filter({ hasText: "Пометка" })).toHaveCount(1);
+  await expect(cards.filter({ hasText: "Отчёт" })).toHaveCount(1);
   await expect(cards.filter({ hasText: "риск" })).toHaveCount(0);
   await expect(cards.filter({ hasText: "платно" })).toHaveCount(0);
   await expect(cards.filter({ hasText: "деструктивно" })).toHaveCount(0);
+  await expect(cards.filter({ hasText: "Некорректный ответ действия" })).toHaveCount(0);
 });
 
 test("approval без needsApproval даёт invalid", () => {
@@ -673,3 +678,16 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("плохой restore мягкого удаления даёт invalid", () => {
+  const bang = structuredClone(EXAMPLE_GROUP_DELETE);
+  (bang.result as { restore_action: string }).restore_action = "group.restore!";
+  const bangView = readActionEnvelope(bang, 1);
+  expect(bangView?.kind).toBe("invalid");
+  expect(bangView?.error).toBe("пометка не подтверждена");
+
+  const pair = structuredClone(EXAMPLE_FRAME_DELETE);
+  (pair.result as { restore_action: string }).restore_action = "group.restore";
+  const pairView = readActionEnvelope(pair, 2);
+  expect(pairView?.kind).toBe("invalid");
+  expect(pairView?.error).toBe("пометка не подтверждена");
+});

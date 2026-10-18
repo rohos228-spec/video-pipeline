@@ -339,7 +339,7 @@ const QUIET: ActionMetadata = { name: "", risk: "low", read_only: true, destruct
 function blankView(id: string, metadata: ActionMetadata | null, kind: ActionCardKind): ActionResultView {
   return {
     id,
-    action: metadata.name,
+    action: metadata?.name ?? "",
     changeId: null,
     metadata,
     kind,
@@ -419,6 +419,13 @@ function editSatisfied(result: Record<string, unknown>): boolean {
   return true;
 }
 
+function confirmedSoftDelete(result: Record<string, unknown>): boolean {
+  const action = str(result.action).trim();
+  if (!Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, action)) return false;
+  if (result.marked !== true) return false;
+  return Boolean(str(result.snapshot_id).trim() || str(result.archive_ref).trim());
+}
+
 /** ok-пометка: marked=true, restore своего kind, снимок или архив. */
 function softDeleteSatisfied(result: Record<string, unknown>): boolean {
   const action = str(result.action).trim();
@@ -473,13 +480,11 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   const status = payload.status;
   if (status !== "ok" && status !== "approval_required" && status !== "failed") return null;
   const result = plainObject(payload.result);
-  if (
-    result &&
-    (badActionName(result.action) || badActionName(result.edit_action) || badActionName(result.restore_action))
-  ) {
+  if (result && (badActionName(result.action) || badActionName(result.edit_action))) {
     // Имя не по шаблону схемы. Карточка не рисуется.
     return null;
   }
+  if (result && badActionName(result.restore_action) && !confirmedSoftDelete(result)) return null;
   const metaRaw = result ? plainObject(result.metadata) : null;
   if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);
   if (skippedWithoutPartial(result)) return invalidView(seq);
@@ -534,6 +539,11 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   if (result.marked === true || Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, deleteAction)) {
     const hasRef = Boolean(str(result.snapshot_id).trim() || str(result.archive_ref).trim());
     if (Object.prototype.hasOwnProperty.call(SOFT_DELETE_RESTORE, deleteAction) && (result.marked !== true || !hasRef)) {
+      return invalidView(seq, "пометка не подтверждена");
+    }
+    const restoreRaw = str(result.restore_action).trim();
+    const pairOk = SOFT_DELETE_RESTORE[deleteAction] === restoreRaw;
+    if (confirmedSoftDelete(result) && (badActionName(result.restore_action) || !pairOk)) {
       return invalidView(seq, "пометка не подтверждена");
     }
     if (!softDeleteSatisfied(result)) return null;
