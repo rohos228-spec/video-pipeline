@@ -522,8 +522,8 @@ def _write_without_dir_fd(
             ensure_ascii=False,
         ).encode("utf-8")
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
-        _write_exclusive(tmp_path, payload)
         _assert_realpath_inside(tmp_path, root)
+        _write_exclusive(tmp_path, payload)
         os.replace(tmp_path, target)
         tmp_path = None
     finally:
