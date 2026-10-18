@@ -11,9 +11,11 @@
 кадра ``shot_id`` проходит только если такой id в before один.
 ``target`` и индекс адрес не заменяют. Сцена с закадром и без живых
 шотов — error ``vo_on_inactive``; soft его не гасит, id там сцены.
-Закадр при пометке не переносится. Потеря FrameText / FrameEdge,
-кадра без id (сверка по тексту) и несписковые ``кадры``
-(``kadry_invalid``) — error.
+Закадр при пометке не переносится. Потеря FrameText / FrameEdge
+и кадра без id (сверка по тексту) — error. Несписковые ``кадры``
+дают ``kadry_invalid``. ``кадры: None`` на стороне after — error
+``shot_dropped`` по id живых шотов: сосед без id и шот с ``имя`` /
+``name`` список не прячут, отсутствующий ключ ``закадр`` — пустой текст.
 """
 
 from __future__ import annotations
@@ -157,6 +159,7 @@ else:
         found.extend(_check_characters(before, after))
         found.extend(_check_frame_links(before, after))
         found.extend(_check_kadry_invalid(before, after))
+        found.extend(_check_shot_dropped(before, after))
         return _sorted(found)
 
     _ACTIVATE_VERBS = {"activate", "set_active", "restore", "восстановить"}
@@ -379,7 +382,20 @@ else:
             status, frames = _kadry(scene)
             match = _match_scene(sid, number, after_by_id, after_by_number)
             after_status, after_frames = _kadry(match) if match is not None else ("absent", None)
-            if status == "nodata" or after_status == "nodata" or status != "list":
+            if status == "nodata" or after_status == "nodata":
+                key = ("frames_no_data", entity)
+                if key not in seen:
+                    seen.add(key)
+                    found.append(
+                        Violation(
+                            code="frames_no_data",
+                            severity="warn",
+                            path=f"scenes/{entity}/кадры" if entity else "scenes/кадры",
+                            id=entity,
+                        )
+                    )
+                continue
+            if status != "list":
                 continue
             if not isinstance(after_frames, list):
                 after_frames = []
@@ -527,6 +543,87 @@ else:
 
         return not shot_is_active(frame)
 
+    def _check_shot_dropped(before: Any, after: Any) -> list[Violation]:
+        """Живой шот с id пропал из снимка — error, в том числе при ``кадры: None``."""
+
+        if before is None or after is None:
+            return []
+        from app.services.frame_tombstones import shot_is_active
+
+        after_ids = {fid for shot in _iter_shots(after) if (fid := _frame_id(shot))}
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for shot in _iter_shots(before):
+            fid = _frame_id(shot)
+            if not fid or fid in seen:
+                continue
+            seen.add(fid)
+            if not shot_is_active(shot) or fid in after_ids:
+                continue
+            scene = shot.get("сцена") if isinstance(shot, dict) else None
+            scene_key = "" if scene in (None, "") else str(scene)
+            path = f"scenes/{scene_key}/кадры/{fid}" if scene_key else f"кадры/{fid}"
+            found.append(
+                Violation(code="shot_dropped", severity="error", path=path, id=fid)
+            )
+        return found
+
+    def _iter_shots(side: Any) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        _walk_shots(side, found, set(), 0)
+        return found
+
+    def _walk_shots(
+        node: Any, found: list[dict[str, Any]], seen: set[int], depth: int
+    ) -> None:
+        if depth > 8 or isinstance(node, (str, int, float, bool)) or node is None:
+            return
+        if isinstance(node, list):
+            marker = id(node)
+            if marker in seen:
+                return
+            seen.add(marker)
+            for item in node:
+                if _is_shot(item):
+                    found.append(item)
+                else:
+                    _walk_shots(item, found, seen, depth + 1)
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                _walk_shots(value, found, seen, depth + 1)
+
+    def _is_shot(item: Any) -> bool:
+        """Шот с id. Нет ключа «закадр» — пустой закадр, как ``""``.
+
+        Ключи шота раньше ``имя`` и op: реальный шот с именем остаётся видимым.
+        Сосед без id не прячет список. Обёртка ``{id, attrs}`` сама не шот.
+        """
+
+        if not isinstance(item, dict):
+            return False
+        if any(key in item for key in ("кадры", "cells", "ячейки", "shots")):
+            return False
+        has_shot_key = any(
+            key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план")
+        )
+        if "attrs" in item and not has_shot_key:
+            return False
+        if _frame_id(item) is None:
+            return False
+        if has_shot_key:
+            return True
+        if any(key in item for key in ("op", "action", "type")):
+            return False
+        if any(key in item for key in ("имя", "name", "внешность", "code", "код")):
+            return False
+        if any(
+            key in item
+            for key in ("номер", "number", "kind", "text", "текст", "from_frame_id", "to_frame_id")
+        ):
+            return False
+        return True
+
     def _check_kadry_invalid(before: Any, after: Any) -> list[Violation]:
         """Несписковые ``кадры`` — error ``kadry_invalid``, не warn."""
 
@@ -567,6 +664,7 @@ else:
 
     def _anonymous_text(frame: Any) -> str:
         if isinstance(frame, dict):
+            # Нет ключа «закадр» — пусто, как "".
             for key in ("закадр", "voiceover", "vo", "text", "текст", "действие"):
                 text = _plain(frame.get(key))
                 if text:

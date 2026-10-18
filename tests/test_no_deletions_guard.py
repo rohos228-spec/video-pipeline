@@ -490,8 +490,9 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
 def test_non_list_kadry_is_error() -> None:
     """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
-    Шим даёт error ``kadry_invalid``. Модуль #379 @ 9820d123 рядом кладёт
-    warn ``frames_no_data`` (и другие). Точный набор и число не фиксируем.
+    Шим даёт error ``kadry_invalid`` и, для живого id, error ``shot_dropped``.
+    Модуль #379 @ 76198ecd рядом кладёт warn ``frames_no_data``.
+    Точный набор и число не фиксируем: нужен error по сцене или шоту.
     """
 
     before = _scene([{"id": "k1", "закадр": "а"}])
@@ -617,11 +618,116 @@ def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
     assert run_preservation_validators(live, copy.deepcopy(live), mode="reject") == []
 
 
-_WS1_SHA = "d59e1586"
+def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
+    """Поведение шима как у #379 @ 76198ecd: F1b, F1c, пустой закадр, ``кадры: None``."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза. Вторая фраза.",
+                "кадры": [
+                    {"id": "k1", "закадр": "Первая фраза."},
+                    {"id": "k2", "закадр": "Вторая фраза."},
+                ],
+            }
+        ]
+    }
+
+    def with_extra(extra: dict) -> dict:
+        scene = copy.deepcopy(before["сцены"][0])
+        scene["кадры"] = [*scene["кадры"], extra]
+        return {"сцены": [scene]}
+
+    for extra in (
+        {"id": "k9"},
+        {"id": "k9", "закадр": ""},
+        {"id": "k9", "имя": "Анна"},
+        {"id": "", "parent_id": "9-K1"},
+    ):
+        added = run_preservation_validators(before, with_extra(extra), mode="reject")
+        assert added == []
+        assert all(item.code != "shot_dropped" for item in added)
+
+    named = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза.",
+                "кадры": [{"id": "k1", "закадр": "Первая фраза.", "имя": "Анна"}],
+            }
+        ]
+    }
+    with pytest.raises(PreservationRejected) as cleared:
+        run_preservation_validators(
+            named,
+            {"сцены": [{"id": "s1", "номер": 1, "закадр": "Первая фраза.", "кадры": []}]},
+            mode="reject",
+        )
+    assert any(item.code == "shot_dropped" and item.id == "k1" for item in cleared.value.violations)
+
+    nulled = copy.deepcopy(before)
+    nulled["сцены"][0]["кадры"] = None
+    frozen = copy.deepcopy(nulled)
+    with pytest.raises(PreservationRejected) as null_exc:
+        run_preservation_validators(before, nulled, mode="reject")
+    assert any(item.code == "shot_dropped" and item.id == "k1" for item in null_exc.value.violations)
+    assert nulled == frozen
+
+    attrs_before = {
+        "frames": [
+            {
+                "id": "u1",
+                "attrs": {"кадры": [{"id": "k1", "закадр": "а"}, {"id": "k2", "закадр": "б"}]},
+            }
+        ]
+    }
+    with pytest.raises(PreservationRejected) as replaced:
+        run_preservation_validators(
+            attrs_before,
+            {"frames": [{"id": "u1", "attrs": {"кадры": [{"id": "k1", "закадр": "а"}]}}]},
+            mode="reject",
+        )
+    assert any(item.code == "shot_dropped" and item.id == "k2" for item in replaced.value.violations)
+    with pytest.raises(PreservationRejected) as attrs_null:
+        run_preservation_validators(
+            attrs_before,
+            {"frames": [{"id": "u1", "attrs": {"кадры": None}}]},
+            mode="reject",
+        )
+    dropped = {item.id for item in attrs_null.value.violations if item.code == "shot_dropped"}
+    assert {"k1", "k2"} <= dropped
+
+    uid = "03ecb474-7628-4a21-b794-fef914ca3505"
+    try:
+        scene_row = run_preservation_validators(
+            {"сцены": [{"id": uid, "номер": 1}]},
+            {"сцены": [{"id": uid, "номер": 1, "кадры": [{"id": "k1", "закадр": "текст"}]}]},
+            mode="reject",
+        )
+    except PreservationRejected as exc:
+        scene_row = exc.violations
+    assert uid not in {item.id for item in scene_row if item.code == "shot_dropped"}
+
+    people = {
+        "сцены": [{"id": "s1", "номер": 1, "кадры": [{"id": "k1", "закадр": "а"}]}],
+        "персонажи": [{"id": "c01", "имя": "Анна"}, {"id": "c02", "code": "c02", "имя": "Борис"}],
+    }
+    people_after = copy.deepcopy(people)
+    people_after["персонажи"] = [{"id": "c01", "имя": "Анна"}]
+    with pytest.raises(PreservationRejected) as char_exc:
+        run_preservation_validators(people, people_after, mode="reject")
+    assert any(item.code == "character_deleted" and item.id == "c02" for item in char_exc.value.violations)
+    assert all(item.code != "shot_dropped" for item in char_exc.value.violations)
+
+
+_WS1_SHA = "76198ecdf1e81c8f55a2d08d00f15be97da11d2a"
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Десять точек вызова на настоящем preservation.py из d59e1586.
+    """Двенадцать точек вызова на настоящем preservation.py из 76198ecd.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -640,9 +746,22 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
         tar.extractall(extracted, filter="data")
     module_dir = extracted / "app" / "orchestrator" / "validators"
     assert (module_dir / "preservation.py").is_file()
+    # #379 @ 76198ecd не содержит activity_flags: его читает наш код, не preservation.
+    flags = module_dir / "activity_flags.py"
+    if not flags.is_file():
+        flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())
 
     import app.orchestrator.validators as validators_pkg
     import app.pipeline.no_deletions_guard as guard
+    import app.services.apply_ops_batches  # noqa: F401 — activity_flags до подмены пути
+    import app.services.db_apply  # noqa: F401
+    import app.services.montage_board_frames  # noqa: F401
+    import app.services.montage_coverage_ops  # noqa: F401
+    import app.services.montage_scene_improve  # noqa: F401
+    import app.services.nii67_card  # noqa: F401
+    import app.services.scene_shot_grammar  # noqa: F401
+    import app.services.shot_templates  # noqa: F401
+    import app.services.vo_shot_expand  # noqa: F401
 
     old_path = list(validators_pkg.__path__)
     saved = {
@@ -682,7 +801,18 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
         test_qc_candidate_keeps_dropped_shot_and_inactive_vo,
         test_repair_vo_keeps_inactive_zakadr,
     )
+    from tests.test_r0c_b_keep_frames import test_apply_generated_scenario_keeps_operator_blocks
     from tests.test_vo_shot_expand import test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo
+
+    def _generated(_mp, _path) -> None:
+        from loguru import logger
+
+        lines: list[str] = []
+        sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+        try:
+            test_apply_generated_scenario_keeps_operator_blocks(lines)
+        finally:
+            logger.remove(sink)
 
     calls = [
         ("coalesce_cell_shot_ops", lambda _mp, _path: test_coalesce_soft_keeps_frame_shot_and_inactive_vo()),
@@ -698,9 +828,14 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
         ("apply_ops_batches", lambda _mp, _path: test_pack_soft_keeps_missing_shot_and_soft_delete_passes()),
         ("repair_shot_vo_ops", lambda _mp, _path: test_repair_vo_keeps_inactive_zakadr()),
         ("montage_coverage_ops", lambda _mp, _path: test_montage_mirror_soft_keeps_dropped_shot()),
-        ("nii67_card", lambda _mp, _path: test_insert_duplicate_delete_reorder_stay_on_one_door()),
+        ("nii67_card.delete_block", lambda _mp, _path: test_insert_duplicate_delete_reorder_stay_on_one_door()),
+        ("nii67_card.apply_generated_scenario", _generated),
         (
-            "vo_shot_expand",
+            "vo_shot_expand.keep_assigned_kadry",
+            lambda mp, path: test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo(mp, path),
+        ),
+        (
+            "vo_shot_expand.preserve_promoted_frames",
             lambda mp, path: test_vo_expand_soft_keeps_dropped_shot_and_inactive_vo(mp, path),
         ),
         (
@@ -708,6 +843,7 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
             lambda mp, _path: test_rewrite_vo_cell_soft_keeps_dropped_shot_and_inactive_vo(mp),
         ),
     ]
+    assert len(calls) == 12
     rejected: list[dict] = []
     for name, fn in calls:
         site = root / name
