@@ -2465,9 +2465,8 @@ async def rebuild_vo_cells_from_shots(
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     work = [f for f in ordered if _is_pipeline_frame(f)]
-    existing_next = {
-        (int(edge.from_frame_id), int(edge.to_frame_id))
-        for edge in (
+    edges = list(
+        (
             await session.execute(
                 select(FrameEdge).where(
                     FrameEdge.project_id == project.id,
@@ -2475,20 +2474,27 @@ async def rebuild_vo_cells_from_shots(
                 )
             )
         ).scalars().all()
+    )
+    existing_next = {
+        (int(edge.from_frame_id), int(edge.to_frame_id)): edge for edge in edges
     }
+    wanted: set[tuple[int, int]] = set()
     for a, b in zip(work, work[1:]):
         pair = (int(a.id), int(b.id))
+        wanted.add(pair)
         if pair in existing_next:
             continue
-        session.add(
-            FrameEdge(
-                project_id=project.id,
-                from_frame_id=a.id,
-                to_frame_id=b.id,
-                type="next",
-            )
+        edge = FrameEdge(
+            project_id=project.id,
+            from_frame_id=a.id,
+            to_frame_id=b.id,
+            type="next",
         )
-        existing_next.add(pair)
+        session.add(edge)
+        existing_next[pair] = edge
+    for pair, edge in existing_next.items():
+        if pair not in wanted:
+            edge.type = "next_stale"
     await session.flush()
     work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
     existing_vo: dict[int, Any] = {}
