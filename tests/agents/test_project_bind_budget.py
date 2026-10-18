@@ -52,9 +52,7 @@ async def test_project_bind_keeps_budget_stop(token: str) -> None:
         assert runtime.supervisor._block_reason.get(task_id) == ApprovalReason.missing_project_id.value
         await runtime.supervisor.absorb_budget(task_id, session, _budget())
         assert task_id in runtime.supervisor._budget_stop
-        # Эскалация бюджета не меняет статус waiting_approval, причина проекта
-        # остаётся той, с которой человек жмёт «привязать».
-        runtime.supervisor._block_reason[task_id] = ApprovalReason.missing_project_id.value
+        assert runtime.supervisor._block_reason.get(task_id) == ApprovalReason.missing_project_id.value
         transport = ASGITransport(app=_app())
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             bound = await client.post(
@@ -63,6 +61,7 @@ async def test_project_bind_keeps_budget_stop(token: str) -> None:
                 headers=_headers(),
             )
         assert bound.status_code == 409
+        assert bound.json()["detail"] == "budget_exhausted"
         assert actions.calls == []
         assert task_id in runtime.supervisor._budget_stop
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value

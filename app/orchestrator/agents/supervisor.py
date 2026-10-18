@@ -1169,6 +1169,12 @@ class Supervisor:
         """Чекпоинт и waiting_approval, если роутер сообщил исчерпание суб-бюджета."""
         if not budget_exhausted_response(response):
             return False
+        if (
+            self._status(task_id) is TaskStatus.waiting_approval
+            and self._block_reason.get(task_id) == ApprovalReason.missing_project_id.value
+        ):
+            self._budget_stop.add(task_id)
+            return True
         if task_id not in self._budget_stop:
             self._budget_stop.add(task_id)
             text = str(getattr(response, "text", "") or "")
