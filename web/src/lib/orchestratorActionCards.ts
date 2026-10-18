@@ -493,6 +493,9 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   if (result && badActionName(result.restore_action) && !confirmedSoftDelete(result)) return null;
   const metaRaw = result ? plainObject(result.metadata) : null;
   if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);
+  const parsedMeta = metadataFrom(metaRaw);
+  const namedAction = str(result?.action).trim();
+  if (parsedMeta && namedAction && namedAction !== parsedMeta.name) return invalidView(seq);
   if (skippedWithoutPartial(result) || partialWithoutSkipped(result)) return invalidView(seq);
   if (status === "approval_required") {
     const metadata = metadataFrom(metaRaw);

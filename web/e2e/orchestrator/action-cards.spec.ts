@@ -679,6 +679,15 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("result.action сверяется с metadata.name", () => {
+  const payload = structuredClone(EXAMPLE_PAID_APPROVAL);
+  const result = payload.result as { action: string };
+  result.action = "create_node";
+  const view = readActionEnvelope(payload, 1);
+  expect(view?.kind).toBe("invalid");
+  expect(view?.error).toBe("Некорректный ответ действия");
+});
+
 test("partial true без skipped невалиден", () => {
   const broken = structuredClone(EXAMPLE_PARTIAL_EDIT);
   (broken.result as { skipped?: string[] }).skipped = [];
