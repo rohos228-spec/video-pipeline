@@ -11,6 +11,7 @@ from app.orchestrator.validators import activity_flags
 from app.orchestrator.validators.activity_flags import (
     ACTIVE_MARK,
     DELETED_MARK,
+    HIDE_MARKS,
     QUARANTINE_MARK,
     frame_is_active,
     shot_is_active,
@@ -41,7 +42,7 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {ACTIVE_MARK: True}, True, False),
     ("shot", {ACTIVE_MARK: "да?"}, True, True),
     ("shot", {DELETED_MARK: True}, False, False),
-    ("shot", {DELETED_MARK: "да"}, True, True),
+    ("shot", {DELETED_MARK: "да"}, False, False),
     ("shot", {DELETED_MARK: "-"}, True, True),
     ("shot", {DELETED_MARK: 1}, False, False),
     ("shot", {DELETED_MARK: False}, True, False),
@@ -57,7 +58,7 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {DELETED_MARK: "ложь"}, True, False),
     ("shot", {DELETED_MARK: _NAN}, True, False),
     ("shot", {QUARANTINE_MARK: True}, False, False),
-    ("shot", {QUARANTINE_MARK: "да"}, True, True),
+    ("shot", {QUARANTINE_MARK: "да"}, False, False),
     ("shot", {QUARANTINE_MARK: _NAN}, True, False),
     ("shot", {QUARANTINE_MARK: 1}, False, False),
     ("shot", {QUARANTINE_MARK: False}, True, False),
@@ -84,7 +85,7 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("frame", {ACTIVE_MARK: _NAN}, True, False),
     ("frame", {ACTIVE_MARK: "да?"}, True, True),
     ("frame", {DELETED_MARK: True}, False, False),
-    ("frame", {DELETED_MARK: "да"}, True, True),
+    ("frame", {DELETED_MARK: "да"}, False, False),
     ("frame", {DELETED_MARK: "0.0"}, True, False),
     ("frame", {DELETED_MARK: "ложь"}, True, False),
     ("frame", {DELETED_MARK: _NAN}, True, False),
@@ -100,6 +101,32 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("frame", {DELETED_MARK: True, ACTIVE_MARK: True}, False, False),
     ("frame", {QUARANTINE_MARK: 1, ACTIVE_MARK: False}, False, False),
 ]
+
+
+_HIDE_TRUE_VALUES = (
+    "да",
+    "Да",
+    "true",
+    "True",
+    "1",
+    1,
+    True,
+    "yes",
+    "on",
+    "истина",
+    " да ",
+)
+
+
+@pytest.mark.parametrize("kind", ("shot", "frame"))
+@pytest.mark.parametrize("mark", HIDE_MARKS)
+@pytest.mark.parametrize("value", _HIDE_TRUE_VALUES, ids=lambda value: repr(value))
+def test_hide_mark_affirmative_is_inactive(kind: str, mark: str, value: object) -> None:
+    """«да»/«true»/«1» в удалён и карантин не отправляют шот в генерацию."""
+
+    payload = {mark: value}
+    active = shot_is_active(payload) if kind == "shot" else frame_is_active(payload)
+    assert active is False
 
 
 def _unknown_tokens(payload: object) -> list[str]:
