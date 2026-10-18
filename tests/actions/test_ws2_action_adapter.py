@@ -306,7 +306,11 @@ async def test_execute_requires_matching_granted_approval(env) -> None:
 
 
 def test_whitelist_built_from_registry_matches_audit() -> None:
-    """Белый список — живой реестр. AUDIT_ACTION_IDS только сверка."""
+    """Белый список — живой реестр плюс реализованный frame.restore.
+
+    AUDIT_ACTION_IDS только сверка. group.restore и prompt.restore_master
+    не реализованы и в список не входят.
+    """
 
     import inspect
 
@@ -317,10 +321,11 @@ def test_whitelist_built_from_registry_matches_audit() -> None:
     assert "actions_audit.md" not in source
     assert "AUDIT_ACTION_IDS" not in source
     names = whitelist()
-    assert len(names) == 102
-    assert len(set(names)) == 102
     assert names == sorted(names)
-    assert set(names) == set(AUDIT_ACTION_IDS)
+    assert len(names) == len(set(names))
+    assert set(names) == set(AUDIT_ACTION_IDS) | {"frame.restore"}
+    assert "group.restore" not in names
+    assert "prompt.restore_master" not in names
 
 
 def test_whitelist_names_match_action_pattern() -> None:
@@ -328,12 +333,18 @@ def test_whitelist_names_match_action_pattern() -> None:
 
     import re
 
-    from app.orchestrator.actions.executor import whitelist
+    from app.orchestrator.action_contracts.contracts import AUDIT_ACTION_IDS
+    from app.orchestrator.actions.executor import metadata_of, whitelist
 
     pattern = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
     names = whitelist()
-    assert len(names) == 102
+    assert "frame.restore" in names
+    assert pattern.fullmatch("frame.restore")
+    assert set(names) == set(AUDIT_ACTION_IDS) | {"frame.restore"}
     assert all(pattern.fullmatch(name) for name in names)
+    meta = metadata_of("frame.restore")
+    assert meta.risk == "high"
+    assert meta.needs_approval is True
 
 
 async def test_delete_frame_via_adapter_is_soft(env) -> None:

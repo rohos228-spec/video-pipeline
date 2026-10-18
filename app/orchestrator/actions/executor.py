@@ -30,6 +30,8 @@ from app.services.redact import redact_text
 
 _CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
 _SOFT_FRAME_DELETE = frozenset({"montage.delete_frame", "montage.delete_child_frame"})
+# Имена из SOFT_DELETE_RESTORE, у которых есть исполнитель. Остальные — только метаданные.
+_IMPLEMENTED_RESTORES = frozenset({"frame.restore"})
 
 
 class BoundResult(ActionResult):
@@ -126,10 +128,20 @@ def _raise_to_floor(published: ActionMetadata, floor: ActionMetadata) -> ActionM
 
 
 def whitelist() -> list[str]:
-    """Имена живого реестра. Документ аудита эту функцию не читает."""
+    """Живой реестр плюс реализованные restore из SOFT_DELETE_RESTORE.
+
+    Документ аудита эту функцию не читает. Нереализованные restore
+    (group.restore, prompt.restore_master) в список не входят.
+    """
 
     ensure_builtin_actions()
-    return sorted(spec.id for spec in registry.list())
+    names = {spec.id for spec in registry.list()}
+    names.update(
+        restore
+        for restore in SOFT_DELETE_RESTORE.values()
+        if restore in _IMPLEMENTED_RESTORES
+    )
+    return sorted(names)
 
 
 class SoftDeleteMetadata(ActionMetadata):
