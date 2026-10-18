@@ -75,7 +75,6 @@ _R0B_XFAIL = {
     'tests/test_r0c_b_inactive_shots_render.py::test_camera_chips_ignore_inactive_shot_id': 'рендер/монтаж возвращены к #352',
     'tests/test_r0c_b_inactive_shots_render.py::test_montage_chain_and_count_use_live_shots': 'рендер/монтаж возвращены к #352',
     'tests/test_r0c_b_inactive_shots_render.py::test_montage_empty_when_no_live_shots': 'рендер/монтаж возвращены к #352',
-    'tests/test_r0c_b_inactive_shots_render.py::test_slim_img_pr_row_does_not_copy_inactive_shot': 'рендер/монтаж возвращены к #352',
     'tests/test_r0c_b_keep_frames.py::test_collapse_and_apply_keep_frames_and_report_deleted_zero': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_coverage_delete_in_auto_apply_marks_frame': 'файлы WS1 возвращены к #352, ветка их не переопределяет',
     'tests/test_r0c_b_keep_frames.py::test_coverage_delete_refuses_non_child': 'файлы WS1 возвращены к #352, ветка их не переопределяет',

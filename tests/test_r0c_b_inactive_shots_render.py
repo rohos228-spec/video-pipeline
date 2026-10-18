@@ -50,6 +50,27 @@ def test_camera_chips_ignore_inactive_shot_id() -> None:
     assert camera_chips_from_frame(only)["план"] == ""
 
 
+def test_slim_img_pr_row_skips_inactive_shot_for_the_model() -> None:
+    """Модели не показываем неактивный шот ни по id, ни как первый кадр."""
+    from app.services.db_frames_context import _slim_img_pr_frame_row
+
+    stored = [
+        {"id": "dead", "план": "КРУПНЫЙ", "действие": "чужое", "активен": False},
+        {"id": "live", "план": "ОБЩИЙ", "действие": "живое"},
+    ]
+    original = [dict(shot) for shot in stored]
+    row = {"shot_id": "dead", "кадры": stored}
+    _slim_img_pr_frame_row(row)
+    assert "кадры" not in row
+    assert stored[0]["действие"] == "чужое"
+    assert stored[0]["активен"] is False
+
+    row_first = {"кадры": [dict(shot) for shot in original]}
+    _slim_img_pr_frame_row(row_first)
+    assert row_first["кадры"] == [{"id": "live", "план": "ОБЩИЙ", "действие": "живое"}]
+    assert original[0]["активен"] is False
+
+
 def test_slim_img_pr_row_does_not_copy_inactive_shot() -> None:
     """_slim_img_pr_frame_row: выбор по id не берёт неактивный шот."""
     from app.services.db_frames_context import _slim_img_pr_frame_row

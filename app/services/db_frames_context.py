@@ -573,13 +573,16 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
 
 def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
     """img_pr: действие/раскладка кадра, без 73 битов и всей площадки проекта."""
+    from app.services.frame_tombstones import shot_is_active
+
     row.pop("биты", None)
     shot_id = str(row.get("shot_id") or "").strip()
     kadry = row.get("кадры")
     if isinstance(kadry, list):
+        active = [shot for shot in kadry if shot_is_active(shot)]
         match: dict[str, Any] | None = None
         if shot_id:
-            match = next(
+            named = next(
                 (
                     shot
                     for shot in kadry
@@ -587,9 +590,20 @@ def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
                 ),
                 None,
             )
-        if match is None:
-            first = kadry[0] if kadry else None
-            match = first if isinstance(first, dict) else None
+            if named is not None and not shot_is_active(named):
+                row.pop("кадры", None)
+                match = None
+                active = []
+            else:
+                match = named if named is not None and shot_is_active(named) else None
+        if match is None and active and not (
+            shot_id
+            and any(
+                isinstance(shot, dict) and str(shot.get("id") or "") == shot_id
+                for shot in kadry
+            )
+        ):
+            match = active[0]
         if match is not None:
             keep = (
                 "id",
