@@ -1777,6 +1777,13 @@ export const api = {
             shot?: number;
           };
         }>;
+        pending_ops?: Array<{
+          type: string;
+          frame_number: number;
+          shot?: number | string;
+          slot?: string;
+          instruction?: string;
+        }>;
       };
     }>(`/api/projects/${projectId}/montage-board/apply-status`),
 

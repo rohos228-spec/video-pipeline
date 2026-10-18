@@ -64,6 +64,32 @@ export function serverQueueReplacesLocal<T>(
   return restoredKeys.every((key, index) => key === suffix[index]);
 }
 
+/**
+ * done/idle: пустой сервер снимает ops, которые уже ушли в apply
+ * (sentKeys или pending_ops job), даже если эту вкладку не сабмитили.
+ * Новые dirty-ops остаются. Без сигнала пустой снимок очередь не трогает.
+ */
+export function reconcileIdleQueue<T>(
+  local: readonly T[],
+  server: readonly T[],
+  keyOf: (op: T) => string,
+  appliedKeys: ReadonlySet<string>,
+): T[] {
+  if (appliedKeys.size === 0) {
+    if (server.length === 0 && local.length > 0) return local.slice();
+    if (serverQueueReplacesLocal(local, server, keyOf)) return server.slice();
+    return local.slice();
+  }
+  const serverKeys = new Set(server.map(keyOf));
+  const kept = local.filter((op) => {
+    const key = keyOf(op);
+    return !(appliedKeys.has(key) && !serverKeys.has(key));
+  });
+  const keptKeys = new Set(kept.map(keyOf));
+  const extra = server.filter((op) => !keptKeys.has(keyOf(op)));
+  return [...kept, ...extra];
+}
+
 export function queueAfterApply<T>(
   all: readonly T[],
   sentKeys: ReadonlySet<string>,

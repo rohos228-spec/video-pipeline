@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { montageOpSelectKey, serverQueueReplacesLocal } from "./montage-apply-queue.ts";
+import { montageOpSelectKey, reconcileIdleQueue, serverQueueReplacesLocal } from "./montage-apply-queue.ts";
 
 test("two image edits on one frame do not share a key", () => {
   const a = montageOpSelectKey({
@@ -40,4 +40,15 @@ test("empty server snapshot does not wipe a local queue or its data", () => {
   const snapshot = local.map((op) => ({ ...op }));
   assert.equal(serverQueueReplacesLocal(local, [], key), false);
   assert.deepEqual(local, snapshot);
+});
+
+test("foreign tab apply done clears the same snapshot and keeps dirty ops", () => {
+  const key = (op: { id: string; instruction: string }) =>
+    `${op.id}:${op.instruction}`;
+  const applied = { id: "same", instruction: "светлее" };
+  const dirty = { id: "dirty", instruction: "новое" };
+  const local = [applied, dirty];
+  const appliedKeys = new Set([key(applied)]);
+  assert.deepEqual(reconcileIdleQueue(local, [], key, appliedKeys), [dirty]);
+  assert.deepEqual(reconcileIdleQueue(local, [], key, new Set()), local);
 });
