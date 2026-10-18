@@ -415,7 +415,15 @@ def _detach_from_coverage_ancestor(
 
 
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
-    kids = _children_of(frames, parent)
+    from app.services.frame_tombstones import frame_is_active
+
+    if not frame_is_active(parent):
+        logger.warning(
+            "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
+            getattr(parent, "number", None),
+        )
+        return
+    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -792,14 +800,21 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover-клей не маппим и не вставляем после него.
+    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
+    а помеченный шот возвращается новым активным кадром.
     """
-    live = [m for m in members if not bool(_cs(m).get("leftover"))]
+    from app.services.frame_tombstones import frame_is_active
+
+    live = [
+        m
+        for m in members
+        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
+    ]
     if not live:
         live = [parent]
-    elif parent not in live:
+    elif parent not in live and frame_is_active(parent):
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (

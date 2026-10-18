@@ -15,6 +15,7 @@ from app.services.montage_coverage_ops import (
     _clear_child_scene_chain,
     _load_frames,
     _refresh_shots_in_beat,
+    _stamp_deleted_shot,
     delete_coverage_child,
 )
 from app.services.montage_board_meta import (
@@ -263,15 +264,27 @@ async def delete_montage_frame(
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
-    kids = _children_of(frames, frame)
-    new_head = _promote_first_child(frame, kids)
+    from app.services.frame_tombstones import frame_is_active, mark_frame_deleted
+
+    reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, number)
-    await _drop_frame_rows(session, project, [frame])
+    mark_frame_deleted(frame, project, reason)
+    _stamp_deleted_shot(frames, frame, reason)
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    new_head = _promote_first_child(frame, kids)
+    promoted_number: int | None = None
     if new_head is not None:
-        leftover = await _load_frames(session, int(project.id))
-        live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
-        _refresh_shots_in_beat(leftover, live)
-        await session.flush()
+        src_vo = (frame.voiceover_text or "").strip()
+        dst = dict(getattr(new_head, "attrs", None) or {})
+        if src_vo and not str(dst.get("vo_cell_full") or "").strip():
+            dst["vo_cell_full"] = src_vo
+            new_head.attrs = dst
+            _flag_attrs(new_head)
+        if src_vo and not (new_head.voiceover_text or "").strip():
+            new_head.voiceover_text = frame.voiceover_text
+        _refresh_shots_in_beat(frames, new_head)
+        promoted_number = int(new_head.number)
+    await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
@@ -285,8 +298,9 @@ async def delete_montage_frame(
         "ok": True,
         "frame_id": frame_id,
         "number": number,
-        "deleted": 1,
-        "promoted": int(new_head.number) if new_head is not None else None,
+        "deleted": 0,
+        "marked": 1,
+        "promoted": promoted_number,
     }
 
 

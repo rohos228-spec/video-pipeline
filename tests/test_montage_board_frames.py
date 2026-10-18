@@ -213,7 +213,8 @@ async def test_delete_parent_keeps_children(
 
     result = await delete_montage_frame(session, project, parent_id)
     await session.commit()
-    assert result["deleted"] == 1
+    assert result["deleted"] == 0
+    assert result["marked"] == 1
     assert result["promoted"] == 2
     left = list(
         (

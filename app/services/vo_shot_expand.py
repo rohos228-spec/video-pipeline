@@ -1108,8 +1108,14 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
     У VO-родителя без явной роли child сбрасывает leftover coverage_parent_id.
     """
     changed = 0
+    from app.services.frame_tombstones import frame_is_active
+
     for members in _group_by_parent(frames).values():
-        live = [m for m in members if not is_coverage_leftover(m)]
+        live = [
+            m
+            for m in members
+            if not is_coverage_leftover(m) and frame_is_active(m)
+        ]
         if not live:
             continue
         parent = next((m for m in live if not is_shot_child(m)), live[0])
