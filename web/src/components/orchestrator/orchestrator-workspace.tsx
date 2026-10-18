@@ -380,6 +380,7 @@ export function OrchestratorWorkspace() {
                 className="mt-2 grid grid-cols-2 gap-2"
                 role="status"
                 aria-live="polite"
+                aria-atomic="false"
                 aria-label="Статусы агентов"
               >
                 {chat.state.agents.map((agent) => (

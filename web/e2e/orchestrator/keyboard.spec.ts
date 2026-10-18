@@ -183,6 +183,7 @@ test("клавиатура: статус агентов читается чер�
   await openWithToken(page, "idle", "kbd-status");
   const status = page.getByRole("status", { name: "Статусы агентов" });
   await expect(status).toHaveAttribute("aria-live", "polite");
+  await expect(status).toHaveAttribute("aria-atomic", "false");
   await expect(status).toContainText("idle");
   const before = await status.ariaSnapshot();
   expect(before).toMatch(/status/i);
