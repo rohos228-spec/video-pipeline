@@ -176,6 +176,8 @@ async def test_paid_step_is_kept_when_budget_trips(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("r3-pay", "оплатить", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-pay")
+        await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         row = rt.tasks.list_steps(task_id)[0]
         assert row["status"] == "done"
@@ -198,6 +200,66 @@ async def test_paid_step_is_kept_when_budget_trips(token: str) -> None:
         await restarted.supervisor.wait(task_id, timeout=5)
         assert len(actions.calls) == before
         assert restarted.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_budget_stop_survives_restart_while_a_paid_step_remains(token: str) -> None:
+    del token
+    actions = MockActions()
+    first = PlanStep(
+        action="charge",
+        params={"_change_id": "chg-a", "_cost": 4.0},
+        paid=True,
+        mutating=True,
+    )
+    second = PlanStep(
+        action="again",
+        params={"_change_id": "chg-b", "_cost": 1.0},
+        paid=True,
+        mutating=True,
+    )
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([first, second]),
+        executor=_PayThenBudget(actions),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("r3-hold", "два платных", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("r3-hold")
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        checkpoint = runtime.checkpoints.load_latest(task_id)
+        assert checkpoint is not None
+        assert checkpoint.position == 1
+    finally:
+        set_runtime(None)
+
+    restarted = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([first, second]),
+        executor=_PayThenBudget(actions),
+    )
+    set_runtime(restarted)
+    try:
+        before = len(actions.calls)
+        await restarted.supervisor.resume(task_id)
+        await restarted.start()
+        live = restarted.supervisor._runs.get(task_id)
+        if live is not None and not live.done():
+            await restarted.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        assert len(actions.calls) == before
+        assert restarted.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert restarted.supervisor._block_reason.get(task_id) == "budget_exhausted"
     finally:
         set_runtime(None)
 
@@ -882,6 +944,8 @@ async def test_failed_action_is_not_done_or_paid(token: str) -> None:
     try:
         task_id = await rt.supervisor.start_task("r3-ok-false", "сбой", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("r3-ok-false")
+        await rt.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["bad"]
         assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
         assert rt.tasks.get(task_id)["error"] == "action_rejected"
@@ -956,7 +1020,10 @@ async def test_plan_mutating_false_does_not_loosen_registry(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-tighten", "правка")
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
-        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.get(task_id)["error"] != "deletion_blocked"
+        approvals = [event for event in rt.bus.replay("r3-tighten", 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "missing_project_id"
     finally:
         set_runtime(None)
 

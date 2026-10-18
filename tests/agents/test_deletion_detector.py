@@ -266,6 +266,54 @@ async def test_known_high_deletion_name_is_not_granted(token: str) -> None:
         set_runtime(None)
 
 
+class _MutatingRegistry(MockActions):
+    """Реестр с ``metadata_of``: известная мутация не является удалением."""
+
+    def metadata_of(self, action_name: str) -> ActionMetadata | dict[str, object] | None:
+        if action_name == "create_node":
+            return ActionMetadata(read_only=False, destructive=False, risk="medium", paid=False)
+        if action_name in {"edit_node_prompt", "edit_node_params", "run_node"}:
+            return ActionMetadata(read_only=False, destructive=False, risk="low")
+        if action_name == "seal_node":
+            return ActionMetadata(read_only=False, destructive=True, risk="high")
+        if action_name == "look":
+            return {"read_only": True, "destructive": False, "risk": "none"}
+        return None
+
+
+def test_known_mutation_is_not_a_deletion() -> None:
+    registry = _MutatingRegistry()
+    for action in ("create_node", "edit_node_prompt", "edit_node_params", "run_node"):
+        assert not step_is_deletion(PlanStep(action=action, mutating=True), registry)
+    assert step_is_deletion(PlanStep(action="frobnicate"), registry)
+    assert step_is_deletion(PlanStep(action="seal_node"), registry)
+    assert not step_is_deletion(PlanStep(action="look"), registry)
+    assert not step_is_deletion(PlanStep(action="look"), MockActions())
+
+
+@pytest.mark.asyncio
+async def test_known_mutation_waits_for_risk_approval(token: str) -> None:
+    del token
+    actions = _MutatingRegistry()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="create_node", risk="medium", mutating=True)]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("mut-known", "создай ноду", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["error"] != "deletion_blocked"
+        approvals = [event for event in runtime.bus.replay("mut-known", 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "risk"
+    finally:
+        set_runtime(None)
+
+
 def test_path_prefix_lookalike_is_outside(tmp_path) -> None:
     root = tmp_path / "allowed"
     root.mkdir()
