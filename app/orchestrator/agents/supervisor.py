@@ -209,6 +209,8 @@ class Supervisor:
         self._decided_change_id: dict[tuple[int, str], str] = {}
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
+        self._partial_llm_cost: dict[int, float] = {}
+        self._bind_partial_llm_cost()
 
     async def start_task(
         self,
@@ -1075,12 +1077,9 @@ class Supervisor:
             "retry_armed": False,
         }
 
-    def _partial_internal_cost(self) -> float:
-        """Уже потраченное на оборванном LLM-ходе.
-
-        Роутер кладёт сумму в ``partial_cost_usd``, пока ``call`` ещё не
-        вернулся, и снимает её после успешного ответа.
-        """
+    def _bind_partial_llm_cost(self) -> None:
+        """Частичная стоимость LLM живёт на задаче, не на общем роутере."""
+        seen: set[int] = set()
         owners = (
             self.planner,
             getattr(self.planner, "router", None),
@@ -1088,19 +1087,44 @@ class Supervisor:
             getattr(self.critic, "router", None),
         )
         for owner in owners:
-            if owner is None:
+            if owner is None or id(owner) in seen:
                 continue
-            raw = getattr(owner, "partial_cost_usd", None)
+            seen.add(id(owner))
+            original = getattr(owner, "call", None)
+            if not callable(original) or getattr(owner, "_orch_partial_bound", False):
+                continue
+            owner.call = self._partial_cost_call(owner, original)
+            owner._orch_partial_bound = True
+
+    def _partial_cost_call(self, owner: Any, original: Any) -> Any:
+        async def _call(*args: Any, **kwargs: Any) -> Any:
+            raw_task = kwargs.get("task_id")
             try:
-                value = float(raw or 0)
+                task_key = int(raw_task) if raw_task is not None else None
             except (TypeError, ValueError):
-                continue
-            if value > 0:
-                return value
-        return 0.0
+                task_key = None
+            try:
+                return await original(*args, **kwargs)
+            except asyncio.CancelledError:
+                cost = self._take_partial_cost(owner)
+                if task_key is not None and cost > 0:
+                    self._partial_llm_cost[task_key] = cost
+                raise
+
+        return _call
+
+    def _take_partial_cost(self, owner: Any) -> float:
+        raw = getattr(owner, "partial_cost_usd", None)
+        try:
+            value = float(raw or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if hasattr(owner, "partial_cost_usd"):
+            owner.partial_cost_usd = 0.0
+        return value if value > 0 else 0.0
 
     def _charge_cancelled_llm(self, task_id: int) -> None:
-        cost = self._partial_internal_cost()
+        cost = self._partial_llm_cost.pop(int(task_id), 0.0)
         if cost:
             self.tasks.add_spend(task_id, internal=cost)
 

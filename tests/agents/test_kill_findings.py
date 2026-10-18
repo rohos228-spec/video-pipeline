@@ -267,6 +267,64 @@ async def test_cancelled_llm_step_records_spent_tokens(token: str) -> None:
         set_runtime(None)
 
 
+_HOLD_PLAN = (
+    '{"steps":[{"action":"hold","params":{"_wait":true},"expected":"ok",'
+    '"paid":false,"mutating":false,"risk":"none"}]}'
+)
+
+
+class _SplitMeter(ScriptedRouter):
+    """Второй вызов держит partial_cost_usd, первый отдаёт план сразу."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.partial_cost_usd = 0.0
+        self.second = asyncio.Event()
+        self.release = asyncio.Event()
+        self.script = [_HOLD_PLAN, _HOLD_PLAN]
+
+    async def call(self, *args, **kwargs):
+        if self.call_count >= 1:
+            self.partial_cost_usd = 0.37
+            self.second.set()
+            await self.release.wait()
+            self.partial_cost_usd = 0.0
+        return await super().call(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_does_not_take_another_tasks_partial_cost(token: str) -> None:
+    del token
+    router = _SplitMeter()
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_a = await runtime.supervisor.start_task("cost-a", "план")
+        await actions.started.wait()
+        task_b = await runtime.supervisor.start_task("cost-b", "план")
+        await router.second.wait()
+        runtime.supervisor._runs[task_a].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_a, timeout=5)
+        assert float(runtime.tasks.get(task_a)["spend_internal"] or 0) == 0
+        assert router.partial_cost_usd == pytest.approx(0.37)
+        runtime.supervisor._runs[task_b].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_b, timeout=5)
+        assert float(runtime.tasks.get(task_a)["spend_internal"] or 0) == 0
+        assert float(runtime.tasks.get(task_b)["spend_internal"] or 0) == pytest.approx(0.37)
+        assert router.partial_cost_usd == 0
+    finally:
+        router.release.set()
+        set_runtime(None)
+
+
 @pytest.mark.asyncio
 async def test_rerun_after_cancelled_mutating_step_is_idempotent(token: str) -> None:
     del token
