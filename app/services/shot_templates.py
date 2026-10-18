@@ -851,10 +851,18 @@ def _assign_scene_vo(
         kept.append(sh)
     if vo and shots and not any(str(s.get("закадр") or "").strip() for s in kept):
         shots[0]["закадр"] = vo
-        # Весь закадр теперь на первом кадре: пометка «пустой кусок» его спрятала бы.
+        # Весь закадр теперь на первом кадре. Снимаем только свой карантин
+        # «пустой кусок», который только что поставили в этом проходе.
+        # Чужую пометку и удалён не трогаем.
         mark = str(shots[0].get("пометка") or "")
-        if shots[0].get("карантин") and (
-            "пуст" in mark or "нет куска" in mark or "кадры сцены сохранены" in mark
+        own_empty_piece = mark in (
+            "пустой кусок закадра — кадр сохранён",
+            "нет куска закадра — кадр сохранён",
+        )
+        if (
+            shots[0].get("карантин")
+            and own_empty_piece
+            and not shots[0].get("удалён")
         ):
             shots[0].pop("карантин", None)
             shots[0].pop("пометка", None)

@@ -750,6 +750,79 @@ def test_full_vo_on_first_shot_clears_empty_quarantine(monkeypatch, warn_log) ->
     assert any("карантин снят" in line for line in warn_log)
 
 
+def test_deleted_first_shot_stays_inactive_when_full_vo_lands(monkeypatch, warn_log) -> None:
+    """Чужой удалён и чужая пометка не снимаются, даже если в причине есть «пуст»."""
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.shot_templates import _assign_scene_vo, fill_kadry_from_catalog
+
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.kadry_vo_partition",
+        lambda vo, shots: ["", ""],
+    )
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.kadry_vo_partition_aligned",
+        lambda vo, shots: ["", ""],
+    )
+    monkeypatch.setattr(
+        "app.services.scene_design.camera_expand.split_text_into_parts",
+        lambda text, n: ["", ""],
+    )
+    foreign = {
+        "id": "a",
+        "закадр": "",
+        "удалён": True,
+        "карантин": True,
+        "пометка": "кадр пуст — удалил оператор",
+        "активен": False,
+    }
+    out = _assign_scene_vo(
+        [foreign, {"id": "b", "закадр": ""}],
+        "Целое предложение сцены.",
+    )
+    assert out[0]["закадр"] == "Целое предложение сцены."
+    assert out[0]["удалён"] is True
+    assert out[0]["карантин"] is True
+    assert out[0]["активен"] is False
+    assert out[0]["пометка"] == "кадр пуст — удалил оператор"
+    assert shot_is_active(out[0]) is False
+
+    marked_only = _assign_scene_vo(
+        [{
+            "id": "foreign-mark",
+            "закадр": "",
+            "карантин": True,
+            "пометка": "кадры сцены сохранены оператором",
+            "активен": False,
+        }],
+        "Целое предложение сцены.",
+    )
+    assert marked_only[0]["карантин"] is True
+    assert marked_only[0]["пометка"] == "кадры сцены сохранены оператором"
+    assert shot_is_active(marked_only[0]) is False
+
+    filled = fill_kadry_from_catalog(
+        [{
+            "id": "gone",
+            "сцена": 1,
+            "удалён": True,
+            "карантин": True,
+            "пометка": "нет куска — снял монтажёр",
+            "активен": False,
+            "действие": "Герой долго стоит у стола и смотрит в окно.",
+            "закадр": "",
+        }],
+        "1. комната — герой стоит у стола\n(Целое предложение сцены.)",
+        cell_number=1,
+    )
+    kept = next(s for s in filled if s.get("удалён") is True)
+    assert kept.get("id") == "gone" or str(kept.get("id") or "").startswith("gone")
+    assert kept["карантин"] is True
+    assert kept["активен"] is False
+    assert "нет куска — снял монтажёр" in str(kept.get("пометка") or "")
+    assert shot_is_active(kept) is False
+    assert any("WARN" in line for line in warn_log)
+
+
 @pytest.mark.asyncio
 async def test_marked_frame_skips_paid_image_generation(
     session: AsyncSession, project: Project, tmp_path: Path, warn_log, monkeypatch
