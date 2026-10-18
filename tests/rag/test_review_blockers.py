@@ -280,6 +280,22 @@ def test_experimental_flag_in_code_artifact_and_note_agree() -> None:
     assert "0.96" in note and "0.80" in note and "1.00" in note and "0.75" in note
 
 
+def test_regenerated_artifact_with_empty_mark_stays_experimental() -> None:
+    """Повторная сборка при пустом mark сохраняет experimental и совпадает с файлом."""
+    import inspect
+
+    from evals.orchestrator.precision_live import acceptance_for_remeasure, run_remeasure
+
+    path = ROOT / "evals" / "orchestrator" / "datasets" / "precision_live_passes.json"
+    committed = json.loads(path.read_text(encoding="utf-8"))
+    acceptance = acceptance_for_remeasure(committed["median"]["test"]["ndcg_at_8"])
+    assert acceptance["mark"] == ""
+    assert acceptance["experimental"] is True
+    regenerated = {**committed, "acceptance": acceptance}
+    assert regenerated == committed
+    assert "acceptance_for_remeasure(" in inspect.getsource(run_remeasure)
+
+
 def test_fusion_weights_stay_experimental_until_dev_selection() -> None:
     """rrf 0.5/1.5 не выбран choose_default: на dev hit@5 был 0.88."""
     from app.orchestrator.rag.profile import (

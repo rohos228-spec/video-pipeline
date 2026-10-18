@@ -1183,6 +1183,22 @@ def contour_c_acceptance(test_ndcg: float) -> dict[str, Any]:
     }
 
 
+def acceptance_for_remeasure(test_ndcg: float) -> dict[str, Any]:
+    """experimental из флага контура и промаха порога, не из текста mark.
+
+    Пустой mark значит, что nDCG@8 порог взят. Флаг ``CONTOUR_B_EXPERIMENTAL``
+    и непустая заметка R5 всё равно оставляют контур экспериментальным.
+    """
+    from app.orchestrator.rag.profile import CONTOUR_B_EXPERIMENTAL, CONTOUR_B_R5_NOTE
+
+    acceptance = contour_c_acceptance(test_ndcg)
+    missed_threshold = test_ndcg < NDCG_AT_8_MIN
+    acceptance["experimental"] = (
+        bool(CONTOUR_B_EXPERIMENTAL) or bool(CONTOUR_B_R5_NOTE.strip()) or missed_threshold
+    )
+    return acceptance
+
+
 def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
     if not rows:
         return {"hit_at_5": 0.0, "ndcg_at_8": 0.0, "ndcg_doc": 0.0, "p95_s": 0.0, "n": 0}
@@ -1595,7 +1611,7 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
             )
             print("PASS", index, "pid", one["pid"], one["embedder_id"], flush=True)
         packed = aggregate_pass_slices(passes)
-        acceptance = contour_c_acceptance(packed["median"]["test"]["ndcg_at_8"])
+        acceptance = acceptance_for_remeasure(packed["median"]["test"]["ndcg_at_8"])
         payload = {**packed, "pass_meta": pass_meta, "config": config, "acceptance": acceptance}
         write_pass_artifact(artifact_path, payload)
         text = render_locked_report(payload)
