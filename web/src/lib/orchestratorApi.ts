@@ -147,12 +147,12 @@ export function parseOrchProjectId(raw: string): number | null {
 }
 
 export function projectBindWireBody(projectId: number, taskId: number | null): OrchProjectBindRequest {
-  if (!Number.isInteger(projectId) || projectId < 1) {
+  if (!Number.isSafeInteger(projectId) || projectId < 1) {
     throw new Error(PROJECT_BIND_INVALID);
   }
   const body: OrchProjectBindRequest = { project_id: projectId };
   if (taskId == null) return body;
-  if (!Number.isInteger(taskId) || taskId < 1) {
+  if (!Number.isSafeInteger(taskId) || taskId < 1) {
     throw new Error(PROJECT_BIND_TASK_INVALID);
   }
   body.task_id = taskId;

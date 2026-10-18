@@ -92,6 +92,14 @@ test("неверный task_id при bind даёт явную ошибку", ()
   expect(bindTaskId("4")).toBe(4);
 });
 
+test("bind отвергает 0 и 1e21", () => {
+  expect(() => projectBindWireBody(1e21, null)).toThrow(PROJECT_BIND_INVALID);
+  expect(() => projectBindWireBody(0, null)).toThrow(PROJECT_BIND_INVALID);
+  expect(() => projectBindWireBody(1, 1e21)).toThrow(PROJECT_BIND_TASK_INVALID);
+  expect(() => projectBindWireBody(1, 0)).toThrow(PROJECT_BIND_TASK_INVALID);
+  expect(projectBindWireBody(1, 2)).toEqual({ project_id: 1, task_id: 2 });
+});
+
 test("task_id вне безопасного целого не уходит в bind", () => {
   expect(parseOrchTaskId("12")).toBe(12);
   expect(parseOrchTaskId(null)).toBeNull();
