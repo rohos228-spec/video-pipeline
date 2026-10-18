@@ -1155,12 +1155,13 @@ async def generate_image_with_retries(
                             context={"error_kind": "no_browser", "model": str(raw_slug)},
                         )
                     media_spend.assert_submit_allowed("outsee", "browser image")
-                    return await _paid(
-                        lambda: outsee.generate_image(
+
+                    async def _browser_generate() -> GenerationResult:
+                        return await outsee.generate_image(
                             send_prompt, out_path, **attempt_kwargs
-                        ),
-                        send_prompt,
-                    )
+                        )
+
+                    return await _paid(_browser_generate, send_prompt)
             except StepCancelledError:
                 raise
             except OutseeDownloadError as e:
@@ -1500,13 +1501,17 @@ async def generate_video_with_retries(
     transient_streak = 0
     fallback_started = False
     substitution_line: str | None = None
-    phase = "primary"
-    logger.info(
-        "outsee_retry: video primary model={} via {} (ladder fallback={})",
-        primary_slug,
-        primary_backend,
-        KIE_KLING_FALLBACK_SLUG,
-    )
+    phase = "fallback" if primary_is_kling else "primary"
+    if primary_is_kling:
+        fallback_started = True
+        logger.info("outsee_retry: video primary Kling 2.6 via kie (KIE_API_KEY)")
+    else:
+        logger.info(
+            "outsee_retry: video primary model={} via {} (ladder fallback={})",
+            primary_slug,
+            primary_backend,
+            KIE_KLING_FALLBACK_SLUG,
+        )
 
     async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
         prefix = (
