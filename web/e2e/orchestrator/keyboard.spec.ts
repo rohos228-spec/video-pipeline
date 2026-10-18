@@ -50,9 +50,16 @@ async function tabTo(page: Page, target: Locator) {
 
 async function expectFocusVisible(target: Locator) {
   await expect(target).toBeFocused();
-  const shadow = await target.evaluate((el) => getComputedStyle(el).boxShadow);
-  expect(shadow).not.toBe("none");
-  expect(shadow.replace(/\s/g, "")).not.toBe("");
+  const focused = await target.evaluate((el) => getComputedStyle(el).boxShadow);
+  await target.evaluate((el) => {
+    if (el instanceof HTMLElement) el.blur();
+  });
+  const resting = await target.evaluate((el) => getComputedStyle(el).boxShadow);
+  await target.focus();
+  await expect(target).toBeFocused();
+  expect(focused).not.toBe("none");
+  expect(focused.replace(/\s/g, "")).not.toBe("");
+  expect(focused).not.toBe(resting);
 }
 
 test("клавиатура: Enter во время стрима шлёт одно сообщение", async ({ page }) => {
