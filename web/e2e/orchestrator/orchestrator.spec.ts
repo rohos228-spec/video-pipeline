@@ -996,6 +996,27 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
   });
 
+  test("approve 204 не успех: нужен JSON 200", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      await route.fulfill({ status: 204, body: "" });
+    });
+    await openWithToken(page, "budget", "approve-204");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    expect(posts).toBe(1);
+  });
+
   test("approve и deny уходят на chat/approve телом ApproveIn", async ({ page }) => {
     const posts: { url: string; body: Record<string, unknown> }[] = [];
     page.on("request", (req) => {
@@ -1635,14 +1656,14 @@ test.describe("orchestrator chat", () => {
       await route.fulfill({ status: 204, body: "" });
     };
 
-    await openWithToken(page, "approval", "approve-204");
+    await openWithToken(page, "approval", "approve-204-legacy");
     await page.route("**/api/orchestrator/chat/**/approve", fulfill204);
     await page.getByTestId("orch-composer").fill("запусти ноду");
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-approval")).toBeVisible();
     await page.getByTestId("orch-approve").click();
-    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
-    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
     await page.unroute("**/api/orchestrator/chat/**/approve");
 
     await openWithToken(page, "approval", "deny-204");
@@ -1651,8 +1672,8 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-approval")).toBeVisible();
     await page.getByTestId("orch-reject").click();
-    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
-    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
     await page.unroute("**/api/orchestrator/chat/**/approve");
 
     await openWithToken(page, "approvefail", "retry-204");
@@ -1664,8 +1685,8 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approval")).toBeVisible();
     await page.route("**/api/orchestrator/chat/**/approve", fulfill204);
     await page.getByTestId("orch-approve").click();
-    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
-    await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
   });
 
   test("чужой change_id не закрывает карточку, свой закрывает", async ({ page }) => {
