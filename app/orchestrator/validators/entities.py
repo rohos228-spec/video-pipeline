@@ -270,6 +270,14 @@ def _is_shot(item: Any) -> bool:
         return False
     if any(key in item for key in ("имя", "name", "внешность", "code", "код")):
         return False
+    if any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план")):
+        return True
+    # Строка сцены и служебные строки снимка — не шоты, даже с id.
+    if any(
+        key in item
+        for key in ("номер", "number", "kind", "text", "текст", "from_frame_id", "to_frame_id")
+    ):
+        return False
     return True
 
 
