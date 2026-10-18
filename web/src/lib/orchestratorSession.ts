@@ -460,7 +460,10 @@ function noteKillRequested(
     if (next.killNotice?.phase === "stopped") {
       next.killNotice = {
         ...next.killNotice,
-        lateStopWarning: detail || "Поздний ответ: стоп-ключ не установлен",
+        phase: "error",
+        text: detail || "Стоп-ключ не установлен",
+        paidBoundary: false,
+        lateStopWarning: "",
       };
       return;
     }

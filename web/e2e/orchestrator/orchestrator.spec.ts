@@ -43,6 +43,33 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("поздний stop_key_set=false откатывает Остановлено в ошибку", () => {
+  const stopped = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "kill_switch",
+      task_id: 1,
+      seq: 1,
+      session_id: "s",
+      payload: { stop_key_set: true },
+    },
+  });
+  expect(stopped.killNotice?.phase).toBe("stopped");
+  const late = reduceOrchScreen(stopped, {
+    type: "event",
+    event: {
+      type: "kill_switch",
+      task_id: 1,
+      seq: 2,
+      session_id: "s",
+      payload: { stop_key_set: false, detail: "поздний отказ ключа" },
+    },
+  });
+  expect(late.killNotice?.phase).toBe("error");
+  expect(late.killNotice?.text).toBe("поздний отказ ключа");
+  expect(late.killNotice?.lateStopWarning).toBe("");
+});
+
 test("чужая задача узнаётся и по detail, и по коду", () => {
   expect(isForeignTaskBindError("not the active task")).toBe(true);
   expect(isForeignTaskBindError('conflict not_the_active_task')).toBe(true);
@@ -1153,10 +1180,9 @@ test.describe("orchestrator chat", () => {
       stop_key_set: false,
       detail: "поздний отказ ключа",
     });
-    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
-    await expect(banner).toHaveAttribute("data-kill-phase", "stopped");
-    await expect(banner).toContainText("Остановлено");
-    await expect(banner).not.toContainText("Стоп-ключ не установлен");
+    await expect(banner).toHaveAttribute("data-kill-phase", "error");
+    await expect(banner).toContainText("поздний отказ ключа");
+    await expect(banner).not.toContainText("Остановлено");
     await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
   });
 
@@ -1240,10 +1266,9 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-kill").click();
     await page.getByTestId("orch-kill-confirm").click();
     const late = page.getByTestId("orch-kill-status");
-    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
-    await expect(late).toContainText("Остановлено");
-    await expect(page.getByTestId("orch-kill-late-warning")).toContainText("поздний отказ ключа");
-    await expect(late).toHaveAttribute("data-kill-phase", "stopped");
+    await expect(late).toHaveAttribute("data-kill-phase", "error");
+    await expect(late).toContainText("поздний отказ ключа");
+    await expect(late).not.toContainText("Остановлено");
     await expect(page.getByTestId("orch-kill-retry")).toBeVisible();
 
     await openWithContract(page, "killfield401", "kill-field-401");
