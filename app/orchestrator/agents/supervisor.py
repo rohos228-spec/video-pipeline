@@ -247,6 +247,7 @@ class Supervisor:
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
+        self._grant_locks: dict[int, asyncio.Lock] = {}
         self._mutating_result: dict[int, str] = {}
         self._partial_announced: set[tuple[int, int]] = set()
         self._stop_holders: dict[int, set[int]] = {}
@@ -425,10 +426,32 @@ class Supervisor:
         ``retry_grant`` — отдельный одноразовый перезапуск после прогноза.
         ``change_id`` клиент может прислать, но идентификатор одобрения
         выбирает только сервер (``orch-appr-<task>-<n>``).
+
+        Один замок на задачу: второй approve/deny того же ``change_id``
+        ждёт, пока первый запишет решение, и получает 409 без второго execute.
         """
         task_id = self._session_task.get(session_id)
         if task_id is None:
             raise LookupError(session_id)
+        lock = self._grant_locks.setdefault(int(task_id), asyncio.Lock())
+        async with lock:
+            return await self._grant_approval_locked(
+                session_id,
+                decision,
+                retry_grant=retry_grant,
+                change_id=change_id,
+                task_id=task_id,
+            )
+
+    async def _grant_approval_locked(
+        self,
+        session_id: str,
+        decision: ApprovalDecision | str | None,
+        *,
+        retry_grant: bool,
+        change_id: str | None,
+        task_id: int,
+    ) -> dict[str, Any] | None:
         await self._load_appr_state(session_id, task_id)
         self._guard_change_id(
             task_id,
