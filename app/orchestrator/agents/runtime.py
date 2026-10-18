@@ -38,6 +38,15 @@ class Runtime:
         return await self.supervisor.recover_after_restart()
 
 
+def recover_on_start() -> bool:
+    """Поднимать задачи при старте процесса только по явному флагу.
+
+    Пустое значение и всё, кроме 1/true/yes/on, — выключено.
+    """
+    raw = os.environ.get("ORCH_RECOVER_ON_START", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def build_runtime(
     *,
     actions: Any | None = None,

@@ -816,6 +816,7 @@ class Supervisor:
         Платный шаг с ``orch_steps.status=running`` доходит до ``_execute_plan``
         и там останавливается: ``waiting_approval`` / ``paid_outcome_unknown``.
         ``execute`` не вызывается, пока человек не выберет кнопку.
+        Задача с выставленным stop-ключом проекта не стартует.
         """
         rows = await asyncio.to_thread(self.tasks.list_open)
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -839,6 +840,9 @@ class Supervisor:
             primary = interrupted[0]
             task_id = int(primary["id"])
             self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            if self._stop_key_blocks_recover(primary):
+                self._session_task[session_id] = task_id
+                return []
             if await self._spawn_from_checkpoint(task_id, primary):
                 return [task_id]
             self._session_task[session_id] = task_id
@@ -855,8 +859,24 @@ class Supervisor:
         rest_pairs = [(int(row["id"]), str(row.get("goal") or "")) for row in rest]
         self._queued[session_id] = self._merge_queued(session_id, rest_pairs)
         task_id = int(first["id"])
+        if self._stop_key_blocks_recover(first):
+            self._session_task[session_id] = task_id
+            return []
         self._spawn_drive(task_id, session_id, str(first.get("goal") or ""))
         return [task_id]
+
+    def _stop_key_blocks_recover(self, row: dict[str, Any]) -> bool:
+        """Stop-файл проекта запрещает resume и старт очереди после рестарта."""
+        raw = row.get("project_id")
+        try:
+            project_id = int(raw)
+        except (TypeError, ValueError):
+            return False
+        if project_id <= 0:
+            return False
+        from app.services.step_cancel import is_stop_requested
+
+        return is_stop_requested(project_id)
 
     async def _spawn_from_checkpoint(self, task_id: int, row: dict[str, Any]) -> bool:
         running = self._runs.get(task_id)

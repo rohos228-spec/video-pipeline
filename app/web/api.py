@@ -221,11 +221,12 @@ async def _lifespan(app: FastAPI):
         logger.exception("montage job reconcile failed (non-fatal)")
 
     try:
-        from app.orchestrator.agents.runtime import get_runtime
+        from app.orchestrator.agents.runtime import get_runtime, recover_on_start
 
-        recovered = await get_runtime().start()
-        if recovered:
-            logger.info("orchestrator recovered tasks {}", recovered)
+        if recover_on_start():
+            recovered = await get_runtime().start()
+            if recovered:
+                logger.info("orchestrator recovered tasks {}", recovered)
     except Exception:  # noqa: BLE001
         logger.exception("orchestrator restart recovery failed (non-fatal)")
 
