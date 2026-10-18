@@ -1422,7 +1422,9 @@ def reflow_vo_by_sentences(shots, vo):
         if v(s) != new[i]:
             notes.append(f"{s.get('id')}: закадр по предложениям")
             s["закадр"] = new[i]
-    assert " ".join(v(s) for s in rows if v(s)) == norm
+    glued = " ".join(v(s) for s in rows if v(s))
+    if glued != norm:
+        raise RuntimeError("reflow: склейка закадра не сошлась с предложениями")
     return notes
 
 

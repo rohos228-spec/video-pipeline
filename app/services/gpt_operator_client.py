@@ -761,9 +761,8 @@ async def _run_check_vision_batched(
             )
         return bi, res
 
+    # Потолок — check_streams. Не поднимать его до числа батчей: это снимает лимит и ловит 429.
     # Пачки параллельно, без сдвига старта.
-    streams = max(streams, len(batches))
-
     gathered = await asyncio.gather(
         *[_one_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
     )

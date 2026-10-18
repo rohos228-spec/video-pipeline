@@ -623,8 +623,6 @@ export function GenAssistantPanel({
       notifyAgentError("Выберите стиль: текст агента пуст");
       return;
     }
-    setRequest("");
-    setPromptOverrides({});
     setAgentError("");
     setEditorTab("request");
     const draftIds = onPrepareGenerate(req, count);
@@ -659,6 +657,8 @@ export function GenAssistantPanel({
       if (!prompts.length) {
         throw new Error("Промпт не собран агентом — генерация не запущена");
       }
+      setRequest("");
+      setPromptOverrides({});
       const pending = { styleId: style.id, ts: Date.now(), prefix: prompts[0].slice(0, 48) };
       lsSet(LS.pendingStyle, JSON.stringify(pending));
       setPendingArt(pending);

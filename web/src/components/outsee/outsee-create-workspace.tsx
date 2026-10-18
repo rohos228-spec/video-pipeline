@@ -43,7 +43,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { KieField, KieModelSpec } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import { isUnfilledAssistantPrompt } from "@/lib/gen-assistant-styles";
+import { isStyleGuideStub, isUnfilledAssistantPrompt, pairAssistantPrompts } from "@/lib/gen-assistant-styles";
 import { cn } from "@/lib/utils";
 import {
   OUTSEE_ACCENT,
@@ -997,7 +997,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
       let text = (promptOverride ?? prompt).trim();
       if (forceSingle && !text) throw new Error("Введите промпт");
-      if (text.toLowerCase().includes("not example objects from the style guide")) {
+      if (isStyleGuideStub(text)) {
         throw new Error("Промпт не собран агентом — генерация не запущена");
       }
       if (text && mediaType === "image" && preset?.suffix) {
@@ -1850,14 +1850,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     setDraftJobs((prev) => prev.filter((d) => !ids.includes(d.job_id)));
                   }}
                   onGenerateAll={(texts, draftIds) => {
-                    const ready = texts
-                      .map((x) => x.trim())
-                      .filter((t) => !isUnfilledAssistantPrompt(t));
-                    const unused = (draftIds || []).slice(ready.length);
-                    if (unused.length) {
-                      setDraftJobs((prev) => prev.filter((d) => !unused.includes(d.job_id)));
+                    const paired = pairAssistantPrompts(texts, draftIds, (t) =>
+                      isUnfilledAssistantPrompt(t),
+                    );
+                    if (paired.unused.length) {
+                      setDraftJobs((prev) => prev.filter((d) => !paired.unused.includes(d.job_id)));
                     }
-                    if (!ready.length) {
+                    if (!paired.ready.length) {
                       if (draftIds?.length) {
                         setDraftJobs((prev) => prev.filter((d) => !draftIds.includes(d.job_id)));
                       }
@@ -1867,11 +1866,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       });
                       return;
                     }
-                    ready.forEach((t, i) => {
+                    paired.ready.forEach((item) => {
                       createGenerate.mutate({
-                        prompt: t,
+                        prompt: item.text,
                         forceSingle: true,
-                        draftId: draftIds?.[i],
+                        draftId: item.draftId,
                       });
                     });
                     setPrompt("");

@@ -4,6 +4,7 @@ Enforcement stays OFF unless WEB_AUTH_USER+WEB_AUTH_PASSWORD are set (settings.w
 
 from __future__ import annotations
 
+import hmac
 import os
 import re
 
@@ -22,6 +23,24 @@ _USER = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
 
 def _pw_ok(pw: str) -> bool:
     return len(pw) >= 8 and re.search(r"[A-Za-zА-Яа-я]", pw) and re.search(r"\d", pw)
+
+
+def legacy_studio_password_ok(username: str, password: str) -> bool:
+    """Сравнение логина и пароля студии за постоянное время."""
+    if not settings.web_auth_enabled:
+        return False
+    try:
+        user_ok = hmac.compare_digest(
+            username.encode("utf-8"),
+            settings.web_auth_user.strip().encode("utf-8"),
+        )
+        pass_ok = hmac.compare_digest(
+            password.encode("utf-8"),
+            settings.web_auth_password.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(user_ok and pass_ok)
 
 
 def reset_link_base() -> str:
@@ -113,7 +132,7 @@ async def login(body: LoginBody, request: Request) -> dict:
         token = ua.new_session(u["id"], request.headers.get("user-agent", ""))
         return {"ok": True, "token": token, "auth_required": settings.web_auth_enabled, "user": ua.public(u)}
     # legacy single env user from main
-    if settings.web_auth_enabled and body.username == settings.web_auth_user.strip() and body.password == settings.web_auth_password:
+    if legacy_studio_password_ok(body.username, body.password):
         return {"ok": True, "token": issue_session_token(body.username), "auth_required": True, "user": None}
     raise HTTPException(401, "Неверный логин или пароль")
 

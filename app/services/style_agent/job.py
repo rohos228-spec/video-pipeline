@@ -654,8 +654,8 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
         except Exception as exc:  # noqa: BLE001
             logger.debug("style_agent: progress not saved: {}", exc)
 
-    ov = _pipeline_text_override(model)
     try:
+        ov = _pipeline_text_override(model)
         if ov is None:
             raise RuntimeError("нет маршрута 52pay для разбора стиля")
         if not videos:
@@ -675,16 +675,17 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
                 ),
             )
         stopped = bool(result["passport"].get("errors", {}).get("stopped"))
+        done_job: dict[str, Any] = {
+            "status": "stopped" if stopped else "done",
+            "finishedAt": _utc_now(),
+            "stage": "done",
+            "llm": budget.snapshot(),
+            "error": None,
+        }
         await _set_meta_retry(
             project_id,
             {
-                "job": {
-                    "status": "stopped" if stopped else "done",
-                    "finishedAt": _utc_now(),
-                    "stage": "done",
-                    "llm": budget.snapshot(),
-                    "error": None,
-                },
+                "job": done_job,
                 "passport": {"draftAt": _utc_now(), "style_id": result["passport"].get("style_id"), "approvedAt": None},
             },
         )

@@ -2033,6 +2033,7 @@ async def _generate_and_send(
         await session.commit()
         return
 
+    sub_line = getattr(result, "model_substitution", None)
     art = Artifact(
         project_id=project.id,
         frame_id=frame.id,
@@ -2043,6 +2044,11 @@ async def _generate_and_send(
             "gen_id": gen_id,
             "raw_url": result.raw_url or "",
             "shot": shot,
+            **(
+                {"model_substitution": str(sub_line)}
+                if sub_line
+                else {}
+            ),
         },
     )
     session.add(art)
@@ -2052,6 +2058,10 @@ async def _generate_and_send(
         frame.attrs = attrs
     else:
         frame.status = FrameStatus.image_generated
+    if sub_line:
+        from app.services.model_substitution import frame_card_with_substitution
+
+        frame.attrs = frame_card_with_substitution(frame.attrs, str(sub_line))
     await session.flush()
 
     try:
