@@ -575,8 +575,9 @@ class Supervisor:
         """Записать, что kill этой задачи поставил stop, либо что stop чужой."""
         from app.services.step_cancel import is_stop_requested, request_stop
 
-        if project_id in self._stop_external:
+        if project_id in self._stop_external and is_stop_requested(project_id):
             return
+        self._stop_external.discard(project_id)
         holders = self._stop_holders.setdefault(project_id, set())
         if not holders and is_stop_requested(project_id):
             self._stop_external.add(project_id)
@@ -1310,10 +1311,10 @@ class Supervisor:
         }
         project_id = self._task_project_id(task_id) if task_id is not None else None
         if project_id is not None:
-            from app.services.step_cancel import stop_flag_path
+            from app.services.step_cancel import is_stop_requested, stop_flag_path
 
             self._note_kill_stop(project_id, task_id)
-            payload["stop_key_set"] = True
+            payload["stop_key_set"] = is_stop_requested(project_id)
             payload["stop_key"] = stop_flag_path(project_id).name
         await self.bus.publish(session_id, "kill_switch", payload, task_id=task_id)
 
