@@ -6,8 +6,8 @@
  * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
- * Платный approve: POST `.../chat/{session}/approve`, тело `{change_id, decision, retry_grant}`.
- * Карточки change_control (#342) остаются на `/api/orchestrator/approvals/{id}/approve|reject`.
+ * Все решения: POST `.../chat/{session}/approve`, тело `{change_id, decision}`.
+ * Платный повтор добавляет `retry_grant`. `approval_id` и `task_id` не отправляются.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
@@ -25,7 +25,6 @@ import {
 } from "./orchestratorPaidOutcome";
 import {
   ORCH_CONTRACT_VERSION,
-  type OrchApprovalDecision,
   type OrchEvent,
   type OrchKillRequest,
   type OrchKillResult,
@@ -496,28 +495,22 @@ async function postApproval(
   }
 }
 
-export function postOrchApprove(
-  cfg: OrchClientConfig,
-  body: OrchApprovalDecision,
-  signal?: AbortSignal,
-): Promise<ApprovalHttpResult> {
-  return postApproval(
-    cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
-    body,
-    signal,
-  );
+/** Тело `ApproveIn` (#370). Лишние поля (`approval_id`, `task_id`) не отправляются. */
+export interface OrchApproveIn {
+  change_id: string;
+  decision: "approve" | "retry_step" | "deny";
 }
 
-export function postOrchReject(
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. */
+export function postOrchDecision(
   cfg: OrchClientConfig,
-  body: OrchApprovalDecision,
+  body: OrchApproveIn,
   signal?: AbortSignal,
 ): Promise<ApprovalHttpResult> {
   return postApproval(
     cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
-    body,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`,
+    { change_id: body.change_id, decision: body.decision },
     signal,
   );
 }
