@@ -6,14 +6,13 @@
  * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
- * Approve/kill в том роутере нет — мок держит их до WS2.
+ * Решение: POST `.../chat/{session}/approve`, тело `{change_id, decision}`.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
 import type {
-  OrchApprovalDecision,
   OrchEvent,
   OrchKillRequest,
   OrchKillResult,
@@ -230,20 +229,22 @@ export function postOrchActionMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
-export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
-    cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
-    body,
-    signal,
-  );
+/** Тело `ApproveIn` (#370). Лишние поля (`approval_id`, `task_id`) не отправляются. */
+export interface OrchApproveIn {
+  change_id: string;
+  decision: "approve" | "retry_step" | "deny";
 }
 
-export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. */
+export function postOrchDecision(
+  cfg: OrchClientConfig,
+  body: OrchApproveIn,
+  signal?: AbortSignal,
+): Promise<{ ok?: boolean; matched?: boolean; approval_id?: string; change_id?: string; decision?: string | null }> {
   return postJson(
     cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
-    body,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`,
+    { change_id: body.change_id, decision: body.decision },
     signal,
   );
 }
