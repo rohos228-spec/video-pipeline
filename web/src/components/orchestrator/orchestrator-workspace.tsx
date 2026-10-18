@@ -81,6 +81,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     body: "Шаг удаляет кадр или сцену. Одобрить нельзя, задача остановлена.",
     testId: "orch-deletion",
   },
+  deletion_forbidden: {
+    title: "Удаление кадра запрещено",
+    body: "Кадр удаляется только если у действия soft_delete и есть грант. Иначе ядро отвечает deletion_forbidden, одобрить шаг нельзя.",
+    testId: "orch-deletion-forbidden",
+  },
   missing_run_id: {
     title: "Нет идентификатора прогона",
     body: "Платный шаг нельзя начать без run_id. Задача остановлена.",

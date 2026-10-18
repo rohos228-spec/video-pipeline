@@ -488,6 +488,7 @@ export const BLOCK_OUTCOMES = {
   "critic_escalation": "waiting_approval",
   "missing_project_id": "waiting_approval",
   "deletion_blocked": "failed",
+  "deletion_forbidden": "failed",
   "missing_run_id": "failed",
   "empty_plan": "failed",
   "paid_outcome_unknown": "waiting_approval",

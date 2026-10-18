@@ -315,6 +315,22 @@ test("paid_outcome_unknown берёт step_change_id и кнопки approve ret
   expect(JSON.parse(posted)).toEqual({ change_id: "orch-appr-9-1", decision: "deny" });
 });
 
+test("deletion_forbidden объясняет отказ без soft_delete и гранта", async ({ page }) => {
+  const session = "del-forbidden";
+  await openWithToken(page, session);
+  await emit(page, session, "task_failed", { error: "deletion_forbidden" });
+  const card = page.getByTestId("orch-approval");
+  await expect(page.getByTestId("orch-deletion-forbidden")).toHaveText("Удаление кадра запрещено");
+  await expect(card).toContainText("soft_delete");
+  await expect(card).toContainText("грант");
+  await expect(card).toContainText("deletion_forbidden");
+  await expect(card).toHaveAttribute("data-terminal", "true");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+});
+
 test("not_in_whitelist: экран отказывает до карточки, grant 403 пишет понятный текст", async ({ page }) => {
   const session = "wl-deny";
   await openWithToken(page, session);
