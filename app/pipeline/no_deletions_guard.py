@@ -14,14 +14,10 @@ Id, который был неактивен в любом кадре, оста�
 считаются копиями: пропажа одной — ``frames_cleared``. Неактивный шот
 без id, оставшийся в списке «после», на месте: это не ``frame_deleted``
 и не ``frames_cleared``. Физически снять уже помеченный шот — error
-``marked_shot_removed`` и в reject, и в soft: помеченного шота нет
-ни в одном кадре «после». Текст без id — множество, не число копий:
-одна оставшаяся копия того же текста — не ошибка. Перенос с пометкой
-и снятие целой сцены (это ``scene_deleted``) — нет. Явное удаление
-пользователя — op ``delete`` / ``remove`` / ``drop`` / ``удалить``
-(или ``delete_shot`` / ``delete_frame``) с адресом ``(frame_uuid, shot_id)``;
-без кадра ``shot_id`` проходит, только если такой id в before один.
-Проверка или код без этой операции шот не снимают.
+``marked_shot_removed`` и в reject, и в soft, как #379 ``458e964a``:
+помеченного шота нет ни в одном кадре «после». Текст без id — множество,
+не число копий. Перенос с пометкой — не ошибка: id или текст ещё есть
+в «после». Операции не смотрятся: явный delete тот же код не гасит.
 Адрес — пара ``(frame_uuid, shot_id)``, как в #379 ``c48e186b``. Без
 кадра ``shot_id`` проходит только если такой id в before один.
 ``target`` и индекс адрес не заменяют. Сцена с закадром и без живых
@@ -271,22 +267,6 @@ else:
         return _sorted(found)
 
     _ACTIVATE_VERBS = {"activate", "set_active", "restore", "восстановить"}
-    _USER_DELETE_VERBS = {
-        "delete",
-        "remove",
-        "drop",
-        "удалить",
-        "delete_shot",
-        "delete_shots",
-        "remove_shot",
-        "remove_shots",
-        "drop_shot",
-        "delete_frame",
-        "delete_frames",
-        "remove_frame",
-        "remove_frames",
-        "drop_frame",
-    }
     _MARKED_ANON_KEYS = ("закадр", "voiceover", "vo", "text", "текст", "действие")
 
     def _check_revived(before: Any, after: Any, ops: Any) -> list[Violation]:
@@ -933,56 +913,42 @@ else:
 
         ``shot_dropped`` / ``frame_deleted`` / ``frames_cleared`` пропускают
         уже неактивный шот. Здесь активность только ``shot_is_active``.
-        Путь ``кадры/{token}``, id — тот же token. Текст без id — множество:
-        строка ещё есть в «после» — не ошибка, даже если копий стало меньше.
-        Перенос с пометкой — id или текст ещё в снимке. Сцена, которой больше
-        нет, сюда не входит: её снимает ``scene_deleted``. Явный op удаления
-        пользователя с парой ``(frame_uuid, shot_id)`` этот код не ставит.
+        Перенос и шот на месте не ошибка: id или текст ещё есть в «после».
+        Текст без id — множество. ``ops`` не читаются.
         """
 
+        del ops
         if before is None or after is None:
             return []
         from app.services.frame_tombstones import shot_is_active
 
         after_shots = _listed_marked_shots(after)
         after_ids = {fid for shot in after_shots if (fid := _frame_id(shot))}
-        after_anon = {
-            text
-            for shot in after_shots
-            if _frame_id(shot) is None and (text := _marked_anon_text(shot))
-        }
-        forgiven = _user_deleted_shot_ids(before, ops)
-        gone_cells = _removed_cell_ids(before, after)
+        after_anon = {_marked_anon_text(shot) for shot in after_shots if _frame_id(shot) is None}
         found: list[Violation] = []
         seen: set[str] = set()
-        for cell in _collect_cells(before):
-            if _cell_was_removed(cell, gone_cells):
+        for shot in _listed_marked_shots(before):
+            if shot_is_active(shot):
                 continue
-            shots = cell.get("кадры")
-            if not isinstance(shots, list):
-                continue
-            for shot in shots:
-                if not isinstance(shot, dict) or shot_is_active(shot):
+            fid = _frame_id(shot)
+            if fid:
+                if fid in after_ids or fid in seen:
                     continue
-                fid = _frame_id(shot)
-                if fid:
-                    if fid in after_ids or fid in seen or fid in forgiven:
-                        continue
-                    seen.add(fid)
-                    token = fid
-                else:
-                    token = _marked_anon_text(shot)
-                    if not token or token in after_anon or token in seen:
-                        continue
-                    seen.add(token)
-                found.append(
-                    Violation(
-                        code="marked_shot_removed",
-                        severity="error",
-                        path=f"кадры/{token}",
-                        id=token,
-                    )
+                seen.add(fid)
+                token = fid
+            else:
+                token = _marked_anon_text(shot)
+                if not token or token in after_anon or token in seen:
+                    continue
+                seen.add(token)
+            found.append(
+                Violation(
+                    code="marked_shot_removed",
+                    severity="error",
+                    path=f"кадры/{token}",
+                    id=token,
                 )
+            )
         return found
 
     def _marked_anon_text(shot: dict[str, Any]) -> str:
@@ -1002,74 +968,6 @@ else:
                 if isinstance(shot, dict):
                     found.append(shot)
         return found
-
-    def _removed_cell_ids(before: Any, after: Any) -> set[str]:
-        """Id ячеек, которых нет в «после»: их шоты закрывает ``scene_deleted``."""
-
-        after_ids: set[str] = set()
-        after_numbers: set[str] = set()
-        for cell in _collect_cells(after):
-            cid = _cell_id(cell)
-            if cid:
-                after_ids.add(cid)
-            number = _scene_number(cell)
-            if number:
-                after_numbers.add(number)
-        gone: set[str] = set()
-        for cell in _collect_cells(before):
-            cid = _cell_id(cell)
-            number = _scene_number(cell)
-            if cid and cid in after_ids:
-                continue
-            if number and number in after_numbers:
-                continue
-            if cid:
-                gone.add(cid)
-        return gone
-
-    def _cell_was_removed(cell: dict[str, Any], gone: set[str]) -> bool:
-        cid = _cell_id(cell)
-        return bool(cid) and cid in gone
-
-    def _op_deletes(op: dict[str, Any]) -> bool:
-        verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
-        return verb.replace("-", "_") in _USER_DELETE_VERBS
-
-    def _user_deleted_shot_ids(before: Any, ops: Any) -> set[str]:
-        """Явное удаление пользователя, не проверка и не код.
-
-        Адрес — ``(frame_uuid, shot_id)``, как у restore. Без кадра shot_id
-        проходит, только если такой id в before один. Шот без id так не адресовать.
-        """
-
-        owners: dict[str, set[str]] = {}
-        for cell in _collect_cells(before):
-            cid = _cell_id(cell)
-            shots = cell.get("кадры")
-            if not isinstance(shots, list):
-                continue
-            for shot in shots:
-                if not isinstance(shot, dict):
-                    continue
-                fid = _frame_id(shot)
-                if fid:
-                    owners.setdefault(fid, set()).add(cid)
-        allowed: set[str] = set()
-        for op in list(ops or []):
-            if not isinstance(op, dict) or not _op_deletes(op):
-                continue
-            fid = _op_shot_id(op)
-            if not fid:
-                continue
-            frame_ref = str(op.get("frame_uuid") or op.get("frame_id") or "")
-            found = owners.get(fid) or set()
-            if frame_ref:
-                if frame_ref in found:
-                    allowed.add(fid)
-                continue
-            if len(found) == 1:
-                allowed.add(fid)
-        return allowed
 
     def _iter_shots(side: Any) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []

@@ -613,6 +613,7 @@ def _assert_marked_shot_removed(run, rejected) -> None:
     live = {"id": "live", "закадр": "живой"}
     inactive_id = _scene([{"id": "k1", "активен": False, "закадр": "тихо"}, dict(live)])
     deleted_flag = _scene([{"id": "k2", "удалён": True, "закадр": "тихо"}, dict(live)])
+    deleted_word = _scene([{"id": "k2", "удалён": "да", "закадр": "тихо"}, dict(live)])
     nameless = _scene(
         [{"закадр": "фраза на месте", "активен": False}, {"закадр": "живой"}]
     )
@@ -625,6 +626,7 @@ def _assert_marked_shot_removed(run, rejected) -> None:
     cases = (
         (inactive_id, _scene([dict(live)]), ("k1",)),
         (deleted_flag, _scene([dict(live)]), ("k2",)),
+        (deleted_word, _scene([dict(live)]), ("k2",)),
         (nameless, _scene([{"закадр": "живой"}]), ("фраза на месте",)),
         (only_inactive, _scene([]), ("k3", "k4")),
     )
@@ -643,10 +645,12 @@ def _assert_marked_shot_removed(run, rejected) -> None:
             assert after == frozen
 
 
-def test_remove_inactive_shot_is_error() -> None:
-    """Шим: снятие уже помеченного шота — error. Перенос и сцена — как раньше."""
+def test_remove_inactive_shot_is_error(tmp_path) -> None:
+    """Четыре снятия и перенос с пометкой: шим и модуль #379 @ 458e964a."""
 
-    _assert_marked_shot_removed(run_preservation_validators, PreservationRejected)
+    for run, rejected in _preservation_runners(tmp_path):
+        _assert_marked_shot_removed(run, rejected)
+        _assert_move_keeps_mark(run)
 
     kept = _scene(
         [
@@ -664,62 +668,6 @@ def test_remove_inactive_shot_is_error() -> None:
         )
         == []
     )
-    worded = _scene([{"id": "k2", "удалён": "да", "закадр": "тихо"}, {"id": "live", "закадр": "живой"}])
-    with pytest.raises(PreservationRejected) as worded_exc:
-        run_preservation_validators(worded, _scene([{"id": "live", "закадр": "живой"}]), mode="reject")
-    assert any(
-        item.code == "marked_shot_removed" and item.id == "k2" and item.path == "кадры/k2"
-        for item in worded_exc.value.violations
-    )
-
-    addressed = _scene(
-        [
-            {"id": "k1", "активен": False, "закадр": "тихо"},
-            {"id": "live", "закадр": "живой"},
-        ]
-    )
-    without_marked = _scene([{"id": "live", "закадр": "живой"}])
-    user_delete = [{"op": "delete", "frame_uuid": "s1", "shot_id": "k1"}]
-    for mode in ("reject", "soft"):
-        frozen = copy.deepcopy(without_marked)
-        assert (
-            run_preservation_validators(
-                copy.deepcopy(addressed),
-                without_marked,
-                user_delete,
-                mode=mode,
-            )
-            == []
-        )
-        assert without_marked == frozen
-    bare_id = [{"action": "delete_shot", "shot_id": "k1"}]
-    assert (
-        run_preservation_validators(
-            copy.deepcopy(addressed),
-            copy.deepcopy(without_marked),
-            bare_id,
-            mode="reject",
-        )
-        == []
-    )
-    wrong_frame = [{"op": "delete", "frame_uuid": "other", "shot_id": "k1"}]
-    with pytest.raises(PreservationRejected) as wrong_exc:
-        run_preservation_validators(
-            copy.deepcopy(addressed),
-            copy.deepcopy(without_marked),
-            wrong_frame,
-            mode="soft",
-        )
-    assert any(item.code == "marked_shot_removed" and item.id == "k1" for item in wrong_exc.value.violations)
-    no_address = [{"op": "удалить", "frame_uuid": "s1"}]
-    with pytest.raises(PreservationRejected):
-        run_preservation_validators(
-            _scene([{"закадр": "фраза на месте", "активен": False}]),
-            _scene([]),
-            no_address,
-            mode="reject",
-        )
-
     moved_after = {
         "сцены": [
             {"id": "s1", "номер": 1, "кадры": []},
@@ -760,24 +708,38 @@ def test_remove_inactive_shot_is_error() -> None:
         run_preservation_validators(gone, {"сцены": []}, mode="soft")
     codes = [item.code for item in scene_exc.value.violations]
     assert "scene_deleted" in codes
-    assert "marked_shot_removed" not in codes
+    assert "marked_shot_removed" in codes
 
 
-@pytest.mark.xfail(strict=True, reason="waiting for WS1 marked_shot_removed")
-def test_remove_inactive_shot_is_error_on_ws1(tmp_path) -> None:
-    """Модуль #379 @ 768676be ещё пропускает снятие уже помеченного шота."""
+def _assert_move_keeps_mark(run) -> None:
+    """Перенос в другой кадр с той же пометкой и шот на месте — не ошибка."""
 
-    real_run = None
-    real_rejected = None
-    for run, rejected in _preservation_runners(tmp_path):
-        real_run, real_rejected = run, rejected
-    assert real_run is not None and real_rejected is not None
-    assert real_run is not run_preservation_validators
-    _assert_marked_shot_removed(real_run, real_rejected)
+    marked = {"id": "k", "активен": False, "закадр": "тихо"}
+    before = {
+        "сцены": [
+            {"id": "A", "номер": 1, "кадры": [dict(marked), {"id": "a", "закадр": "y"}]},
+            {"id": "B", "номер": 2, "кадры": [{"id": "b", "закадр": "z"}]},
+        ]
+    }
+    moved = {
+        "сцены": [
+            {"id": "A", "номер": 1, "кадры": [{"id": "a", "закадр": "y"}]},
+            {"id": "B", "номер": 2, "кадры": [{"id": "b", "закадр": "z"}, dict(marked)]},
+        ]
+    }
+    stayed = {
+        "сцены": [
+            {"id": "A", "номер": 1, "кадры": [dict(marked), {"id": "a", "закадр": "y"}]},
+            {"id": "B", "номер": 2, "кадры": [{"id": "b", "закадр": "z"}]},
+        ]
+    }
+    for mode in ("reject", "soft"):
+        assert run(before, moved, mode=mode) == []
+        assert run(before, stayed, mode=mode) == []
 
 
 def test_two_idless_copies_to_one_is_frames_cleared(tmp_path) -> None:
-    """Две копии без id стали одной: и шим, и модуль 768676be дают frames_cleared."""
+    """Две копии без id стали одной: и шим, и модуль 458e964a дают frames_cleared."""
 
     before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
     after = _scene([{"действие": "фраза на месте"}])
@@ -808,7 +770,7 @@ def test_non_list_kadry_is_error() -> None:
     """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
     Шим даёт error ``kadry_invalid`` и, для живого id, error ``shot_dropped``.
-    Модуль #379 @ 768676be рядом кладёт warn ``frames_no_data``.
+    Модуль #379 @ 458e964a рядом кладёт warn ``frames_no_data``.
     Точный набор и число не фиксируем: нужен error по сцене или шоту.
     """
 
@@ -936,7 +898,7 @@ def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
 
 
 def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
-    """Поведение шима как у #379 @ 768676be: F1b, F1c, пустой закадр, ``кадры: None``."""
+    """Поведение шима как у #379 @ 458e964a: F1b, F1c, пустой закадр, ``кадры: None``."""
 
     before = {
         "сцены": [
@@ -1040,7 +1002,7 @@ def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
     assert all(item.code != "shot_dropped" for item in char_exc.value.violations)
 
 
-_WS1_SHA = "768676be7c4764a01e9404705f45fb122bdd186f"
+_WS1_SHA = "458e964a7565579d79dd87191b964eba0ae043fe"
 
 
 def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
@@ -1125,7 +1087,7 @@ def test_same_id_active_elsewhere_before_is_not_revived(mode: str) -> None:
     assert any(item.code == "inactive_shot_revived" and item.id == "k1" for item in raised.value.violations)
 
 
-def test_idless_loss_and_named_description_match_768676be() -> None:
+def test_idless_loss_and_named_description_match_458e964a() -> None:
     """Пустой id даёт ``frames_cleared``, ``описание`` и ``attrs.кадры`` не прячут шот."""
 
     kept = {"id": "k1", "закадр": "а"}
@@ -1204,7 +1166,7 @@ def test_idless_loss_and_named_description_match_768676be() -> None:
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Двенадцать точек вызова на настоящем preservation.py из 768676be.
+    """Двенадцать точек вызова на настоящем preservation.py из 458e964a.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -1223,7 +1185,7 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
         tar.extractall(extracted, filter="data")
     module_dir = extracted / "app" / "orchestrator" / "validators"
     assert (module_dir / "preservation.py").is_file()
-    # #379 @ 768676be не содержит activity_flags: его читает наш код, не preservation.
+    # #379 @ 458e964a уже содержит activity_flags (b522133c). Копия — только если файла нет.
     flags = module_dir / "activity_flags.py"
     if not flags.is_file():
         flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())
@@ -1352,7 +1314,7 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
 
 
 def _preservation_runners(tmp_path):
-    """Шим и настоящий preservation.py из 768676be. Модуль в дерево не копируется."""
+    """Шим и настоящий preservation.py из 458e964a. Модуль в дерево не копируется."""
 
     yield run_preservation_validators, PreservationRejected
 
