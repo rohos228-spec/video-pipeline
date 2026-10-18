@@ -432,6 +432,7 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
     else:
         attrs.pop("vo_cell_full", None)
     place = frame_place(parent)
+    old_kadry = attrs.get("кадры")
     kadry: list[dict[str, Any]] = []
     chain: list[dict[str, Any]] = []
     for i, member in enumerate(members):
@@ -448,7 +449,9 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
-    attrs["кадры"] = kadry
+    from app.services.db_apply import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(old_kadry, kadry)
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

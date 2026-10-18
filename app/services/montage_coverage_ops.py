@@ -503,8 +503,29 @@ def _clear_shot_action(frame: Frame) -> None:
     if role != "vo_parent":
         attrs["главное_действие"] = ""
         attrs["main_action"] = ""
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
+
+        def _hide_rows(rows: Any) -> Any:
+            if not isinstance(rows, list):
+                return rows
+            hidden: list[Any] = []
+            for shot in rows:
+                if not isinstance(shot, dict):
+                    hidden.append(shot)
+                    continue
+                item = dict(shot)
+                item["активен"] = False
+                item["карантин"] = True
+                hidden.append(item)
+            return hidden
+
+        if "кадры" in attrs:
+            attrs["кадры"] = _hide_rows(attrs.get("кадры"))
+        if "shots" in attrs:
+            attrs["shots"] = _hide_rows(attrs.get("shots"))
+        logger.warning(
+            "WARN _clear_shot_action: кадры кадра {} помечены, не удалены",
+            getattr(frame, "number", "?"),
+        )
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(

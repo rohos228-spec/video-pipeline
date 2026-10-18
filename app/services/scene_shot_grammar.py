@@ -16,10 +16,33 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
+    """Сверх лимита кадры остаются в списке с активен False."""
+    if limit <= 0 or len(out) <= limit:
+        return
+    normal_n = 0
+    for shot in out:
+        over = False
+        if is_cutaway_shot(shot) and normal_n >= limit:
+            over = False
+        elif normal_n < limit:
+            if not is_cutaway_shot(shot):
+                normal_n += 1
+        else:
+            over = True
+        if over and shot.get("активен") is not False and not shot.get("карантин"):
+            _mark_shot_kept(
+                shot,
+                f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+
+
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
     shot["карантин"] = True
     shot["пометка"] = reason
+    shot["активен"] = False
     logger.warning(
         "WARN {}: кадр {} помечен, не удалён: {}",
         where,
@@ -727,6 +750,7 @@ def merge_gpt_shots_with_action(
         action, cell_number=cell_number, prev_place=prev_place
     )
     if not canonical:
+        _mark_over_shot_limit(cleaned, expected if expected > 0 else cap)
         return cleaned, None
     by_stem: dict[str, dict[str, Any]] = {}
     for s in cleaned:
@@ -806,19 +830,7 @@ def merge_gpt_shots_with_action(
                 continue
             out.append(s)
     # VO-cap / expected: не держим десятки кадров на короткий закадр.
-    limit = expected if expected > 0 else cap
-    if limit > 0 and len(out) > limit:
-        kept: list[dict[str, Any]] = []
-        normal_n = 0
-        for s in out:
-            if is_cutaway_shot(s) and normal_n >= limit:
-                kept.append(s)
-                continue
-            if normal_n < limit:
-                kept.append(s)
-                if not is_cutaway_shot(s):
-                    normal_n += 1
-        out = kept or out[:limit]
+    _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
 
 
@@ -1058,7 +1070,14 @@ def align_shots_to_action_chain(
             scene_place = places.get(n) or ""
             shot_place = str(shot.get("место") or "").strip()
             if scene_place and shot_place and not _same_place(shot_place, scene_place):
-                removed += 1
+                if shot.get("активен") is not False and not shot.get("карантин"):
+                    _mark_shot_kept(
+                        shot,
+                        f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён",
+                        where="align_shots_to_action_chain",
+                    )
+                    removed += 1
+                kept.append(shot)
                 continue
             kept.append(shot)
         if len(kept) != len(shots):
