@@ -2368,7 +2368,9 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = active_planned_shots(parent)
+        # Живые шоты раскладывают закадр. Если живых нет, лестница остаётся
+        # целиком: пустой active-срез не подменяет кадры[] пустыми словарями.
+        planned = active_planned_shots(parent) or planned_shots_from_attrs(parent)
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2481,13 +2483,19 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 else:
                     # Дочерний шот сцены: свой кадр, свой кусок закадра.
                     # shot2-промт не трогаем — картинка из PNG родителя.
-                    # Пустой шот и шот без id не затирают уже лежащие кадры[].
+                    # Пустой шот не затирает кадры[]. Шот без id, но с текстом,
+                    # дописывается через merge: старые id остаются.
                     shot_id = ""
+                    has_body = False
                     if isinstance(shot, dict):
                         shot_id = str(
                             shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
                         ).strip()
-                    if shot and shot_id:
+                        has_body = any(
+                            str(shot.get(key) or "").strip()
+                            for key in ("закадр", "действие", "место", "план")
+                        )
+                    if shot and (shot_id or has_body):
                         from app.services.frame_tombstones import merge_kadry_keep_missing
 
                         attrs["кадры"] = merge_kadry_keep_missing(
