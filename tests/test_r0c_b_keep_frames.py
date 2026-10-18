@@ -1478,7 +1478,12 @@ def test_export_keeps_marked_frame_timecode(tmp_path: Path) -> None:
     from openpyxl import Workbook, load_workbook
 
     from app.services.db_apply import export_project_xlsx
-    from app.services.xlsx_v8_import import ROW_TIMECODE_V8, ROW_VOICEOVER_V8
+    from app.services.xlsx_v8_import import (
+        INACTIVE_COLUMN_MARK,
+        ROW_FRAME_ACTIVITY_V8,
+        ROW_TIMECODE_V8,
+        ROW_VOICEOVER_V8,
+    )
 
     path = tmp_path / "project.xlsx"
     wb = Workbook()
@@ -1514,6 +1519,8 @@ def test_export_keeps_marked_frame_timecode(tmp_path: Path) -> None:
     sheet = wb2["план"]
     assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
     assert sheet.cell(ROW_VOICEOVER_V8, 4).value == "секретный закадр"
+    assert sheet.cell(ROW_FRAME_ACTIVITY_V8, 1).value == "активен"
+    assert sheet.cell(ROW_FRAME_ACTIVITY_V8, marked.number + 2).value == INACTIVE_COLUMN_MARK
     timecode = str(sheet.cell(ROW_TIMECODE_V8, 4).value or "")
     assert timecode
     assert "0:00.00" in timecode and "0:03.00" in timecode

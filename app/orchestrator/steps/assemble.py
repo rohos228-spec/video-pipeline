@@ -160,6 +160,7 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
         )
 
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
     from app.services.frame_tombstones import frame_is_active
 
     # Полный список до фильтра: R15 и per-frame таймлайн должны видеть
@@ -182,6 +183,8 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
     frames: list[Frame] = []
     skipped_no_video: list[int] = []
     for fr in frames_all:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         p1 = await _scene_video_path(session, project, fr, shot=1)
         p2 = await _scene_video_path(session, project, fr, shot=2)
         if p1 is not None or p2 is not None:

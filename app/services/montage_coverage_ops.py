@@ -800,21 +800,24 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
+    """Живые шоты ячейки: leftover и скрытый кадр не получают слот покрытия.
 
     Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
     а помеченный шот возвращается новым активным кадром.
     """
-    from app.services.frame_tombstones import frame_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active
+
+    def _shown(fr: Frame) -> bool:
+        return frame_is_active(getattr(fr, "attrs", None) or {})
 
     live = [
         m
         for m in members
-        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
+        if not bool(_cs(m).get("leftover")) and _shown(m)
     ]
     if not live:
         live = [parent]
-    elif parent not in live and frame_is_active(parent):
+    elif parent not in live and _shown(parent):
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1321,7 +1324,7 @@ async def apply_coverage_scene_action(
         )
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    from app.services.vo_shot_expand import shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
 
     # attrs["кадры"] хранит полный список, включая помеченные и хвост
     # длиннее MAX_IMPROVE_SHOTS. На кадры идёт только layout живых шотов.
@@ -1366,7 +1369,9 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = kadry
+    from app.services.db_apply import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
     parent.attrs = attrs
     _flag_attrs(parent)
 

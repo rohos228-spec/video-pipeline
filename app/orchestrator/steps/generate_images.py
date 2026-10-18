@@ -541,10 +541,12 @@ async def _load_refs_for_frame(
 
 def frame_hidden_from_paid_generation(fr: Frame) -> bool:
     """Скрытый кадр не ставим в платную очередь."""
+    from app.orchestrator.validators.activity_flags import frame_is_active
+
     attrs = getattr(fr, "attrs", None) or {}
     if not isinstance(attrs, dict):
         return False
-    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+    return not frame_is_active(attrs)
 
 
 def requeue_failed_frames_without_png(

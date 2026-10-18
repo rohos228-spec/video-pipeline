@@ -27,6 +27,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.orchestrator.validators.activity_flags import shot_is_active
 from app.services.scene_shot_grammar import (
     classify_object,
     visible_len,
@@ -2082,7 +2083,7 @@ def apply_scene_plan_cells(
                     and id(shot) not in seen
                     and shot.get("_cell") == c["key"]
                 ):
-                    if shot.get("активен") is not False:
+                    if shot_is_active(shot):
                         shot["активен"] = False
                         shot["карантин"] = True
                         shot["пометка"] = "срез плана не забрал кадр — сохранён"
