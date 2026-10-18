@@ -215,3 +215,49 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         _project65_and_readers_stay_active()
         _delegates_when_ws1_module_is_present()
         assert shot_is_active({}) is True
+
+
+_WS1_FLAGS_SHA = "d984a52d"
+
+
+def test_activity_matrix_matches_ws1_activity_flags(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Локальная копия и ``activity_flags.py`` из d984a52d дают одну матрицу.
+
+    Файл #371 только во временном каталоге и в репозиторий не попадает.
+    """
+    import importlib.util
+    import io
+    import subprocess
+    import tarfile
+
+    repo = __import__("pathlib").Path(__file__).resolve().parents[1]
+    archive = subprocess.run(
+        ["git", "archive", _WS1_FLAGS_SHA, "app/orchestrator/validators/activity_flags.py"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        tar.extractall(tmp_path, filter="data")
+    path = tmp_path / "app" / "orchestrator" / "validators" / "activity_flags.py"
+    spec = importlib.util.spec_from_file_location("ws1_activity_flags_probe", path)
+    assert spec is not None and spec.loader is not None
+    ws1 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ws1)
+    sys.modules.pop("app.orchestrator.validators.activity_flags", None)
+
+    caplog.set_level(logging.WARNING)
+    for kind, payload, expected, warns in _CASES:
+        caplog.clear()
+        if kind == "shot":
+            local = shot_is_active(payload)
+        else:
+            local = frame_is_active(_as_frame(payload))
+        local_warn = any("активен" in record.getMessage() for record in caplog.records)
+        caplog.clear()
+        remote = ws1.shot_is_active(payload) if kind == "shot" else ws1.frame_is_active(payload)
+        remote_warn = any("активен" in record.getMessage() for record in caplog.records)
+        assert local is expected
+        assert remote is expected
+        assert local_warn is warns
+        assert remote_warn is warns
