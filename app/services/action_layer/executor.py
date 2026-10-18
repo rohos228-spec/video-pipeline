@@ -171,7 +171,14 @@ async def drain_background() -> None:
             task.cancel()
             pending.append(task)
     if pending:
-        await asyncio.wait(pending, timeout=5)
+        _done, still = await asyncio.wait(pending, timeout=5)
+        if still:
+            logger.warning(
+                "action layer: drain_background timeout, осталось задач: {}",
+                len(still),
+            )
+    _TASKS.clear()
+    _ORPHANS.clear()
 
 
 async def _finish(plan_id: str, status: str, *, error: str = "", reason: str = "") -> None:
