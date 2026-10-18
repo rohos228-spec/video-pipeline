@@ -22,7 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
-from app.orchestrator.validators.activity_flags import flag_is_false, flag_is_true
+from app.orchestrator.validators.activity_flags import (
+    flag_is_false,
+    flag_is_true,
+    frame_is_active,
+)
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -1397,9 +1401,32 @@ def export_project_xlsx(
             snap = backup_to_old(path)
         except Exception:  # noqa: BLE001
             snap = None
+        from loguru import logger
+
         cells = 0
+        plan_rows = {
+            ROW_IMAGE_PROMPT_V8,
+            ROW_IMAGE_PROMPT_2_V8,
+            ROW_VIDEO_PROMPT_V8,
+            ROW_VIDEO_PROMPT_2_V8,
+            ROW_VOICEOVER_V8,
+            ROW_DURATION_V8,
+            ROW_TIMECODE_V8,
+            ROW_PERSONS_PRIMARY,
+            *(_ATTR_EXCEL_ROWS.values()),
+        }
         for fr in frames:
             col = fr.number + 2
+            raw_attrs = getattr(fr, "attrs", None)
+            if not frame_is_active(raw_attrs if isinstance(raw_attrs, dict) else {}):
+                logger.warning(
+                    "WARN export_project_xlsx: кадр #{} неактивен — колонка плана очищена, строка БД на месте",
+                    fr.number,
+                )
+                for row in plan_rows:
+                    ws.cell(row=row, column=col).value = None
+                    cells += 1
+                continue
             attrs = fr.attrs or {}
             writes = {
                 ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
