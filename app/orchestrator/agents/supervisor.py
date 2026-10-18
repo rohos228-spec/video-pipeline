@@ -48,7 +48,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.orchestrator.agents.executor import effective_risk, run_many
+from app.orchestrator.agents.executor import effective_risk, run_many, tighten_paid_step
 from app.orchestrator.agents.stubs import (
     ActionBackedExecutor,
     StubCritic,
@@ -104,7 +104,14 @@ _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 _APPROVED_MARK = "\n\x1eorchfp:"
 _UNKNOWN_MARK = "\n\x1eorchun:"
+_BLOCK_MARK = "\n\x1eorchbr:"
 _PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
+_PERSISTED_BLOCKS = frozenset(
+    {
+        ApprovalReason.budget_exhausted.value,
+        *_PAID_OUTCOME_REASONS,
+    }
+)
 
 
 class InvalidTransition(RuntimeError):
@@ -225,12 +232,22 @@ class Supervisor:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
         session_id = str(row["session_id"])
         self._arm_resume(session_id, task_id, data)
-        if self._status(task_id) is not TaskStatus.executing:
-            await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         await self._flush_kill_publishes()
         if not data.plan:
+            if self._status(task_id) is not TaskStatus.executing:
+                await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
             await self._apply_block(task_id, session_id, "empty_plan")
             return
+        if self._block_holds_resume(task_id, data):
+            return
+        if (
+            self._block_reason.get(task_id) == ApprovalReason.budget_exhausted.value
+            and int(data.position) >= len(data.plan)
+        ):
+            self._budget_stop.discard(task_id)
+            self._block_reason.pop(task_id, None)
+        if self._status(task_id) is not TaskStatus.executing:
+            await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         self._runs[task_id] = asyncio.create_task(
             self._execute_plan(
                 task_id,
@@ -288,6 +305,9 @@ class Supervisor:
             }
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
+        live = self._runs.get(task_id)
+        if live is not None and not live.done():
+            raise InvalidTransition("grant_approval живой задачи")
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
         decided = _coerce_decision(decision)
@@ -323,9 +343,11 @@ class Supervisor:
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         self._budget_stop.discard(task_id)
         if data is None:
+            self._clear_budget_block(task_id)
             await self._replan_from_grant(task_id, session_id)
             return
         self._arm_resume(session_id, task_id, data)
+        self._clear_budget_block(task_id)
         await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
         await self._flush_kill_publishes()
         plan = list(data.plan)
@@ -339,7 +361,25 @@ class Supervisor:
             await self._replan_from_grant(task_id, session_id)
             return
         position = int(data.position)
-        if not paid_outcome and position < len(plan):
+        if paid_outcome:
+            if not self._accept_confirmed_paid(task_id, plan, position):
+                action = plan[position].action if position < len(plan) else ""
+                extra = {"action": action} if action else None
+                await self._apply_block(task_id, session_id, "paid_outcome_unknown", extra=extra)
+                return
+            self._paid_outcome_hold.discard(task_id)
+            self._block_reason.pop(task_id, None)
+            position += 1
+            if self._paid_spend_fills_budget(task_id):
+                self._budget_stop.add(task_id)
+                await self._checkpoint(task_id, session_id, plan, position)
+                await self._apply_block(
+                    task_id,
+                    session_id,
+                    ApprovalReason.budget_exhausted.value,
+                )
+                return
+        elif position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
@@ -379,7 +419,37 @@ class Supervisor:
             self._merge_appr_pack(task_id, session_id, packed)
         if mark:
             self._approved[task_id] = mark
+        self._restore_block(task_id, data.context or "")
         self._remember_paid(task_id)
+
+    def _restore_block(self, task_id: int, raw: str) -> None:
+        reason = _unpack_block(raw)
+        if reason not in _PERSISTED_BLOCKS:
+            return
+        self._block_reason[task_id] = reason
+        if reason == ApprovalReason.budget_exhausted.value:
+            self._budget_stop.add(task_id)
+        if reason in _PAID_OUTCOME_REASONS:
+            self._paid_outcome_hold.add(task_id)
+
+    def _clear_budget_block(self, task_id: int) -> None:
+        """Грант снимает бюджетный стоп уже после восстановления чекпоинта."""
+        self._budget_stop.discard(task_id)
+        if self._block_reason.get(task_id) == ApprovalReason.budget_exhausted.value:
+            self._block_reason.pop(task_id, None)
+
+    def _drop_block_text(self, task_id: int) -> None:
+        """Снять метку блока из памяти контекста. Видимая оценка шага остаётся."""
+        prev, _packed = _split_appr_context(self._context.get(task_id, ""))
+        visible, _mark = _unpack_approved(prev)
+        self._context[task_id] = visible
+
+    def _block_holds_resume(self, task_id: int, data: CheckpointData) -> bool:
+        """Пока впереди платный или бюджетный шаг, resume без гранта не идёт."""
+        reason = self._block_reason.get(task_id)
+        if reason not in _PERSISTED_BLOCKS:
+            return False
+        return int(data.position) < len(data.plan)
 
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
@@ -391,6 +461,17 @@ class Supervisor:
         task_id = self._session_task.get(session_id)
         if task_id is not None:
             self.tasks.set_flag(task_id, cancel_requested=1)
+        if (
+            task_id is not None
+            and self._status(task_id) is TaskStatus.waiting_approval
+            and self._block_reason.get(task_id) in _PAID_OUTCOME_REASONS
+        ):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            self._spawn(self._deny_paid_outcome(session_id, task_id))
+            return
         if task_id is not None and task_id in self._paid_open:
             self._paid_outcome_hold.add(task_id)
             try:
@@ -827,8 +908,9 @@ class Supervisor:
             self.tasks.add_spend(task_id, actions=cost)
         note = f"estimate {step.action} {cost}"
         prev, _packed = _split_appr_context(self._context.get(task_id, ""))
-        if note not in prev:
-            self._context[task_id] = (prev + "\n" + note).strip()
+        visible = _strip_unknown(prev).split(_BLOCK_MARK, 1)[0]
+        if note not in visible:
+            self._context[task_id] = f"{note}\n{prev}".strip() if prev else note
         return cost
 
     async def _stamp_estimate(
@@ -837,7 +919,10 @@ class Supervisor:
         session_id: str,
         data: CheckpointData,
     ) -> CheckpointData:
-        raw_context = self._context.get(task_id, "") or data.context
+        raw_context = self._context.get(task_id, "")
+        if not raw_context:
+            stored, _packed = _split_appr_context(data.context or "")
+            raw_context, _mark = _unpack_approved(stored)
         stamped = data.model_copy(
             update={
                 "spend": self._spend(task_id),
@@ -851,14 +936,37 @@ class Supervisor:
     async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""
         self._retry_armed.pop(task_id, None)
+        self._paid_outcome_hold.discard(task_id)
         data, step = await self._checkpoint_step(task_id)
         row = self._running_paid_row(task_id, step)
-        if row is not None:
+        if row is not None and row.get("change_id"):
+            text = str(row["change_id"])
+            self.tasks.finish_step(int(row["id"]), "done", text, float(row.get("cost") or 0))
+            bucket = self._change_ids.setdefault(task_id, [])
+            if text not in bucket:
+                bucket.append(text)
+        elif row is not None:
             self._count_unknown_attempt(task_id, step, row, "done")
         self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
         self._block_reason.pop(task_id, None)
+        self._drop_block_text(task_id)
         data = await self._stamp_estimate(task_id, session_id, data)
-        await self._continue_from_checkpoint(task_id, session_id, data)
+        advanced = int(data.position) + 1
+        if self._paid_spend_fills_budget(task_id):
+            self._budget_stop.add(task_id)
+            self._block_reason[task_id] = ApprovalReason.budget_exhausted.value
+            await self._checkpoint(task_id, session_id, list(data.plan), advanced)
+            await self._replace_waiting_reason(
+                task_id,
+                session_id,
+                ApprovalReason.budget_exhausted.value,
+            )
+            return
+        await self._continue_from_checkpoint(
+            task_id,
+            session_id,
+            data.model_copy(update={"position": advanced}),
+        )
 
     async def _deny_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Остановить задачу»: шаг и задача failed, execute не вызывается."""
@@ -963,11 +1071,14 @@ class Supervisor:
             }
         self._retry_spent.add((task_id, key))
         self._retry_armed.pop(task_id, None)
+        self._paid_outcome_hold.discard(task_id)
         row = self._running_paid_row(task_id, step)
         if row is not None:
             self._count_unknown_attempt(task_id, step, row, "cancelled")
         self._block_reason.pop(task_id, None)
+        self._drop_block_text(task_id)
         data = await self._stamp_estimate(task_id, session_id, data)
+        self._risk_granted.add(self._risk_grant_key(task_id, int(data.position), step))
         await self._continue_from_checkpoint(task_id, session_id, data)
         return {
             "executed": True,
@@ -1095,8 +1206,9 @@ class Supervisor:
             return None
         if self._status(task_id) is not TaskStatus.planning:
             await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
-        plan = list(
-            await self._cancellable(
+        plan = [
+            tighten_paid_step(self.actions, step)
+            for step in await self._cancellable(
                 session_id,
                 self.planner.make_plan(
                     goal,
@@ -1104,7 +1216,7 @@ class Supervisor:
                     **self._llm_kwargs(task_id, AgentRole.planner.value),
                 ),
             )
-        )
+        ]
         self._save_plan(task_id, plan)
         if await self._absorb_budget(task_id, session_id, getattr(self.planner, "last_response", None)):
             return None
@@ -1297,6 +1409,7 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        plan = [tighten_paid_step(self.actions, step) for step in plan]
         if forecast_unknown(plan):
             await self._apply_block(task_id, session_id, "unknown_cost")
             return
@@ -1347,6 +1460,10 @@ class Supervisor:
             if len(batch) > 1 and any(not step_is_readonly(item, self.actions) for item in batch):
                 await self._fail_closed(task_id, session_id, "parallel_risk")
                 return
+            if len(batch) == 1 and step.paid and self._running_paid_row(task_id, step) is not None:
+                await self._hold_paid_unknown(task_id, session_id, step)
+                return
+
             risk = effective_risk(self.actions, step)
             if risk in APPROVAL_RISKS and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
                 await self._checkpoint(task_id, session_id, plan, index)
@@ -1836,6 +1953,7 @@ class Supervisor:
     ) -> None:
         """Статус блокировки берётся из ``BLOCK_OUTCOMES``, не из ветки вызова."""
         self._block_reason[task_id] = reason
+        self._persist_block_reason(task_id, session_id)
         outcome = block_status(reason)
         if outcome is TaskStatus.waiting_approval:
             await self._escalate(task_id, session_id, reason, extra=extra)
@@ -1846,6 +1964,19 @@ class Supervisor:
                 await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
             return
         await self._fail_closed(task_id, session_id, reason)
+
+    def _persist_block_reason(self, task_id: int, session_id: str) -> None:
+        reason = self._block_reason.get(task_id)
+        if reason not in _PERSISTED_BLOCKS:
+            return
+        data = self.checkpoints.load_latest(task_id)
+        if data is None:
+            return
+        visible, mark = _unpack_approved(data.context or "")
+        packed = _pack_approved(visible, mark, reason)
+        if packed == (data.context or ""):
+            return
+        self.checkpoints.save(task_id, session_id, data.model_copy(update={"context": packed}))
 
     async def _fail_validation(self, task_id: int, session_id: str) -> None:
         await self._apply_block(task_id, session_id, "validator_blocked")
@@ -1984,6 +2115,52 @@ class Supervisor:
         if noted:
             await self._checkpoint(task_id, session_id, plan, index)
 
+    def _accept_confirmed_paid(self, task_id: int, plan: list[PlanStep], position: int) -> bool:
+        """Закрыть running-строку с подтверждённым change_id как done."""
+        if position < 0 or position >= len(plan):
+            return False
+        step = plan[position]
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "running" or not row.get("paid"):
+                continue
+            if str(row.get("action_name") or "") != step.action:
+                continue
+            change_id = row.get("change_id")
+            if not change_id:
+                return False
+            text = str(change_id)
+            self.tasks.finish_step(int(row["id"]), "done", text, float(row.get("cost") or 0))
+            self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
+            bucket = self._change_ids.setdefault(task_id, [])
+            if text not in bucket:
+                bucket.append(text)
+            return True
+        return False
+
+    def _paid_spend_fills_budget(self, task_id: int) -> bool:
+        """Уже списанная стоимость платных шагов заняла потолок прогноза."""
+        limit = server_forecast_limit()
+        if ceiling_blocks(limit):
+            return True
+        return self._spend(task_id).actions >= float(limit)
+
+    async def _deny_paid_outcome(self, session_id: str, task_id: int) -> None:
+        """Отказ по неизвестному платному исходу: задача cancelled, строка остаётся."""
+        self._paid_outcome_hold.discard(task_id)
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "running":
+                continue
+            change_id = row.get("change_id")
+            self.tasks.finish_step(
+                int(row["id"]),
+                "cancelled",
+                str(change_id) if change_id else None,
+                float(row.get("cost") or 0),
+            )
+        current = self._status(task_id)
+        if current is not None and current not in TERMINAL_STATUSES:
+            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
+
     async def _mark_paid_outcome_unknown(self, session_id: str, task_id: int) -> None:
         """Kill или interrupt во время платного шага: исход неизвестен, отката нет."""
         if task_id not in self._paid_outcome_hold:
@@ -2002,6 +2179,29 @@ class Supervisor:
             "paid_outcome_unknown",
             extra={"action": action} if action else None,
         )
+
+    async def _hold_paid_unknown(self, task_id: int, session_id: str, step: PlanStep) -> None:
+        await self._apply_block(
+            task_id,
+            session_id,
+            "paid_unknown_outcome",
+            extra={"action": step.action},
+        )
+
+    async def _replace_waiting_reason(
+        self,
+        task_id: int,
+        session_id: str,
+        reason: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Задача уже ``waiting_approval``: новая причина без повторного перехода."""
+        self._block_reason[task_id] = reason
+        self._persist_block_reason(task_id, session_id)
+        payload: dict[str, Any] = {"reason": reason, "task_id": task_id}
+        if extra:
+            payload.update(extra)
+        await self.publish_approval_required(session_id, payload, task_id=task_id)
 
     def _remember_paid(self, task_id: int) -> None:
         found = self._paid_done.setdefault(task_id, set())
@@ -2237,6 +2437,7 @@ class Supervisor:
                 reason = payload.get("reason")
                 if key and reason == "paid_outcome_unknown" and key not in self._block_reason:
                     self._block_reason[key] = "paid_outcome_unknown"
+                    self._paid_outcome_hold.add(key)
                 continue
             if change_id is None:
                 continue
@@ -2320,8 +2521,13 @@ class Supervisor:
     def _checkpoint_context(self, task_id: int) -> str:
         visible, _packed = _split_appr_context(self._context.get(task_id, ""))
         visible, _mark = _unpack_approved(visible)
+        reason = self._block_reason.get(task_id)
         packed = _pack_unknown(
-            _pack_approved(_strip_unknown(visible), self._approved.get(task_id)),
+            _pack_approved(
+                _strip_unknown(visible),
+                self._approved.get(task_id),
+                reason if reason in _PERSISTED_BLOCKS else None,
+            ),
             self._unknown_step.get(task_id),
         )
         return self._context_with_appr(task_id, packed)
@@ -2345,7 +2551,11 @@ class Supervisor:
         memory, memory_mark = _unpack_approved(memory)
         base = memory or stored
         mark = self._approved.get(int(task_id)) or memory_mark or stored_mark
-        packed_context = self._context_with_appr(int(task_id), _pack_approved(base, mark))
+        reason = self._block_reason.get(int(task_id))
+        packed_context = self._context_with_appr(
+            int(task_id),
+            _pack_approved(base, mark, reason if reason in _PERSISTED_BLOCKS else None),
+        )
         if packed_context == data.context:
             return
         await asyncio.to_thread(
@@ -2485,21 +2695,28 @@ def _plan_fingerprint(plan: list[PlanStep]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
-def _pack_approved(visible: str, fingerprint: str | None) -> str:
-    """Отпечаток approve лежит в JSON чекпоинта, в поле ``context``."""
-    base = _strip_unknown((visible or "").split(_APPROVED_MARK, 1)[0])
-    if not fingerprint:
-        return base
-    return f"{base}{_APPROVED_MARK}{fingerprint}"
+def _pack_approved(
+    visible: str,
+    fingerprint: str | None,
+    block_reason: str | None = None,
+) -> str:
+    """Отпечаток approve и причина блока лежат в поле ``context`` чекпоинта."""
+    base = _strip_unknown((visible or "").split(_APPROVED_MARK, 1)[0]).split(_BLOCK_MARK, 1)[0]
+    packed = base
+    if fingerprint:
+        packed += f"{_APPROVED_MARK}{fingerprint}"
+    if block_reason in _PERSISTED_BLOCKS:
+        packed += f"{_BLOCK_MARK}{block_reason}"
+    return packed
 
 
 def _unpack_approved(raw: str) -> tuple[str, str | None]:
     text = raw or ""
     if _APPROVED_MARK not in text:
-        return _strip_unknown(text), None
+        return _strip_unknown(text).split(_BLOCK_MARK, 1)[0], None
     visible, mark = text.split(_APPROVED_MARK, 1)
-    mark = mark.split(_UNKNOWN_MARK, 1)[0].strip()
-    return _strip_unknown(visible), mark or None
+    mark = mark.split(_UNKNOWN_MARK, 1)[0].split(_BLOCK_MARK, 1)[0].strip()
+    return _strip_unknown(visible).split(_BLOCK_MARK, 1)[0], mark or None
 
 
 def _strip_unknown(text: str) -> str:
@@ -2518,7 +2735,7 @@ def _unpack_unknown(raw: str) -> dict[str, Any] | None:
     if _UNKNOWN_MARK not in (raw or ""):
         return None
     chunk = raw.split(_UNKNOWN_MARK, 1)[1]
-    for mark in (_APPR_MARK, _APPROVED_MARK):
+    for mark in (_APPR_MARK, _APPROVED_MARK, _BLOCK_MARK):
         chunk = chunk.split(mark, 1)[0]
     try:
         data = json.loads(chunk)
@@ -2527,6 +2744,16 @@ def _unpack_unknown(raw: str) -> dict[str, Any] | None:
     if not isinstance(data, dict) or "position" not in data:
         return None
     return data
+
+
+def _unpack_block(raw: str) -> str | None:
+    if _BLOCK_MARK not in (raw or ""):
+        return None
+    reason = raw.split(_BLOCK_MARK, 1)[1]
+    for mark in (_APPR_MARK, _UNKNOWN_MARK, _APPROVED_MARK, "\n"):
+        reason = reason.split(mark, 1)[0]
+    reason = reason.strip()
+    return reason or None
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:
