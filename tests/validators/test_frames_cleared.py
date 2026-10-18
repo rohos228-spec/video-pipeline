@@ -113,6 +113,37 @@ def test_idless_shot_loss_is_frames_cleared() -> None:
         )
 
 
+def test_duplicate_idless_same_text_loss_is_frames_cleared() -> None:
+    """Два шота без id с одним текстом: удаление одного — frames_cleared.
+
+    Перенос копии в другую ячейку той же сцены остаётся допустимым.
+    """
+
+    one = {"id": "", "закадр": "кусок"}
+    two = [{"id": "", "закадр": "кусок"}, {"id": "", "закадр": "кусок"}]
+
+    def wrapped(shots: list[dict], *, key: str) -> dict:
+        if key == "cells":
+            return {"cells": [{"id": "c", "сцена": "1", "кадры": shots}]}
+        return {"frames": [{"id": "u1", "attrs": {"кадры": shots}}]}
+
+    for key in ("cells", "frames"):
+        with pytest.raises(PreservationRejected) as raised:
+            run_preservation_validators(wrapped(two, key=key), wrapped([one], key=key), mode="reject")
+        assert any(
+            item.code == "frames_cleared" and item.id == "кусок"
+            for item in raised.value.violations
+        )
+
+    moved = {
+        "cells": [
+            {"id": "c1", "сцена": "1", "кадры": [one]},
+            {"id": "c2", "сцена": "1", "кадры": [dict(one)]},
+        ]
+    }
+    assert check_frames_cleared(wrapped(two, key="cells"), moved) == []
+
+
 def test_non_list_is_not_frames_cleared() -> None:
     before = _cells({"id": "child", "сцена": "1", "кадры": [{"id": "k1", "сцена": 1}]})
     after = _cells({"id": "child", "сцена": "1", "кадры": "нет"})
