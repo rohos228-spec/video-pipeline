@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from app.orchestrator.validators.preservation import run_preservation_validators
 from app.orchestrator.validators.shot_dropped import check_shot_dropped
 
 
@@ -263,3 +264,32 @@ def test_detach_replica_is_caught_or_kept() -> None:
     before = _snap_cells(frames)
     detach_duplicate_vo_replica_cells(frames)
     _assert_missing_shots_are_caught(before, _snap_cells(frames))
+
+
+def test_add_shot_without_vo_key_passes() -> None:
+    """Нет ключа «закадр» — пустой закадр, как "". Старые шоты не shot_dropped."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза. Вторая фраза.",
+                "кадры": [
+                    {"id": "a", "закадр": "Первая фраза."},
+                    {"id": "b", "закадр": "Вторая фраза."},
+                ],
+            }
+        ]
+    }
+
+    def with_extra(extra: dict) -> dict:
+        scene = copy.deepcopy(before["сцены"][0])
+        scene["кадры"] = [*scene["кадры"], extra]
+        return {"сцены": [scene]}
+
+    empty = run_preservation_validators(before, with_extra({"id": "k9", "закадр": ""}), mode="reject")
+    missing = run_preservation_validators(before, with_extra({"id": "k9"}), mode="reject")
+    assert empty == []
+    assert missing == []
+    assert all(item.code != "shot_dropped" for item in missing)
