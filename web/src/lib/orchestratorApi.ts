@@ -518,6 +518,15 @@ export interface OrchApproveResult {
 
 const APPROVE_NOT_JSON = "ответ approve — не JSON 200";
 
+const APPROVE_REFUSAL: Record<number, string> = {
+  401: "401 — нет токена или токен неверный",
+  400: "400 — плохой session_id",
+  422: "422 — тело не по схеме",
+  404: "404 — нет сессии, change_id из чужой сессии или неизвестный change_id",
+  409: "409 — решение уже принято, change_id не текущий или переход недопустим",
+  403: "403 — not_in_whitelist",
+};
+
 /** Все решения: `POST /api/orchestrator/chat/{session}/approve`. 204 — отказ. */
 export async function postOrchDecision(
   cfg: OrchClientConfig,
@@ -539,7 +548,8 @@ export async function postOrchDecision(
     signal,
   });
   if (res.status === 204) throw new OrchApiError(204, APPROVE_NOT_JSON);
-  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+  const refusal = APPROVE_REFUSAL[res.status];
+  if (refusal) throw new OrchApiError(res.status, refusal);
   if (!res.ok) throw new OrchApiError(res.status, await readError(res));
   if (res.status !== 200) throw new OrchApiError(res.status, APPROVE_NOT_JSON);
   let json: unknown;
@@ -658,6 +668,17 @@ export interface ReportMutation {
   report_id: number;
   version: number;
   change_id: string;
+}
+
+export interface OrchSessionSnapshot {
+  session: string;
+  task_id: number | null;
+  status: string;
+  resume_allowed: boolean;
+}
+
+export function getOrchSessionStatus(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchSessionSnapshot> {
+  return getJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/status`, signal);
 }
 
 async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSignal): Promise<T> {
