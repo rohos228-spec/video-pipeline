@@ -538,11 +538,21 @@ async def patch_project(
     from app.services.content_locks import lock_ui_field
     from app.services.project_control import on_auto_mode_changed
     from app.services.project_meta import apply_project_meta_patch
+    from app.services.step_failure_policy import SPEND_APPROVAL_META_KEYS
 
     was_auto = bool(p.auto_mode)
     topic_changed = False
     for k, v in payload.items():
         if k == "meta":
+            if isinstance(v, dict):
+                stripped = sorted(SPEND_APPROVAL_META_KEYS & v.keys())
+                if stripped:
+                    logger.warning(
+                        "patch_project #{}: ключи одобрения трат игнорируются (только POST spend-approval): {}",
+                        project_id,
+                        stripped,
+                    )
+                    v = {mk: mv for mk, mv in v.items() if mk not in SPEND_APPROVAL_META_KEYS}
             apply_project_meta_patch(p, v, source="patch_project")
             flag_modified(p, "meta")
             continue

@@ -454,6 +454,13 @@ async def _park_budget_exhausted(
     return "waiting_approval"
 
 
+# Ключи meta, которыми управляет только spend-approval (операторский токен).
+# PATCH /projects/{id} их не меняет — иначе обход потолка трат.
+SPEND_APPROVAL_META_KEYS: frozenset[str] = frozenset(
+    {"approval_status", "approval_reason", "paused_from_status"}
+)
+
+
 async def approve_budget_wait(session: AsyncSession, project: Project) -> None:
     """Пользователь одобряет продолжение после потолка трат.
 

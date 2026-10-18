@@ -150,6 +150,15 @@ def merge_project_meta(
     if not isinstance(patch, dict):
         return base
     merged = {**base, **patch}
+    if source == "patch_project":
+        # defense in depth: одобрение трат — только через POST spend-approval
+        from app.services.step_failure_policy import SPEND_APPROVAL_META_KEYS
+
+        for key in SPEND_APPROVAL_META_KEYS & patch.keys():
+            if key in base:
+                merged[key] = base[key]
+            else:
+                merged.pop(key, None)
     for key in PROTECTED_META_BUCKETS:
         if key not in patch:
             continue
