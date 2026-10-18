@@ -431,7 +431,8 @@ async def test_wipe_split_parks_numbers_so_resplit_does_not_revive(session):
     assert by_id[id_a].attrs["исходный_номер"] == 1
     assert by_id[id_b].attrs["исходный_номер"] == 2
     tomb = set((p.meta or {}).get("deleted_frame_numbers") or [])
-    assert {1, 2, 900_000, 900_001} <= tomb
+    assert {900_000, 900_001} <= tomb
+    assert not ({1, 2} & tomb)
     assert (p.meta or {}).get("split_completed") is None
 
     session.add(
@@ -464,6 +465,40 @@ async def test_wipe_split_parks_numbers_so_resplit_does_not_revive(session):
     assert again_a.attrs["исходный_номер"] == 1
     assert {c.id for c in created}.isdisjoint({id_a, id_b})
     assert all(frame_is_active(c) for c in created)
+
+
+@pytest.mark.asyncio
+async def test_wipe_split_lets_xlsx_import_keep_original_numbers(
+    session, tmp_path: Path
+):
+    """Сброс не кладёт 1..N в tombstone, и v8-импорт эти колонки не выкидывает."""
+    from openpyxl import Workbook
+
+    from app.services.frame_tombstones import deleted_numbers
+    from app.services.reset_step import _wipe_split
+    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8, import_v8_xlsx
+
+    p = await _mkproject(session, slug="import-after-reset")
+    await _mkframe(session, p, 1)
+    await _mkframe(session, p, 2)
+    await _wipe_split(session, p)
+    await session.flush()
+
+    tomb = deleted_numbers(p)
+    assert 1 not in tomb and 2 not in tomb
+    assert {900_000, 900_001} <= tomb
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="новый один")
+    ws.cell(row=ROW_VOICEOVER_V8, column=4, value="новый два")
+    xlsx = tmp_path / "project.xlsx"
+    wb.save(xlsx)
+
+    summary = await import_v8_xlsx(session, p, xlsx, keep_fields=True)
+    kept = summary.get("frames_kept_marked") or []
+    assert 1 not in kept and 2 not in kept
 
 
 @pytest.mark.asyncio

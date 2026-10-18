@@ -287,8 +287,10 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
             fr,
             project,
             "reset_step split: сброс шага помечает кадр, строка сохранена",
+            remember_number=False,
         )
-    # До снимка meta: парковка пишет и номер 900000+, и deleted_frame_numbers.
+    # Парковка пишет в deleted_frame_numbers только новый номер 900000+.
+    # Исходный 1..N не записываем: строки уедут, и импорт иначе выкинет колонку.
     park_marked_frame_numbers(list(frames), project)
     meta = dict(project.meta or {})
     meta_cleared: list[str] = []

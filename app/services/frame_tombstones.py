@@ -346,11 +346,15 @@ def park_marked_frame_numbers(frames: list, project=None) -> int:
     return parked
 
 
-def mark_frame_deleted(frame, project, reason: str) -> None:
-    """Пометить кадр удалённым, не стирая строку. Номер попадает в tombstone.
+def mark_frame_deleted(
+    frame, project, reason: str, *, remember_number: bool = True
+) -> None:
+    """Пометить кадр удалённым, не стирая строку.
 
     Повторный вызов не меняет уже стоящие ``удалён`` / ``пометка`` /
-    ``причина`` / ``карантин`` / ``активен``.
+    ``причина`` / ``карантин`` / ``активен``. Живой номер 1..N в tombstone
+    пишет только ``remember_number``: сброс шага его не записывает, иначе
+    повторный импорт выкинет колонку, строка которой уже уехала на 900000+.
     """
     attrs = dict(getattr(frame, "attrs", None) or {})
     number = getattr(frame, "number", None)
@@ -362,7 +366,7 @@ def mark_frame_deleted(frame, project, reason: str) -> None:
             getattr(frame, "id", None),
             attrs.get(REASON_MARK) or attrs.get("причина") or reason,
         )
-        if project is not None and number is not None:
+        if remember_number and project is not None and number is not None:
             remember_deleted(project, int(number))
         return
     attrs[DELETED_MARK] = True
@@ -371,7 +375,7 @@ def mark_frame_deleted(frame, project, reason: str) -> None:
     attrs[ACTIVE_MARK] = False
     frame.attrs = attrs
     _flag_frame(frame)
-    if project is not None and number is not None:
+    if remember_number and project is not None and number is not None:
         remember_deleted(project, int(number))
     logger.warning(
         "WARN frame_tombstones: кадр #{} id={} помечен «удалён», строка сохранена: {}",
