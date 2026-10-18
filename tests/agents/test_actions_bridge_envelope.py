@@ -34,7 +34,10 @@ async def test_bridge_keeps_envelope_and_strips_nested_approval_id() -> None:
     }
     out = await ActionsBridge(_Inner(payload)).execute("read_pipeline_code", {}, {})
     assert isinstance(out, dict)
+    assert out["ok"] is False
     assert out["status"] == "approval_required"
+    assert out["data"]["snapshot_id"] == "snap-13-6"
+    assert out["cost"] == 0.0
     assert out["warnings"] == ["schema has no change_id"]
     assert out["result"]["snapshot_id"] == "snap-13-6"
     assert out["result"]["skipped"] == ["n_other"]
@@ -42,6 +45,7 @@ async def test_bridge_keeps_envelope_and_strips_nested_approval_id() -> None:
     assert out["result"]["change_id"] is None
 
     failed = await ActionsBridge(_Inner({"status": "failed", "error": "no", "result": {}})).execute("x", {}, {})
+    assert failed["ok"] is False
     assert failed["status"] == "failed"
     assert failed["error"] == "no"
 
@@ -61,7 +65,9 @@ async def test_load_actions_bridge_strips_orch_appr() -> None:
         bridge, degraded = load_actions()
         assert degraded is None
         out = await bridge.execute("revert_node_to_git", {}, {})
+        assert out["ok"] is True
         assert out["status"] == "ok"
+        assert out["data"]["snapshot_id"] == "snap"
         assert out["result"]["snapshot_id"] == "snap"
         assert out["result"]["change_id"] is None
     finally:

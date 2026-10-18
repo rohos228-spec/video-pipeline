@@ -30,7 +30,7 @@ _VALIDATORS = "app.orchestrator.validators"
 _PRESERVATION = "app.orchestrator.validators.preservation"
 _ACTIONS = "app.orchestrator.actions"
 _APPROVAL_CHANGE_ID = re.compile(r"^orch-appr-\d+-\d+$")
-_ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required"})
+_ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required", "partial"})
 
 
 def load_module(name: str) -> Any | None:
@@ -288,7 +288,7 @@ class ActionsBridge:
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, dict) and result.get("status") in _ENVELOPE_STATUSES:
-            return _strip_envelope(result)
+            return _map_r23(result)
         if not isinstance(result, ActionResult):
             result = ActionResult.model_validate(result)
         change_id = result.change_id
@@ -303,15 +303,55 @@ def _strip_approval_id(value: Any) -> Any:
     return value
 
 
-def _strip_envelope(payload: dict[str, Any]) -> dict[str, Any]:
-    """Конверт r2.2 проходит как есть. ``orch-appr-*`` срезается и в теле ``result``."""
-    body = dict(payload)
-    if "change_id" in body:
-        body["change_id"] = _strip_approval_id(body.get("change_id"))
-    inner = body.get("result")
-    if isinstance(inner, dict):
-        inner = dict(inner)
-        if "change_id" in inner:
-            inner["change_id"] = _strip_approval_id(inner.get("change_id"))
-        body["result"] = inner
-    return body
+def _error_code(error: Any) -> str | None:
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        raw = error.get("code", error.get("error"))
+        return str(raw) if raw else "failed"
+    text = str(error).strip()
+    return text or None
+
+
+def _map_r23(payload: dict[str, Any]) -> dict[str, Any]:
+    """Конверт r2.3 → ``ok`` / ``data`` / ``cost``.
+
+    ``warnings`` остаются на результате: супервизор кладёт их в событие шага.
+    ``error`` — код, статус ``failed``. ``partial: true`` при уже включённом
+    partial kill-fixes даёт статус ``partial``, не успех.
+    ``orch-appr-*`` в этом слое ещё срезается: ядро само выдаёт id.
+    """
+    status = str(payload.get("status") or "")
+    raw_result = payload.get("result")
+    data = dict(raw_result) if isinstance(raw_result, dict) else {}
+    if "change_id" in data:
+        data["change_id"] = _strip_approval_id(data.get("change_id"))
+    partial = payload.get("partial") is True or data.get("partial") is True
+    if status == "ok" and partial:
+        status = "partial"
+    error = _error_code(payload.get("error"))
+    if error and status == "ok":
+        status = "failed"
+    raw_cost = payload.get("cost", data.get("cost", 0))
+    try:
+        cost = float(raw_cost or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    change_id = data.get("change_id")
+    if not isinstance(change_id, str):
+        change_id = _strip_approval_id(payload.get("change_id"))
+        if not isinstance(change_id, str):
+            change_id = None
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "data": data,
+        "result": data,
+        "cost": cost,
+        "warnings": [str(item) for item in warnings],
+        "error": error,
+        "change_id": change_id,
+    }
