@@ -210,6 +210,11 @@ class RagStore:
         written = 0
         unchanged = 0
         deleted = 0
+        from app.orchestrator.rag.aliases import alias_groups
+
+        alias_table = alias_groups(
+            [doc.text for docs in grouped.values() for doc in docs[1]]
+        )
         incoming = set(grouped)
         doomed = sorted(source_id for source_id in existing if source_id not in incoming)
         if doomed:
@@ -241,7 +246,14 @@ class RagStore:
             for doc in docs:
                 chunk_id = chunk_id_for(doc.corpus, doc.source_id, doc.part_key)
                 vector = embeddings[chunk_id]
-                self._insert_chunk(conn, doc, chunk_id, vector, indexed_at=indexed_at)
+                self._insert_chunk(
+                    conn,
+                    doc,
+                    chunk_id,
+                    vector,
+                    indexed_at=indexed_at,
+                    alias_table=alias_table,
+                )
                 written += 1
             conn.execute(
                 """
@@ -278,11 +290,18 @@ class RagStore:
         vector: list[float],
         *,
         indexed_at: str,
+        alias_table: dict[str, frozenset[str]] | None = None,
     ) -> None:
         metadata = normalize_metadata(doc.metadata)
         metadata["part_key"] = doc.part_key
         meta_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
         content_hash = sha256_payload({"text": doc.text, "title": doc.title, "metadata": metadata})
+        from app.orchestrator.rag.aliases import alias_suffix
+
+        lexical_text = lexical_index_text(doc.text)
+        suffix = alias_suffix(doc.text, alias_table or {})
+        if suffix:
+            lexical_text = f"{lexical_text} {suffix}"
         conn.execute(
             """
             INSERT INTO chunks(
@@ -305,7 +324,7 @@ class RagStore:
         )
         conn.execute(
             "INSERT INTO chunks_fts(chunk_id, title, text, corpus) VALUES (?, ?, ?, ?)",
-            (chunk_id, lexical_index_text(doc.title), lexical_index_text(doc.text), doc.corpus),
+            (chunk_id, lexical_index_text(doc.title), lexical_text, doc.corpus),
         )
         conn.execute(
             "INSERT INTO chunks_head_fts(chunk_id, head, corpus) VALUES (?, ?, ?)",
