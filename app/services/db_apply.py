@@ -1439,16 +1439,18 @@ def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]
 
 
 def _frame_preservation_id(frame: Any) -> str:
-    """Стабильный id кадра в снимке. Без uuid — номер, не пустая строка."""
+    """Стабильный id кадра в снимке. Без uuid — первичный ключ, не номер."""
 
     uid = str(getattr(frame, "uuid", "") or "").strip()
     if uid:
         return uid
+    pk = getattr(frame, "id", None)
+    if pk is not None:
+        return f"pk:{pk}"
     number = getattr(frame, "number", None)
     if number is not None:
         return f"n{number}"
-    pk = getattr(frame, "id", None)
-    return "" if pk is None else str(pk)
+    return ""
 
 
 def _preservation_view(

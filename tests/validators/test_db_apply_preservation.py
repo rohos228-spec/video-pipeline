@@ -710,3 +710,17 @@ def test_preservation_view_frame_without_uuid_keeps_id() -> None:
     )
     view = db_apply._preservation_view([frame])
     assert view["сцены"][0]["id"] == "n4"
+
+
+def test_preservation_view_frame_without_uuid_prefers_pk() -> None:
+    """Без uuid id снимка — pk кадра, а не номер, который может смениться."""
+
+    frame = Frame(
+        id=12,
+        number=4,
+        voiceover_text="текст",
+        attrs={"кадры": [{"id": "k"}]},
+    )
+    frame.number = 9
+    view = db_apply._preservation_view([frame])
+    assert view["сцены"][0]["id"] == "pk:12"
