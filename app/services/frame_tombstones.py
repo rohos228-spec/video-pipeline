@@ -118,12 +118,22 @@ def paid_frame_skip_reason(frame: Any) -> str | None:
     return f"кадр #{number} неактивен — платная генерация пропущена"
 
 
+_PAID_SKIP_LOGGED: set[tuple[Any, Any, str]] = set()
+
+
 def log_paid_frame_skip(frame: Any, *, where: str) -> str | None:
-    """WARN на каждый пропуск. Кадр не меняется, кэш между вызовами не копится."""
+    """WARN один раз на кадр и точку вызова. Кадр не меняется."""
     reason = paid_frame_skip_reason(frame)
     if not reason:
         return None
-    logger.warning("WARN {}: {}", where, reason)
+    key = (
+        getattr(frame, "project_id", None),
+        getattr(frame, "id", None) or getattr(frame, "number", None),
+        where,
+    )
+    if key not in _PAID_SKIP_LOGGED:
+        _PAID_SKIP_LOGGED.add(key)
+        logger.warning("WARN {}: {}", where, reason)
     return reason
 
 

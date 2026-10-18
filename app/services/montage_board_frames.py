@@ -200,16 +200,93 @@ def _store_head_rollback(parent: Frame, kids: list[Frame]) -> None:
     _flag_attrs(parent)
 
 
+def _seal_head_rollback(parent: Frame, kids: list[Frame]) -> None:
+    """Зафиксировать состояние после повышения, чтобы restore не стёр поздние правки."""
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    snap = attrs.get(_HEAD_ROLLBACK_KEY)
+    if not isinstance(snap, dict):
+        return
+    snap = dict(snap)
+    snap["head_voiceover_after"] = parent.voiceover_text
+    head_after = dict(attrs)
+    head_after.pop(_HEAD_ROLLBACK_KEY, None)
+    snap["head_attrs_after"] = copy.deepcopy(head_after)
+    snap["members_after"] = [
+        {
+            "id": int(fr.id),
+            "voiceover_text": fr.voiceover_text,
+            "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
+        }
+        for fr in kids
+        if getattr(fr, "id", None)
+    ]
+    attrs[_HEAD_ROLLBACK_KEY] = snap
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+
+def _rollback_mapping(current: Any, before: Any, after: Any) -> dict[str, Any]:
+    """Откат ключей повышения. Ключ, изменённый после снимка, остаётся как есть."""
+    cur = current if isinstance(current, dict) else {}
+    pre = before if isinstance(before, dict) else {}
+    post = after if isinstance(after, dict) else None
+    if post is None:
+        return copy.deepcopy(pre)
+    out: dict[str, Any] = {}
+    for key in set(cur) | set(pre) | set(post):
+        if key == _HEAD_ROLLBACK_KEY:
+            continue
+        has_c, has_b, has_a = key in cur, key in pre, key in post
+        c, b, a = cur.get(key), pre.get(key), post.get(key)
+        if (
+            has_c
+            and has_b
+            and has_a
+            and isinstance(c, dict)
+            and isinstance(b, dict)
+            and isinstance(a, dict)
+        ):
+            out[key] = _rollback_mapping(c, b, a)
+            continue
+        if has_c and (not has_a or c != a):
+            out[key] = copy.deepcopy(c)
+            continue
+        if has_b:
+            out[key] = copy.deepcopy(b)
+    return out
+
+
+def _rollback_text(current: Any, before: Any, after: Any, *, has_after: bool) -> Any:
+    if not has_after or current == after:
+        return before
+    return current
+
+
 def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
-    """Вернуть голову и шоты к состоянию до повышения. False — снимка нет."""
+    """Вернуть роли повышения. Правки, сделанные после него, не затираются."""
     raw = dict(getattr(frame, "attrs", None) or {})
     snap = raw.get(_HEAD_ROLLBACK_KEY)
     if not isinstance(snap, dict):
         return False
     by_id = {int(fr.id): fr for fr in frames if getattr(fr, "id", None)}
-    frame.voiceover_text = snap.get("head_voiceover")
-    frame.attrs = copy.deepcopy(snap.get("head_attrs") or {})
+    has_head_after = "head_voiceover_after" in snap
+    frame.voiceover_text = _rollback_text(
+        frame.voiceover_text,
+        snap.get("head_voiceover"),
+        snap.get("head_voiceover_after"),
+        has_after=has_head_after,
+    )
+    frame.attrs = _rollback_mapping(
+        raw,
+        snap.get("head_attrs") or {},
+        snap.get("head_attrs_after") if "head_attrs_after" in snap else None,
+    )
     _flag_attrs(frame)
+    after_by_id = {
+        int(row["id"]): row
+        for row in (snap.get("members_after") or [])
+        if isinstance(row, dict) and row.get("id") is not None
+    }
     for member in snap.get("members") or []:
         if not isinstance(member, dict):
             continue
@@ -220,8 +297,22 @@ def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
         kid = by_id.get(mid)
         if kid is None or kid is frame:
             continue
-        kid.voiceover_text = member.get("voiceover_text")
-        kid.attrs = copy.deepcopy(member.get("attrs") or {})
+        after = after_by_id.get(mid)
+        if after is None:
+            kid.voiceover_text = member.get("voiceover_text")
+            kid.attrs = copy.deepcopy(member.get("attrs") or {})
+        else:
+            kid.voiceover_text = _rollback_text(
+                kid.voiceover_text,
+                member.get("voiceover_text"),
+                after.get("voiceover_text"),
+                has_after=True,
+            )
+            kid.attrs = _rollback_mapping(
+                getattr(kid, "attrs", None) or {},
+                member.get("attrs") or {},
+                after.get("attrs") or {},
+            )
         _flag_attrs(kid)
     return True
 
@@ -336,6 +427,8 @@ async def delete_montage_frame(
             new_head.voiceover_text = frame.voiceover_text
         _refresh_shots_in_beat(frames, new_head)
         promoted_number = int(new_head.number)
+    if kids:
+        _seal_head_rollback(frame, kids)
     await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})

@@ -2525,6 +2525,153 @@ def test_shifted_words_match_subtitles_without_marked_frame() -> None:
     assert by_text["три"][1] <= 2.0 + 0.05
 
 
+def test_paid_frame_skip_logs_once(warn_log) -> None:
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import log_paid_frame_skip
+
+    frame = SimpleNamespace(
+        id=901,
+        project_id=77,
+        number=4,
+        attrs={"удалён": True, "активен": False},
+    )
+    first = log_paid_frame_skip(frame, where="nit-once-901")
+    second = log_paid_frame_skip(frame, where="nit-once-901")
+    assert first == second
+    assert first is not None
+    assert sum("nit-once-901" in line for line in warn_log) == 1
+
+
+@pytest.mark.asyncio
+async def test_regen_blocks_paid_call_when_session_fails(
+    monkeypatch: pytest.MonkeyPatch, warn_log
+) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.services.montage_board_regen import _regen_paid_blocked
+
+    class _Scope:
+        async def __aenter__(self):
+            raise SQLAlchemyError("session did not open")
+
+        async def __aexit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.session_scope",
+        lambda *_a, **_k: _Scope(),
+    )
+    assert await _regen_paid_blocked(1, 9, where="nit-session-closed") is True
+    assert any("остановлена" in line for line in warn_log)
+
+
+def test_head_rollback_keeps_edits_made_after_promotion() -> None:
+    from types import SimpleNamespace
+
+    from app.services.montage_board_frames import _HEAD_ROLLBACK_KEY, _apply_head_rollback
+
+    head = SimpleNamespace(
+        id=1,
+        voiceover_text="после",
+        attrs={
+            _HEAD_ROLLBACK_KEY: {
+                "head_voiceover": "до",
+                "head_voiceover_after": "после",
+                "head_attrs": {"camera_subdivide": {"role": "vo_parent"}},
+                "head_attrs_after": {
+                    "удалён": True,
+                    "camera_subdivide": {"role": "shot"},
+                },
+                "members": [
+                    {
+                        "id": 2,
+                        "voiceover_text": "шот",
+                        "attrs": {"camera_subdivide": {"role": "shot"}},
+                    }
+                ],
+                "members_after": [
+                    {
+                        "id": 2,
+                        "voiceover_text": "шот",
+                        "attrs": {"camera_subdivide": {"role": "vo_parent"}},
+                    }
+                ],
+            },
+            "удалён": True,
+            "camera_subdivide": {"role": "shot"},
+            "правка": "позже",
+        },
+    )
+    kid = SimpleNamespace(
+        id=2,
+        voiceover_text="шот и правка",
+        attrs={
+            "camera_subdivide": {"role": "vo_parent"},
+            "правка": "не терять",
+        },
+    )
+    assert _apply_head_rollback([head, kid], head) is True
+    assert head.attrs.get("правка") == "позже"
+    assert head.attrs.get("удалён") is not True
+    assert head.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert head.voiceover_text == "до"
+    assert kid.voiceover_text == "шот и правка"
+    assert kid.attrs["правка"] == "не терять"
+    assert kid.attrs["camera_subdivide"]["role"] == "shot"
+
+
+@pytest.mark.asyncio
+async def test_paid_frame_skip_is_not_ok(
+    session: AsyncSession, project: Project, monkeypatch
+) -> None:
+    from app.services.frame_tombstones import PaidFrameSkipped
+    from app.services.montage_board_apply import apply_montage_board
+    from app.services.montage_board_meta import montage_meta
+
+    session.add(project)
+    await session.flush()
+
+    class _Scope:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *_a):
+            return False
+
+    async def _boom(*_a, **_k):
+        raise PaidFrameSkipped("кадр #2 помечен «удалён»")
+
+    async def _sync(*_a, **_k):
+        return None
+
+    async def _parents(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", lambda *_a, **_k: _Scope())
+    monkeypatch.setattr(
+        "app.services.montage_board_apply._run_op_with_short_sessions", _boom
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.sync_project_row_to_master_db", _sync
+    )
+    monkeypatch.setattr("app.services.montage_board_apply.coverage_parent_map", _parents)
+
+    result = await apply_montage_board(
+        session,
+        project,
+        pending_ops=[{"type": "image_regen", "frame_number": 2, "shot": 1}],
+    )
+    assert result["errors"] == []
+    assert result["results"]
+    row = result["results"][0]
+    assert row["ok"] is False
+    assert row.get("paid_frame_skipped") is True
+    assert "помечен" in row["skipped"]
+    pending = montage_meta(project).get("pending_ops") or []
+    assert pending == []
+
+
 @pytest.mark.asyncio
 async def test_run_assemble_cuts_marked_frame_speech(
     session: AsyncSession, project: Project, monkeypatch, warn_log

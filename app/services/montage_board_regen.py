@@ -192,12 +192,12 @@ async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str)
                 return True
     except SQLAlchemyError as exc:
         logger.warning(
-            "WARN {}: сессия кадра #{} не открылась, платный вызов не блокируем: {}",
+            "WARN {}: сессия кадра #{} не открылась, платная генерация остановлена: {}",
             where,
             frame_number,
             exc,
         )
-        return False
+        return True
     if fr is None:
         return False
     return log_paid_frame_skip(fr, where=where) is not None
