@@ -1168,11 +1168,12 @@ const server = http.createServer(async (req, res) => {
     req.method === "POST" &&
     parts[0] === "api" &&
     parts[1] === "orchestrator" &&
-    parts[2] === "approvals" &&
-    (parts[4] === "approve" || parts[4] === "reject")
+    parts[2] === "chat" &&
+    parts[4] === "approve"
   ) {
-    const approvalId = decodeURIComponent(parts[3]);
-    const decision = parts[4] === "approve" ? "approve" : "reject";
+    const body = await readBody(req);
+    const changeId = typeof body.change_id === "string" ? body.change_id : "";
+    const decision = typeof body.decision === "string" ? body.decision : "";
     const scenario = scenarioOf(req, url);
     if (decision === "approve" && scenario === "approvefail") {
       await sleep(800);
@@ -1190,7 +1191,7 @@ const server = http.createServer(async (req, res) => {
     let matched = false;
     for (const session of sessions.values()) {
       const wait = session.approvalWait;
-      if (wait && wait.id === approvalId) {
+      if (wait && wait.id === changeId) {
         wait.resolve(decision);
         session.approvalWait = null;
         matched = true;
@@ -1201,7 +1202,14 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { detail: "approval not found" });
       return;
     }
-    sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched: true });
+    sendJson(res, 200, {
+      executed: decision === "approve",
+      reason: null,
+      forecast_usd: null,
+      retry_armed: false,
+      change_id: changeId,
+      decision,
+    });
     return;
   }
 

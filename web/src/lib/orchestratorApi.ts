@@ -13,7 +13,6 @@
  */
 
 import type {
-  OrchApprovalDecision,
   OrchEvent,
   OrchKillRequest,
   OrchKillResult,
@@ -379,28 +378,22 @@ async function postApproval(
   }
 }
 
-export function postOrchApprove(
-  cfg: OrchClientConfig,
-  body: OrchApprovalDecision,
-  signal?: AbortSignal,
-): Promise<ApprovalHttpResult> {
-  return postApproval(
-    cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
-    body,
-    signal,
-  );
+/** Тело `ApproveIn` (#370). Лишние поля (`approval_id`, `task_id`) не отправляются. */
+export interface OrchApproveIn {
+  change_id: string;
+  decision: "approve" | "retry_step" | "deny";
 }
 
-export function postOrchReject(
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. */
+export function postOrchDecision(
   cfg: OrchClientConfig,
-  body: OrchApprovalDecision,
+  body: OrchApproveIn,
   signal?: AbortSignal,
 ): Promise<ApprovalHttpResult> {
   return postApproval(
     cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
-    body,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`,
+    { change_id: body.change_id, decision: body.decision },
     signal,
   );
 }
