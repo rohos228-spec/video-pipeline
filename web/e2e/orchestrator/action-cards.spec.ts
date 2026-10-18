@@ -679,6 +679,25 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("approval_required с @ в имени не рисует ожидание", async ({ page }) => {
+  const atAction = structuredClone(EXAMPLE_PAID_APPROVAL);
+  const actionResult = atAction.result as { action: string; metadata: { name: string } };
+  actionResult.action = "create_node@new_group";
+  actionResult.metadata.name = "create_node@new_group";
+  expect(readActionEnvelope(atAction, 1)).toBeNull();
+
+  const atMeta = structuredClone(EXAMPLE_PAID_APPROVAL);
+  (atMeta.result as { metadata: { name: string } }).metadata.name = "montage.suggest_scene_variants@paid";
+  expect(readActionEnvelope(atMeta, 2)?.kind).not.toBe("waiting");
+
+  await openWithToken(page, "act-at-wait");
+  await emit(page, "act-at-wait", "step_finished", atAction);
+  await emit(page, "act-at-wait", "step_finished", atMeta);
+  await emit(page, "act-at-wait", "step_finished", EXAMPLE_PARAMS_EDIT);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "Параметры" })).toBeVisible();
+  await expect(page.getByTestId("orch-action-wait")).toHaveCount(0);
+});
+
 test("карточка сбоя не рисует риск", async ({ page }) => {
   const view = readActionEnvelope(EXAMPLE_FAILED, 1);
   expect(view?.kind).toBe("error");
