@@ -323,6 +323,19 @@ def test_whitelist_built_from_registry_matches_audit() -> None:
     assert set(names) == set(AUDIT_ACTION_IDS)
 
 
+def test_whitelist_names_match_action_pattern() -> None:
+    """Каждое имя whitelist() подходит под pattern контракта, без @."""
+
+    import re
+
+    from app.orchestrator.actions.executor import whitelist
+
+    pattern = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
+    names = whitelist()
+    assert len(names) == 102
+    assert all(pattern.fullmatch(name) for name in names)
+
+
 async def test_delete_frame_via_adapter_is_soft(env) -> None:
     """delete_frame и delete_child_frame помечают кадр и не стирают строку."""
 
