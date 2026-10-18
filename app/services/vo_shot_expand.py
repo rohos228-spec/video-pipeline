@@ -2461,7 +2461,12 @@ async def rebuild_vo_cells_from_shots(
     if archived:
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
-    work = [f for f in ordered if _is_pipeline_frame(f)]
+    work = [
+        f
+        for f in ordered
+        if _is_pipeline_frame(f)
+        and frame_is_active(getattr(f, "attrs", None) or {})
+    ]
     edges = list(
         (
             await session.execute(
