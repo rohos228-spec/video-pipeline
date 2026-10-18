@@ -1412,6 +1412,17 @@ async def test_coverage_delete_stamps_parent_shot(
     assert ladder[0].get("карантин") is not True
     assert (child.attrs or {}).get("удалён") is True
     assert child.voiceover_text == "хвост"
+    await apply_coverage_op(
+        session, project, {"type": "coverage_delete", "frame_number": 2}
+    )
+    await session.refresh(parent)
+    await session.refresh(child)
+    again = list((parent.attrs or {}).get("кадры") or [])
+    assert [item["id"] for item in again] == ["1-S1-K1", "1-S1-K2"]
+    assert again[1]["удалён"] is True
+    assert again[1]["активен"] is False
+    assert (child.attrs or {}).get("удалён") is True
+    assert child.voiceover_text == "хвост"
 
 
 def test_assembly_clips_skip_marked_frame(tmp_path: Path) -> None:

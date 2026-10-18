@@ -1134,9 +1134,14 @@ def fill_kadry_from_catalog(
         )
         out.extend(tail)
     _keep_anonymous_source_text(incoming, out)
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
 
-    return keep_soft_kadry(incoming, out, scene_id=cell_number, number=cell_number)
+    return keep_soft_kadry(
+        incoming,
+        retain_already_marked(incoming, out),
+        scene_id=cell_number,
+        number=cell_number,
+    )
 
 
 def _anonymous_shot_text(shot: dict[str, Any]) -> str:

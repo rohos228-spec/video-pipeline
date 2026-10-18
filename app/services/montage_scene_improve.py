@@ -1781,6 +1781,9 @@ def _keep_qc_kadry(parent: Any, shots: list[dict[str, Any]], candidate: list[dic
             "WARN _keep_qc_kadry: шоты остаются неактивными, restore не запрошен ({})",
             ", ".join(held),
         )
+    from app.pipeline.no_deletions_guard import retain_already_marked
+
+    rows = retain_already_marked(before, rows)
     kept = keep_soft_kadry(
         before,
         rows,

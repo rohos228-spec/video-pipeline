@@ -1116,9 +1116,14 @@ def align_shots_to_action_chain(
 
 
 def _keep_grammar_kadry(before_rows, after_rows, *, uid: str, number: Any):
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
 
-    return keep_soft_kadry(before_rows, after_rows, scene_id=uid or "cell", number=number)
+    return keep_soft_kadry(
+        before_rows,
+        retain_already_marked(before_rows, after_rows),
+        scene_id=uid or "cell",
+        number=number,
+    )
 
 
 def scene_script_text(place: str, action: str) -> str:

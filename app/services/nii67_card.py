@@ -426,11 +426,11 @@ def delete_block(card: dict[str, Any], door_id: str, block_id: str) -> dict[str,
         return out
     before_blocks = [dict(block) for block in door["blocks"]]
     door["blocks"] = [block for block in door["blocks"] if block["id"] != block_id]
-    from app.pipeline.no_deletions_guard import keep_soft_kadry
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
 
     door["blocks"] = keep_soft_kadry(
         before_blocks,
-        door["blocks"],
+        retain_already_marked(before_blocks, door["blocks"]),
         scene_id=door_id,
         number=1,
     )

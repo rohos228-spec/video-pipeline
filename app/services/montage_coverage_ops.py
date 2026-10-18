@@ -1327,17 +1327,20 @@ def _preserve_parent_kadry(
 
     if not isinstance(kadry, list):
         return kadry
+    from app.pipeline.no_deletions_guard import retain_already_marked
+
     uid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
     number = getattr(parent, "number", None)
     if number is None:
         number = 0
+    rows = retain_already_marked(before_rows, kadry)
     run_preservation_validators(
         {"сцены": [{"id": uid, "номер": number, "кадры": before_rows}]},
-        {"сцены": [{"id": uid, "номер": number, "кадры": kadry}]},
+        {"сцены": [{"id": uid, "номер": number, "кадры": rows}]},
         ops,
         mode="soft",
     )
-    return kadry
+    return rows
 
 
 async def apply_coverage_scene_action(

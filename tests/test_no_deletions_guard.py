@@ -448,6 +448,119 @@ def test_montage_mirror_soft_keeps_dropped_shot() -> None:
     assert soft[1]["закадр"] == "фраза на месте"
 
 
+def test_marking_paths_keep_already_marked_shot(monkeypatch) -> None:
+    """Уже помеченный шот не выпадает из списка, даже если новая версия его не принесла."""
+
+    from types import SimpleNamespace
+
+    from app.services.apply_ops_batches import coalesce_cell_shot_ops
+    from app.services.montage_coverage_ops import _preserve_parent_kadry
+    from app.services.montage_scene_improve import _keep_qc_kadry
+    from app.services.scene_shot_grammar import apply_grammar_to_ops
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    uid = "cell-marked"
+    frames = [
+        {
+            "uuid": uid,
+            "number": 4,
+            "кадры": [
+                {"id": "a", "закадр": "живой"},
+                {"id": "b", "закадр": "фраза на месте", "активен": False},
+                {"id": "c", "закадр": "снятый", "удалён": True},
+                {"закадр": "тихий кусок", "активен": False},
+                {"закадр": "тихий кусок", "активен": False},
+            ],
+        }
+    ]
+    merged = coalesce_cell_shot_ops(
+        [
+            {
+                "frame_uuid": uid,
+                "fields": {
+                    "кадры": [
+                        {"id": "a", "закадр": "живой"},
+                        {"закадр": "тихий кусок", "активен": False},
+                    ]
+                },
+            }
+        ],
+        frames,
+        patch=False,
+    )[0]["fields"]["кадры"]
+    by_id = {row["id"]: row for row in merged if row.get("id")}
+    assert by_id["b"]["активен"] is False
+    assert by_id["b"]["закадр"] == "фраза на месте"
+    assert by_id["c"]["удалён"] is True
+    assert sum(1 for row in merged if row.get("закадр") == "тихий кусок") == 2
+
+    parent = SimpleNamespace(uuid="qc-marked", number=3)
+    kept_qc = _keep_qc_kadry(
+        parent,
+        [
+            {"id": "a", "закадр": "живой"},
+            {"id": "b", "закадр": "фраза на месте", "активен": False},
+        ],
+        [{"id": "a", "закадр": "живой"}],
+    )
+    assert [row["id"] for row in kept_qc] == ["a", "b"]
+    assert kept_qc[1]["активен"] is False
+
+    def _drop_marked(shots, action, **kwargs):
+        del action, kwargs
+        return [dict(shot) for shot in shots if shot.get("id") != "b"], None
+
+    monkeypatch.setattr(
+        "app.services.scene_shot_grammar.merge_gpt_shots_with_action",
+        _drop_marked,
+    )
+    ops = [
+        {
+            "frame_uuid": "u",
+            "fields": {
+                "главное_действие": "1. кухня — режет хлеб",
+                "кадры": [
+                    {"id": "a", "закадр": "первый", "сцена": 1, "место": "кухня"},
+                    {
+                        "id": "b",
+                        "закадр": "фраза на месте",
+                        "сцена": 1,
+                        "место": "кухня",
+                        "активен": False,
+                    },
+                ],
+            },
+        }
+    ]
+    apply_grammar_to_ops(ops, [{"uuid": "u", "number": 1, "voiceover_text": "первый"}])
+    grammar_rows = {shot["id"]: shot for shot in ops[0]["fields"]["кадры"]}
+    assert grammar_rows["b"]["активен"] is False
+    assert grammar_rows["b"]["закадр"] == "фраза на месте"
+
+    filled = fill_kadry_from_catalog(
+        [
+            {"id": "a", "закадр": "первый"},
+            {"id": "b", "закадр": "фраза на месте", "активен": False},
+        ],
+        "",
+    )
+    filled_b = next(row for row in filled if row.get("id") == "b")
+    assert filled_b["активен"] is False
+    assert filled_b["закадр"] == "фраза на месте"
+
+    mirror = _preserve_parent_kadry(
+        SimpleNamespace(uuid="parent-marked", number=4, id=4),
+        [
+            {"id": "k1", "закадр": "первый"},
+            {"id": "k2", "закадр": "фраза на месте", "активен": False},
+        ],
+        [{"id": "k1", "закадр": "первый"}],
+    )
+    assert [row["id"] for row in mirror] == ["k1", "k2"]
+    assert mirror[1]["активен"] is False
+    assert mirror[1]["закадр"] == "фраза на месте"
+
+
 def test_frame_text_and_edge_loss_is_error() -> None:
     text = {"frame_id": "f1", "kind": "voiceover", "text": "фраза на месте"}
     edge = {"from_frame_id": "f1", "to_frame_id": "f2", "type": "next"}
@@ -486,7 +599,181 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
     assert gone == frozen
 
     quiet = _scene([{"закадр": "фраза на месте", "активен": False}])
-    assert run_preservation_validators(quiet, _scene([]), mode="soft") == []
+    with pytest.raises(PreservationRejected) as quiet_exc:
+        run_preservation_validators(quiet, _scene([]), mode="soft")
+    assert any(
+        item.code == "marked_shot_removed" and item.severity == "error" and item.id == "фраза на месте"
+        for item in quiet_exc.value.violations
+    )
+
+
+def _assert_marked_shot_removed(run, rejected) -> None:
+    """Четыре снятия уже помеченного шота — error и в reject, и в soft."""
+
+    live = {"id": "live", "закадр": "живой"}
+    inactive_id = _scene([{"id": "k1", "активен": False, "закадр": "тихо"}, dict(live)])
+    deleted_flag = _scene([{"id": "k2", "удалён": True, "закадр": "тихо"}, dict(live)])
+    nameless = _scene(
+        [{"закадр": "фраза на месте", "активен": False}, {"закадр": "живой"}]
+    )
+    only_inactive = _scene(
+        [
+            {"id": "k3", "активен": False, "закадр": "один"},
+            {"id": "k4", "активен": False, "закадр": "два"},
+        ]
+    )
+    cases = (
+        (inactive_id, _scene([dict(live)]), ("k1",)),
+        (deleted_flag, _scene([dict(live)]), ("k2",)),
+        (nameless, _scene([{"закадр": "живой"}]), ("фраза на месте",)),
+        (only_inactive, _scene([]), ("k3", "k4")),
+    )
+    for mode in ("reject", "soft"):
+        for before, after, needles in cases:
+            frozen = copy.deepcopy(after)
+            with pytest.raises(rejected) as raised:
+                run(copy.deepcopy(before), after, mode=mode)
+            for needle in needles:
+                assert any(
+                    item.code == "marked_shot_removed"
+                    and item.severity == "error"
+                    and item.id == needle
+                    for item in raised.value.violations
+                ), mode
+            assert after == frozen
+
+
+def test_remove_inactive_shot_is_error() -> None:
+    """Шим: снятие уже помеченного шота — error. Перенос и сцена — как раньше."""
+
+    _assert_marked_shot_removed(run_preservation_validators, PreservationRejected)
+
+    kept = _scene(
+        [
+            {"закадр": "фраза на месте", "активен": False},
+            {"закадр": "фраза на месте", "активен": False},
+        ]
+    )
+    assert run_preservation_validators(kept, copy.deepcopy(kept), mode="reject") == []
+    # Тот же текст ещё в списке: это множество, не счётчик копий (как #379 458e964a).
+    assert (
+        run_preservation_validators(
+            kept,
+            _scene([{"закадр": "фраза на месте", "активен": False}]),
+            mode="reject",
+        )
+        == []
+    )
+    worded = _scene([{"id": "k2", "удалён": "да", "закадр": "тихо"}, {"id": "live", "закадр": "живой"}])
+    with pytest.raises(PreservationRejected) as worded_exc:
+        run_preservation_validators(worded, _scene([{"id": "live", "закадр": "живой"}]), mode="reject")
+    assert any(
+        item.code == "marked_shot_removed" and item.id == "k2" and item.path == "кадры/k2"
+        for item in worded_exc.value.violations
+    )
+
+    addressed = _scene(
+        [
+            {"id": "k1", "активен": False, "закадр": "тихо"},
+            {"id": "live", "закадр": "живой"},
+        ]
+    )
+    without_marked = _scene([{"id": "live", "закадр": "живой"}])
+    user_delete = [{"op": "delete", "frame_uuid": "s1", "shot_id": "k1"}]
+    for mode in ("reject", "soft"):
+        frozen = copy.deepcopy(without_marked)
+        assert (
+            run_preservation_validators(
+                copy.deepcopy(addressed),
+                without_marked,
+                user_delete,
+                mode=mode,
+            )
+            == []
+        )
+        assert without_marked == frozen
+    bare_id = [{"action": "delete_shot", "shot_id": "k1"}]
+    assert (
+        run_preservation_validators(
+            copy.deepcopy(addressed),
+            copy.deepcopy(without_marked),
+            bare_id,
+            mode="reject",
+        )
+        == []
+    )
+    wrong_frame = [{"op": "delete", "frame_uuid": "other", "shot_id": "k1"}]
+    with pytest.raises(PreservationRejected) as wrong_exc:
+        run_preservation_validators(
+            copy.deepcopy(addressed),
+            copy.deepcopy(without_marked),
+            wrong_frame,
+            mode="soft",
+        )
+    assert any(item.code == "marked_shot_removed" and item.id == "k1" for item in wrong_exc.value.violations)
+    no_address = [{"op": "удалить", "frame_uuid": "s1"}]
+    with pytest.raises(PreservationRejected):
+        run_preservation_validators(
+            _scene([{"закадр": "фраза на месте", "активен": False}]),
+            _scene([]),
+            no_address,
+            mode="reject",
+        )
+
+    moved_after = {
+        "сцены": [
+            {"id": "s1", "номер": 1, "кадры": []},
+            {
+                "id": "s2",
+                "номер": 2,
+                "кадры": [
+                    {"id": "k2", "закадр": "живая"},
+                    {"id": "k1", "закадр": "фраза на месте", "активен": False},
+                    {"закадр": "тихий кусок", "удалён": True},
+                ],
+            },
+        ]
+    }
+    moved_before = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "кадры": [
+                    {"id": "k1", "закадр": "фраза на месте", "активен": False},
+                    {"закадр": "тихий кусок", "удалён": True},
+                ],
+            },
+            {"id": "s2", "номер": 2, "кадры": [{"id": "k2", "закадр": "живая"}]},
+        ]
+    }
+    assert run_preservation_validators(moved_before, moved_after, mode="reject") == []
+    assert run_preservation_validators(moved_before, copy.deepcopy(moved_after), mode="soft") == []
+
+    gone = _scene(
+        [
+            {"id": "k1", "закадр": "фраза на месте", "активен": False},
+            {"закадр": "ещё фраза", "удалён": True},
+        ]
+    )
+    with pytest.raises(PreservationRejected) as scene_exc:
+        run_preservation_validators(gone, {"сцены": []}, mode="soft")
+    codes = [item.code for item in scene_exc.value.violations]
+    assert "scene_deleted" in codes
+    assert "marked_shot_removed" not in codes
+
+
+@pytest.mark.xfail(strict=True, reason="waiting for WS1 marked_shot_removed")
+def test_remove_inactive_shot_is_error_on_ws1(tmp_path) -> None:
+    """Модуль #379 @ 768676be ещё пропускает снятие уже помеченного шота."""
+
+    real_run = None
+    real_rejected = None
+    for run, rejected in _preservation_runners(tmp_path):
+        real_run, real_rejected = run, rejected
+    assert real_run is not None and real_rejected is not None
+    assert real_run is not run_preservation_validators
+    _assert_marked_shot_removed(real_run, real_rejected)
 
 
 def test_two_idless_copies_to_one_is_frames_cleared(tmp_path) -> None:

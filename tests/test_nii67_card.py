@@ -83,6 +83,19 @@ def test_insert_duplicate_delete_reorder_stay_on_one_door() -> None:
     assert [block["id"] for block in card["doors"][1]["blocks"]] == before_right
 
 
+def test_delete_already_marked_block_stays() -> None:
+    card = default_card()
+    block = card["doors"][0]["blocks"][0]
+    block_id = block["id"]
+    card = delete_block(card, "door1", block_id)
+    again = delete_block(card, "door1", block_id)
+    kept = next(item for item in card["doors"][0]["blocks"] if item["id"] == block_id)
+    matches = [item for item in again["doors"][0]["blocks"] if item["id"] == block_id]
+    assert len(matches) == 1
+    assert matches[0]["активен"] is False
+    assert matches[0]["text"] == kept["text"]
+
+
 def test_normalize_repairs_shape_and_limits() -> None:
     raw = {
         "doors": [
