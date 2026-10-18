@@ -160,6 +160,17 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
         )
 
+    from app.services.frame_tombstones import frame_is_active
+
+    # Полный список до отбора клипов: R15 и per-frame видят помеченный кадр,
+    # иначе его речь остаётся в voice_full и не вырезается.
+    all_frame_numbers = [int(fr.number) for fr in frames_all]
+    marked_numbers = [
+        int(fr.number)
+        for fr in frames_all
+        if not frame_is_active(getattr(fr, "attrs", None) or {})
+    ]
+
     from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
 
     frames: list[Frame] = []
@@ -208,7 +219,7 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
     if not audio_path.is_file():
         raise RuntimeError(f"файл озвучки не найден: {audio_path}")
     audio_dir = project.data_dir / "audio"
-    frame_numbers = [fr.number for fr in frames_all]
+    frame_numbers = list(all_frame_numbers)
     audio_meta = audio.meta or {}
     per_frame_tts = (
         audio_meta.get("mode") == "per_frame"
