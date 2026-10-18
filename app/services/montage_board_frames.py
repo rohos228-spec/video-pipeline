@@ -433,6 +433,11 @@ async def delete_montage_frame(
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
+    logger.warning(
+        "WARN delete_montage_frame: кадр #{} помечен, дети сцены на месте (шотов {})",
+        number,
+        len(kids),
+    )
     logger.info(
         "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,

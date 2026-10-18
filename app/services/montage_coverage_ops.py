@@ -1576,6 +1576,10 @@ async def apply_coverage_op(
                 "regen_image": False,
             }
         await delete_coverage_child(session, project, frame, frames)
+        logger.warning(
+            "WARN coverage_delete: кадр #{} помечен, строка и промты на месте",
+            frame.number,
+        )
 
     await session.flush()
     highlight = slot_key_from_op(op)

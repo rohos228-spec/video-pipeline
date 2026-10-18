@@ -1061,7 +1061,8 @@ def fill_kadry_from_catalog(
         marked = dict(sh)
         marked["активен"] = False
         marked["карантин"] = True
-        marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
+        if not str(marked.get("пометка") or "").strip():
+            marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
         tail.append(marked)
     if tail:
         logger.warning(
