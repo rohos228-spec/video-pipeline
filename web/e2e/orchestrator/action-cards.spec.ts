@@ -448,6 +448,23 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   });
 });
 
+test("отчёт без edit_action принимается как update_report", () => {
+  const payload = structuredClone(EXAMPLE_REPORT);
+  const result = payload.result as { edit_action?: string; report_id?: number };
+  delete result.edit_action;
+  const view = readActionEnvelope(payload, 1);
+  expect(view?.kind).toBe("report");
+  expect(view?.reportId).toBe(7);
+  expect(view?.editAction).toBe("update_report");
+
+  result.report_id = 1.5;
+  expect(readActionEnvelope(payload, 2)?.kind).not.toBe("report");
+  result.report_id = 0;
+  expect(readActionEnvelope(payload, 3)?.kind).not.toBe("report");
+  result.report_id = 7;
+  expect(readActionEnvelope(payload, 4)?.reportId).toBe(7);
+});
+
 test("новая версия отчёта заменяет карточку", () => {
   const older = structuredClone(EXAMPLE_REPORT);
   const newer = structuredClone(EXAMPLE_REPORT);

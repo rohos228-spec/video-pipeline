@@ -449,9 +449,12 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   const version = intGe1(result.version);
   const baseVersion = intGe1(result.base_version);
   if (version != null && baseVersion != null && version <= baseVersion) return invalidView(seq);
-  const reportId = num(result.report_id);
+  const reportId = intGe1(result.report_id);
   const html = typeof result.html === "string" ? result.html : null;
-  if (reportId != null && html != null && result.edit_action === REPORT_EDIT_ACTION) {
+  const editRaw = result.edit_action;
+  const editAction =
+    editRaw == null || (typeof editRaw === "string" && editRaw.trim() === "") ? REPORT_EDIT_ACTION : str(editRaw).trim();
+  if (reportId != null && html != null && editAction === REPORT_EDIT_ACTION) {
     const reportVersion = intGe1(result.version);
     if (reportVersion == null || !html.trim()) return null;
     const view = blankView(`report-${reportId}-v${reportVersion}`, metadataOf("create_report"), "report");
