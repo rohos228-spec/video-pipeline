@@ -611,6 +611,10 @@ async def _shot1_job(
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
                 return False
+            from app.services.frame_tombstones import log_paid_frame_skip
+
+            if log_paid_frame_skip(fr, where="generate_videos"):
+                return False
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
             start = await _shot1_start_frame(session, project, fr, scenes_dir)

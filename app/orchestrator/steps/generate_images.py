@@ -1156,6 +1156,10 @@ async def _claim_shot1_batch(
         for fr in frames:
             if fr in claimed:
                 continue
+            from app.services.frame_tombstones import log_paid_frame_skip
+
+            if log_paid_frame_skip(fr, where="generate_images"):
+                continue
             if project is not None:
                 allow = scene_regen_allows(project, fr.number, 1)
                 if allow is False:
@@ -1737,6 +1741,10 @@ async def _generate_and_send(
     shot1_reference: Path | None = None,
 ) -> None:
     """Один прогон outsee → сохранение артефакта → HITL-карточка."""
+    from app.services.frame_tombstones import log_paid_frame_skip
+
+    if log_paid_frame_skip(frame, where="generate_images"):
+        return
     raise_if_cancelled(project.id)
     is_shot2 = shot == 2
     attrs = dict(frame.attrs or {})

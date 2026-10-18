@@ -332,6 +332,41 @@ def _is_shot_child(fr: Frame) -> bool:
     return int(meta.get("shot_index") or 1) > 1
 
 
+def _archive_parent_shot(frames: list[Frame], child: Frame) -> None:
+    """Шот ребёнка в кадры родителя остаётся, но не живым."""
+    from app.services.frame_tombstones import shot_is_active
+
+    meta = _subdivide_attr(child)
+    shot_id = str(meta.get("shot_id") or "").strip()
+    parent_uuid = str(meta.get("parent_uuid") or "").strip()
+    if not shot_id or not parent_uuid:
+        return
+    parent = next((fr for fr in frames if fr.uuid == parent_uuid), None)
+    if parent is None:
+        return
+    attrs = dict(parent.attrs or {})
+    kadry = attrs.get("кадры")
+    if not isinstance(kadry, list):
+        return
+    changed = False
+    rows: list[Any] = []
+    for shot in kadry:
+        if (
+            isinstance(shot, dict)
+            and str(shot.get("id") or "") == shot_id
+            and shot_is_active(shot)
+        ):
+            item = dict(shot)
+            item["активен"] = False
+            rows.append(item)
+            changed = True
+        else:
+            rows.append(shot)
+    if changed:
+        attrs["кадры"] = rows
+        parent.attrs = attrs
+
+
 def already_subdivided(frames: list[Frame]) -> bool:
     """True только если уже есть живые дочерние шоты (shot_index>1).
 
@@ -420,6 +455,7 @@ async def collapse_shot_children(
                 project,
                 "collapse_shot_children: SET-ребёнок помечен, строка сохранена",
             )
+            _archive_parent_shot(frames, fr)
             fr.sort_key = 1_000_000_000_000.0 + i
             marked += 1
         await session.flush()
@@ -842,7 +878,9 @@ def _group_frames_into_scenes(
     # chrono_dyn: сцена = id_scene из shot_plan (не parent_uuid после «1 шота»).
     # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
     if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
-        frames_sorted = [f for f in sorted(frames, key=_sort_key) if f.uuid]
+        frames_sorted = [
+            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(f)
+        ]
         by_scene: dict[str, list[Frame]] = {}
         scene_order: list[str] = []
         scene_beat: dict[str, dict[str, Any]] = {}
@@ -872,7 +910,7 @@ def _group_frames_into_scenes(
     by_parent: dict[str, list[Frame]] = {}
     singles: list[Frame] = []
     for fr in frames:
-        if not fr.uuid:
+        if not fr.uuid or not frame_is_active(fr):
             continue
         meta = _subdivide_attr(fr)
         parent_u = str(meta.get("parent_uuid") or "").strip()
@@ -914,7 +952,7 @@ def _group_frames_into_scenes(
     # Если групп нет — fallback: каждый кадр = сцена.
     if not groups:
         for fr in sorted(frames, key=_sort_key):
-            if fr.uuid:
+            if fr.uuid and frame_is_active(fr):
                 groups.append(([fr], {}, 1))
     return groups
 
