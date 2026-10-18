@@ -34,35 +34,31 @@ def _quiet_gate(monkeypatch: pytest.MonkeyPatch, *, run_cap: float) -> None:
     spend_guard.reset_inflight()
 
 
-class _Stream:
+class _Reply:
     intervals: list[tuple[float, float]] = []
     seen: list[int] = []
 
     def __init__(self) -> None:
         self.status_code = 200
-
-    async def __aenter__(self) -> _Stream:
-        start = time.monotonic()
-        await asyncio.sleep(0.35)
-        _Stream.intervals.append((start, time.monotonic()))
-        _Stream.seen.append(spend_guard.inflight_usd()["count"])
-        return self
-
-    async def __aexit__(self, *_exc: object) -> bool:
-        return False
-
-    async def aiter_lines(self):
-        body = {
+        self.headers = {"content-type": "application/json"}
+        self._body = {
+            "model": sb.MODEL,
             "choices": [
-                {"delta": {"content": "[Альфа бежит.]"}, "finish_reason": None}
-            ]
+                {
+                    "message": {"role": "assistant", "content": "[Альфа бежит.]"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         }
-        yield "data: " + json.dumps(body)
-        yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
-        yield "data: [DONE]"
+        self.text = json.dumps(self._body, ensure_ascii=False)
+        self.content = self.text.encode("utf-8")
 
-    async def aread(self) -> bytes:
-        return b""
+    def json(self) -> dict:
+        return self._body
+
+    def raise_for_status(self) -> None:
+        return None
 
 
 class _Client:
@@ -75,23 +71,37 @@ class _Client:
     async def __aexit__(self, *_e: object) -> bool:
         return False
 
-    def stream(self, *_a: object, **_k: object) -> _Stream:
-        return _Stream()
+    async def aclose(self) -> None:
+        return None
+
+    def stream(self, *_a: object, **_k: object) -> None:
+        raise AssertionError("scene_boundaries ушёл в stream, а не в POST 52pay")
+
+    async def post(self, *_a: object, **_k: object) -> _Reply:
+        start = time.monotonic()
+        await asyncio.sleep(0.35)
+        _Reply.intervals.append((start, time.monotonic()))
+        _Reply.seen.append(spend_guard.inflight_usd()["count"])
+        return _Reply()
 
 
 def _install_live(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 
-    from app.services import gpt_api
+    from app.services import api_tracker_hook, gpt_api, pay52_routes
 
     async def _ok(_url: str) -> None:
         return None
 
-    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    # Только 52pay: без ключа vibecode запасного пути нет.
+    monkeypatch.setattr(settings, "vibecode_api_key", "")
+    monkeypatch.setattr(settings, "pay52_gpt_api_key", "pk-test")
     monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", _ok)
+    monkeypatch.setattr(api_tracker_hook, "check_api_allowed", lambda **_k: None)
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    _Stream.intervals = []
-    _Stream.seen = []
+    assert pay52_routes.resolve_text(sb.MODEL) is not None
+    _Reply.intervals = []
+    _Reply.seen = []
 
 
 @pytest.mark.asyncio
@@ -106,8 +116,8 @@ async def test_live_stream_calls_overlap_without_queue(
 
     a, b = await asyncio.gather(one("a"), one("b"))
     assert a.strip() and b.strip()
-    assert len(_Stream.intervals) == 2
-    left, right = _Stream.intervals
+    assert len(_Reply.intervals) == 2
+    left, right = _Reply.intervals
     assert left[0] < right[1] and right[0] < left[1]
 
 
@@ -120,7 +130,7 @@ async def test_one_live_call_reserves_once(
     _install_live(monkeypatch)
     text = await sb.call_opus("user", "system", "one", tmp_path / "one", tries=1)
     assert text.strip()
-    assert _Stream.seen == [1]
+    assert _Reply.seen == [1]
 
 
 @pytest.mark.asyncio
