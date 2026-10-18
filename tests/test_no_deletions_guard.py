@@ -490,7 +490,7 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
 
 
 def test_two_idless_copies_to_one_is_frames_cleared(tmp_path) -> None:
-    """Две копии без id стали одной: и шим, и модуль fb09550b дают frames_cleared."""
+    """Две копии без id стали одной: и шим, и модуль 768676be дают frames_cleared."""
 
     before = _scene([{"закадр": "фраза на месте"}, {"закадр": "фраза на месте"}])
     after = _scene([{"действие": "фраза на месте"}])
@@ -521,7 +521,7 @@ def test_non_list_kadry_is_error() -> None:
     """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
     Шим даёт error ``kadry_invalid`` и, для живого id, error ``shot_dropped``.
-    Модуль #379 @ fb09550b рядом кладёт warn ``frames_no_data``.
+    Модуль #379 @ 768676be рядом кладёт warn ``frames_no_data``.
     Точный набор и число не фиксируем: нужен error по сцене или шоту.
     """
 
@@ -649,7 +649,7 @@ def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
 
 
 def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
-    """Поведение шима как у #379 @ fb09550b: F1b, F1c, пустой закадр, ``кадры: None``."""
+    """Поведение шима как у #379 @ 768676be: F1b, F1c, пустой закадр, ``кадры: None``."""
 
     before = {
         "сцены": [
@@ -753,7 +753,7 @@ def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
     assert all(item.code != "shot_dropped" for item in char_exc.value.violations)
 
 
-_WS1_SHA = "fb09550bb98324a4db5ae2782489c371b39ee097"
+_WS1_SHA = "768676be7c4764a01e9404705f45fb122bdd186f"
 
 
 def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
@@ -838,7 +838,7 @@ def test_same_id_active_elsewhere_before_is_not_revived(mode: str) -> None:
     assert any(item.code == "inactive_shot_revived" and item.id == "k1" for item in raised.value.violations)
 
 
-def test_idless_loss_and_named_description_match_fb09550b() -> None:
+def test_idless_loss_and_named_description_match_768676be() -> None:
     """Пустой id даёт ``frames_cleared``, ``описание`` и ``attrs.кадры`` не прячут шот."""
 
     kept = {"id": "k1", "закадр": "а"}
@@ -917,7 +917,7 @@ def test_idless_loss_and_named_description_match_fb09550b() -> None:
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Двенадцать точек вызова на настоящем preservation.py из fb09550b.
+    """Двенадцать точек вызова на настоящем preservation.py из 768676be.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -936,7 +936,7 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
         tar.extractall(extracted, filter="data")
     module_dir = extracted / "app" / "orchestrator" / "validators"
     assert (module_dir / "preservation.py").is_file()
-    # #379 @ fb09550b не содержит activity_flags: его читает наш код, не preservation.
+    # #379 @ 768676be не содержит activity_flags: его читает наш код, не preservation.
     flags = module_dir / "activity_flags.py"
     if not flags.is_file():
         flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())
@@ -1065,7 +1065,7 @@ def _run_call_sites(rejected_type: type, root) -> list[dict]:
 
 
 def _preservation_runners(tmp_path):
-    """Шим и настоящий preservation.py из fb09550b. Модуль в дерево не копируется."""
+    """Шим и настоящий preservation.py из 768676be. Модуль в дерево не копируется."""
 
     yield run_preservation_validators, PreservationRejected
 

@@ -9,8 +9,11 @@
 ``activate`` (или ``активен: True``) — error ``inactive_shot_revived``.
 Id, который был неактивен в любом кадре, остаётся неактивным и в копии
 в другом кадре, пока restore не разрешил именно пару ``(frame_uuid, shot_id)``.
-Пара, которая в before уже была активной, — не оживление. Два шота без id
-с одним текстом считаются копиями: пропажа одной — ``frames_cleared``.
+Пара, которая в before уже была активной, — не оживление: ошибка только
+если живых копий пары стало больше. Два шота без id с одним текстом
+считаются копиями: пропажа одной — ``frames_cleared``. Неактивный шот
+без id, оставшийся в списке «после», на месте: это не ``frame_deleted``
+и не ``frames_cleared``. Уже неактивный в «до» может уйти.
 Адрес — пара ``(frame_uuid, shot_id)``, как в #379 ``c48e186b``. Без
 кадра ``shot_id`` проходит только если такой id в before один.
 ``target`` и индекс адрес не заменяют. Сцена с закадром и без живых
@@ -177,11 +180,10 @@ else:
 
         operations = [op for op in list(ops or []) if isinstance(op, dict)]
         before_inactive = _inactive_pairs(before)
-        before_active = _active_pairs(before)
+        before_active = _active_counts(before)
         inactive_ids = {shot_id for _owner, shot_id in before_inactive}
         activated = _activated_pairs(operations, before_inactive)
-        found: list[Violation] = []
-        seen: set[tuple[str, str]] = set()
+        after_active: Counter[tuple[str, str]] = Counter()
         for scene in _scenes(after):
             status, frames = _kadry(scene)
             if status != "list" or not isinstance(frames, list):
@@ -191,27 +193,28 @@ else:
                 if not isinstance(shot, dict) or not shot_is_active(shot):
                     continue
                 fid = _frame_id(shot)
-                pair = (entity, fid or "")
-                # Id был неактивен в любом кадре. Копия в другом кадре — тоже revived,
-                # пока restore не разрешил именно эту пару (кадр, shot_id).
-                # Пара, которая в before уже была активной, — не оживление.
-                if (
-                    not fid
-                    or fid not in inactive_ids
-                    or pair in activated
-                    or pair in before_active
-                    or pair in seen
-                ):
-                    continue
-                seen.add(pair)
-                found.append(
-                    Violation(
-                        code="inactive_shot_revived",
-                        severity="error",
-                        path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
-                        id=fid,
-                    )
+                if fid:
+                    after_active[(entity, fid)] += 1
+        # Живых копий пары стало больше, и в before была неактивная копия
+        # этой пары или этого id. Явный restore этой пары — не оживление.
+        found: list[Violation] = []
+        seen: set[tuple[str, str]] = set()
+        for (entity, fid), after_n in after_active.items():
+            if after_n <= before_active[(entity, fid)]:
+                continue
+            if (entity, fid) in activated or (entity, fid) in seen:
+                continue
+            if (entity, fid) not in before_inactive and fid not in inactive_ids:
+                continue
+            seen.add((entity, fid))
+            found.append(
+                Violation(
+                    code="inactive_shot_revived",
+                    severity="error",
+                    path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
+                    id=fid,
                 )
+            )
         return found
 
     def _check_vo_on_inactive(after: Any) -> list[Violation]:
@@ -269,12 +272,12 @@ else:
                     found.add((entity, fid))
         return found
 
-    def _active_pairs(side: Any) -> set[tuple[str, str]]:
-        """Уже живые шоты как (кадр, shot_id). Тот же id в другом кадре их не оживляет."""
+    def _active_counts(side: Any) -> Counter[tuple[str, str]]:
+        """Число живых копий пары (кадр, shot_id). Множество прячет вторую копию."""
 
         from app.services.frame_tombstones import shot_is_active
 
-        found: set[tuple[str, str]] = set()
+        found: Counter[tuple[str, str]] = Counter()
         for scene in _scenes(side):
             status, frames = _kadry(scene)
             if status != "list" or not isinstance(frames, list):
@@ -285,7 +288,7 @@ else:
                     continue
                 fid = _frame_id(shot)
                 if fid:
-                    found.add((entity, fid))
+                    found[(entity, fid)] += 1
         return found
 
     def _activated_pairs(
@@ -455,7 +458,10 @@ else:
                     )
                 )
             path = f"scenes/{entity}/кадры" if entity else "кадры"
-            lost_text = _anonymous_texts(frames) - _anonymous_texts(after_frames)
+            # «После» считает и неактивный шот без id: строка на месте.
+            lost_text = _anonymous_texts(frames) - _anonymous_texts(
+                after_frames, skip_exempt=False
+            )
             for text in sorted(lost_text):
                 key = ("frame_deleted", text)
                 if key in seen:
@@ -478,7 +484,8 @@ else:
 
         Токен — id, иначе текст, иначе ``parent:<id>``. Пустой id — не id.
         Шоты без id с одним текстом считаются копиями, не множеством.
-        Неактивный шот может уйти. Несписковые ``кадры`` — не этот код.
+        В «до» уже неактивный шот может уйти. В «после» неактивный шот
+        в списке на месте. Несписковые ``кадры`` — не этот код.
         """
 
         if before is None or after is None:
@@ -501,7 +508,7 @@ else:
                 token = _shot_token(shot)
                 if token:
                     bucket.add(token)
-                _count_idless(idless_after, scene_key, shot)
+                _count_idless(idless_after, scene_key, shot, skip_exempt=False)
         idless_before: dict[str, Counter[str]] = {}
         for cell in before_cells:
             shots = cell.get("кадры")
@@ -542,8 +549,16 @@ else:
                 )
         return found
 
-    def _count_idless(buckets: dict[str, Counter[str]], scene: str, shot: Any) -> None:
-        if _frames_cleared_exempt(shot) or _frame_id(shot):
+    def _count_idless(
+        buckets: dict[str, Counter[str]],
+        scene: str,
+        shot: Any,
+        *,
+        skip_exempt: bool = True,
+    ) -> None:
+        if _frame_id(shot):
+            return
+        if skip_exempt and _frames_cleared_exempt(shot):
             return
         token = _idless_token(shot)
         if token:
@@ -888,17 +903,19 @@ else:
                 )
         return found
 
-    def _anonymous_texts(frames: list[Any]) -> set[str]:
+    def _anonymous_texts(frames: list[Any], *, skip_exempt: bool = True) -> set[str]:
         """Текст без id, который исчез целиком.
 
+        ``skip_exempt`` — для «до»: уже неактивный шот может уйти.
+        На «после» шот без id, оставшийся в списке, считается присутствующим.
         Число копий считает ``_check_frames_cleared`` через Counter.
-        Пока хотя бы одна копия текста на месте, это не ``frame_deleted``:
-        правка одной копии и выдача ей id список не укорачивают.
         """
 
         found: set[str] = set()
         for frame in frames:
-            if _frame_id(frame) is not None or _exempt(frame):
+            if _frame_id(frame) is not None:
+                continue
+            if skip_exempt and _exempt(frame):
                 continue
             found.add(_anonymous_text(frame))
         return found
