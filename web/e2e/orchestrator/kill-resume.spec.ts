@@ -343,8 +343,50 @@ test("not_in_whitelist: экран отказывает до карточки, g
   });
   const grant = page.getByTestId("orch-approval").filter({ hasText: "exec" });
   await grant.getByTestId("orch-approve").click();
-  await expect(grant.getByTestId("orch-approval-error")).toContainText("белом списке");
-  await expect(grant.getByTestId("orch-approve")).toBeVisible();
+  await expect(page.getByTestId("orch-whitelist").first()).toHaveText("Действия нет в белом списке");
+  await expect(page.getByTestId("orch-approval").filter({ hasText: "exec" })).toHaveCount(0);
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+});
+
+test("grant not_in_whitelist закрывает карточку и ставит failed", async ({ page }) => {
+  const session = "grant-unlisted";
+  const marked = await page.request.post(`${MOCK}/api/orchestrator/test/unlisted`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: session, unlisted: true },
+  });
+  expect(marked.ok()).toBeTruthy();
+  await openWithToken(page, session);
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-unlisted",
+    plan: [{ action: "bash", paid: true, risk: "high", estimated_cost: 1 }],
+    position: 0,
+    change_ids: ["chg-bash"],
+    context: "",
+  });
+  await emit(page, session, "approval_required", {
+    reason: "paid_outcome_unknown",
+    change_id: "orch-appr-8-1",
+    action: "bash",
+    retry_armed: false,
+    task_id: 1,
+    actions: ["approve", "retry_step", "deny"],
+    step_change_id: "chg-bash",
+  });
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+  await expect(page.getByTestId("orch-decision")).toHaveCount(3);
+
+  const approve = page.getByTestId("orch-decision").first();
+  await approve.click();
+  const screen = page.getByTestId("orch-approval");
+  await expect(page.getByTestId("orch-whitelist")).toHaveText("Действия нет в белом списке");
+  await expect(screen).toContainText("Одобрить и выполнить его нельзя");
+  await expect(screen).toHaveAttribute("data-terminal", "true");
+  await expect(page.getByTestId("orch-decision")).toHaveCount(0);
+  await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
 });
 
 test("deny закрывает карточку, ставит failed и прячет Продолжить", async ({ page }) => {

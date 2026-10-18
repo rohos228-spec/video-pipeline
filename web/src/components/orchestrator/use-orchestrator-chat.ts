@@ -28,7 +28,6 @@ import { conflictRetryBody, reportEditBody, restoreBody } from "@/lib/orchestrat
 import {
   initialOrchScreen,
   NOT_IN_WHITELIST,
-  NOT_IN_WHITELIST_TEXT,
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
@@ -344,10 +343,11 @@ export function useOrchestratorChat() {
           const raw = error instanceof Error ? error.message : "не записалось решение";
           const denied =
             error instanceof OrchApiError && error.status === 403 && raw === NOT_IN_WHITELIST;
-          setDecisionError({
-            id: approvalId,
-            message: denied ? NOT_IN_WHITELIST_TEXT : raw,
-          });
+          if (denied) {
+            dispatch({ type: "whitelist-denied", approvalId, taskId: taskId || card.taskId });
+          } else {
+            setDecisionError({ id: approvalId, message: raw });
+          }
         }
       } finally {
         decisionLock.current = false;
@@ -369,7 +369,12 @@ export function useOrchestratorChat() {
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        await postOrchChatApprove(cfg, { change_id: approvalId, decision });
+        const result = await postOrchChatApprove(cfg, { change_id: approvalId, decision });
+        if (result.reason === NOT_IN_WHITELIST) {
+          dispatch({ type: "whitelist-denied", approvalId, taskId: taskId || card.taskId });
+          setSendError("");
+          return;
+        }
         if (decision === "deny") {
           dispatch({ type: "approval-resolved", id: approvalId, decision: "rejected" });
           const failedId = taskId || card.taskId;
@@ -385,10 +390,11 @@ export function useOrchestratorChat() {
           const raw = error instanceof Error ? error.message : "не записалось решение";
           const denied =
             error instanceof OrchApiError && error.status === 403 && raw === NOT_IN_WHITELIST;
-          setDecisionError({
-            id: approvalId,
-            message: denied ? NOT_IN_WHITELIST_TEXT : raw,
-          });
+          if (denied) {
+            dispatch({ type: "whitelist-denied", approvalId, taskId: taskId || card.taskId });
+          } else {
+            setDecisionError({ id: approvalId, message: raw });
+          }
         }
       } finally {
         decisionLock.current = false;

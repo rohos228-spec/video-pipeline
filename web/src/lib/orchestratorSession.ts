@@ -277,6 +277,7 @@ export type OrchScreenAction =
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "task-status"; taskId: string; status: TaskStatus; resumeAllowed?: boolean }
   | { type: "session-snapshot"; taskId: string; status: TaskStatus; resumeAllowed: boolean }
+  | { type: "whitelist-denied"; approvalId: string; taskId: string | null }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -620,6 +621,40 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (!existing) task.status = action.status;
     if (task.resumeAllowed == null) task.resumeAllowed = action.resumeAllowed;
     return { ...state, tasks };
+  }
+  if (action.type === "whitelist-denied") {
+    const tasks = state.tasks.map((task) => ({
+      ...task,
+      steps: task.steps.map((step) => ({ ...step, node: step.node ? { ...step.node } : null })),
+      checkpoints: task.checkpoints.map((checkpoint) => ({ ...checkpoint })),
+      validators: [...task.validators],
+      plan: task.plan.map((step) => ({ ...step })),
+    }));
+    if (action.taskId) {
+      const task = tasks.find((item) => item.id === action.taskId) ?? ensureTask(tasks, action.taskId);
+      task.status = "failed";
+      task.resumeAllowed = false;
+    }
+    const approvals = state.approvals.map((item) =>
+      item.id === action.approvalId ? { ...item, resolved: "closed" as const } : { ...item },
+    );
+    if (!approvals.some((item) => item.reason === NOT_IN_WHITELIST && item.resolved == null)) {
+      approvals.push({
+        id: `block-whitelist-${action.approvalId}`,
+        serverId: false,
+        taskId: action.taskId,
+        title: "",
+        reason: NOT_IN_WHITELIST,
+        risk: "",
+        action: "",
+        costEstimate: null,
+        retryArmed: null,
+        actions: null,
+        stepChangeId: null,
+        resolved: null,
+      });
+    }
+    return { ...state, tasks, approvals };
   }
   if (action.type === "user-message") {
     return {
