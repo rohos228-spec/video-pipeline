@@ -408,7 +408,7 @@ function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, ses
   }
 }
 
-/** Своя сессия cfg.session. Без session_id статус не трогаем. Чужую задачу не создаём. */
+/** Своя сессия cfg.session. Без session_id и чужую сессию не принимаем. */
 function acceptsTaskSession(state: OrchScreenState, sessionId: string | null): boolean {
   if (!sessionId) return false;
   if (state.ownSession && sessionId !== state.ownSession) return false;
@@ -422,9 +422,8 @@ function applyTaskStatus(
   sessionId: string | null,
   title?: string,
 ): TaskView | null {
-  if (!acceptsTaskSession(state, sessionId)) {
-    return state.tasks.find((item) => item.id === taskId) ?? null;
-  }
+  // Отклонённое событие не отдаёт задачу: иначе task_done/task_failed пишут summary и error.
+  if (!acceptsTaskSession(state, sessionId)) return null;
   const task = ensureTask(state.tasks, taskId, title);
   if (task.sessionId && task.sessionId !== sessionId) return task;
   if (!task.sessionId) task.sessionId = sessionId;

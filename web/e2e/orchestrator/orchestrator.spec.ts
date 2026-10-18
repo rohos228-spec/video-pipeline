@@ -283,6 +283,50 @@ test("чужое executing не закрепляет задачу: своё done
   expect(done.approvals[0]?.resolved).toBe("closed");
 });
 
+test("отклонённое событие не меняет summary, error и статус своей задачи", () => {
+  const cases = [
+    { label: "чужая сессия", sessionId: "other-session" },
+    { label: "без session_id", sessionId: "" },
+  ] as const;
+  for (const item of cases) {
+    const own = reduceOrchScreen(initialOrchScreen("own"), {
+      type: "event",
+      event: {
+        type: "agent_status",
+        task_id: 1,
+        seq: 1,
+        session_id: "own",
+        payload: { agent: "supervisor", status: "running", task_status: "executing", title: "Своя" },
+      },
+    });
+    const rejectedDone = reduceOrchScreen(own, {
+      type: "event",
+      event: {
+        type: "task_done",
+        task_id: 1,
+        seq: 2,
+        session_id: item.sessionId,
+        payload: { summary: "чужое", error: "чужая ошибка" },
+      },
+    });
+    const rejected = reduceOrchScreen(rejectedDone, {
+      type: "event",
+      event: {
+        type: "task_failed",
+        task_id: 1,
+        seq: 3,
+        session_id: item.sessionId,
+        payload: { summary: "чужое", error: "чужая ошибка" },
+      },
+    });
+    const task = rejected.tasks[0];
+    expect(task?.status, item.label).toBe("executing");
+    expect(task?.summary, item.label).toBe("");
+    expect(task?.error, item.label).toBe("");
+    expect(rejected.tasks, item.label).toHaveLength(1);
+  }
+});
+
 test("событие без session_id не перезаписывает статус и не мешает закрыть карточку", () => {
   const opened = reduceOrchScreen(initialOrchScreen("own"), {
     type: "event",
