@@ -5,10 +5,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 
 
 def _ignored(path: str) -> bool:
+    if not (_REPO / ".git").exists():
+        pytest.skip("нет .git")
     proc = subprocess.run(
         ["git", "check-ignore", "-q", "--", path],
         cwd=_REPO,
