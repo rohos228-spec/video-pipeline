@@ -1,13 +1,21 @@
 """План: только whitelist, схемы аргументов, verify перед run_node, без удалений.
 
 Источник истины — реестр ``app.orchestrator.actions.registry`` или
-``app.services.action_layer.spec.registry``, если модуль импортируется.
+``app.services.action_layer.spec.registry`` после ``ensure_builtin_actions()``,
+если модуль импортируется.
 Иначе временный ``FALLBACK_WHITELIST``: 11 новых действий §6 плюс read-only
 имена из того же параграфа, ``run_node`` и ``verify_code_state``.
 ``context["whitelist"]`` и ``context["registry"]`` могут только сузить это
 множество. Имя вне реестра из context не становится разрешённым.
 
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
+``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе,
+и только если сырое имя шага уже равно нормализованному токену:
+``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
+``context["approval"]`` с ``risk == "high"`` (без strip и lower), ``destructive is True``,
+``granted is True`` и ``approval["action"]``, строго равным сырому имени шага.
+Нет поля ``soft_delete`` или нет ``metadata_of`` у серверного реестра модуля —
+это false. ``context["registry"]`` для решения об удалении не читается.
 ``edit_files`` / ``exec`` / ``shell`` / ``run_tests`` в запасном списке отсутствуют
 (E8).
 """
@@ -104,7 +112,7 @@ def check(project_id: int, context: dict[str, Any]) -> Any:
         if not action:
             errors.append(_err(index, action, "missing_action"))
             continue
-        if is_deletion(action, params):
+        if is_deletion(action, params) and not _soft_delete_granted(action, context, registry):
             errors.append(_err(index, action, "deletion_forbidden"))
             continue
         if action not in whitelist:
@@ -182,6 +190,12 @@ def _import_registry() -> tuple[set[str], Any]:
             module = importlib.import_module(module_name)
         except Exception:  # noqa: BLE001 — реестра ещё нет
             continue
+        ensure = getattr(module, "ensure_builtin_actions", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception:  # noqa: BLE001 — пустой реестр уйдёт в fallback
+                pass
         registry = getattr(module, attr, None)
         if callable(registry):
             try:
@@ -211,9 +225,73 @@ def _registry_names(registry: Any) -> set[str]:
     return set()
 
 
+_SOFT_FRAME_DELETES = frozenset({"montage.delete_frame", "montage.delete_child_frame"})
+
+
+def _soft_delete_granted(action: str, context: dict[str, Any], registry: Any) -> bool:
+    """Мягкое удаление кадра монтажа: пометка и одобрение ядра, иначе блок."""
+
+    token = action.strip().lower().replace("-", "_")
+    if action != token or token not in _SOFT_FRAME_DELETES:
+        return False
+    if not _metadata_soft_delete(action, registry):
+        return False
+    return _core_approved_high_destructive(context, action)
+
+
+def _metadata_soft_delete(action: str, registry: Any) -> bool:
+    """``metadata_of`` только у серверного реестра модуля.
+
+    ``context["registry"]`` сюда не входит: его кладёт вызывающий, не сервер.
+    Нет метода или поля ``soft_delete`` — false.
+    """
+
+    fn = getattr(registry, "metadata_of", None)
+    if not callable(fn):
+        return False
+    try:
+        meta = fn(action)
+    except Exception:  # noqa: BLE001 — нет карточки, как отсутствие поля
+        return False
+    getter = getattr(meta, "get", None)
+    if not callable(getter):
+        return False
+    return getter("soft_delete") is True
+
+
+def _core_approved_high_destructive(context: dict[str, Any], action: str) -> bool:
+    """Ядро выдало одобрение именно этому действию.
+
+    ``context["approval"]`` — форма WS3: ``change_id``, ``action``, ``risk``,
+    ``destructive``, ``granted``, ``cc_change_id``. Обязательны ``risk == "high"``
+    без strip и lower, ``destructive is True``, ``granted is True`` и
+    ``approval["action"]``, строго равный сырому имени шага.
+    """
+
+    approval = context.get("approval")
+    if isinstance(approval, dict):
+        risk = approval.get("risk")
+        destructive = approval.get("destructive")
+        granted = approval.get("granted")
+        approved_action = approval.get("action")
+    elif approval is not None:
+        risk = getattr(approval, "risk", None)
+        destructive = getattr(approval, "destructive", None)
+        granted = getattr(approval, "granted", None)
+        approved_action = getattr(approval, "action", None)
+    else:
+        return False
+    return (
+        risk == "high"
+        and destructive is True
+        and granted is True
+        and approved_action == action
+    )
+
+
 def _action_deletes(action: str) -> bool:
     token = action.strip().lower().replace("-", "_")
-    if token in _DENY_EXACT:
+    if token in _DENY_EXACT or "delete_child_frame" in token:
         return True
     return _DELETE.search(token) is not None
 
