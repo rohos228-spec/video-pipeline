@@ -12,8 +12,11 @@ from app.orchestrator.validators.entities import (
     collect_cells,
     frame_id,
     frame_is_exempt,
+    text_of,
 )
 from app.orchestrator.validators.violations import Violation, sorted_violations
+
+_IDLESS_TEXT_KEYS = ("закадр", "voiceover", "vo", "действие", "текст", "text", "описание")
 
 
 def check_frames_cleared(before: Any, after: Any, ops: Any = None) -> list[Violation]:
@@ -38,9 +41,9 @@ def check_frames_cleared(before: Any, after: Any, ops: Any = None) -> list[Viola
         if not isinstance(shots, list):
             continue
         for shot in shots:
-            fid = frame_id(shot)
-            if fid:
-                bucket.add(fid)
+            token = _shot_token(shot)
+            if token:
+                bucket.add(token)
     violations: list[Violation] = []
     seen: set[str] = set()
     for cell in before_cells:
@@ -63,15 +66,33 @@ def check_frames_cleared(before: Any, after: Any, ops: Any = None) -> list[Viola
         for shot in shots:
             if frame_is_exempt(shot):
                 continue
-            fid = frame_id(shot)
-            if not fid or fid in kept or fid in seen:
+            token = _shot_token(shot)
+            if not token or token in kept or token in seen:
                 continue
-            seen.add(fid)
-            path = f"scenes/{scene}/кадры/{fid}" if scene else f"кадры/{fid}"
+            seen.add(token)
+            path = f"scenes/{scene}/кадры/{token}" if scene else f"кадры/{token}"
             violations.append(
-                Violation(code="frames_cleared", severity="error", path=path, id=fid)
+                Violation(code="frames_cleared", severity="error", path=path, id=token)
             )
     return sorted_violations(violations)
+
+
+def _shot_token(shot: Any) -> str | None:
+    """id шота, иначе текст, иначе ``parent:<id>``. Пустой id — не id."""
+
+    fid = frame_id(shot)
+    if fid:
+        return fid
+    if not isinstance(shot, dict):
+        return None
+    for key in _IDLESS_TEXT_KEYS:
+        text = text_of(shot.get(key))
+        if text:
+            return text
+    parent = shot.get("parent_id")
+    if parent not in (None, ""):
+        return f"parent:{parent}"
+    return None
 
 
 def _cell_id(cell: dict[str, Any]) -> str:

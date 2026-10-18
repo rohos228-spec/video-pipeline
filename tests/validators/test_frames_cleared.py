@@ -5,7 +5,10 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+import pytest
+
 from app.orchestrator.validators.frames_cleared import check_frames_cleared
+from app.orchestrator.validators.preservation import PreservationRejected, run_preservation_validators
 
 
 def _cells(*rows: dict) -> dict:
@@ -83,6 +86,31 @@ def test_transfer_inside_scene_and_inactive_pass() -> None:
     )
     left = _cells({"id": "child", "сцена": "1", "кадры": [{"id": "k2", "сцена": 1}]})
     assert check_frames_cleared(inactive, left) == []
+
+
+def test_idless_shot_loss_is_frames_cleared() -> None:
+    """Шот без id, пропавший из списка, — frames_cleared, не тихий пропуск."""
+
+    kept = {"id": "k1", "закадр": "а"}
+    lost_shot = {"id": "", "parent_id": "9-K1", "закадр": "кусок"}
+
+    def pair(key: str) -> tuple[dict, dict]:
+        if key == "cells":
+            before = {"cells": [{"id": "c", "сцена": "1", "кадры": [kept, lost_shot]}]}
+            after = {"cells": [{"id": "c", "сцена": "1", "кадры": [kept]}]}
+            return before, after
+        before = {"frames": [{"id": "u1", "attrs": {"кадры": [kept, lost_shot]}}]}
+        after = {"frames": [{"id": "u1", "attrs": {"кадры": [kept]}}]}
+        return before, after
+
+    for key in ("cells", "frames"):
+        before, after = pair(key)
+        with pytest.raises(PreservationRejected) as raised:
+            run_preservation_validators(before, after, mode="reject")
+        assert any(
+            item.code == "frames_cleared" and item.id == "кусок"
+            for item in raised.value.violations
+        )
 
 
 def test_non_list_is_not_frames_cleared() -> None:
