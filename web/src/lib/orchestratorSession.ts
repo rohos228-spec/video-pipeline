@@ -363,6 +363,15 @@ export function approvalServerKey(body: Record<string, unknown>): string | null 
   return serverApprovalId(inner.approval_id) ?? approvalChangeId(inner.change_id);
 }
 
+/** `change_id` события. `step_change_id` не подставляется. */
+function approvalEventChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
+}
+
 /**
  * `change_id` для `ApproveIn`: только `^orch-appr-[0-9]+-[0-9]+$` с карточки.
  * `step_change_id` не подставляется, даже если другого id нет.
@@ -400,7 +409,7 @@ function approvalLegacyId(body: Record<string, unknown>): string | null {
  * проверяет. События #342 могли прийти только с `approval_id`.
  */
 function approvalDecisionKey(body: Record<string, unknown>): string | null {
-  return approvalWireChangeId(body) ?? approvalLegacyId(body);
+  return approvalEventChangeId(body) ?? approvalLegacyId(body);
 }
 
 function approvalDecidedResolution(
@@ -421,7 +430,7 @@ function closeServerApproval(
   body: Record<string, unknown>,
   decision: "approved" | "rejected" | "closed",
 ): void {
-  const changeId = approvalWireChangeId(body);
+  const changeId = approvalEventChangeId(body);
   const legacyId = approvalLegacyId(body);
   const item = state.approvals.find((entry) => {
     if (!entry.serverId || entry.resolved) return false;
@@ -565,7 +574,7 @@ function absorbLlmSignal(
     state.approvals.push({
       id,
       serverId: fromServer != null,
-      changeId: approvalWireChangeId(body),
+      changeId: approvalEventChangeId(body),
       sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
@@ -841,7 +850,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const incoming = {
       id,
       serverId: fromServer != null,
-      changeId: approvalWireChangeId(body),
+      changeId: approvalEventChangeId(body),
       sessionId,
       taskId,
       title: str(body.title, "Нужно подтверждение"),

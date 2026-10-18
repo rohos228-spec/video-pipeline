@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
   approvalButtons,
+  approvalChangeId,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -709,7 +710,7 @@ function ApprovalCard({
               Привязать проект
             </Button>
           </form>
-        ) : approval.changeId && buttons.length > 0 ? (
+        ) : approvalChangeId(approval.changeId) && buttons.length > 0 ? (
           <>
             {buttons.includes("approve") ? (
               <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>

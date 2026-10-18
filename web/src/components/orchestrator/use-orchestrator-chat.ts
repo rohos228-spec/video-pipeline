@@ -236,8 +236,12 @@ export function useOrchestratorChat() {
           decision: decision === "approved" ? "approve" : decision === "retry_step" ? "retry_step" : "deny",
           ...(decision === "retry_step" ? { retry_grant: true } : {}),
         });
-        if (!approvalPostAccepted(result, card.changeId)) {
-          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+        const refusal =
+          typeof result.reason === "string" && result.reason
+            ? paidOutcomeGrantNotice(result.reason) || result.reason
+            : "";
+        if (!approvalPostAccepted(result, card.changeId) || refusal) {
+          setDecisionError({ id: approvalId, message: refusal || "сервер не подтвердил это решение" });
           return;
         }
         dispatch({
