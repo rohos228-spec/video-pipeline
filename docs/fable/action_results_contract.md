@@ -1,7 +1,7 @@
 # Контракт результатов действий R2 (моки WS4)
 
 Версия: `ws2-r2.3` (`CONTRACT_VERSION` в `app/orchestrator/action_contracts/contracts.py`).
-sha256 схемы: `5963ecba52fe0bd61ac863e82b6f9c092e8ee4a586b242e0796487ed2d69afb3`.
+sha256 схемы: `76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123`.
 
 ## Изменения r2.0 → r2.1
 

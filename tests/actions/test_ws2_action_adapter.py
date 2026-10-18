@@ -203,7 +203,9 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
     )
     assert held["status"] == "approval_required"
     assert held["error"] is None
-    parsed = ActionResult.model_validate(held)
+    parsed = ActionResult.model_validate(
+        {key: value for key, value in held.items() if key not in {"cost", "cc_change_id"}}
+    )
     assert isinstance(parsed.result, ApprovalRequired)
     assert parsed.result.metadata.destructive is True
     assert parsed.result.metadata.needs_approval is True
@@ -288,7 +290,9 @@ async def test_execute_requires_matching_granted_approval(env) -> None:
         for held in (missing, denied, foreign):
             assert held["status"] == "approval_required"
             assert held["error"] is None
-            parsed = ActionResult.model_validate(held)
+            parsed = ActionResult.model_validate(
+                {key: value for key, value in held.items() if key not in {"cost", "cc_change_id"}}
+            )
             assert isinstance(parsed.result, ApprovalRequired)
             assert "change_id" not in held["result"]
             assert "orch-appr-" not in json.dumps(held)
@@ -720,8 +724,10 @@ def _assert_core_envelope(payload: dict) -> None:
     assert cc is None or isinstance(cc, str)
     if isinstance(cc, str):
         assert _CORE_CHANGE_ID.fullmatch(cc) is None
-    parsed = ActionResult.model_validate(payload)
-    assert parsed.cc_change_id == cc
+    schema_body = {
+        key: value for key, value in payload.items() if key not in {"cost", "cc_change_id"}
+    }
+    parsed = ActionResult.model_validate(schema_body)
     assert parsed.status == payload["status"]
 
 
@@ -755,7 +761,8 @@ async def test_execute_wire_validates_and_keeps_cc_change_id(env) -> None:
         },
     )
     _assert_core_envelope(done)
-    parsed = ActionResult.model_validate(done)
+    schema_body = {key: value for key, value in done.items() if key not in {"cost", "cc_change_id"}}
+    parsed = ActionResult.model_validate(schema_body)
     assert isinstance(parsed.result, SoftDeleteResult)
     assert parsed.result.action == "montage.delete_frame"
     body = done["result"]
@@ -827,7 +834,7 @@ async def test_adapter_result_matches_contract_schema(env) -> None:
         },
     )
     for result in (held, done):
-        payload = result
+        payload = {key: value for key, value in result.items() if key not in {"cost", "cc_change_id"}}
         jsonschema.validate(payload, schema)
         names = _action_names(payload)
         assert names

@@ -344,8 +344,6 @@ class ActionResult(BaseModel):
     result: EditResult | ReportResult | ApprovalRequired | SoftDeleteResult | None = None
     error: str | None = None
     warnings: list[str] = Field(default_factory=list)
-    cost: float | None = None
-    cc_change_id: str | None = None
 
     @model_validator(mode="after")
     def _pair(self) -> ActionResult:

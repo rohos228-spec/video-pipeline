@@ -221,7 +221,8 @@ def _attach_cc(result: ActionResult, approval: dict | None) -> ActionResult:
         return result
     if _CORE_CHANGE_ID.fullmatch(cc.strip()) is not None:
         return result
-    return result.model_copy(update={"cc_change_id": cc.strip()})
+    object.__setattr__(result, "cc_change_id", cc.strip())
+    return result
 
 
 def _preview_change(spec: Any, params: dict) -> str:
@@ -530,10 +531,28 @@ async def _frame_restore(params: dict, ctx: Any) -> ActionResult:
     return _attach_cc(result, approval)
 
 
-async def execute(name: str, params: dict | None, ctx: Any) -> dict[str, Any]:
-    """Один ActionSpec. Ответ — model_dump(mode=json) конверта r2.3."""
+def _wire(result: ActionResult) -> dict[str, Any]:
+    """model_dump схемы #378 плюс поля, которые читает ядро и которых в схеме нет.
 
-    return (await _execute(name, params, ctx)).model_dump(mode="json")
+    cost и cc_change_id не входят в общий контракт r2.3: extra=forbid.
+    orch-appr в cc_change_id не кладётся.
+    """
+
+    payload = result.model_dump(mode="json")
+    cc = getattr(result, "cc_change_id", None)
+    text = cc.strip() if isinstance(cc, str) else ""
+    if text and _CORE_CHANGE_ID.fullmatch(text) is None:
+        payload["cc_change_id"] = text
+    else:
+        payload["cc_change_id"] = None
+    payload["cost"] = None
+    return payload
+
+
+async def execute(name: str, params: dict | None, ctx: Any) -> dict[str, Any]:
+    """Один ActionSpec. Ответ — dict: model_dump(mode=json) и поля ядра."""
+
+    return _wire(await _execute(name, params, ctx))
 
 
 async def _execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
