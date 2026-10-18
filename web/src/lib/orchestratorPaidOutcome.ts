@@ -4,7 +4,7 @@
  *
  * `decision` закреплён: approve | retry_step | deny.
  *
- * Имена сверены с #358 @ fbd8b6ee47472ad24a8f0036815055d66f60520e
+ * Имена сверены с #358 @ 135e39e6
  * (`origin/cursor/ws3-nonblocking-350`). Первое `approval_required` уже несёт
  * `change_id`, `forecast_usd` и `retry_armed: false`.
  * Сервер сам ставит `change_id` вида `orch-appr-<task_id>-<n>`
@@ -16,7 +16,7 @@
  * 401 — нет Bearer. Карточки change_control (#342) этот путь не используют.
  */
 
-/** Нет в union ApprovalReason контракта ws3-r3.3. */
+/** В enum ApprovalReason на #358 этой причины нет. Она есть в BLOCK_OUTCOMES. */
 export const PAID_OUTCOME_UNKNOWN_REASON = "paid_outcome_unknown";
 
 export const PAID_OUTCOME_DECISION = {

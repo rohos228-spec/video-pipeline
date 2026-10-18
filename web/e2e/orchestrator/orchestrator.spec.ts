@@ -15,9 +15,10 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
-import { ORCH_CONTRACT_VERSION, ORCH_EVENT_TYPES } from "../../src/lib/orchestratorTypes";
+import { BLOCK_OUTCOMES, ORCH_CONTRACT_VERSION, ORCH_EVENT_TYPES } from "../../src/lib/orchestratorTypes";
 import {
   PAID_OUTCOME_BODY_FIELDS,
+  PAID_OUTCOME_UNKNOWN_REASON,
   paidOutcomeDecisionBody,
   paidOutcomeGrantBody,
   paidOutcomeRetryReady,
@@ -304,6 +305,11 @@ test("grant с executed false и неизвестным reason не закрыв
   });
   expect(armed.ok).toBe(true);
   expect(armed.retryReady).toBe(true);
+});
+
+test("paid_outcome_unknown есть в BLOCK_OUTCOMES", () => {
+  expect(PAID_OUTCOME_UNKNOWN_REASON).toBe("paid_outcome_unknown");
+  expect(BLOCK_OUTCOMES[PAID_OUTCOME_UNKNOWN_REASON]).toBe("waiting_approval");
 });
 
 test("NaN внутри строки не ломает JSON paid outcome", () => {
