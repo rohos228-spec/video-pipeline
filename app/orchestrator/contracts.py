@@ -1378,9 +1378,26 @@ def load_risk_escalations() -> tuple[Any, ...]:
 
 
 def group_is_new(params: Any) -> bool:
-    """Параметр ``group_is_new is True``. Имя с ``@`` сюда не приходит."""
+    """Новая группа — по серверному ключу. Флаг планировщика только без ключа.
+
+    ``group`` / ``group_id`` / ``group_key``: нет записи или сбой lookup —
+    группа новая. Без ключа остаётся ``group_is_new is True``.
+    """
     if not isinstance(params, dict):
         return False
+    key = ""
+    for field in ("group", "group_id", "group_key"):
+        raw = params.get(field)
+        if isinstance(raw, str) and raw.strip():
+            key = raw.strip()
+            break
+    if key:
+        try:
+            from app.services.node_groups import get_node_group
+
+            return get_node_group(key) is None
+        except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
+            return True
     return params.get("group_is_new") is True
 
 
