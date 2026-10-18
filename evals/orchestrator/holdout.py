@@ -17,6 +17,7 @@ from app.orchestrator.rag.store import chunk_id_for
 HOLDOUT_NAME = "precision_live_holdout.json"
 HOLDOUT_PATH = Path(__file__).resolve().parent / "datasets" / HOLDOUT_NAME
 HOLDOUT3_NAME = "precision_live_holdout3.json"
+HOLDOUT4_NAME = "precision_live_holdout4.json"
 
 # Совпадает с ``precision_live._FAMILIES``. Импорт оттуда зациклил бы модули.
 FAMILY_NODES: dict[str, tuple[str, str]] = {
@@ -176,7 +177,8 @@ class HoldoutLeakError(ValueError):
 
 
 def is_holdout_id(query_id: str) -> bool:
-    return str(query_id).startswith("h3-")
+    text = str(query_id)
+    return text.startswith("h3-") or text.startswith("h4-")
 
 
 def dev_plus_ids() -> list[str]:
@@ -188,8 +190,8 @@ def dev_plus_ids() -> list[str]:
 
 def assert_tuning_path(path: Path) -> Path:
     """Путь holdout-3 для сетки и подбора закрыт. Бывший holdout-2 — это dev."""
-    if Path(path).name == HOLDOUT3_NAME:
-        raise HoldoutLeakError(f"тюнинг не читает {HOLDOUT3_NAME}")
+    if Path(path).name in {HOLDOUT3_NAME, HOLDOUT4_NAME}:
+        raise HoldoutLeakError(f"тюнинг не читает {Path(path).name}")
     return Path(path)
 
 
