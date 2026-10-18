@@ -149,11 +149,14 @@ test("legacy-токен не дописывается в пузырь выше �
   expect(legacy.messages[2]?.messageId).toBeUndefined();
 });
 
+test("ws3-r3.4.1 не принимается как контракт клиента", () => {
+  expect(acceptsOrchContractVersion("ws3-r3.4.1")).toBe(false);
+});
+
 test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупреждения", () => {
   expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
   expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);
   expect(acceptsOrchContractVersion(ORCH_CONTRACT_VERSION)).toBe(true);
-  expect(acceptsOrchContractVersion("ws3-r3.4.1")).toBe(false);
   expect(ORCH_EVENT_TYPES).toContain("approval_decided");
   const warnings: string[] = [];
   const original = console.warn;
