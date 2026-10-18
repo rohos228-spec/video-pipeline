@@ -10,7 +10,8 @@
  * пустой snapshot_id и archive_ref недействительны; непустой skipped включает
  * partial. Иначе карточка «Некорректный ответ действия», интерфейс не падает.
  * Риск и approval карточки берутся из metadata, не из имени действия.
- * Имя с «@» — некорректный ответ. Отдельной строки name@… в таблице нет.
+ * Имя с «@» отвергает UI, не схема: ответ некорректный, карточка не рисуется.
+ * Отдельной строки name@… в таблице нет.
  *
  * Моки — JSON этой версии (#378).
  * Обязательны: version и base_version у правки, before или snapshot_id,
@@ -463,7 +464,8 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
     result &&
     (badActionName(result.action) || badActionName(result.edit_action) || badActionName(result.restore_action))
   ) {
-    return invalidView(seq);
+    // Шаблон схемы на «@» ещё не закреплён. Имя отвергает сам UI, карточка не рисуется.
+    return null;
   }
   const metaRaw = result ? plainObject(result.metadata) : null;
   if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);

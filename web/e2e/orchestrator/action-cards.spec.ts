@@ -102,7 +102,7 @@ test("схема ws2-r2.3 закреплена sha256", () => {
 
   const atName = structuredClone(EXAMPLE_NODE_CREATE);
   (atName.result as { action: string }).action = "create_node@new_group";
-  expect(readActionEnvelope(atName, 8)?.kind).toBe("invalid");
+  expect(readActionEnvelope(atName, 8)).toBeNull();
 
   const policy = structuredClone(EXAMPLE_PAID_APPROVAL);
   const policyResult = policy.result as { action: string; metadata: Record<string, unknown> };
@@ -130,6 +130,22 @@ test("схема ws2-r2.3 закреплена sha256", () => {
 
   expect(readActionEnvelope(EXAMPLE_PROMPT_EDIT, 1)?.version).toBe(2);
   expect(readActionEnvelope(EXAMPLE_REPORT, 2)?.kind).toBe("report");
+});
+
+test("action create_node@new_group не рисует карточку", async ({ page }) => {
+  const broken = structuredClone(EXAMPLE_NODE_CREATE);
+  (broken.result as { action: string }).action = "create_node@new_group";
+  expect(readActionEnvelope(broken, 1)).toBeNull();
+
+  await openWithToken(page, "act-at-action");
+  await emit(page, "act-at-action", "step_finished", broken);
+  await emit(page, "act-at-action", "step_finished", EXAMPLE_PARAMS_EDIT);
+  const params = page.getByTestId("orch-action-card").filter({ hasText: "Параметры" });
+  await expect(params).toBeVisible();
+  await expect(page.getByTestId("orch-action-card")).toHaveCount(1);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "create_node@new_group" })).toHaveCount(0);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "Новая нода" })).toHaveCount(0);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" })).toHaveCount(0);
 });
 
 test("версия, снимок и marked обязательны", () => {
