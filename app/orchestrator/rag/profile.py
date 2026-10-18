@@ -44,13 +44,13 @@ Dev-плюс (все 50, fp32, 1 поток, сид 0), до holdout:
 В профиль входит ``none``: на dev-плюс это единственный из двух, где hit@5 ≥ 0.9
 и assemble/world выше. nDCG@8 этого варианта на dev-плюс 0.6119, порог 0.65
 не снижался. Holdout в выборе не участвовал.
-Dev-70 (live-01..50 и hold-01..20) подтвердил тот же профиль через choose_default:
-обязательный hit@5 ≥ 0.9 прошёл только ``none`` + rrf 0.5/1.5
-(hit@5 0.9286, nDCG@8 0.6011). Три холодных p95 прод-пути на dev-70 —
-0.996 / 0.941 / 0.975 с, каждый ≤ 1.2, реранкер остаётся на top-12.
+Dev-70 (live-01..50 и hold-01..20) через choose_default выбрал ``expand_tail``
+и слияние BM25/реранкер 0.25/1.5 при RRF k=20: hit@5 0.9286, nDCG@8 0.7007.
+Top-5 как у ``none``, места 6–8 — соседние части тех же промптов.
 Порог nDCG@8 0.65 не снижался. Флаг эксперимента снят. Holdout-3 в выборе не участвовал.
-Остальное без изменений: RRF k=20, веса лексика/вектор 0.5/1.5,
-BM25 full, реранк топ-12, family_boost 1, слияние 0.5/1.5, 256 токенов.
+Лексика/вектор остаются 0.5/1.5. BM25 full, реранк топ-12, family_boost 1, 256 токенов.
+Три холодных p95 прод-пути на dev-70, кэш сброшен, реранкер top-12:
+0.904 / 1.053 / 0.956 с, каждый ≤ 1.2. Это не p95 fp32-эвала.
 Детерминированный перемер — три прохода, ``intra_op=1``, ``inter_op=1``, сид 0.
 Реранкер эвалов — fp32-граф той же bge-m3: квантованный граф не бит-стабилен.
 Три прохода fp32 совпали. test: hit@5 0.8000, nDCG@8 0.6768.
@@ -72,15 +72,15 @@ CONTOUR_B_RRF_LEXICAL = 0.5
 CONTOUR_B_RRF_VECTOR = 1.5
 CONTOUR_B_BM25_SCOPE = "full"
 CONTOUR_B_RERANK_POOL = 12
-CONTOUR_B_AGGREGATE = "none"
+CONTOUR_B_AGGREGATE = "expand_tail"
 CONTOUR_B_RERANK_MAX_LENGTH = 256
 # Слияние реранкера с BM25. replace в профиль не входит.
 CONTOUR_B_RERANK_FUSION = "rrf"
-CONTOUR_B_FUSION_BM25 = 0.5
+CONTOUR_B_FUSION_BM25 = 0.25
 CONTOUR_B_FUSION_RERANK = 1.5
 CONTOUR_B_BM25_PROTECT = 0.0
 CONTOUR_B_FAMILY_BOOST = 1.0
-# Dev-70 choose_default выбрал none + rrf 0.5/1.5: hit@5 0.9286, nDCG@8 0.6011.
-# Три холодных p95 прод-пути ≤ 1.2 с. Веса не менялись. Флаг снят.
+# Dev-70 choose_default: expand_tail + слияние 0.25/1.5, k=20.
+# hit@5 0.9286, nDCG@8 0.7007. Порог 0.65 не снижался. Флаг снят.
 CONTOUR_B_EXPERIMENTAL = False
 CONTOUR_B_R5_NOTE = ""

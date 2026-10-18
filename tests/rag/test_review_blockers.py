@@ -266,7 +266,7 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
 
 
 def test_dev70_choice_clears_the_experimental_flag() -> None:
-    """choose_default на dev-70 выбрал none + rrf 0.5/1.5, флаг снят."""
+    """choose_default на dev-70 выбрал expand_tail + слияние 0.25/1.5, флаг снят."""
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
         CONTOUR_B_EXPERIMENTAL,
@@ -278,9 +278,9 @@ def test_dev70_choice_clears_the_experimental_flag() -> None:
     from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
 
     assert CONTOUR_B_RERANK_FUSION == "rrf"
-    assert CONTOUR_B_FUSION_BM25 == 0.5
+    assert CONTOUR_B_FUSION_BM25 == 0.25
     assert CONTOUR_B_FUSION_RERANK == 1.5
-    assert CONTOUR_B_AGGREGATE == "none"
+    assert CONTOUR_B_AGGREGATE == "expand_tail"
     assert CONTOUR_B_RERANK_POOL == 12
     assert CONTOUR_B_EXPERIMENTAL is False
     missed = choose_default([("rrf", "rrf 0.5/1.5", {"ndcg_at_8": 0.7, "hit_at_5": 0.88, "p95_s": 0.4})])
@@ -290,7 +290,7 @@ def test_dev70_choice_clears_the_experimental_flag() -> None:
     assert len(samples) == 3
     assert max(samples) <= 1.2
     chosen, _why = choose_default(grid_runs_for_choice(document["configs"], prod_p95_s=max(samples)))
-    assert chosen == "none-rrf-0.5-1.5"
+    assert chosen == "expand-tail-rrf-0.25-1.5-k20"
 
 
 def test_r5_below_0_65_is_experimental_and_threshold_stays() -> None:

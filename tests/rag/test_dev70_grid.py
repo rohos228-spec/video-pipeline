@@ -128,13 +128,15 @@ def test_extended_grid_lists_weights_k_and_expand_tail() -> None:
     ]
 
 
-def test_committed_dev70_grid_keeps_the_only_hit_pass() -> None:
+def test_committed_dev70_grid_keeps_the_hit_pass() -> None:
     from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
 
     document = json.loads(GRID_PATH.read_text(encoding="utf-8"))
     assert document["set"] == "dev-70"
     assert document["rerank_pool"] == 12
-    assert len(document["configs"]) == 4
+    keys = {row["key"] for row in document["configs"]}
+    assert {"none-rrf-0.5-1.5", "prompt-expand-rrf-0.5-1.5", "prompt-pool-rrf-0.5-1.5", "none-no-rerank"} <= keys
+    assert "expand-tail-rrf-0.25-1.5-k20" in keys
     samples = document["prod_p95_s"]
     assert len(samples) == 3
     assert all(float(sample) <= 1.2 for sample in samples)
@@ -143,5 +145,6 @@ def test_committed_dev70_grid_keeps_the_only_hit_pass() -> None:
     assert hits["prompt-pool-rrf-0.5-1.5"] < 0.9
     assert hits["prompt-expand-rrf-0.5-1.5"] < 0.9
     assert hits["none-no-rerank"] < 0.9
+    assert hits["none-cand-expand-rerank-rrf-0.5-1.5-k20"] < 0.9
     chosen, _why = choose_default(grid_runs_for_choice(document["configs"], prod_p95_s=max(samples)))
-    assert chosen == "none-rrf-0.5-1.5"
+    assert chosen == "expand-tail-rrf-0.25-1.5-k20"
