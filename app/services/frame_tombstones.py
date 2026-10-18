@@ -17,10 +17,18 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.orchestrator.validators.activity_flags import (
+    flag_is_true,
+    frame_is_active as _attrs_are_active,
+    shot_is_active as _shot_record_is_active,
+)
+
 _KEY = "deleted_frame_numbers"
 DELETED_MARK = "удалён"
 REASON_MARK = "пометка"
 ACTIVE_MARK = "активен"
+# Все пометки скрытия шота: переносятся со старого шота на совпавший новый.
+SHOT_HIDE_KEYS = (ACTIVE_MARK, DELETED_MARK, "удален", "карантин", REASON_MARK)
 
 
 def _touch(project) -> None:
@@ -74,34 +82,42 @@ def forget_deleted(project, number: int | None = None) -> None:
     _touch(project)
 
 
+def _frame_attrs(frame: Any) -> dict[str, Any]:
+    """attrs кадра: принимаем и объект Frame, и сам словарь attrs."""
+    if isinstance(frame, dict):
+        return frame
+    attrs = getattr(frame, "attrs", None)
+    return attrs if isinstance(attrs, dict) else {}
+
+
 def frame_marked_deleted(frame: Any) -> bool:
     """Кадр помечен «удалён» и должен остаться неактивным."""
     if frame is None:
         return False
-    attrs = getattr(frame, "attrs", None)
-    if not isinstance(attrs, dict):
-        return False
-    return bool(attrs.get(DELETED_MARK))
+    return flag_is_true(_frame_attrs(frame).get(DELETED_MARK), mark=DELETED_MARK)
 
 
 def frame_is_active(frame: Any) -> bool:
-    if frame is None or frame_marked_deleted(frame):
+    """Делегат activity_flags.frame_is_active: та же матрица, включая карантин."""
+    if frame is None:
         return False
-    attrs = getattr(frame, "attrs", None) or {}
-    if isinstance(attrs, dict) and attrs.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    return _attrs_are_active(_frame_attrs(frame))
 
 
 def shot_is_active(shot: Any) -> bool:
     """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
-    if not isinstance(shot, dict):
-        return False
-    if shot.get(DELETED_MARK) or shot.get("карантин"):
-        return False
-    if shot.get(ACTIVE_MARK) is False:
-        return False
-    return True
+    return _shot_record_is_active(shot)
+
+
+def carry_hide_marks(old_shot: Any, new_shot: dict[str, Any]) -> dict[str, Any]:
+    """Скрытый старый шот остаётся скрытым после merge: все пометки — на новый."""
+    if not isinstance(old_shot, dict) or _shot_record_is_active(old_shot):
+        return new_shot
+    merged = dict(new_shot)
+    for key in SHOT_HIDE_KEYS:
+        if key in old_shot:
+            merged[key] = old_shot[key]
+    return merged
 
 
 class PaidFrameSkipped(RuntimeError):
@@ -167,6 +183,10 @@ def import_skip_reason(project, frame, number: int) -> str | None:
     if frame is not None and frame_marked_deleted(frame):
         return (
             f"кадр #{int(number)} помечен «удалён» — не оживляем и не дублируем"
+        )
+    if frame is not None and not frame_is_active(frame):
+        return (
+            f"кадр #{int(number)} неактивен (активен/карантин) — не оживляем"
         )
     if frame is None and int(number) in deleted_numbers(project):
         return (

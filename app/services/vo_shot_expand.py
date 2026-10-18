@@ -923,6 +923,10 @@ def _is_pipeline_frame(frame: Any) -> bool:
     return True
 
 
+_ARCHIVED_LEFTOVER_NOTE = "archived leftover — кадр сохранён"
+_ARCHIVED_LEFTOVER_KEY = "archived_leftover"
+
+
 def _archive_frames_as_leftover(frames: list[Any]) -> int:
     """Пометить кадры leftover. Строки Frame / промты / тексты не удаляются."""
     n = 0
@@ -935,7 +939,13 @@ def _archive_frames_as_leftover(frames: list[Any]) -> int:
         attrs = dict(getattr(fr, "attrs", None) or {})
         attrs["активен"] = False
         attrs["карантин"] = True
-        attrs["пометка"] = "archived leftover — кадр сохранён"
+        note = str(attrs.get("пометка") or "").strip()
+        if not note:
+            attrs["пометка"] = _ARCHIVED_LEFTOVER_NOTE
+        elif _ARCHIVED_LEFTOVER_NOTE not in note:
+            # Пометку пользователя не затираем — дописываем.
+            attrs["пометка"] = f"{note}; {_ARCHIVED_LEFTOVER_NOTE}"
+        attrs[_ARCHIVED_LEFTOVER_KEY] = True
         fr.attrs = attrs
         _flag_attrs(fr)
         logger.warning(
@@ -945,6 +955,30 @@ def _archive_frames_as_leftover(frames: list[Any]) -> int:
         )
         n += 1
     return n
+
+
+def _clear_leftover_on_restore(frame: Any) -> bool:
+    """Снять archived leftover при восстановлении. Чужой leftover не трогаем."""
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    note = str(attrs.get("пометка") or "")
+    if not attrs.get(_ARCHIVED_LEFTOVER_KEY) and _ARCHIVED_LEFTOVER_NOTE not in note:
+        return False
+    if is_coverage_leftover(frame):
+        _set_cs(frame, leftover=False)
+        attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs.pop(_ARCHIVED_LEFTOVER_KEY, None)
+    rest = [
+        part.strip()
+        for part in note.split(";")
+        if part.strip() and part.strip() != _ARCHIVED_LEFTOVER_NOTE
+    ]
+    if rest:
+        attrs["пометка"] = "; ".join(rest)
+    else:
+        attrs.pop("пометка", None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    return True
 
 
 def _cs(frame: Any) -> dict[str, Any]:

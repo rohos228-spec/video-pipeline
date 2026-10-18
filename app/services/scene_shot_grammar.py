@@ -16,6 +16,22 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def _vo_words(text: Any) -> list[str]:
+    """Слова закадра без регистра и пунктуации — для проверки «текст уже есть»."""
+    folded = "".join(ch if ch.isalnum() else " " for ch in str(text or "").casefold())
+    return folded.split()
+
+
+def _vo_contains(host_text: Any, piece: Any) -> bool:
+    """Кусок закадра целиком (по словам, подряд) есть в тексте хоста."""
+    need = _vo_words(piece)
+    if not need:
+        return True
+    have = _vo_words(host_text)
+    n = len(need)
+    return any(have[i : i + n] == need for i in range(len(have) - n + 1))
+
+
 def fold_inactive_shot_voiceover(shots: list[Any]) -> list[str]:
     """Закадр неактивного шота переезжает на живого соседа. Шот остаётся в списке."""
     from app.services.frame_tombstones import shot_is_active
@@ -42,10 +58,19 @@ def fold_inactive_shot_voiceover(shots: list[Any]) -> list[str]:
             continue
         host = _host(index)
         if host is None:
+            # Живого соседа нет — закадр остаётся на шоте как есть.
             continue
         host_text = " ".join(str(host.get("закадр") or "").split())
-        if piece not in host_text:
+        if not _vo_contains(host_text, piece):
             host["закадр"] = f"{host_text} {piece}".strip()
+        if not _vo_contains(host.get("закадр"), piece):
+            logger.warning(
+                "WARN fold_inactive_shot_voiceover: закадр шота {} не подтверждён на {}, оставлен на шоте",
+                shot.get("id") or "?",
+                host.get("id") or "?",
+            )
+            continue
+        shot["закадр_перенесён"] = piece
         shot["закадр"] = ""
         notes.append(
             f"{shot.get('id') or '?'} закадр перенесён на {host.get('id') or '?'}"
@@ -793,14 +818,30 @@ def merge_gpt_shots_with_action(
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
     # Наследие авто-«общий вид …» помечаем, но не выкидываем.
+    # Сцена не гаснет целиком: если кроме «общий вид» живых нет — первый остаётся.
+    from app.orchestrator.validators.activity_flags import shot_is_active as _shot_live
+
+    def _legacy_wide(row: dict[str, Any]) -> bool:
+        return str(row.get("действие") or "").casefold().startswith("общий вид")
+
+    keep_first = not any(
+        _shot_live(s) and not _legacy_wide(s) for s in dict_shots
+    )
     cleaned: list[dict[str, Any]] = []
     for shot in dict_shots:
-        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
-            _mark_shot_kept(
-                shot,
-                "наследие авто-«общий вид» — кадр сохранён",
-                where="merge_gpt_shots_with_action",
-            )
+        if _legacy_wide(shot):
+            if keep_first and _shot_live(shot):
+                keep_first = False
+                logger.warning(
+                    "WARN merge_gpt_shots_with_action: кадр {} «общий вид» оставлен живым — иначе в сцене 0 живых кадров",
+                    shot.get("id") or shot.get("id_shot") or "?",
+                )
+            else:
+                _mark_shot_kept(
+                    shot,
+                    "наследие авто-«общий вид» — кадр сохранён",
+                    where="merge_gpt_shots_with_action",
+                )
         cleaned.append(shot)
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)

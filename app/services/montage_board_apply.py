@@ -704,8 +704,10 @@ async def _run_ops_phase(
     meta_lock = asyncio.Lock()
     total = len(all_ops)
 
+    from app.services.montage_op_status import op_is_open, op_status_after_result
+
     def _op_open(status: str | None) -> bool:
-        return status not in ("ok", "skip")
+        return op_is_open(status)
 
     def _pending_snapshot() -> list[dict[str, Any]]:
         open_ops = [all_ops[i] for i, st in enumerate(op_status) if _op_open(st)]
@@ -714,7 +716,10 @@ async def _run_ops_phase(
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
             if result.get("paid_frame_skipped"):
-                op_status[idx] = "skip"
+                # Платный кадр не трогаем, но правка остаётся в pending_ops.
+                op_status[idx] = op_status_after_result(result, ok)
+                result["held"] = True
+                result["held_reason"] = str(result.get("skipped") or "paid_frame_skipped")
                 results.append(result)
                 board["pending_ops"] = _pending_snapshot()
                 async with session_scope(project_id) as session:
@@ -729,7 +734,7 @@ async def _run_ops_phase(
                 if on_progress is not None:
                     await on_progress(len(results), max(total, 1), result)
                 return
-            op_status[idx] = "ok" if ok else "fail"
+            op_status[idx] = op_status_after_result(result, ok)
             mapping = result.get("renumber") if ok else None
             if isinstance(mapping, dict) and mapping:
                 # Якорь создал шот → номера кадров сдвинулись: чиним ещё не

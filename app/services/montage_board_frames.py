@@ -569,11 +569,14 @@ async def restore_montage_frame(
     """Снять пометку «удалён». Строка кадра и шоты в ``кадры[]`` остаются."""
     from app.services.frame_tombstones import forget_deleted
     from app.services.montage_coverage_ops import _unstamp_deleted_shot
+    from app.services.vo_shot_expand import _clear_leftover_on_restore
 
     frames = await _load_frames(session, int(project.id))
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден")
+    # Кадр, ушедший в archived leftover, возвращается в покрытие.
+    _clear_leftover_on_restore(frame)
     rolled = _apply_head_rollback(frames, frame)
     if not rolled:
         attrs = dict(getattr(frame, "attrs", None) or {})
