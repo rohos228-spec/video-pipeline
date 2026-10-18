@@ -175,6 +175,29 @@ def test_plan_shape_errors() -> None:
     assert empty_action.details["errors"][0]["reason"] == "missing_action"
 
 
+def test_registry_names_come_after_ensure_builtin_actions(monkeypatch) -> None:
+    """Имена читаются только после ensure_builtin_actions()."""
+    module = types.ModuleType("app.orchestrator.actions")
+    ready = {"ok": False}
+
+    class Registry:
+        def names(self) -> list[str]:
+            return ["custom_builtin_action"] if ready["ok"] else []
+
+    def ensure_builtin_actions() -> None:
+        ready["ok"] = True
+
+    module.registry = Registry()
+    module.ensure_builtin_actions = ensure_builtin_actions
+    monkeypatch.setitem(sys.modules, "app.orchestrator.actions", module)
+    result = run(
+        "plan_sanity",
+        1,
+        {"plan": [{"action": "custom_builtin_action", "params": {}}]},
+    )
+    assert result.passed is True
+
+
 def test_registry_names_and_validate_params(monkeypatch) -> None:
     module = types.ModuleType("app.orchestrator.actions")
 
