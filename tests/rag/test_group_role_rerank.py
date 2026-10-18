@@ -284,11 +284,10 @@ def test_revert_to_git_pointer_is_treated_as_null(tmp_path: Path) -> None:
     assert signature.parameters["templates_root"].kind is inspect.Parameter.KEYWORD_ONLY
     resolve_fn, _missing, broken = bind_resolve()
     try:
-        import importlib
-
-        importlib.import_module("app.orchestrator.node_store")
-        assert resolve_fn.__module__.startswith("app.orchestrator.node_store")
+        from app.orchestrator.node_store import resolve_node as package_resolve
     except ImportError:
         assert resolve_fn.__module__ == "app.orchestrator.rag.node_store"
+    else:
+        assert resolve_fn is package_resolve
     with pytest.raises(broken, match="revert_to_git"):
         SqliteNodeStore(db_path).list_overrides(templates_root=tmp_path)
