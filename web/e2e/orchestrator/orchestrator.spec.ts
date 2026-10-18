@@ -353,21 +353,48 @@ test("replay без токенов собирает пузырь из message и
 
 test("kill_switch уходит полем только на контракте ws3-r3.4", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  const previousTest = process.env.NEXT_PUBLIC_ORCH_TEST;
   try {
     delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    process.env.NEXT_PUBLIC_ORCH_TEST = "1";
     expect(orchKillUsesMessageField("")).toBe(false);
     expect(orchKillUsesMessageField("?scenario=idle")).toBe(false);
     expect(orchKillUsesMessageField("?orchContract=ws3-r3.4&scenario=killfield")).toBe(true);
   } finally {
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
     else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+    if (previousTest == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    else process.env.NEXT_PUBLIC_ORCH_TEST = previousTest;
   }
   expect(orchKillMessageBody()).toEqual({ text: "останови генерацию", kill_switch: true });
   expect(Object.keys(orchKillMessageBody())).toEqual(["text", "kill_switch"]);
 });
 
+test("?orchContract=ws3-r3.4 не переключает kill вне тест-режима", () => {
+  const previousContract = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  const previousTest = process.env.NEXT_PUBLIC_ORCH_TEST;
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    expect(orchTestModeEnabled()).toBe(false);
+    expect(orchKillUsesMessageField("?orchContract=ws3-r3.4")).toBe(false);
+    expect(orchContractIsR34("?orchContract=ws3-r3.4&scenario=killfield")).toBe(false);
+    process.env.NEXT_PUBLIC_ORCH_CONTRACT = "ws3-r3.4";
+    expect(orchKillUsesMessageField("")).toBe(true);
+    delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    process.env.NEXT_PUBLIC_ORCH_TEST = "1";
+    expect(orchKillUsesMessageField("?orchContract=ws3-r3.4")).toBe(true);
+  } finally {
+    if (previousContract == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previousContract;
+    if (previousTest == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    else process.env.NEXT_PUBLIC_ORCH_TEST = previousTest;
+  }
+});
+
 test("флаг r3.4 принимает ws3-r3.4 и не предупреждает", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+  const previousTest = process.env.NEXT_PUBLIC_ORCH_TEST;
   const warnings: string[] = [];
   const original = console.warn;
   console.warn = (...args: unknown[]) => {
@@ -375,6 +402,7 @@ test("флаг r3.4 принимает ws3-r3.4 и не предупреждае
   };
   try {
     delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
+    process.env.NEXT_PUBLIC_ORCH_TEST = "1";
     expect(orchContractIsR34("?orchContract=ws3-r3.4")).toBe(true);
     expect(orchContractIsR34("?orchContract=ws3-r3.4.1")).toBe(false);
     expect(orchContractIsR34("?orchContract=ws3-r3.3.1")).toBe(false);
@@ -387,6 +415,8 @@ test("флаг r3.4 принимает ws3-r3.4 и не предупреждае
     console.warn = original;
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_CONTRACT;
     else process.env.NEXT_PUBLIC_ORCH_CONTRACT = previous;
+    if (previousTest == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    else process.env.NEXT_PUBLIC_ORCH_TEST = previousTest;
   }
 });
 

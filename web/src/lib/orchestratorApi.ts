@@ -105,10 +105,12 @@ export const ORCH_CONTRACT_R34 = "ws3-r3.4";
 /**
  * Кнопка kill шлёт `{text, kill_switch:true}` только здесь.
  * Иначе остаётся POST /api/orchestrator/kill: сервер r3.3 лишнее поле молча игнорирует.
- * Включается `NEXT_PUBLIC_ORCH_CONTRACT=ws3-r3.4` или `?orchContract=ws3-r3.4`.
+ * Прод берёт версию из `NEXT_PUBLIC_ORCH_CONTRACT`. Query `?orchContract=ws3-r3.4`
+ * действует только в тест-сборке: ссылка на проде не должна отключать kill.
  */
 export function orchKillUsesMessageField(search?: string): boolean {
   if (process.env.NEXT_PUBLIC_ORCH_CONTRACT === ORCH_CONTRACT_R34) return true;
+  if (!orchTestModeEnabled()) return false;
   const source = search ?? (typeof window !== "undefined" ? window.location.search : "");
   if (!source) return false;
   const query = new URLSearchParams(source.startsWith("?") ? source.slice(1) : source);
