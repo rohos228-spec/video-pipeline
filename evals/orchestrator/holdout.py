@@ -20,6 +20,7 @@ HOLDOUT3_NAME = "precision_live_holdout3.json"
 HOLDOUT4_NAME = "precision_live_holdout4.json"
 HOLDOUT5_NAME = "precision_live_holdout5.json"
 HOLDOUT5_MEASURE_NAME = "precision_live_holdout5_measure.json"
+HOLDOUT6_NAME = "precision_live_holdout6.json"
 
 # Совпадает с ``precision_live._FAMILIES``. Импорт оттуда зациклил бы модули.
 FAMILY_NODES: dict[str, tuple[str, str]] = {
@@ -180,7 +181,12 @@ class HoldoutLeakError(ValueError):
 
 def is_holdout_id(query_id: str) -> bool:
     text = str(query_id)
-    return text.startswith("h3-") or text.startswith("h4-") or text.startswith("h5-")
+    return (
+        text.startswith("h3-")
+        or text.startswith("h4-")
+        or text.startswith("h5-")
+        or text.startswith("h6-")
+    )
 
 
 def dev_plus_ids() -> list[str]:
@@ -192,7 +198,13 @@ def dev_plus_ids() -> list[str]:
 
 def assert_tuning_path(path: Path) -> Path:
     """Путь holdout-3 для сетки и подбора закрыт. Бывший holdout-2 — это dev."""
-    if Path(path).name in {HOLDOUT3_NAME, HOLDOUT4_NAME, HOLDOUT5_NAME, HOLDOUT5_MEASURE_NAME}:
+    if Path(path).name in {
+        HOLDOUT3_NAME,
+        HOLDOUT4_NAME,
+        HOLDOUT5_NAME,
+        HOLDOUT5_MEASURE_NAME,
+        HOLDOUT6_NAME,
+    }:
         raise HoldoutLeakError(f"тюнинг не читает {Path(path).name}")
     return Path(path)
 
