@@ -455,9 +455,10 @@ function noteKillRequested(
   }
   if (stopKey === false) {
     if (next.killNotice?.phase === "stopped") {
+      const honest = "Не остановлено: стоп-ключ не установлен, платный шаг может продолжаться";
       next.killNotice = {
         ...next.killNotice,
-        lateStopWarning: detail || "Поздний ответ: стоп-ключ не установлен",
+        lateStopWarning: detail ? `${honest} ${detail}` : honest,
       };
       return;
     }

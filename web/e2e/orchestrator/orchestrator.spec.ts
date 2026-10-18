@@ -48,6 +48,34 @@ test("отброшенный NEXT_PUBLIC_ORCH_API предупреждает о�
   }
 });
 
+test("поздний stop_key_set=false говорит, что остановка не случилась", () => {
+  const stopped = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "kill_switch",
+      task_id: 1,
+      seq: 1,
+      session_id: "own",
+      payload: { stop_key_set: true, detail: "ключ встал" },
+    },
+  });
+  expect(stopped.killNotice?.phase).toBe("stopped");
+  const late = reduceOrchScreen(stopped, {
+    type: "event",
+    event: {
+      type: "kill_switch",
+      task_id: 1,
+      seq: 2,
+      session_id: "own",
+      payload: { stop_key_set: false },
+    },
+  });
+  expect(late.killNotice?.phase).toBe("stopped");
+  expect(late.killNotice?.lateStopWarning).toBe(
+    "Не остановлено: стоп-ключ не установлен, платный шаг может продолжаться",
+  );
+});
+
 test("javascript: в NEXT_PUBLIC_ORCH_API пишется как некорректный адрес", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_API;
   const warnings: string[] = [];
