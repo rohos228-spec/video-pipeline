@@ -260,7 +260,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
     const w = el.clientWidth;
     const h = el.clientHeight;
     setCollapsedBox((p) => (p && p.w === w && p.h === h ? p : { w, h }));
-  });
+  }, [isOpenBox]);
   useEffect(() => {
     if (!inlineStudio) return;
     const onClosed = () => {
@@ -1322,7 +1322,7 @@ function PosterTile({
                   <button
                     type="button"
                     data-action="stop"
-                    title="Остановить"
+                    title="Остановить весь проект"
                     className="absolute inset-0 flex items-center justify-center rounded-full bg-black/70 text-yellow-300 opacity-0 transition-opacity duration-150 group-hover/st:opacity-100"
                     onClick={(e) => {
                       e.stopPropagation();

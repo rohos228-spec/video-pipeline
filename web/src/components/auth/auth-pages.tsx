@@ -15,8 +15,9 @@ export function getToken(): string | null {
 }
 export function setToken(t: string | null) {
   try {
-    if (t) { localStorage.setItem(AUTH_TOKEN_KEY, t); document.cookie = `vp_session=${t}; path=/; max-age=${86400 * 7}; samesite=lax`; }
-    else { localStorage.removeItem(AUTH_TOKEN_KEY); document.cookie = "vp_session=; path=/; max-age=0"; }
+    const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; secure" : "";
+    if (t) { localStorage.setItem(AUTH_TOKEN_KEY, t); document.cookie = `vp_session=${t}; path=/; max-age=${86400 * 7}; samesite=lax${secure}`; }
+    else { localStorage.removeItem(AUTH_TOKEN_KEY); document.cookie = `vp_session=; path=/; max-age=0${secure}`; }
   } catch {}
 }
 export async function authApi<T = any>(path: string, body?: unknown, method?: string): Promise<T> {

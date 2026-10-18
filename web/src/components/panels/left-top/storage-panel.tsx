@@ -20,7 +20,7 @@ type Usage = {
   files: number;
   by_type: Record<string, number>;
   projects: { id: number; bytes: number; files: number }[];
-  disk: { free: number; total: number; drive: string };
+  disk: { free: number; total: number; used?: number; drive: string };
   limit_bytes: number;
 };
 const fmt = (b: number) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " ГБ" : b >= 1e6 ? (b / 1e6).toFixed(0) + " МБ" : (b / 1e3).toFixed(0) + " КБ");
@@ -102,7 +102,8 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   const total = usage?.total_bytes ?? 0;
-  const limit = usage ? usage.total_bytes + usage.limit_bytes : 0;
+  // limit_bytes в API — свободное место, не потолок. Полоса считается от объёма диска.
+  const limit = usage?.disk.total || (usage ? usage.total_bytes + usage.limit_bytes : 0);
   const list = useMemo(() => {
     let l = (items ?? []).filter((p) => (filter === "all" || statusKind(p.status) === filter) && (p.title ?? "").toLowerCase().includes(q.toLowerCase()));
     l = [...l].sort((a, b) =>
