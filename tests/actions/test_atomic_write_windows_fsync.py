@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import sys
 from pathlib import Path
@@ -56,12 +55,19 @@ def test_windows_fsync_requires_writable_fd(tmp_path: Path, monkeypatch) -> None
 
     monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt())
     order: list[str] = []
+    readonly: set[int] = set()
+    real_open = os.open
     real_fsync = os.fsync
     real_replace = os.replace
 
-    def fsync(fd: int) -> None:
-        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    def tracked_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
         if (flags & os.O_ACCMODE) == os.O_RDONLY:
+            readonly.add(fd)
+        return fd
+
+    def fsync(fd: int) -> None:
+        if fd in readonly:
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         order.append("fsync")
         real_fsync(fd)
@@ -70,6 +76,7 @@ def test_windows_fsync_requires_writable_fd(tmp_path: Path, monkeypatch) -> None
         order.append("replace")
         return real_replace(src, dst, *args, **kwargs)
 
+    monkeypatch.setattr(mod.os, "open", tracked_open)
     monkeypatch.setattr(mod.os, "fsync", fsync)
     monkeypatch.setattr(mod.os, "replace", replace)
     dest = tmp_path / "node_overrides" / "sync.json"
@@ -80,6 +87,28 @@ def test_windows_fsync_requires_writable_fd(tmp_path: Path, monkeypatch) -> None
     assert "fsync" in order and "replace" in order
     assert order.index("fsync") < order.index("replace")
     assert "next" in dest.read_text(encoding="utf-8")
+
+
+def test_windows_fsync_module_collects_without_fcntl(monkeypatch) -> None:
+    """На Windows модуля fcntl нет: файл теста должен импортироваться."""
+    import builtins
+    import importlib.util
+
+    real_import = builtins.__import__
+
+    def guarded(modname, globals=None, locals=None, fromlist=(), level=0):
+        if modname == "fcntl":
+            raise ModuleNotFoundError("No module named 'fcntl'")
+        return real_import(modname, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    spec = importlib.util.spec_from_file_location(
+        "vp_fsync_nofcntl",
+        Path(__file__),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert hasattr(module, "test_windows_fsync_requires_writable_fd")
 
 
 def test_tmp_realpath_is_checked_before_write(tmp_path: Path, monkeypatch) -> None:
