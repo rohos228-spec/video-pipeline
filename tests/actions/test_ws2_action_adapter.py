@@ -190,3 +190,103 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
     assert "orch-appr-" not in json.dumps(dumped)
     assert dumped["result"].get("change_id") is None
     assert dumped["result"].get("proposal_id") == "cc-proposal-1"
+
+
+def test_whitelist_built_from_registry_matches_audit() -> None:
+    """Белый список — живой реестр. AUDIT_ACTION_IDS только сверка."""
+
+    import inspect
+
+    from app.orchestrator.action_contracts.contracts import AUDIT_ACTION_IDS
+    from app.orchestrator.actions.executor import whitelist
+
+    source = inspect.getsource(whitelist)
+    assert "actions_audit.md" not in source
+    assert "AUDIT_ACTION_IDS" not in source
+    names = whitelist()
+    assert len(names) == 102
+    assert len(set(names)) == 102
+    assert names == sorted(names)
+    assert set(names) == set(AUDIT_ACTION_IDS)
+
+
+async def test_delete_frame_via_adapter_is_soft(env) -> None:
+    """delete_frame и delete_child_frame помечают кадр и не стирают строку."""
+
+    from sqlalchemy import select
+
+    from app.models import Frame, Project
+    from app.orchestrator.action_contracts.contracts import SoftDeleteResult
+    from app.orchestrator.actions.executor import execute
+    from app.services.frame_tombstones import deleted_numbers
+
+    pid = await env.add_project(frames=2)
+    ids = await env.frame_ids(pid)
+    shots = [
+        {"id": "s1", "номер": 1, "активен": True, "текст": "первый"},
+        {"id": "s2", "номер": 2, "активен": True, "текст": "второй"},
+    ]
+    async with env.factory() as session:
+        for fid in ids.values():
+            frame = await session.get(Frame, fid)
+            frame.attrs = {"кадры": [dict(shot) for shot in shots]}
+        await session.commit()
+
+    bare = {"app": env.app, "operator": "adapter-test"}
+    held = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        bare,
+    )
+    assert held.status == "approval_required"
+    assert "orch-appr-" not in held.model_dump_json()
+
+    missing_id = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        {**bare, "approved": True},
+    )
+    assert missing_id.status == "failed"
+    assert "orch-appr-" not in (missing_id.error or "")
+
+    ctx = {**bare, "approved": True, "change_id": "orch-appr-7-1"}
+    deleted = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        ctx,
+    )
+    child = await execute(
+        "montage.delete_child_frame",
+        {"project_id": pid, "frame_number": 2},
+        ctx,
+    )
+    for result, action in (
+        (deleted, "montage.delete_frame"),
+        (child, "montage.delete_child_frame"),
+    ):
+        assert result.status == "ok"
+        assert isinstance(result.result, SoftDeleteResult)
+        assert result.result.marked is True
+        assert result.result.snapshot_id
+        assert result.result.change_id == "orch-appr-7-1"
+        assert result.result.action == action
+        assert result.result.restore_action == "frame.restore"
+
+    async with env.factory() as session:
+        rows = list((await session.scalars(select(Frame).where(Frame.project_id == pid))).all())
+        assert {row.id for row in rows} == set(ids.values())
+        project = await session.get(Project, pid)
+        assert deleted_numbers(project) == {1, 2}
+        for row in rows:
+            kadry = row.attrs["кадры"]
+            by_id = {shot["id"]: shot for shot in kadry}
+            assert set(by_id) == {"s1", "s2"}
+            marked = "s1" if row.number == 1 else "s2"
+            kept = "s2" if row.number == 1 else "s1"
+            assert by_id[marked]["активен"] is False
+            assert by_id[kept]["активен"] is True
+            assert by_id[kept]["текст"] == ("второй" if kept == "s2" else "первый")
+
+    assert list(env.tmp_path.rglob("deleted-*")) == []
+    restore = await execute("frame.restore", {"project_id": pid, "frame_id": ids[1]}, ctx)
+    assert restore.status == "failed"

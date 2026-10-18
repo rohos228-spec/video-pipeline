@@ -11,16 +11,25 @@ from typing import Any
 
 from pydantic import ConfigDict
 
+from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
+
+from app.models import Frame, Project
+from app.orchestrator.action_contracts.contracts import SOFT_DELETE_RESTORE
 from app.orchestrator.action_contracts.contracts import ActionMetadata
 from app.orchestrator.action_contracts.contracts import ActionResult
 from app.orchestrator.action_contracts.contracts import ApprovalPreview
 from app.orchestrator.action_contracts.contracts import ApprovalRequired
+from app.orchestrator.action_contracts.contracts import SoftDeleteResult
 from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
+from app.services.action_layer import store
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
+from app.services.frame_tombstones import mark_frame_deleted
 from app.services.redact import redact_text
 
 _CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
+_SOFT_FRAME_DELETE = frozenset({"montage.delete_frame", "montage.delete_child_frame"})
 
 
 class BoundResult(ActionResult):
@@ -116,6 +125,13 @@ def _raise_to_floor(published: ActionMetadata, floor: ActionMetadata) -> ActionM
     )
 
 
+def whitelist() -> list[str]:
+    """Имена живого реестра. Документ аудита эту функцию не читает."""
+
+    ensure_builtin_actions()
+    return sorted(spec.id for spec in registry.list())
+
+
 def metadata_of(name: str) -> ActionMetadata:
     """Флаги из audit_metadata.json, не слабее пола яруса Никиты.
 
@@ -201,6 +217,124 @@ async def _approval_required(spec: Any, params: dict, meta: ActionMetadata) -> A
     return ActionResult(status="approval_required", result=body, error=None, warnings=[])
 
 
+def _shot_key(shot: dict) -> tuple:
+    if shot.get("id") not in (None, ""):
+        return ("id", shot["id"])
+    for field in ("номер", "number"):
+        if shot.get(field) not in (None, ""):
+            return (field, shot[field])
+    return ("raw", tuple(sorted((str(key), str(value)) for key, value in shot.items())))
+
+
+def merge_kadry_keep_missing(existing: list | None, incoming: list | None) -> list:
+    """Обновить шоты по id, иначе по номеру. Шот, которого нет во входящем списке, остаётся."""
+
+    merged: list = []
+    index: dict[tuple, int] = {}
+    for shot in existing or []:
+        if isinstance(shot, dict):
+            item = dict(shot)
+            index[_shot_key(item)] = len(merged)
+            merged.append(item)
+        else:
+            merged.append(shot)
+    for shot in incoming or []:
+        if not isinstance(shot, dict):
+            merged.append(shot)
+            continue
+        item = dict(shot)
+        key = _shot_key(item)
+        slot = index.get(key)
+        if slot is None:
+            index[key] = len(merged)
+            merged.append(item)
+            continue
+        current = merged[slot]
+        if isinstance(current, dict):
+            updated = dict(current)
+            updated.update(item)
+            merged[slot] = updated
+        else:
+            merged[slot] = item
+    return merged
+
+
+def _marked_shot(shots: list, number: int) -> list:
+    marked: list = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        token = shot.get("номер", shot.get("number"))
+        try:
+            hit = int(token) == int(number)
+        except (TypeError, ValueError):
+            hit = False
+        if not hit:
+            continue
+        copy = dict(shot)
+        copy["активен"] = False
+        marked.append(copy)
+    return marked
+
+
+async def _soft_delete_frame(spec: Any, params: dict, ctx: Any) -> ActionResult:
+    """Пометить кадр. Строку, сцену и файлы адаптер не удаляет. frame.restore не реализован."""
+
+    change_id = str(ctx.get("change_id") or "") if isinstance(ctx, dict) else ""
+    if _CORE_CHANGE_ID.fullmatch(change_id) is None:
+        return _failed("ядро не передало change_id")
+    project_id = int(params["project_id"])
+    factory = store.sessions()
+    async with factory() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            return _failed("проект не найден")
+        if spec.id == "montage.delete_frame":
+            frame = await session.get(Frame, int(params["frame_id"]))
+            if frame is None or frame.project_id != project_id:
+                return _failed("кадр не найден")
+        else:
+            frame = await session.scalar(
+                select(Frame).where(
+                    Frame.project_id == project_id,
+                    Frame.number == int(params["frame_number"]),
+                )
+            )
+            if frame is None:
+                return _failed("кадр не найден")
+        before = [dict(shot) if isinstance(shot, dict) else shot for shot in (frame.attrs or {}).get("кадры") or []]
+        merged = merge_kadry_keep_missing(before, _marked_shot(before, frame.number))
+        attrs = dict(frame.attrs or {})
+        attrs["кадры"] = merged
+        frame.attrs = attrs
+        flag_modified(frame, "attrs")
+        mark_frame_deleted(project, frame.number)
+        number = int(frame.number)
+        frame_id = int(frame.id)
+        await session.commit()
+    snapshot_id = await store.save_snapshot(
+        plan_id=str(ctx.get("plan_id") or "") if isinstance(ctx, dict) else "",
+        step_index=ctx.get("step_index") if isinstance(ctx, dict) else None,
+        action_id=spec.id,
+        project_id=project_id,
+        kind="soft_delete",
+        target={"frame_id": frame_id, "number": number},
+        before={"кадры": before},
+        after={"кадры": merged},
+        restorable=True,
+        note="кадр помечен, строка не удалена",
+        actor=str(ctx.get("operator") or "system") if isinstance(ctx, dict) else "system",
+    )
+    body = SoftDeleteResult(
+        change_id=change_id,
+        action=spec.id,
+        marked=True,
+        restore_action=SOFT_DELETE_RESTORE[spec.id],
+        snapshot_id=str(snapshot_id),
+    )
+    return ActionResult(status="ok", result=body, error=None, warnings=[])
+
+
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     """Один ActionSpec. Исключения и отказы — status=failed."""
 
@@ -215,6 +349,8 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     meta = metadata_of(spec.id)
     if meta.needs_approval and not _approved(ctx):
         return await _approval_required(spec, params, meta)
+    if spec.id in _SOFT_FRAME_DELETE:
+        return await _soft_delete_frame(spec, params, ctx)
     try:
         action_ctx = _action_context(ctx)
         if spec.risk == "read":
