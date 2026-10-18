@@ -365,10 +365,11 @@ async function runApproval(session, taskId, options = {}) {
     action: "run_node",
     cost_estimate: 4,
   };
-  if (includeChangeId) approval.change_id = options.changeId || approvalId;
+  const wireId = includeChangeId ? (typeof options.changeId === "string" ? options.changeId : "orch-appr-1-1") : null;
+  if (wireId) approval.change_id = wireId;
   emit(session, "approval_required", taskId, approval);
   const decision = await new Promise((resolve) => {
-    session.approvalWait = { id: approvalId, resolve };
+    session.approvalWait = { id: wireId || approvalId, resolve };
   });
   session.approvalWait = null;
   if (decision === "approve") {
@@ -475,7 +476,7 @@ async function runBudget(session, taskId, withChangeId = true) {
     title: "Бюджет",
     detail: "budget_exhausted",
   });
-  const approvalId = "chg-budget-d4";
+  const approvalId = "orch-appr-4-1";
   const payload = {
     reason: "budget_exhausted",
     action: "run_node",
@@ -498,6 +499,34 @@ async function runBudget(session, taskId, withChangeId = true) {
     detail: "суб-бюджет выдан",
   });
   emit(session, "message", taskId, { role: "assistant", text: "Суб-бюджет добавлен." });
+}
+
+async function runStepChange(session, taskId, withCardId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Платный шаг",
+    detail: "paid_outcome_unknown",
+  });
+  const payload = {
+    approval_id: withCardId ? "orch-appr-9-3" : "ap-step-only",
+    step_change_id: "cc-step-88",
+    reason: "paid_outcome_unknown",
+    action: "run_node",
+    title: "Исход платного шага неизвестен",
+  };
+  if (withCardId) payload.change_id = "orch-appr-9-3";
+  emit(session, "approval_required", taskId, payload);
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: withCardId ? "orch-appr-9-3" : "cc-step-88", resolve };
+  });
+  session.approvalWait = null;
+  if (decision === "deny" || decision === "retry_step") {
+    emit(session, "message", taskId, { role: "assistant", text: "решение принято" });
+  }
 }
 
 async function runPlan(session, taskId) {
@@ -733,6 +762,10 @@ function startScenario(session, scenario, text, mode) {
     void runBudget(session, id, scenario === "budget");
     return;
   }
+  if (scenario === "stepchange" || scenario === "stepchangeboth") {
+    void runStepChange(session, id, scenario === "stepchangeboth");
+    return;
+  }
   if (scenario === "kill") {
     void runKillScenario(session, id);
     return;
@@ -801,6 +834,7 @@ async function runMissingProject(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-missing-project",
+    change_id: "orch-appr-6-1",
     title: "Запустить run_node",
     reason: "missing_project_id",
     risk: "high",
@@ -835,6 +869,7 @@ async function runRiskApproval(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-risk",
+    change_id: "orch-appr-5-1",
     title: "Запустить test.medium_touch",
     reason: "risk",
     risk: "medium",
@@ -854,6 +889,7 @@ async function runUnknownReason(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-unknown",
+    change_id: "orch-appr-7-1",
     title: "Проверьте план",
     reason: "plan_sanity",
     risk: "low",
