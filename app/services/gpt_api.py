@@ -2679,47 +2679,6 @@ def _chat_sse_finish_seen(lines: list[str]) -> str:
     return finish
 
 
-@_gpt_seam
-@observe_model
-async def _chat_completions_nostream(
-    *,
-    url: str,
-    headers: dict[str, str],
-    body: dict[str, Any],
-    timeout: float,
-    use_model: str,
-) -> GptChatResult:
-    nostream = {**body, "stream": False}
-    async with _async_client(timeout=_http_timeout(timeout)) as client:
-        resp = await client.post(url, headers=headers, json=nostream)
-    if resp.status_code >= 400:
-        _raise_http_status(resp.status_code, resp.text, use_model=use_model)
-    try:
-        payload = resp.json()
-    except Exception as e:
-        raise GptApiError(
-            f"GPT: ответ не JSON: {resp.text[:300]}",
-            context={"retryable": True, "model": use_model, "error_kind": "empty_stream"},
-        ) from e
-    if not isinstance(payload, dict):
-        raise GptApiError(
-            "GPT(chat): пустой output",
-            context={"retryable": True, "error_kind": "empty_stream"},
-        )
-    _check_provider_envelope(payload)
-    text, finish = _parse_choice(payload)
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    logger.info("GPT(chat) nostream salvage chars={} model={}", len(text or ""), use_model)
-    return GptChatResult(
-        text=text,
-        model=use_model,
-        finish_reason=finish,
-        usage=usage,
-        raw=payload,
-        response_id=str(payload.get("id") or ""),
-    )
-
-
 @spend_guard.paid_seam(
     "vibecode",
     "chat completions stream",

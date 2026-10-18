@@ -88,7 +88,6 @@ class OutseeSubmitUnknownError(OutseeApiError):
 
 
 submit_probe: contextvars.ContextVar[dict | None] = contextvars.ContextVar("outsee_submit_probe", default=None)
-_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
 _CURL_SENT_CODES = frozenset({18, 28, 52, 55, 56})
 
 

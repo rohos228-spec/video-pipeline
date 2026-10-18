@@ -194,9 +194,10 @@ def test_bind_script_frames_qc_uses_vibecode_high(monkeypatch) -> None:
         assert current_text_model_id() == "gpt-5.6-sol"
 
 
-def test_bind_script_frames_qc_forces_vibecode(monkeypatch) -> None:
-    """Без ключа 52pay каркас уходит на vibecode: это только фолбэк."""
+def test_bind_script_frames_qc_stays_52pay_without_key(monkeypatch) -> None:
+    """Без ключа 52pay каркас не уходит на vibecode: маршрута нет, chat() падает."""
     from app.services.llm_override import current_override
+    from app.services.pay52_routes import resolve_text
 
     _pay52_key(monkeypatch, "")
     meta = {
@@ -206,9 +207,10 @@ def test_bind_script_frames_qc_forces_vibecode(monkeypatch) -> None:
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "vibecode"
+        assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
+        assert resolve_text("gpt-5.6-sol") is None
 
 
 def test_bind_script_frames_qc_shots_uses_vibecode_high(monkeypatch) -> None:
@@ -365,19 +367,18 @@ def test_shots_routes_chat_to_vibecode_direct_while_header_is_kie(
     assert gpt_api._node_reasoning_effort() is None
 
 
-def test_script_frames_qc_fallback_logs_warning_without_printing_key(monkeypatch) -> None:
-    """Фолбэк на vibecode пишется warning с причиной и без значения ключа."""
+def test_script_frames_qc_without_key_logs_no_fallback_and_no_key(monkeypatch) -> None:
+    """Без ключа 52pay фолбэка на vibecode нет, в логе нет значения ключа."""
     from loguru import logger
 
     from app.services.llm_override import bind_project_llm, current_override
     from app.settings import settings
 
-    secret = "pay52-should-not-leak"
     vibe = "vk-should-not-leak"
     monkeypatch.setattr(settings, "pay52_gpt_api_key", "")
     monkeypatch.setattr(settings, "vibecode_api_key", vibe)
     lines: list[str] = []
-    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    sink = logger.add(lambda message: lines.append(str(message)), level="INFO")
     try:
         meta = {
             **_SFQC_GRAPH,
@@ -386,14 +387,13 @@ def test_script_frames_qc_fallback_logs_warning_without_printing_key(monkeypatch
         with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
             ov = current_override()
             assert ov is not None
-            assert ov.provider == "vibecode"
+            assert ov.provider == "52pay"
             assert ov.reasoning_effort == "high"
     finally:
         logger.remove(sink)
     text = "".join(lines)
-    assert "fallback vibecode" in text
-    assert "ключ 52pay для gpt-5.6-sol пуст" in text
-    assert secret not in text
+    assert "fallback vibecode" not in text
+    assert "52pay" in text
     assert vibe not in text
 
 

@@ -209,26 +209,16 @@ async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
     from app.services.llm_override import NodeLlmOverride, use_override
     from app.services.pay52_routes import resolve_text
 
-    if resolve_text(MODEL) is not None:
-        ov = NodeLlmOverride(
-            model_id=MODEL,
-            channel="stable",
-            kind="text",
-            provider="52pay",
-            label=f"{MODEL} (52pay · high)",
-            reasoning_effort="high",
-        )
-    else:
-        # Ключ 52pay пуст — fallback на vibecode: спенд-шлюз внутри chat()
-        # обязан сработать до HTTP, падать до шлюза нельзя.
-        ov = NodeLlmOverride(
-            model_id=MODEL,
-            channel="stable",
-            kind="text",
-            provider="vibecode",
-            label=f"{MODEL} (vibecode · high, fallback)",
-            reasoning_effort="high",
-        )
+    if resolve_text(MODEL) is None:
+        raise RuntimeError(f"нет маршрута 52pay для {MODEL}")
+    ov = NodeLlmOverride(
+        model_id=MODEL,
+        channel="stable",
+        kind="text",
+        provider="52pay",
+        label=f"{MODEL} (52pay · high)",
+        reasoning_effort="high",
+    )
     with use_override(ov):
         res = await gpt_api.chat(prompt=user, system=system, model=MODEL, auto_pack=False, max_retries=1)
     txt = getattr(res, "text", None) or getattr(res, "content", None) or str(res)

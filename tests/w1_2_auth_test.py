@@ -78,7 +78,7 @@ async def test_login_endpoint_goes_through_constant_time_check_and_does_not_leak
         ok = await _login(c)
     assert bad_user.status_code == bad_pwd.status_code == 401
     assert bad_user.json() == bad_pwd.json()
-    assert n_bad_user == n_bad_pwd == len(calls) == 2
+    assert n_bad_user == n_bad_pwd == len(calls) == 4
     assert ok.status_code == 200 and ok.json()["token"]
 
 

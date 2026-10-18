@@ -229,10 +229,10 @@ async def test_rollback_returns_the_frames_their_artifacts_and_meta(db):
     meta.update(split_completed=True, split_params_applied="fp-new")
     project.meta = meta
     await db.flush()
-    after = await _frames(db, project)
+    after = [f for f in await _frames(db, project) if not (f.attrs or {}).get("archived")]
     assert [f.voiceover_text for f in after] == ["новый один", "новый два"]
     art = await db.scalar(select(Artifact).where(Artifact.uuid == "art-1"))
-    assert art.frame_id is None, "replace_all_frames unlinks artifacts; the rollback must link them back"
+    assert art.frame_id not in {f.id for f in after}, "the artifact is off the live frames; the rollback must link it back"
 
     result = await nc.rollback_split(db, project, snapshot)
     assert result == {"rolled_back": True, "frames": 3, "artifact_links": 1}

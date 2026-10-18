@@ -13,6 +13,7 @@ DOCKER_ONLY = (
     "tests/observe_v1/test_readonly_pilot.py",
 )
 SKIP_DIRS = {"__pycache__", "fixtures"}
+LEGACY_SUBDIRS = ("pipeline_regression", "validators")
 
 
 def is_test_file(path: Path) -> bool:
@@ -33,7 +34,12 @@ def all_test_files() -> list[str]:
 
 
 def legacy_files() -> list[str]:
-    return sorted(_rel(p) for p in TESTS.glob("*.py") if is_test_file(p))
+    out = [_rel(p) for p in TESTS.glob("*.py") if is_test_file(p)]
+    for sub in LEGACY_SUBDIRS:
+        for p in (TESTS / sub).rglob("*.py"):
+            if is_test_file(p) and not any(part in SKIP_DIRS for part in p.relative_to(TESTS).parts):
+                out.append(_rel(p))
+    return sorted(out)
 
 
 def observe_files() -> list[str]:
