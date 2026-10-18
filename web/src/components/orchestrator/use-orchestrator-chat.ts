@@ -56,6 +56,10 @@ export function useOrchestratorChat() {
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);
   const decisionLock = useRef(false);
+  /** 409/404/403: карточка больше не шлёт решение. */
+  const sealedDecisions = useRef(new Set<string>());
+  /** Второй клик двойного щелчка попадает в это окно и не уходит на сервер. */
+  const suppressUntil = useRef(new Map<string, number>());
 
   useEffect(() => {
     setToken(readOrchToken());
@@ -205,15 +209,20 @@ export function useOrchestratorChat() {
 
   const decide = useCallback(
     async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected" | "retry_step") => {
+      if (sealedDecisions.current.has(approvalId)) return;
       if (decisionLock.current) return;
+      if (Date.now() < (suppressUntil.current.get(approvalId) ?? 0)) return;
       const card = state.approvals.find((item) => item.id === approvalId);
       if (!card?.changeId || !/^orch-appr-[0-9]+-[0-9]+$/.test(card.changeId)) {
         setDecisionError({ id: approvalId, message: "нет change_id формата orch-appr" });
         return;
       }
+      const quietUntil = Date.now() + 400;
+      suppressUntil.current.set(approvalId, quietUntil);
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
+      let seal = false;
       try {
         const result = await postOrchDecision(cfg, {
           change_id: card.changeId,
@@ -231,7 +240,12 @@ export function useOrchestratorChat() {
         });
         setSendError("");
       } catch (error) {
-        if (error instanceof OrchApiError && error.status === 409) {
+        const status = error instanceof OrchApiError ? error.status : 0;
+        if (status === 409 || status === 404 || status === 403) {
+          seal = true;
+          sealedDecisions.current.add(approvalId);
+        }
+        if (status === 409) {
           try {
             const snap = await getOrchSessionStatus(cfg);
             dispatch({
@@ -251,7 +265,12 @@ export function useOrchestratorChat() {
         }
       } finally {
         decisionLock.current = false;
-        setDecisionPendingId(null);
+        if (seal) return;
+        const wait = Math.max(0, quietUntil - Date.now());
+        window.setTimeout(() => {
+          if (sealedDecisions.current.has(approvalId)) return;
+          setDecisionPendingId((current) => (current === approvalId ? null : current));
+        }, wait);
       }
     },
     [cfg, noteAuth, state.approvals],
