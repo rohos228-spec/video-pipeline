@@ -22,8 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import shot_is_active
 from app.services import db_v2
-from app.services.frame_tombstones import shot_is_active
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
     ROW_IMAGE_PROMPT_2_V8,
