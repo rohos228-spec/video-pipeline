@@ -1133,6 +1133,50 @@ def _stamp_deleted_shot(frames: list[Frame], frame: Frame, reason: str) -> None:
         _stamp_matching_shot(host, sid, fields)
 
 
+def _unstamp_deleted_shot(frames: list[Frame], frame: Frame) -> None:
+    """Снять пометку удаления с шота. Список ``кадры[]`` не укорачивается."""
+    clear = ("карантин", "пометка", "удалён", "активен")
+
+    def _clear(item: dict[str, Any]) -> None:
+        for key in clear:
+            item.pop(key, None)
+
+    sid = coverage_shot_id(frame)
+    own = planned_shots_from_attrs(frame)
+    if own:
+        for item in own:
+            item_id = str(item.get("id") or "").strip()
+            if not sid or item_id == sid:
+                _clear(item)
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs["кадры"] = own
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    parent = _vo_parent_frame(frames, frame)
+    if not sid or parent is None:
+        return
+    seen: set[int] = set()
+    for host in _vo_members(frames, parent):
+        if host is frame:
+            continue
+        key = int(getattr(host, "id", 0) or 0) or int(host.number)
+        if key in seen:
+            continue
+        seen.add(key)
+        planned = planned_shots_from_attrs(host)
+        hit = False
+        for item in planned:
+            if str(item.get("id") or "").strip() == sid:
+                _clear(item)
+                hit = True
+        if not hit:
+            continue
+        attrs = dict(getattr(host, "attrs", None) or {})
+        attrs["кадры"] = planned
+        host.attrs = attrs
+        _flag_attrs(host)
+
+
 async def delete_coverage_child(
     session: AsyncSession,
     project: Project,
