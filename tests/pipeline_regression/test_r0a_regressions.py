@@ -126,10 +126,13 @@ def test_merge_trivial_shots_keeps_vo_and_action() -> None:
     ]
     notes = merge_trivial_shots(merged)
     assert notes
-    assert len(merged) == 1
-    assert "Он сидит молча." in merged[0]["закадр"]
-    assert "сидит за столом" in merged[0]["действие"]
-    assert "чашку" in merged[0]["действие"]
+    from app.orchestrator.validators.activity_flags import shot_is_active
+    live = [s for s in merged if shot_is_active(s)]
+    assert len(live) == 1
+    assert "Он сидит молча." in live[0]["закадр"]
+    assert "сидит за столом" in live[0]["действие"]
+    assert "чашку" in live[0]["действие"]
+    assert [s["id"] for s in merged if not shot_is_active(s)] == ["s2"]
 
     kept = [
         _shot("a", "c01 сидит за столом", "Первое предложение целиком."),
