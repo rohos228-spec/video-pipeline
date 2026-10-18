@@ -1411,6 +1411,7 @@ async def apply_coverage_scene_action(
         keep_cell_vo = bool(
             piece
             and existing_vo
+            and used < len(layout)
             and all(part in existing_vo for part in live_pieces)
             and len(existing_vo) >= len(piece)
         )
