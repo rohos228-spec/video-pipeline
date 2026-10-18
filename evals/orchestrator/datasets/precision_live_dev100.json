@@ -1,0 +1,652 @@
+{
+  "role": "dev-100-extra",
+  "base": "dev-70 = live-01..50 + hold-01..20",
+  "families": {
+    "camera": 10,
+    "characters": 10,
+    "world": 10
+  },
+  "label_rule": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+  "queries": [
+    {
+      "id": "d2-01",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Ось действия внутри одной сцены можно перепрыгнуть?",
+      "justification": "Ось действия внутри сцены не перескакивают, новый ракурс идёт по дуге той же стороны.",
+      "source": "prompts:n_excel_gpt_sd_camera:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s2",
+          "chunk_id": "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61",
+          "grade": 1,
+          "from": [
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-02",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Заваленный горизонт без причины — нормальный приём?",
+      "justification": "Наклон кадра допустим редко и только с причиной, иначе это не приём.",
+      "source": "prompts:n_excel_gpt_sd_camera:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s2",
+          "chunk_id": "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61",
+          "grade": 1,
+          "from": [
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-03",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Длиннофокусная оптика сжимает задник или раздвигает комнату?",
+      "justification": "Телеобъектив сжимает глубину, широкий угол её раздвигает.",
+      "source": "prompts:n_excel_gpt_sd_camera:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s2",
+          "chunk_id": "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61",
+          "grade": 1,
+          "from": [
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-04",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Давка и паника. Камеру оставлять мёртвой?",
+      "justification": "Ссора, паника и толчея снимаются с рук, не неподвижным планом.",
+      "source": "prompts:n_excel_gpt_sd_cd_camera:s3",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s3",
+          "chunk_id": "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe",
+          "grade": 1,
+          "from": [
+            "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-05",
+      "family": "camera",
+      "kind": "howto",
+      "text": "Человека ведут под руки несколько секунд. Камера стоит или идёт с ним?",
+      "justification": "Сопровождение ставят, когда тело ведут, тащат или оно убегает пару секунд.",
+      "source": "prompts:n_excel_gpt_sd_cd_camera:s3",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s3",
+          "chunk_id": "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe",
+          "grade": 1,
+          "from": [
+            "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-06",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Крупность писать по-русски, словами вроде дальнего плана?",
+      "justification": "Крупность в этом шаге пишется только русскими формулировками, дальний план в их числе.",
+      "source": "prompts:n_excel_gpt_sd_cd_camera:s4",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s4",
+          "chunk_id": "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579",
+          "grade": 1,
+          "from": [
+            "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-07",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Пик бита оставлять широким видом двора?",
+      "justification": "Пик бита укрупняют до крупного плана, очень крупного или вставки, не оставляют общим.",
+      "source": "prompts:n_excel_gpt_sd_camera:s5",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s5",
+          "chunk_id": "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679",
+          "grade": 1,
+          "from": [
+            "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-08",
+      "family": "camera",
+      "kind": "howto",
+      "text": "Ролик и каждый новый мир открывать с ладони крупно?",
+      "justification": "Первый бит ролика и каждый новый мир начинают с установочного широкого плана.",
+      "source": "prompts:n_excel_gpt_sd_camera:s5",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s5",
+          "chunk_id": "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679",
+          "grade": 1,
+          "from": [
+            "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-09",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Зачем камера поехала, можно не писать?",
+      "justification": "Мотив движения обязателен: одна эмоция объясняет, зачем план поехал.",
+      "source": "prompts:n_excel_gpt_sd_cd_camera:s3",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s3",
+          "chunk_id": "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe",
+          "grade": 1,
+          "from": [
+            "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-10",
+      "family": "camera",
+      "kind": "prompt",
+      "text": "Композицию прошлого кадра скопировать пиксель в пиксель?",
+      "justification": "Пространство сцены то же, но прошлый кадр один в один не копируют.",
+      "source": "prompts:n_excel_gpt_sd_cd_camera:s5",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s5",
+          "chunk_id": "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a",
+          "grade": 1,
+          "from": [
+            "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-11",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Характер брать из поступков или дописывать биографию, которой в тексте нет?",
+      "justification": "Характер — два–четыре слова из поступков в тексте, не отдельная биография.",
+      "source": "prompts:n_excel_gpt_sd_characters:s4",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s4",
+          "chunk_id": "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee",
+          "grade": 1,
+          "from": [
+            "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-12",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Номера людей идут по алфавиту имён?",
+      "justification": "Номера идут по порядку появления в тексте, не по алфавиту.",
+      "source": "prompts:n_excel_gpt_sd_characters:s4",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s4",
+          "chunk_id": "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee",
+          "grade": 1,
+          "from": [
+            "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-13",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Двух разных людей оставить с одной причёской и одним лицом?",
+      "justification": "Герои не должны путаться: копировать лицо и причёску нельзя.",
+      "source": "prompts:n_excel_gpt_sd_characters:s3",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s3",
+          "chunk_id": "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf",
+          "grade": 1,
+          "from": [
+            "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-14",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "В одежде достаточно слова «повседневная», без верха и обуви?",
+      "justification": "Одежда — конкретный комплект, верх, низ и обувь, не общая отписка.",
+      "source": "prompts:n_excel_gpt_sd_characters:s3",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s3",
+          "chunk_id": "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf",
+          "grade": 1,
+          "from": [
+            "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-15",
+      "family": "characters",
+      "kind": "howto",
+      "text": "Кадр пустой. Добавить кого-нибудь для заполнения?",
+      "justification": "Персонажа «для красоты» или чтобы кто-то был в кадре заводить нельзя.",
+      "source": "prompts:n_excel_gpt_sd_characters:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-16",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Человека один раз назвали и у него нет ни шага, ни реплики. Карточка нужна?",
+      "justification": "Карточку заводят, когда человека назвали, у него есть действие или реплика, либо текст прямо о нём.",
+      "source": "prompts:n_excel_gpt_sd_characters:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-17",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Площадь полна народа. Завести одну карточку «люди»?",
+      "justification": "Толпа, группа и «люди» не персонаж, такую карточку не заводят.",
+      "source": "prompts:n_excel_gpt_sd_characters:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-18",
+      "family": "characters",
+      "kind": "howto",
+      "text": "В паспорте отметить, в каких кусках истории человек вообще виден?",
+      "justification": "Для каждой сущности указывают, в каких фазах и сценах она появляется.",
+      "source": "prompts:n_excel_gpt_sd_cd_characters:s1",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-19",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Безымянная группа без своего номера может быть главным объектом кадра?",
+      "justification": "Массовка без номера не бывает главным объектом кадра, только фоном.",
+      "source": "prompts:n_excel_gpt_sd_cd_characters:s1",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-20",
+      "family": "characters",
+      "kind": "prompt",
+      "text": "Пустой список лиц хуже, чем пачка безымянных?",
+      "justification": "Пустой список лучше реестра статистов.",
+      "source": "prompts:n_excel_gpt_sd_characters:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-21",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Сколько читаемых зон закладывать внутрь одного места?",
+      "justification": "Внутри места две–четыре читаемые зоны, по ним ходят камера и действие.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-22",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Описание места одним словом «интерьер» сойдёт?",
+      "justification": "Описание из одного слова, в том числе «интерьер», считается браком.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-23",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Стулья, чашки и прочие вещи комнаты перечислять в паспорте места?",
+      "justification": "Предметы локации в паспорт места не пишут, это поле убрано.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-24",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Номер места заменить на более понятный?",
+      "justification": "Номер места остаётся как во входном списке, его не переименовывают.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-25",
+      "family": "world",
+      "kind": "howto",
+      "text": "Одно место из уже выданного списка можно молча пропустить?",
+      "justification": "На каждый номер из входного списка пишут паспорт, пропускать нельзя.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-26",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Рядом с местом записывать, какая фраза закадра его включает?",
+      "justification": "Триггеры закадра в паспорт места не пишут.",
+      "source": "prompts:n_excel_gpt_sd_cd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-27",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Глубину комнаты и материал стен можно не называть?",
+      "justification": "Описание места включает стены, материал, цвет и глубину, не обходится без них.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-28",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Два угла одной комнаты — это два разных номера места?",
+      "justification": "Одно пространство не дробят на два номера, смена зоны не новое место.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-29",
+      "family": "world",
+      "kind": "howto",
+      "text": "Фон без постоянного номера. Ему нужен такой же полный паспорт, как остальным?",
+      "justification": "Разовый фон без номера места не раздувают в локацию и не кладут в паспорта.",
+      "source": "prompts:n_excel_gpt_sd_cd_world:s1, prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2-30",
+      "family": "world",
+      "kind": "prompt",
+      "text": "Подпись места уточнить, а номер оставить как пришёл?",
+      "justification": "Короткое имя можно уточнить, номер остаётся тем же.",
+      "source": "prompts:n_excel_gpt_sd_world:s2",
+      "method": "Реплика про задачу, симптом или цель, без имён нод, групп и номеров правил. Семейство по смыслу. Gold — только отвечающие part_key и однострочное обоснование. Retrieve не вызывался.",
+      "relevant": [
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        }
+      ]
+    }
+  ]
+}
