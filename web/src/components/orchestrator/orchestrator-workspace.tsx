@@ -741,17 +741,8 @@ function ApprovalCard({
           />
         ) : (
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" data-testid="orch-paid-done" disabled>
-              {PAID_OUTCOME_COPY.done}
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-retry" disabled>
-              {PAID_OUTCOME_COPY.retry}
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-deny" disabled>
-              {PAID_OUTCOME_COPY.deny}
-            </Button>
             <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
-              Решение недоступно: сервер не передал id
+              Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
             </p>
           </div>
         )
@@ -771,17 +762,9 @@ function ApprovalCard({
               </Button>
             </>
           ) : (
-            <>
-              <Button type="button" size="sm" data-testid="orch-approve" disabled>
-                Approve
-              </Button>
-              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled>
-                Reject
-              </Button>
-              <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
-                Решение недоступно: сервер не передал id
-              </p>
-            </>
+            <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+              Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
+            </p>
           )}
         </div>
       )}
