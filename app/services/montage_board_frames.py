@@ -175,6 +175,33 @@ async def _drop_frame_rows(
     )
 
 
+def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
+    """Лестница головы плюс шоты ребёнка. Совпадающий id не дублируется."""
+    out: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+
+    def _take(raw: Any, *, child: bool) -> None:
+        if not isinstance(raw, list):
+            return
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or "").strip()
+            item = dict(row)
+            if sid and sid in index:
+                if child:
+                    merged = dict(out[index[sid]])
+                    merged.update(item)
+                    out[index[sid]] = merged
+                continue
+            index[sid or f"#{len(out)}"] = len(out)
+            out.append(item)
+
+    _take(parent_rows, child=False)
+    _take(child_rows, child=True)
+    return out
+
+
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
     if not kids:
@@ -185,10 +212,13 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     dst = dict(getattr(head, "attrs", None) or {})
     import copy
 
-    for key in ("vo_cell_full", "главное_действие", "main_action", "биты", "кадры", "shots"):
+    for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
         if src.get(key) and not dst.get(key):
             val = src[key]
             dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+    for key in ("кадры", "shots"):
+        if src.get(key) or dst.get(key):
+            dst[key] = _merge_ladders_by_id(src.get(key), dst.get(key))
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(

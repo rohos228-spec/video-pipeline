@@ -97,6 +97,37 @@ def test_renumber_scene_does_not_rewrite_unique_ids() -> None:
     assert dup[1]["id"] != "1-S1-K1"
 
 
+def test_promote_merges_nonempty_child_ladder_by_id() -> None:
+    from app.services.montage_board_frames import _promote_first_child
+
+    parent = SimpleNamespace(
+        number=1,
+        uuid="p" * 12,
+        sort_key=1.0,
+        voiceover_text="голова",
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "план": "ОБЩИЙ"},
+                {"id": "1-K2", "план": "СРЕДНИЙ"},
+            ]
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        uuid="c" * 12,
+        sort_key=2.0,
+        voiceover_text="",
+        attrs={"кадры": [{"id": "1-K2", "план": "КРУПНЫЙ"}]},
+    )
+    head = _promote_first_child(parent, [child])
+    ladder = (head.attrs or {}).get("кадры") or []
+    by_id = {row["id"]: row for row in ladder}
+    assert list(by_id) == ["1-K1", "1-K2"]
+    assert by_id["1-K1"]["план"] == "ОБЩИЙ"
+    assert by_id["1-K2"]["план"] == "КРУПНЫЙ"
+    assert by_id["1-K1"].get("активен") is not False
+
+
 def test_promote_first_child_keeps_head_kadry() -> None:
     from app.services.montage_board_frames import _promote_first_child
 
