@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.3": "d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10",
+    "ws2-r2.3": "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c",
 }
 
 
@@ -481,20 +481,56 @@ def test_md_approval_card_comes_from_core_events() -> None:
     assert "change_id" not in ApprovalRequired.model_fields
 
 
+def _audit_rows(text: str) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    in_table = False
+    for line in text.splitlines():
+        if line.startswith("## Таблица действий"):
+            in_table = True
+            continue
+        if in_table and line.startswith("## "):
+            break
+        if not in_table or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells or not cells[0].isdigit():
+            continue
+        rows.append((cells[1].strip("`").strip(), cells[4], cells[5]))
+    return rows
+
+
+def _flags(name: str, tier: str) -> tuple[bool, bool, bool]:
+    """read_only, destructive, paid. Особые ячейки аудита не ослабляют контракт."""
+
+    parts = set(tier.split("+"))
+    if name == "montage.suggest_scene_variants" and tier == "paid+paid":
+        parts = {"paid"}
+    read_only = tier == "read"
+    paid = "paid" in parts
+    destructive = "destructive" in parts
+    if name == "prompt.create_master":
+        destructive = True
+        read_only = False
+    return read_only, destructive, paid
+
+
 def test_doc_flags_match_contract_metadata() -> None:
     from app.orchestrator.action_contracts import contracts as contract_mod
 
+    source = Path(contract_mod.__file__).read_text(encoding="utf-8")
+    assert "def _audit_rows" not in source
+    assert "def _flags" not in source
     audit = (_REPO / "docs" / "fable" / "actions_audit.md").read_text(encoding="utf-8")
     contract = _MD.read_text(encoding="utf-8")
     registry = contract_mod.metadata_registry()
     covered: set[str] = set()
 
-    table = contract_mod._audit_rows(audit)
+    table = _audit_rows(audit)
     assert len(table) == 102
     for name, risk, tier in table:
         meta = registry[name]
         assert meta.risk == risk, name
-        assert (meta.read_only, meta.destructive, meta.paid) == contract_mod._flags(name, tier), name
+        assert (meta.read_only, meta.destructive, meta.paid) == _flags(name, tier), name
         covered.add(name)
 
     headings = _audit_headings(audit)
@@ -502,7 +538,7 @@ def test_doc_flags_match_contract_metadata() -> None:
     for name, risk, tier in headings:
         meta = metadata_of(name)
         assert meta.risk == risk, name
-        assert (meta.read_only, meta.destructive, meta.paid) == contract_mod._flags(name, tier), name
+        assert (meta.read_only, meta.destructive, meta.paid) == _flags(name, tier), name
         covered.add(name)
     revert = metadata_of("revert_node_to_git")
     assert revert.destructive is True
@@ -532,30 +568,40 @@ def test_audit_ids_are_not_a_live_registry_name() -> None:
 
 
 def test_create_node_new_group_raises_risk() -> None:
-    base = metadata_of("create_node")
-    raised = metadata_of("create_node@new_group")
-    assert base.risk == "medium" and base.needs_approval is False
+    from app.orchestrator.action_contracts.contracts import (
+        RISK_ESCALATIONS,
+        escalated_metadata,
+        metadata_registry,
+    )
+
+    assert "create_node@new_group" not in metadata_registry()
+    rule = next(item for item in RISK_ESCALATIONS if item.when == "group_is_new")
+    assert rule.action == "create_node"
+    raised = escalated_metadata("create_node", group_is_new=True)
+    plain = escalated_metadata("create_node", group_is_new=False)
+    assert raised.name == "create_node"
     assert raised.risk == "high" and raised.destructive is True and raised.needs_approval is True
+    assert plain.risk == "medium" and plain.needs_approval is False
     ApprovalRequired.model_validate(
         {
-            "action": "create_node@new_group",
+            "action": "create_node",
             "metadata": raised.model_dump(),
             "reason": "новой группы ещё нет",
             "preview": {"change": "создать группу и ноду", "estimate": 0},
         }
     )
-    tighter = base.model_dump()
-    tighter["risk"] = "high"
-    tighter["destructive"] = True
-    ApprovalRequired.model_validate(
-        {
-            "action": "create_node",
-            "metadata": tighter,
-            "reason": "ужесточение допустимо",
-            "preview": {"change": "нода", "estimate": 0},
-        }
-    )
-    weaker = base.model_dump()
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(action="create_node@new_group", before={"a": 1}))
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(
+            {
+                "action": "create_node@new_group",
+                "metadata": {**raised.model_dump(), "name": "create_node@new_group"},
+                "reason": "ядро такое имя не исполнит",
+                "preview": {"change": "нода", "estimate": 0},
+            }
+        )
+    weaker = plain.model_dump()
     weaker["risk"] = "low"
     with pytest.raises(ValidationError):
         ApprovalRequired.model_validate(
@@ -571,5 +617,52 @@ def test_create_node_new_group_raises_risk() -> None:
 def test_script_detector_is_not_a_sanitizer() -> None:
     with pytest.raises(ValidationError, match="не санитайзер"):
         ReportResult(report_id=1, html="<p>ok</p><script>alert(1)</script>", version=1)
-    for html in ("<svg/onload=alert(1)>", "<img/onerror=alert(1)>", "&#106;avascript:alert(1)"):
+    with pytest.raises(ValidationError):
+        ReportResult(report_id=1, html="<b onclick=alert(1)>", version=1)
+    for html in (
+        "<svg/onload=alert(1)>",
+        "<img/onerror=alert(1)>",
+        "&#106;avascript:alert(1)",
+        "текст onload=alert(1) вне тега",
+    ):
         ReportResult(report_id=1, html=html, version=1)
+
+
+def test_schema_rejects_skipped_without_partial() -> None:
+    import jsonschema
+
+    from app.orchestrator.action_contracts.contracts import export_action_result_schema
+
+    models = export_action_result_schema()["models"]
+    edited = EditResult.model_validate(
+        _edit_payload(before={"a": 1}, skipped=["shot-2"], partial=True)
+    ).model_dump(mode="json")
+    deleted = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        action="montage.delete_frame",
+        marked=True,
+        restore_action="frame.restore",
+        snapshot_id="snap-1",
+        skipped=["frame-9"],
+        partial=True,
+    ).model_dump(mode="json")
+    for name, payload in (("EditResult", edited), ("SoftDeleteResult", deleted)):
+        schema = models[name]
+        jsonschema.validate(payload, schema)
+        bad = dict(payload)
+        bad["partial"] = False
+        bad["skipped"] = ["x"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+
+def test_audit_metadata_json_is_package_data() -> None:
+    import tomllib
+
+    project = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    packaged = project["tool"]["setuptools"]["package-data"]["app.orchestrator.action_contracts"]
+    assert "audit_metadata.json" in packaged
+    from importlib.resources import files
+
+    text = files("app.orchestrator.action_contracts").joinpath("audit_metadata.json").read_text(encoding="utf-8")
+    assert '"actions"' in text

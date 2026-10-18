@@ -12,7 +12,7 @@ import json
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,10 +22,21 @@ CONTRACT_VERSION = "ws2-r2.3"
 _CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
 # Детектор явных скриптов, не санитайзер. Не ловит ``<svg/onload=…>``,
 # ``<img/onerror=…>`` и ``&#106;avascript:``.
+# ``on*=`` только внутри тега. Текст «onload=» вне разметки детектор не трогает.
 _SCRIPT_DETECTOR = re.compile(
-    r"<\s*/?\s*script\b|javascript\s*:|\son[a-z]+\s*=",
+    r"<\s*/?\s*script\b|javascript\s*:|<[^>]*\son[a-z]+\s*=",
     re.IGNORECASE,
 )
+_SKIPPED_REQUIRES_PARTIAL: dict[str, Any] = {
+    "if": {
+        "properties": {"skipped": {"minItems": 1}},
+        "required": ["skipped"],
+    },
+    "then": {
+        "properties": {"partial": {"const": True}},
+        "required": ["partial"],
+    },
+}
 _META_PATH = Path(__file__).with_name("audit_metadata.json")
 
 # Правка отчёта из чата. Имя из плана §6.3, не новое.
@@ -134,6 +145,12 @@ def _check_change_id(value: str) -> str:
     return value
 
 
+def _plain_action(value: str) -> str:
+    if "@" in value:
+        raise ValueError("action не содержит @")
+    return value
+
+
 def _nonblank_ref(value: str | None) -> str | None:
     if value is None:
         return None
@@ -145,7 +162,7 @@ def _nonblank_ref(value: str | None) -> str | None:
 class EditResult(BaseModel):
     """Правка ноды, промта, параметров или отчёта."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_SKIPPED_REQUIRES_PARTIAL)
 
     action: str = Field(min_length=1)
     change_id: str
@@ -169,6 +186,7 @@ class EditResult(BaseModel):
     @field_validator("action")
     @classmethod
     def _known_action(cls, value: str) -> str:
+        value = _plain_action(value)
         if value not in metadata_registry():
             raise ValueError("action вне реестра")
         return value
@@ -240,6 +258,11 @@ class ApprovalRequired(BaseModel):
     reason: str = Field(min_length=1)
     preview: ApprovalPreview
 
+    @field_validator("action")
+    @classmethod
+    def _action(cls, value: str) -> str:
+        return _plain_action(value)
+
     @model_validator(mode="after")
     def _estimate(self) -> ApprovalRequired:
         """None — оценки нет, 0 — бесплатно. Платное действие не бывает бесплатным молча."""
@@ -260,7 +283,7 @@ class ApprovalRequired(BaseModel):
 class SoftDeleteResult(BaseModel):
     """Пометка вместо физического удаления. Восстановление — отдельным действием."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_SKIPPED_REQUIRES_PARTIAL)
 
     change_id: str
     action: str = Field(min_length=1)
@@ -275,6 +298,11 @@ class SoftDeleteResult(BaseModel):
     @classmethod
     def _change_id(cls, value: str) -> str:
         return _check_change_id(value)
+
+    @field_validator("action")
+    @classmethod
+    def _action(cls, value: str) -> str:
+        return _plain_action(value)
 
     @field_validator("snapshot_id", "archive_ref")
     @classmethod
@@ -332,46 +360,6 @@ class ActionResult(BaseModel):
         return self
 
 
-def _audit_rows(text: str) -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
-    in_table = False
-    for line in text.splitlines():
-        if line.startswith("## Таблица действий"):
-            in_table = True
-            continue
-        if in_table and line.startswith("## "):
-            break
-        if not in_table or not line.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if not cells or not cells[0].isdigit():
-            continue
-        rows.append((cells[1].strip("`").strip(), cells[4], cells[5]))
-    return rows
-
-
-def _flags(name: str, tier: str) -> tuple[bool, bool, bool]:
-    """read_only, destructive, paid.
-
-    Ячейка ``paid+paid`` у ``montage.suggest_scene_variants`` — опечатка
-    таблицы #344. В коде ярус ``paid``, контракт хранит его так и не
-    переписывает документ аудита.
-    ``prompt.create_master`` пишет общий файл промта: ярус в таблице
-    ``local_safe``, для контракта флаг ``destructive``.
-    """
-
-    parts = set(tier.split("+"))
-    if name == "montage.suggest_scene_variants" and tier == "paid+paid":
-        parts = {"paid"}
-    read_only = tier == "read"
-    paid = "paid" in parts
-    destructive = "destructive" in parts
-    if name == "prompt.create_master":
-        destructive = True
-        read_only = False
-    return read_only, destructive, paid
-
-
 def _r2_metadata() -> dict[str, ActionMetadata]:
     """Имена из плана §6 и ``revert_node_to_git`` из аудита. Не из 102."""
 
@@ -382,7 +370,6 @@ def _r2_metadata() -> dict[str, ActionMetadata]:
         ("stop_node", "medium", False, False, False),
         ("resume_node", "high", False, True, True),
         ("create_node", "medium", False, False, False),
-        ("create_node@new_group", "high", False, True, False),
         ("edit_node_prompt", "medium", False, True, False),
         ("edit_node_params", "medium", False, True, False),
         ("create_report", "low", False, False, False),
@@ -473,6 +460,42 @@ def metadata_of(name: str) -> ActionMetadata:
         destructive=True,
         paid=True,
     )
+
+
+class RiskEscalation(NamedTuple):
+    """Повышение риска по условию. Это не id действия и не поле ``action``."""
+
+    action: str
+    when: str
+    risk: RiskName
+    read_only: bool
+    destructive: bool
+    paid: bool
+
+
+# Новая группа у create_node. Ядро исполняет action=create_node, не имя с «@».
+RISK_ESCALATIONS: tuple[RiskEscalation, ...] = (
+    RiskEscalation("create_node", "group_is_new", "high", False, True, False),
+)
+
+
+def escalated_metadata(action: str, *, group_is_new: bool = False) -> ActionMetadata:
+    """Базовые флаги или ужесточение из ``RISK_ESCALATIONS``."""
+
+    action = _plain_action(action)
+    base = metadata_of(action)
+    if not group_is_new:
+        return base
+    for rule in RISK_ESCALATIONS:
+        if rule.action == action and rule.when == "group_is_new":
+            return ActionMetadata(
+                name=action,
+                risk=rule.risk,
+                read_only=rule.read_only,
+                destructive=rule.destructive,
+                paid=rule.paid,
+            )
+    return base
 
 
 _WIRE_MODELS: dict[str, type[BaseModel]] = {
