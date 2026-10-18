@@ -210,7 +210,18 @@ def tracker(tmp_path, monkeypatch):
     db = tmp_path / "trk" / "tracker.db"
     monkeypatch.setattr(hook, "_TRACKER_DB", db)
     monkeypatch.setattr(hook, "_get_identity", lambda: ("alice-os-user", "ALICE-PC"))
-    return db
+    try:
+        yield db
+    finally:
+        # Кэш рубильника живёт 5 с в процессе. Иначе следующий тест на том же
+        # воркере xdist видит блок alice-os-user и не делает вызовы API.
+        hook._KILLSWITCH_CACHE = {
+            "is_blocked": False,
+            "updated_by": "",
+            "updated_at": "",
+            "reason": "",
+            "expires_at": 0.0,
+        }
 
 
 def _tracker_rows(db: Path):
@@ -414,6 +425,10 @@ def test_killswitch_cloud_payload_hashes_identity(tracker, monkeypatch):
     hook.toggle_killswitch("block", user_name="alice-os-user", reason="t")
     body = json.dumps(_FakeClient.posted[0]["json"], ensure_ascii=False)
     assert "alice-os-user" not in body and "ALICE-PC" not in body
+
+
+def test_killswitch_block_does_not_remain_in_the_process_cache():
+    assert hook._KILLSWITCH_CACHE.get("is_blocked") is False
 
 
 def test_cloud_on_without_credentials_sends_nothing_and_says_so(tracker, monkeypatch, log_lines):
