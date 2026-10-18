@@ -283,15 +283,33 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
+    """Фейковые Bnn-K1 не сцена: пометить и положить в архив, список не резать."""
     planned = planned_shots_from_attrs(frame)
     if not planned or kadry_are_scene_shots(planned):
         return False
     attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs.pop("кадры", None)
-    attrs.pop("shots", None)
+    archived = [
+        dict(row) if isinstance(row, dict) else {"value": row}
+        for row in (attrs.get("кадры_archived") or [])
+    ]
+    marked: list[dict[str, Any]] = []
+    for shot in planned:
+        row = dict(shot) if isinstance(shot, dict) else {"value": shot}
+        row["активен"] = False
+        row["карантин"] = True
+        row["пометка"] = "не сцена — кадр сохранён"
+        marked.append(row)
+        archived.append(dict(row))
+    attrs["кадры"] = marked
+    if "shots" in attrs:
+        attrs["shots"] = [dict(row) for row in marked]
+    attrs["кадры_archived"] = archived
     frame.attrs = attrs
     _flag_attrs(frame)
+    logger.warning(
+        "WARN strip_non_scene_kadry: {} шотов помечены, не удалены",
+        len(marked),
+    )
     return True
 
 
@@ -2097,12 +2115,21 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         if not full:
             continue
         planned = planned_shots_from_attrs(parent)
+        ladder_parts: list[str] | None = None
+        if planned:
+            ladder_parts = kadry_vo_pieces(planned, full, main_action_text(parent))
         parts = _vo_parts_without_empty(full, len(members))
+        if ladder_parts:
+            from app.services.scene_design.camera_expand import vo_chunk_is_dangling
+
+            head = [p for p in ladder_parts[: len(members)] if p]
+            if head and not any(vo_chunk_is_dangling(p) for p in head):
+                parts = ladder_parts[: len(members)]
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
-        if planned:
+        if planned and ladder_parts:
             for i, item in enumerate(planned):
-                piece = parts[i] if i < len(parts) else ""
+                piece = ladder_parts[i] if i < len(ladder_parts) else ""
                 if not piece:
                     continue
                 if str(item.get("закадр") or "") != piece:

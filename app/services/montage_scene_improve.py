@@ -1738,6 +1738,10 @@ async def stage_qc(
                 raw, cell_number=int(parent.number), place=place, anchors=len(units)
             )
             if candidate and len(candidate) == len(shots):
+                for i, shot in enumerate(candidate):
+                    src_anchor = shots[i].get("якорь_n") if isinstance(shots[i], dict) else None
+                    if src_anchor is not None:
+                        shot["якорь_n"] = src_anchor
                 extra = repair_shots(candidate, units)
                 c_hard, c_soft = qc_reasons(candidate, units)
                 if len(c_hard) < len(hard):
