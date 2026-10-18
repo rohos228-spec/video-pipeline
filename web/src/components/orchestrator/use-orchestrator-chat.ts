@@ -6,6 +6,7 @@ import {
   isAbortError,
   orchTaskModeEnabled,
   OrchApiError,
+  getOrchSessionStatus,
   postOrchDecision,
   postOrchKill,
   postOrchMessage,
@@ -230,6 +231,18 @@ export function useOrchestratorChat() {
         });
         setSendError("");
       } catch (error) {
+        if (error instanceof OrchApiError && error.status === 409) {
+          try {
+            const snap = await getOrchSessionStatus(cfg);
+            dispatch({
+              type: "snapshot",
+              taskId: snap.task_id == null ? null : String(snap.task_id),
+              status: snap.status,
+            });
+          } catch {
+            /* отказ остаётся на карточке, повтор сам не уходит */
+          }
+        }
         if (!noteAuth(error)) {
           setDecisionError({
             id: approvalId,
