@@ -161,7 +161,19 @@ _ALLOW_MARKERS = (
 # заранее объявленное исключение вне реестра, не 103-е действие.
 _RAG_ID = "rag.reindex"
 _OUTSIDE_REGISTRY_ALLOW = frozenset({_RAG_ID})
-_CONTENT_OVERWRITE = frozenset({"open", "write_text", "write_bytes", "os.open"})
+_CONTENT_OVERWRITE = frozenset(
+    {
+        "open",
+        "write_text",
+        "write_bytes",
+        "os.open",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+    }
+)
 _RAG_SUFFIXES = ("orch_rag.db", "orch_rag.db-wal", "orch_rag.db-shm")
 _SNAPSHOT_DIR = "action_layer_snapshots"
 # Решение куратора: каталог снимков разрешён только этим трём id.
@@ -1718,32 +1730,10 @@ def _write_hit(
             sketch,
             function,
             source=None,
-            allowed=bool(sketch) and _resolved_is_allow(sketch),
+            allowed=False,
             snapshot_delete=False,
         )
-    versioned = bool(
-        fn_node is not None
-        and norm_sketch
-        and norm_sketch in _guard_paths_for_call(fn_node, env, call)
-    )
-    mkstemp_publish = bool(
-        kind in {"os.replace", "Path.replace"}
-        and isinstance(src, ast.Name)
-        and src.id in mkstemp_names
-        and versioned
-        and norm_sketch
-        and _resolved_is_allow(norm_sketch)
-    )
     denied = kind in _DELETE_KINDS or kind.startswith("alias:")
-    if mkstemp_publish:
-        return WriteHit(
-            kind,
-            sketch,
-            function,
-            source=source,
-            allowed=True,
-            snapshot_delete=False,
-        )
     if denied:
         under = sketch is None or _under_snapshot(sketch)
         if source and _under_snapshot(source):
@@ -1759,6 +1749,8 @@ def _write_hit(
     if kind in {"shutil.move"}:
         dest_ok = bool(sketch) and _path_permitted(sketch, action_id)
         src_ok = bool(source) and _path_permitted(source, action_id)
+        if dest_ok and _resolved_is_allow(sketch):
+            dest_ok = False
         return WriteHit(
             kind,
             sketch,
@@ -2602,11 +2594,46 @@ def test_version_compare_must_guard_write() -> None:
         for hit in analyze_module_source(guarded, "node.set_config")
         if hit.kind == "os.replace"
     ]
-    assert guarded_hits and guarded_hits[0].allowed is True
+    assert guarded_hits and guarded_hits[0].allowed is False
+
+
+def test_mkstemp_publish_without_lock_is_denied() -> None:
+    """В allowlist пишет только atomic_write_text. mkstemp без lock — отказ."""
+    source = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+    )
+    hits = analyze_module_source(source, "node.set_config")
+    assert hits
+    assert all(hit.allowed is False for hit in hits)
+
+    copied = (
+        "import shutil\n"
+        "def save(src):\n"
+        "    shutil.copy2(src, 'data/node_overrides/x.json')\n"
+        "    shutil.copy(src, 'data/reports/a.txt')\n"
+        "    shutil.copyfile(src, 'data/reports/b.txt')\n"
+        "    shutil.move('data/reports/a.txt', 'data/reports/c.txt')\n"
+        "    atomic_write_text('data/node_overrides/x.json', 'ok', expected_version=0)\n"
+    )
+    copy_hits = analyze_module_source(copied, "node.set_config")
+    assert [hit.kind for hit in copy_hits] == [
+        "shutil.copy2",
+        "shutil.copy",
+        "shutil.copyfile",
+        "shutil.move",
+        "atomic_write_text",
+    ]
+    assert [hit.allowed for hit in copy_hits] == [False, False, False, False, True]
 
 
 def test_fixed_tmp_denied_helper_and_mkstemp_allowed() -> None:
-    """Фиксированный tmp запрещён. Разрешены helper и mkstemp в allowlist."""
+    """Фиксированный tmp и mkstemp в allowlist запрещены. Разрешён только helper."""
     fixed = (
         "import os\n"
         "def save(version, current):\n"
@@ -2646,7 +2673,7 @@ def test_fixed_tmp_denied_helper_and_mkstemp_allowed() -> None:
     )
     mk_hits = analyze_module_source(mkstemp, "node.set_config")
     assert [hit.kind for hit in mk_hits] == ["mkstemp", "os.replace", "mkstemp", "os.replace"]
-    assert [hit.allowed for hit in mk_hits] == [True, True, False, False]
+    assert [hit.allowed for hit in mk_hits] == [False, False, False, False]
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
@@ -2880,7 +2907,7 @@ def test_move_and_rename_check_source_and_dest() -> None:
         "    rp('data/action_layer_snapshots/a', 'data/reports/a')\n"
     )
     hits = analyze_module_source(source, "history.rollback")
-    assert [hit.allowed for hit in hits] == [True, False, False, False, False, False, False]
+    assert [hit.allowed for hit in hits] == [False, False, False, False, False, False, False]
     assert [hit.snapshot_delete for hit in hits] == [False, False, False, False, False, False, True]
     foreign = analyze_module_source(source, "group.delete")
     assert foreign[-1].allowed is False
