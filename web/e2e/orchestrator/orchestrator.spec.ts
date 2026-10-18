@@ -696,11 +696,9 @@ test.describe("orchestrator chat", () => {
     await openWithToken(page, "approvallegacy", "approval-legacy");
     await page.getByTestId("orch-composer").fill("старый approval");
     await page.getByTestId("orch-send").click();
-    await expect(page.getByTestId("orch-approve")).toBeEnabled();
-    await expect(page.getByTestId("orch-reject")).toBeEnabled();
-    await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
-    await page.getByTestId("orch-approve").click();
-    await expect(page.getByTestId("orch-approval-error")).toContainText("нет change_id");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-noid")).toContainText("orch-appr");
     expect(approveUrls.some((url) => url.includes("/approvals/"))).toBe(false);
     expect(approveUrls.some((url) => url.includes("/chat/") && url.endsWith("/approve"))).toBe(false);
 
@@ -711,13 +709,14 @@ test.describe("orchestrator chat", () => {
       action: "note",
       risk: "low",
     });
-    await expect(page.getByTestId("orch-approve")).toBeEnabled();
-    await expect(page.getByTestId("orch-approval-noid")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-noid").last()).toContainText("orch-appr");
     await emitBus(page, "approval-legacy", "approval_decided", 2, {
       approval_id: "appr-old",
       decision: "approve",
     });
-    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByText("Старый формат")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval")).toHaveCount(1);
   });
 
   test("approve 404 и 409 оставляют карточку", async ({ page }) => {

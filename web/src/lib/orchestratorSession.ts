@@ -167,7 +167,7 @@ export interface ApprovalView {
    * Событие закрывает карточку по `changeId`, а если его нет — по `id`.
    */
   serverId: boolean;
-  /** Серверный `change_id` карточки, формат `orch-appr-<задача>-<n>`. `step_change_id` сюда не попадает. */
+  /** Серверный `change_id` карточки, формат `orch-appr-<задача>-<n>`. Старый `approval_id` карточку открывает, но в /approve не уходит. `step_change_id` сюда не попадает. */
   changeId: string | null;
   /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
   sessionId: string | null;
