@@ -517,6 +517,15 @@ class Supervisor:
             primary = interrupted[0]
             task_id = int(primary["id"])
             self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            status = TaskStatus(str(primary["status"]))
+            saved = await self._load_saved_plan(task_id, primary)
+            if saved is None and status is TaskStatus.planning:
+                self._spawn_drive(task_id, session_id, str(primary.get("goal") or ""))
+                return [task_id]
+            if saved is None and status is TaskStatus.executing:
+                self._session_task[session_id] = task_id
+                await self._fail_closed(task_id, session_id, "empty_plan")
+                return [task_id]
             if await self._spawn_from_checkpoint(task_id, primary):
                 return [task_id]
             self._session_task[session_id] = task_id
@@ -535,6 +544,15 @@ class Supervisor:
         task_id = int(first["id"])
         self._spawn_drive(task_id, session_id, str(first.get("goal") or ""))
         return [task_id]
+
+    async def _load_saved_plan(self, task_id: int, row: dict[str, Any]) -> CheckpointData | None:
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
+        if data is not None and data.plan:
+            return data
+        fallback = self._checkpoint_from_row(row)
+        if fallback is not None and fallback.plan:
+            return fallback
+        return None
 
     async def _spawn_from_checkpoint(self, task_id: int, row: dict[str, Any]) -> bool:
         running = self._runs.get(task_id)
@@ -1027,7 +1045,8 @@ class Supervisor:
         if task_id in self._budget_stop:
             await self._settle_stopped(task_id, session_id)
             return None
-        await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
+        if self._status(task_id) is not TaskStatus.planning:
+            await self._set_status(task_id, TaskStatus.planning, session_id=session_id)
         plan = list(
             await self._cancellable(
                 session_id,
