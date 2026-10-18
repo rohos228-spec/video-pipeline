@@ -63,7 +63,7 @@ def test_montage_delete_child_frame_is_blocked() -> None:
         {
             "plan": plan,
             "whitelist": ["montage.delete_child_frame"],
-            "approval": {"risk": "high", "destructive": True},
+            "approval": _core_approval("montage.delete_child_frame"),
             "registry": _meta_registry({"montage.delete_child_frame": {}}),
         },
     )
@@ -88,8 +88,16 @@ def _install_meta(monkeypatch: pytest.MonkeyPatch, meta: dict) -> None:
     monkeypatch.setitem(sys.modules, "app.orchestrator.actions", module)
 
 
-def _core_approval() -> dict:
-    return {"risk": "high", "destructive": True}
+def _core_approval(action: str) -> dict:
+    """Форма одобрения WS3: change_id, action, risk, destructive, granted, cc_change_id."""
+    return {
+        "change_id": "chg-1",
+        "action": action,
+        "risk": "high",
+        "destructive": True,
+        "granted": True,
+        "cc_change_id": "cc-1",
+    }
 
 
 @pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
@@ -102,7 +110,51 @@ def test_montage_delete_blocked_without_soft_delete_even_with_approval(
         1,
         {
             "plan": [{"action": action, "params": {"frame_id": "f1"}}],
-            "approval": _core_approval(),
+            "approval": _core_approval(action),
+        },
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
+@pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
+def test_montage_delete_blocked_when_approval_names_another_action(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Одобрение на другое действие не открывает этот кадр. Остальные поля валидны."""
+    other = (
+        "montage.delete_frame"
+        if action == "montage.delete_child_frame"
+        else "montage.delete_child_frame"
+    )
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    approval = _core_approval(other)
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+            "approval": approval,
+        },
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
+@pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
+def test_montage_delete_blocked_when_granted_is_false(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """granted=False блокирует, даже если имя, risk и destructive верные."""
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    approval = _core_approval(action)
+    approval["granted"] = False
+    result = run(
+        "plan_sanity",
+        1,
+        {
+            "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+            "approval": approval,
         },
     )
     assert result.blocking is True
@@ -133,7 +185,7 @@ def test_montage_delete_passes_with_soft_delete_and_approval(
         1,
         {
             "plan": [{"action": action, "params": {"frame_id": "f1"}}],
-            "approval": _core_approval(),
+            "approval": _core_approval(action),
         },
     )
     assert result.passed is True
