@@ -1296,6 +1296,20 @@ def _name_listed(action: str, listed: set[str]) -> bool:
     return folded in {canonical_action_name(item) for item in listed}
 
 
+_FRAME_RESTORE = "frame.restore"
+
+
+def frame_restore_grant(action: str, registry: Any | None) -> bool:
+    """``frame.restore`` нет в ``whitelist()`` из 102. Карточка с тем же именем пускает грант."""
+    if action != _FRAME_RESTORE:
+        return False
+    kind, meta = lookup_action_metadata(action, registry)
+    if kind != "value" or meta is None:
+        return False
+    meta_name = _meta_field(meta, "name", None)
+    return meta_name is None or str(meta_name) == action
+
+
 def not_in_whitelist(action: str, registry: Any | None) -> bool:
     """Имя нельзя ни одобрить, ни выполнить.
 
@@ -1311,6 +1325,8 @@ def not_in_whitelist(action: str, registry: Any | None) -> bool:
         return True
     if canonical_action_name(raw) in ACTION_DENYLIST:
         return True
+    if frame_restore_grant(raw, registry):
+        return False
     if any(getattr(owner, "allow_unlisted", False) is True for owner in _registry_owners(registry)):
         return False
     listed = explicit_action_names(registry)
@@ -1700,6 +1716,8 @@ def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
     Свободный текст параметров не сканируется: только структурные ключи.
     """
     if frame_soft_delete_state(step.action, registry) == "grant":
+        return False
+    if frame_restore_grant(step.action, registry):
         return False
     if (
         is_deletion_action(step.action)

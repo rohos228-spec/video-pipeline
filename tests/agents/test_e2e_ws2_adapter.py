@@ -248,36 +248,127 @@ async def test_e2e_delete_frame_through_core_keeps_the_row(env, monkeypatch) -> 
         set_runtime(None)
 
 
-@pytest.mark.skip(reason="WS2 #385: frame.restore ожидается ~07:30")
+def _raw_bridge(monkeypatch):
+    import app.orchestrator.actions as actions
+
+    calls: list[str] = []
+    contexts: list[dict] = []
+    raw: list[object] = []
+    real = actions.execute
+
+    async def spy(name, params, ctx):
+        calls.append(name)
+        contexts.append(dict(ctx) if isinstance(ctx, dict) else {})
+        out = await real(name, params, ctx)
+        raw.append(out)
+        return out
+
+    monkeypatch.setattr(actions, "execute", spy)
+    return ActionsBridge(ModuleActions(actions)), calls, contexts, raw
+
+
+async def _run_granted(bridge, session_id: str, goal: str, step: PlanStep, *, project_id: int):
+    runtime = build_runtime(
+        actions=bridge,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+    )
+    set_runtime(runtime)
+    task_id = await runtime.supervisor.start_task(session_id, goal, project_id=project_id)
+    await runtime.supervisor.wait(task_id, timeout=5)
+    held = runtime.tasks.get(task_id)
+    assert held["status"] == TaskStatus.waiting_approval.value, (held.get("status"), held.get("error"))
+    opened = [event for event in runtime.bus.replay(session_id, 0) if event.type == "approval_required"]
+    assert opened
+    change_id = opened[-1].payload["change_id"]
+    assert _CHANGE_ID.fullmatch(change_id)
+    await runtime.supervisor.grant_approval(session_id)
+    await runtime.supervisor.wait(task_id, timeout=5)
+    return runtime, task_id, change_id
+
+
 @pytest.mark.asyncio
-async def test_e2e_frame_restore_returns_the_marked_shot(env, monkeypatch) -> None:
-    """frame.restore возвращает активен и не создаёт новую строку кадра."""
+@pytest.mark.parametrize(
+    ("action", "lookup"),
+    [("montage.delete_frame", "snapshot_id"), ("montage.delete_child_frame", "change_id")],
+)
+async def test_e2e_frame_restore_roundtrip(env, monkeypatch, action: str, lookup: str) -> None:
+    """delete → грант ядра → frame.restore → повторный restore не успех."""
     from app.models import Frame
 
-    bridge, calls, _contexts = _bridge(monkeypatch)
+    original = [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]
+    bridge, calls, contexts, raw = _raw_bridge(monkeypatch)
     pid = await env.add_project(frames=1)
     ids = await env.frame_ids(pid)
     async with env.factory() as session:
         frame = await session.get(Frame, ids[1])
-        frame.attrs = {"кадры": [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]}
+        frame.attrs = {"кадры": [dict(shot) for shot in original]}
         await session.commit()
-    ctx = {"app": env.app, "operator": "e2e"}
-    params = {"project_id": pid, "frame_id": ids[1]}
-    done = await bridge.execute("montage.delete_frame", params, _grant(ctx, "montage.delete_frame"))
-    assert done["status"] == "ok"
-    restored = await bridge.execute(
-        "frame.restore",
-        {"project_id": pid, "frame_id": ids[1], "snapshot_id": done["data"]["snapshot_id"]},
-        _grant(ctx, "frame.restore"),
-    )
-    assert restored["status"] == "ok"
-    async with env.factory() as session:
-        frame = await session.get(Frame, ids[1])
-        assert frame is not None
-        assert frame.attrs["кадры"][0]["активен"] is True
-        total = await session.scalar(select(func.count()).select_from(Frame).where(Frame.project_id == pid))
-        assert total == 1
-    assert calls[-1] == "frame.restore"
+    delete_params = {"project_id": pid}
+    if action == "montage.delete_frame":
+        delete_params["frame_id"] = ids[1]
+    else:
+        delete_params["frame_number"] = 1
+    try:
+        _runtime, task_id, _card = await _run_granted(
+            bridge,
+            f"e2e-del-{lookup}",
+            "пометь",
+            PlanStep(action=action, params=delete_params, mutating=True, risk="high"),
+            project_id=pid,
+        )
+        assert runtime_status(task_id, _runtime) == TaskStatus.done.value
+        assert calls == [action]
+        body = raw[-1].result
+        assert body.marked is True
+        assert body.restore_action == "frame.restore"
+        async with env.factory() as session:
+            frame = await session.get(Frame, ids[1])
+            assert frame is not None
+            assert frame.attrs["кадры"][0]["активен"] is False
+        restore_params = {"project_id": pid, lookup: body.snapshot_id if lookup == "snapshot_id" else body.change_id}
+        calls.clear()
+        _runtime, task_id, _card = await _run_granted(
+            bridge,
+            f"e2e-restore-{lookup}",
+            "верни",
+            PlanStep(action="frame.restore", params=restore_params, mutating=True, risk="high"),
+            project_id=pid,
+        )
+        assert runtime_status(task_id, _runtime) == TaskStatus.done.value
+        assert calls == ["frame.restore"]
+        assert contexts[-1]["approval"]["action"] == "frame.restore"
+        assert _CHANGE_ID.fullmatch(contexts[-1]["approval"]["change_id"])
+        async with env.factory() as session:
+            frame = await session.get(Frame, ids[1])
+            assert frame is not None
+            assert frame.attrs["кадры"] == original
+            total = await session.scalar(select(func.count()).select_from(Frame).where(Frame.project_id == pid))
+            assert total == 1
+        calls.clear()
+        _runtime, task_id, _card = await _run_granted(
+            bridge,
+            f"e2e-again-{lookup}",
+            "ещё раз",
+            PlanStep(action="frame.restore", params=dict(restore_params), mutating=True, risk="high"),
+            project_id=pid,
+        )
+        row = _runtime.tasks.get(task_id)
+        assert row["status"] == TaskStatus.failed.value
+        assert row["status"] != TaskStatus.done.value
+        steps = _runtime.tasks.list_steps(task_id)
+        assert steps
+        assert all(item["status"] != "done" for item in steps)
+        async with env.factory() as session:
+            frame = await session.get(Frame, ids[1])
+            assert frame.attrs["кадры"] == original
+    finally:
+        set_runtime(None)
+
+
+def runtime_status(task_id: int, runtime) -> str:
+    return runtime.tasks.get(task_id)["status"]
 
 
 @pytest.mark.asyncio

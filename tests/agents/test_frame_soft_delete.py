@@ -152,3 +152,29 @@ async def test_grant_does_not_run_frame_delete_without_soft_delete(token: str) -
         assert runtime.tasks.get(task_id)["error"] == "deletion_forbidden"
     finally:
         set_runtime(None)
+
+
+class _RestoreCard:
+    """frame.restore нет в whitelist(), карточка high/destructive есть."""
+
+    def whitelist(self) -> list[str]:
+        return ["montage.delete_frame"]
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        if name != "frame.restore":
+            raise KeyError(name)
+        return {
+            "name": name,
+            "risk": "high",
+            "read_only": False,
+            "destructive": True,
+            "paid": False,
+        }
+
+
+def test_frame_restore_is_grantable_outside_the_whitelist() -> None:
+    from app.orchestrator.contracts import not_in_whitelist, step_is_deletion
+
+    card = _RestoreCard()
+    assert not_in_whitelist("frame.restore", card) is False
+    assert step_is_deletion(PlanStep(action="frame.restore", mutating=True, risk="high"), card) is False
