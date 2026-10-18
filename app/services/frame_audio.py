@@ -287,6 +287,54 @@ def frame_clips_from_whisper(
     return _to_clips(timings)
 
 
+def close_marked_timeline(
+    clips: list[FrameAudioClip],
+    master: float,
+    omit: set[int] | None,
+) -> tuple[list[FrameAudioClip], float]:
+    """Помеченный кадр выпадает из середины: соседи сдвигаются, длина = сумма клипов."""
+    if not omit:
+        return clips, master
+    omit_ids = {int(n) for n in omit}
+    kept: list[FrameAudioClip] = []
+    removed = False
+    for clip in clips:
+        if int(clip.frame_number) in omit_ids:
+            removed = True
+            logger.warning(
+                "WARN assemble timeline: кадр #{} помечен — слот звука закрыт, клип сохранён в списке источника",
+                clip.frame_number,
+            )
+            continue
+        kept.append(clip)
+    total = round(sum(c.duration for c in kept), 3)
+    if not kept:
+        return kept, 0.0
+    if not removed and abs(total - master) <= 0.15:
+        return kept, master
+    pos = 0.0
+    relaid: list[FrameAudioClip] = []
+    for clip in kept:
+        dur = round(float(clip.duration), 3)
+        relaid.append(
+            FrameAudioClip(
+                frame_number=clip.frame_number,
+                path=clip.path,
+                text=clip.text,
+                start_ts=round(pos, 3),
+                end_ts=round(pos + dur, 3),
+                duration=dur,
+            )
+        )
+        pos += dur
+    logger.warning(
+        "WARN assemble timeline: помеченные кадры {} вынуты из таймлайна, длина звука {:.2f}s = сумма клипов",
+        sorted(omit_ids),
+        pos,
+    )
+    return relaid, round(pos, 3)
+
+
 async def build_assembly_timeline(
     audio_dir: Path,
     voice_full_path: Path,
@@ -296,6 +344,7 @@ async def build_assembly_timeline(
     align_cells: list[tuple[int, str]] | None = None,
     words: list[WordTS] | None = None,
     per_frame_tts: bool = False,
+    omit_numbers: set[int] | None = None,
 ) -> tuple[list[FrameAudioClip], float, float, bool]:
     """Озвучка — единственное мерило: voice_full задаёт конец ролика.
 
@@ -343,6 +392,7 @@ async def build_assembly_timeline(
             clips[-1].end_ts = round(master, 3)
             clips[-1].duration = round(clips[-1].end_ts - clips[-1].start_ts, 3)
 
+        clips, master = close_marked_timeline(clips, master, omit_numbers)
         return clips, master, 1.0, True
 
     if has_all_frame_audio(audio_dir, frame_numbers) and not per_frame_tts:
@@ -373,6 +423,7 @@ async def build_assembly_timeline(
             len(mapping_cells),
             len(all_clips),
         )
+    clips, master = close_marked_timeline(clips, master, omit_numbers)
     return clips, master, 1.0, False
 
 

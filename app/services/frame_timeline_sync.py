@@ -45,8 +45,24 @@ def timeline_frames_and_cells(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], list[tuple[int, str]]]:
-    """Кадры и VO для таймлайна — только из БД (Frame.voiceover_text)."""
+    """Кадры и VO для таймлайна — только из БД (Frame.voiceover_text).
+
+    Помеченный кадр не озвучивается и не сдвигает соседей. Текст остаётся на строке.
+    """
     del project  # Excel больше не SoT
+    from app.services.frame_tombstones import frame_is_active
+
+    active: list[Frame] = []
+    for fr in frames:
+        if frame_is_active(fr):
+            active.append(fr)
+            continue
+        if (fr.voiceover_text or "").strip():
+            logger.warning(
+                "WARN timeline: кадр #{} помечен — не входит в TTS, текст на строке сохранён",
+                fr.number,
+            )
+    frames = active
     cells = [(fr.number, (fr.voiceover_text or "").strip()) for fr in frames]
     filtered_cells: list[tuple[int, str]] = []
     allowed: set[int] = set()

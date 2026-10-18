@@ -1340,3 +1340,55 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
     head = next(fr for fr in rows if fr.number == 3)
     assert _cs(head).get("role") == "vo_parent"
     assert str((_cs(head).get("vo_cell_full") or head.attrs.get("vo_cell_full") or "")) or head.voiceover_text
+
+
+@pytest.mark.asyncio
+async def test_marked_middle_frame_timeline_matches_audio_length(warn_log) -> None:
+    """Помеченный кадр в середине не разъезжает клипы и длину звука."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.frame_audio import build_assembly_timeline
+    from app.services.frame_timeline_sync import timeline_frames_and_cells
+    from app.services.whisper import WordTS
+
+    frames = [
+        SimpleNamespace(number=1, voiceover_text="один", attrs={}),
+        SimpleNamespace(
+            number=2,
+            voiceover_text="два в середине",
+            attrs={"удалён": True, "активен": False},
+        ),
+        SimpleNamespace(number=3, voiceover_text="три", attrs={}),
+    ]
+    timeline, cells = timeline_frames_and_cells(SimpleNamespace(), frames)
+    assert [fr.number for fr in timeline] == [1, 3]
+    assert [n for n, _text in cells] == [1, 3]
+    assert frames[1].voiceover_text == "два в середине"
+    assert any("не входит в TTS" in line for line in warn_log)
+
+    words = [
+        WordTS("один", 0.0, 2.0, 1.0),
+        WordTS("два", 2.0, 5.0, 1.0),
+        WordTS("три", 5.0, 9.0, 1.0),
+    ]
+    voice = Path("voice_full.wav")
+    with (
+        patch(
+            "app.services.frame_audio.probe_duration",
+            new=AsyncMock(return_value=9.0),
+        ),
+        patch("app.services.frame_audio.has_all_frame_audio", return_value=False),
+    ):
+        clips, master, _scale, per_frame = await build_assembly_timeline(
+            Path("."),
+            voice,
+            [1, 2, 3],
+            cells=[(1, "один"), (2, "два"), (3, "три")],
+            words=words,
+            omit_numbers={2},
+        )
+    assert per_frame is False
+    assert [c.frame_number for c in clips] == [1, 3]
+    assert abs(sum(c.duration for c in clips) - master) < 0.05
+    assert clips[1].start_ts == clips[0].end_ts
