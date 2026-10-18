@@ -201,7 +201,8 @@ class Supervisor:
         self._appr_owner: dict[str, tuple[int, str]] = {}
         self._appr_decided: dict[str, str | None] = {}
         self._appr_loaded: set[int] = set()
-        self._decided_change_id: dict[int, str] = {}
+        self._decided_change_id: dict[tuple[int, str], str] = {}
+        self._card_action: dict[str, str] = {}
 
     async def start_task(
         self,
@@ -1922,7 +1923,7 @@ class Supervisor:
         raw_cost = result.get("cost") if isinstance(result, dict) else getattr(result, "cost", 0)
         cost = float(raw_cost or 0)
         gated = metadata_call_gate(step.action, self.actions) is not None
-        core_id = self._decided_change_id.get(task_id) if gated else None
+        core_id = self._decided_change_id.pop((task_id, step.action), None) if gated else None
         problem = "unapproved_action" if ok and gated and not core_id else None
         if problem is None and ok:
             problem = r21_result_problem(result)
@@ -2368,6 +2369,10 @@ class Supervisor:
 
         ``change_id`` карточки (``orch-appr-*``) не затирается: по нему grant.
         """
+        card = body.get("change_id")
+        action = body.get("action")
+        if isinstance(card, str) and isinstance(action, str) and action:
+            self._card_action[card] = action
         reason = str(body.get("reason") or "")
         if reason in _PAID_OUTCOME_REASONS:
             body["actions"] = ["approve", "retry_step", "deny"]
@@ -2430,7 +2435,7 @@ class Supervisor:
         label = decision.value if decision is not None else None
         if change_id:
             self._appr_decided[change_id] = label
-            self._decided_change_id[key] = change_id
+            self._remember_authorizing_decision(key, change_id, label)
             if label != ApprovalDecision.retry_step.value:
                 self._appr_open[key] = None
         await self.bus.publish(
@@ -2477,12 +2482,16 @@ class Supervisor:
                 self._appr_owner[change_id] = (key, session_id)
                 self._appr_open[key] = change_id
                 self._note_appr_seq(key, change_id)
+                action = payload.get("action")
+                if isinstance(action, str) and action:
+                    self._card_action[change_id] = action
                 continue
             if change_id is None:
                 continue
             label = payload.get("decision")
-            self._appr_decided[change_id] = label if isinstance(label, str) else None
-            self._decided_change_id[key] = change_id
+            stored = label if isinstance(label, str) else None
+            self._appr_decided[change_id] = stored
+            self._remember_authorizing_decision(key, change_id, stored)
             if (
                 self._appr_decided[change_id] != ApprovalDecision.retry_step.value
                 and self._appr_open.get(key) == change_id
@@ -2498,13 +2507,29 @@ class Supervisor:
         if number > self._appr_seq.get(key, 0):
             self._appr_seq[key] = number
 
+    def _decision_authorizes(self, label: str | None) -> bool:
+        """Пустой grant и approve/retry_step. deny и чужая причина не открывают шаг."""
+        return label in {None, ApprovalDecision.approve.value, ApprovalDecision.retry_step.value}
+
+    def _remember_authorizing_decision(self, key: int, change_id: str, label: str | None) -> None:
+        if not self._decision_authorizes(label):
+            return
+        action = self._card_action.get(change_id)
+        if not action:
+            return
+        self._decided_change_id[(key, action)] = change_id
+
     def _clear_appr_key(self, key: int) -> None:
         self._appr_seq.pop(key, None)
         self._appr_open.pop(key, None)
+        for pair in list(self._decided_change_id):
+            if pair[0] == key:
+                self._decided_change_id.pop(pair, None)
         for change_id, owner in list(self._appr_owner.items()):
             if owner[0] == key:
                 self._appr_owner.pop(change_id, None)
                 self._appr_decided.pop(change_id, None)
+                self._card_action.pop(change_id, None)
 
     def _merge_appr_pack(self, key: int, session_id: str, packed: dict[str, Any] | None) -> None:
         if not packed:
