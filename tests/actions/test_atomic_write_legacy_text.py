@@ -32,12 +32,18 @@ def test_legacy_html_report_migrates_from_zero(tmp_path: Path, monkeypatch) -> N
     dest.parent.mkdir(parents=True)
     html = "<html><p>отчёт</p></html>"
     dest.write_text(html, encoding="utf-8")
-    atomic_write_text(dest, "next", expected_version=0)
+    nxt = "<html><p>next</p></html>"
+    atomic_write_text(dest, nxt, expected_version=0)
     backup = dest.parent / "old" / f"{dest.name}.v0"
     assert backup.read_text(encoding="utf-8") == html
-    body = json.loads(dest.read_text(encoding="utf-8"))
-    assert body["version"] == 1
-    assert body["text"] == "next"
+    body = dest.read_text(encoding="utf-8")
+    assert body == nxt
+    assert not body.lstrip().startswith("{")
+    side = dest.with_name(dest.name + ".version")
+    assert side.read_text(encoding="utf-8").strip() == "1"
+    atomic_write_text(dest, "<html><p>two</p></html>", expected_version=1)
+    assert dest.read_text(encoding="utf-8") == "<html><p>two</p></html>"
+    assert side.read_text(encoding="utf-8").strip() == "2"
 
 
 def test_non_utf8_legacy_is_conflict_not_allowlist_error(

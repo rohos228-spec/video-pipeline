@@ -4,6 +4,7 @@
 с версией уже лежащего файла. Несовпадение — 409, файл не меняется.
 Перед replace прежние байты копируются в old/.
 Файл без обёртки {"version","text"} — старый формат, версия 0.
+HTML-отчёт не заворачивается в JSON: версия лежит в соседнем ``имя.html.version``.
 
 Каталог allowlist открывается с O_DIRECTORY|O_NOFOLLOW. lock, копия и tmp
 идут через dir_fd, чтобы symlink old/ или .lock не писал наружу.
@@ -50,6 +51,15 @@ def _versioned_payload(payload: object) -> dict | None:
     return payload
 
 
+def _is_html_report(path: Path) -> bool:
+    return path.suffix.lower() in {".html", ".htm"}
+
+
+def _version_sidecar(path: Path) -> Path:
+    """Версия HTML лежит рядом, сам отчёт остаётся HTML."""
+    return path.with_name(path.name + ".version")
+
+
 def _read_legacy_text(target: Path) -> str:
     """Сырое тело старого файла. Не-UTF-8 — VersionConflict, не ошибка allowlist."""
     try:
@@ -78,6 +88,14 @@ def _stored_version(target: Path) -> int:
     """
     if not target.is_file():
         return 0
+    if _is_html_report(target):
+        side = _version_sidecar(target)
+        if not side.is_file():
+            return 0
+        raw_side = side.read_text(encoding="utf-8").strip()
+        if not raw_side.isdigit():
+            raise VersionConflict("битая версия sidecar")
+        return int(raw_side)
     raw = _read_legacy_text(target)
     try:
         payload = json.loads(raw)
@@ -161,9 +179,20 @@ def _assert_allowlisted(dest: Path) -> Path:
     return root.joinpath(*parts)
 
 
+def _body_bytes(target: Path, text: str, version: int) -> bytes:
+    if _is_html_report(target):
+        return text.encode("utf-8")
+    return json.dumps(
+        {"version": version, "text": text},
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
 def read_override(dest: Path) -> str:
-    """Читает override: text из обёртки или сырое тело старого файла."""
+    """Читает override: text из обёртки, сырое тело или HTML как HTML."""
     target = _assert_allowlisted(Path(dest))
+    if _is_html_report(target):
+        return _read_legacy_text(target)
     raw = _read_legacy_text(target)
     try:
         payload = json.loads(raw)
@@ -391,13 +420,20 @@ def _write_at(
                 probe = _open_dir("old", parent_fd)
                 os.close(probe)
             mode = 0o644
-        payload = json.dumps(
-            {"version": current + 1, "text": text},
-            ensure_ascii=False,
-        ).encode("utf-8")
+        payload = _body_bytes(target, text, current + 1)
         tmp_name = _write_tmp(parent_fd, name, payload, mode or 0o644)
         os.replace(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         tmp_name = None
+        if _is_html_report(target):
+            side_name = name + ".version"
+            tmp_name = _write_tmp(
+                parent_fd,
+                side_name,
+                str(current + 1).encode("ascii"),
+                0o644,
+            )
+            os.replace(tmp_name, side_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            tmp_name = None
         if os.name == "posix":
             os.fsync(parent_fd)
     except Exception:
@@ -530,15 +566,19 @@ def _write_without_dir_fd(
                 backup = backup_dir / f"{target.name}.v{current}.{suffix}"
             _assert_realpath_inside(backup, root)
             _write_exclusive(backup, target.read_bytes())
-        payload = json.dumps(
-            {"version": current + 1, "text": text},
-            ensure_ascii=False,
-        ).encode("utf-8")
+        payload = _body_bytes(target, text, current + 1)
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
         _assert_realpath_inside(tmp_path, root)
         _write_exclusive(tmp_path, payload)
         os.replace(tmp_path, target)
         tmp_path = None
+        if _is_html_report(target):
+            side = _version_sidecar(target)
+            tmp_path = side.with_name(f".{side.name}.{secrets.token_hex(8)}.tmp")
+            _assert_realpath_inside(tmp_path, root)
+            _write_exclusive(tmp_path, str(current + 1).encode("ascii"))
+            os.replace(tmp_path, side)
+            tmp_path = None
     finally:
         pending = sys.exc_info()[1]
         errors: list[BaseException] = []
