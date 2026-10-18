@@ -183,21 +183,38 @@ test.describe("orchestrator chat", () => {
   });
 
   test("approve 404 и 409 оставляют карточку", async ({ page }) => {
-    const cases = [
-      ["approve404", "неизвестный change_id"],
-      ["approve409", "change_id не текущий"],
-    ] as const;
-    for (const [scenario, detail] of cases) {
-      await openWithToken(page, scenario, scenario);
-      await page.getByTestId("orch-composer").fill("запусти ноду");
-      await page.getByTestId("orch-send").click();
-      await expect(page.getByTestId("orch-approval")).toBeVisible();
-      await page.getByTestId("orch-approve").click();
-      await expect(page.getByTestId("orch-approval-error")).toContainText(detail);
-      await expect(page.getByTestId("orch-approval")).toBeVisible();
-      await expect(page.getByTestId("orch-approve")).toBeEnabled();
-      await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
-    }
+    // 404: change_id неизвестен — блокировки нет, карточка остаётся, повтор разрешён.
+    await openWithToken(page, "approve404", "approve404");
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("неизвестный change_id");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+
+    // 409: решение уже зафиксировано на сервере — карточка остаётся с ошибкой,
+    // кнопки заблокированы, повторный клик не отправляет второй POST.
+    let approvePosts = 0;
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      if (!new URL(req.url()).pathname.endsWith("/approve")) return;
+      approvePosts += 1;
+    });
+    await openWithToken(page, "approve409", "approve409");
+    await page.getByTestId("orch-composer").fill("запусти ноду");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("change_id не текущий");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    expect(approvePosts).toBe(1);
+    await page.getByTestId("orch-approve").click({ force: true });
+    await page.waitForTimeout(250);
+    expect(approvePosts).toBe(1);
   });
 
   test("approve 500: карточка остаётся и ошибку можно повторить", async ({ page }) => {
