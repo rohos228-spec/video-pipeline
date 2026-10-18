@@ -536,6 +536,18 @@ class ApiEmergencyBlockedError(RuntimeError):
     pass
 
 
+def reraise_if_spend_blocked(exc: BaseException) -> None:
+    """Kill switch и бюджет не глотаются ретраями и не превращаются в fallback."""
+    if isinstance(exc, ApiEmergencyBlockedError):
+        raise exc
+    try:
+        from app.services.style_agent.budget import BudgetExceeded
+    except Exception:  # noqa: BLE001
+        return
+    if isinstance(exc, BudgetExceeded):
+        raise exc
+
+
 _KILLSWITCH_CACHE: dict[str, Any] = {
     "is_blocked": False,
     "updated_by": "",

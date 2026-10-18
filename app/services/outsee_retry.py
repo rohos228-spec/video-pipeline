@@ -420,7 +420,13 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite."""
+    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite.
+
+    Неопределённый submit уже мог быть оплачен. Шаг, который ретраит по
+    этому предикату, не должен слать второй POST.
+    """
+    if _outsee_submit_uncertain(err):
+        return False
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
@@ -957,6 +963,12 @@ class KieSlugWithoutOutseeBotError(OutseeImageError):
         )
 
 
+def _outsee_submit_uncertain(err: BaseException) -> bool:
+    """POST генерации мог быть оплачен, повторять его нельзя."""
+    ctx = getattr(err, "context", None)
+    return isinstance(ctx, dict) and bool(ctx.get("submit_uncertain"))
+
+
 async def generate_image_with_retries(
     outsee: OutseeBot | None,
     gpt: Any | None,
@@ -1220,6 +1232,14 @@ async def generate_image_with_retries(
                 if is_no_resubmit(e):
                     raise
                 last_err = e
+                if _outsee_submit_uncertain(e):
+                    logger.warning(
+                        "outsee.generate_image [{}]: исход отправки неизвестен, "
+                        "повторный POST не делаю: {}",
+                        round_label,
+                        e.reason,
+                    )
+                    raise
                 if _is_concurrency_limit_error(e):
                     concurrency_waits += 1
                     if concurrency_waits > _CONCURRENCY_MAX_WAITS:
@@ -1359,17 +1379,23 @@ async def generate_image_with_retries(
         str(raw_slug) if raw_slug else None
     )
     if fb and outsee_error_is_moderation(last_err):
-        logger.warning(
-            "outsee.generate_image: {} CONTENT_POLICY → fallback {}",
-            raw_slug,
-            fb,
+        from app.services.model_substitution import note_model_substitution
+
+        pid = kwargs.get("project_id")
+        line = note_model_substitution(
+            original_model=str(raw_slug or "gpt-image-2"),
+            substituted_model=str(fb),
+            reason="CONTENT_POLICY: модерация gpt-image-2, картинка уходит на nano-banana-2",
+            node="image",
+            run=pid if isinstance(pid, int) else None,
+            project_id=pid if isinstance(pid, int) else None,
         )
         fb_kwargs = dict(kwargs)
         fb_kwargs["model_slug"] = fb
         fb_kwargs.pop("quality", None)
         fb_kwargs["_image_model_fallback_done"] = True
         fb_kwargs["idempotent"] = idem_flag
-        return await generate_image_with_retries(
+        result = await generate_image_with_retries(
             outsee,
             gpt,
             prompt=current_prompt,
@@ -1378,6 +1404,8 @@ async def generate_image_with_retries(
             gpt_rewrite=False,
             **fb_kwargs,
         )
+        result.model_substitution = line
+        return result
     raise last_err
 
 
@@ -1471,17 +1499,14 @@ async def generate_video_with_retries(
     concurrency_waits = 0
     transient_streak = 0
     fallback_started = False
-    phase = "fallback" if primary_is_kling else "primary"
-    if primary_is_kling:
-        fallback_started = True
-        logger.info("outsee_retry: video primary Kling 2.6 via kie (KIE_API_KEY)")
-    else:
-        logger.info(
-            "outsee_retry: video primary model={} via {} (ladder fallback={})",
-            primary_slug,
-            primary_backend,
-            KIE_KLING_FALLBACK_SLUG,
-        )
+    substitution_line: str | None = None
+    phase = "primary"
+    logger.info(
+        "outsee_retry: video primary model={} via {} (ladder fallback={})",
+        primary_slug,
+        primary_backend,
+        KIE_KLING_FALLBACK_SLUG,
+    )
 
     async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
         prefix = (
@@ -1700,6 +1725,16 @@ async def generate_video_with_retries(
                         model_fallback=KIE_KLING_FALLBACK_SLUG,
                     ),
                 )
+                from app.services.model_substitution import note_model_substitution
+
+                substitution_line = note_model_substitution(
+                    original_model=str(primary_slug or ""),
+                    substituted_model=str(KIE_KLING_FALLBACK_SLUG),
+                    reason="видео-лестница: primary исчерпан, клип уходит на Kling",
+                    node="video",
+                    run=project_id,
+                    project_id=project_id,
+                )
                 fallback_started = True
                 if not local_sanitized:
                     current_prompt = _apply_local_prompt_sanitize(
@@ -1750,8 +1785,10 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling,
-                                   kie=use_kling or primary_backend == "kie")
+            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            if use_kling and substitution_line:
+                result.model_substitution = substitution_line
+            return result
         except StepCancelledError:
             raise
         except OutseeDownloadError as e:
@@ -1784,6 +1821,12 @@ async def generate_video_with_retries(
             classified = classify_video_error(e)
         except OutseeImageError as e:
             last_err = e
+            if _outsee_submit_uncertain(e):
+                logger.warning(
+                    "outsee video: исход отправки неизвестен, повторный POST не делаю: {}",
+                    e.reason,
+                )
+                raise
             classified = classify_video_error(e)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, VideoLadderExhaustedError):
@@ -1930,6 +1973,7 @@ async def generate_video_with_retries(
             "primary_model": primary_slug,
             "fallback_model": KIE_KLING_FALLBACK_SLUG,
             "last_error": detail[:300],
+            "model_substitution": substitution_line,
         },
     )
 

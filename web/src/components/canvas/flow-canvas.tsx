@@ -51,7 +51,12 @@ import type {
 } from "@/lib/types";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
-import { formatNodeKeyLabel, formatRunStatus, formatStepCode } from "@/lib/format-labels";
+import {
+  formatNodeKeyLabel,
+  formatRunOverlayLabel,
+  formatStepCode,
+  nodeRunsFromPayload,
+} from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
 import {
   inferNodeStatusFromProject,
@@ -337,8 +342,9 @@ export function FlowCanvas({
   // (не рисовать «прервано», пока Project.generating_* того же шага).
   useEffect(() => {
     if (nodes.length === 0) return;
-    // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
-    if (!run.data) return;
+    // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate)
+    // и при пустом ответе ([] / объект без status): иначе node_runs.map падает.
+    if (!formatRunOverlayLabel(run.data)) return;
     const projectStatus = project.data?.status;
     const meta = (project.data?.meta ?? {}) as Record<string, unknown>;
     const activeExcelGptKey =
@@ -348,7 +354,9 @@ export function FlowCanvas({
     const completedExcelGptKeys = Array.isArray(meta.excel_gpt_completed_keys)
       ? meta.excel_gpt_completed_keys.map(String)
       : [];
-    const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
+    const nodeRunByKey = new Map(
+      nodeRunsFromPayload<NodeRunDTO>(run.data).map((nr) => [nr.node_key, nr]),
+    );
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
@@ -1548,7 +1556,7 @@ function RunOverlay({
       <div className="flex items-center gap-2 text-xs">
           <span className="text-muted-foreground">Run:</span>
           <span className="font-medium">
-            {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
+            {formatRunOverlayLabel(run) ?? "не запущен"}
           </span>
         </div>
       {project ? (
@@ -1639,10 +1647,8 @@ function workflowToReactFlowNodes(
   run: WorkflowRunDetail | null
 ): Node<PipelineNodeData>[] {
   const nodeRunByKey = new Map<string, NodeRunDTO>();
-  if (run) {
-    for (const nr of run.node_runs) {
-      nodeRunByKey.set(nr.node_key, nr);
-    }
+  for (const nr of nodeRunsFromPayload<NodeRunDTO>(run)) {
+    if (nr && typeof nr.node_key === "string") nodeRunByKey.set(nr.node_key, nr);
   }
   const migrated = migrateWorkflowNodes(wf.nodes);
   return migrated.map((n) => {

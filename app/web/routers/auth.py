@@ -5,6 +5,8 @@ Enforcement stays OFF unless WEB_AUTH_USER+WEB_AUTH_PASSWORD are set (settings.w
 from __future__ import annotations
 
 import asyncio
+import hmac
+import os
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -28,8 +30,30 @@ def _pw_ok(pw: str) -> bool:
     return len(pw) >= 8 and re.search(r"[A-Za-zА-Яа-я]", pw) and re.search(r"\d", pw)
 
 
-def _origin(req: Request) -> str:
-    return (req.headers.get("origin") or str(req.base_url)).rstrip("/")
+def legacy_studio_password_ok(username: str, password: str) -> bool:
+    """Сравнение логина и пароля студии за постоянное время."""
+    if not settings.web_auth_enabled:
+        return False
+    try:
+        user_ok = hmac.compare_digest(
+            username.encode("utf-8"),
+            settings.web_auth_user.strip().encode("utf-8"),
+        )
+        pass_ok = hmac.compare_digest(
+            password.encode("utf-8"),
+            settings.web_auth_password.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(user_ok and pass_ok)
+
+
+def reset_link_base() -> str:
+    """База ссылки сброса только из настроек, не из заголовка Origin."""
+    public = (settings.fleet_public_url or "").strip().rstrip("/")
+    if public:
+        return public
+    return settings.fleet_local_web_url
 
 
 class LoginBody(BaseModel):
@@ -65,7 +89,10 @@ class DeleteBody(BaseModel):
 def _send_verify(req: Request, u) -> dict:
     code = ua.issue_token(u["id"], "verify")
     sent = ua.send_mail(u["email"], "VIA — код подтверждения", f"Ваш код подтверждения VIA: {code} (действует 24 ч)")
-    return {"mail_sent": sent, "dev_note": None if sent else "Почта не настроена — код записан в лог сервера", "dev_code": None if sent else code}
+    out = {"mail_sent": sent}
+    if os.environ.get("VP_AUTH_DEV_MAIL") == "1":
+        out["dev_code"] = code
+    return out
 
 
 def _me(req: Request):
@@ -84,6 +111,8 @@ async def auth_status(request: Request) -> dict:
 
 @router.post("/register")
 async def register(body: RegisterBody, request: Request) -> dict:
+    if settings.web_auth_enabled:
+        raise HTTPException(403, "Регистрация закрыта, пока включён вход студии")
     email, username = body.email.strip().lower(), body.username.strip()
     if not _EMAIL.match(email):
         raise HTTPException(422, "Некорректный email")
@@ -130,8 +159,9 @@ async def login(body: LoginBody, request: Request, response: Response) -> dict:
         auth_sessions.login_throttle.record_success(keys)
         token = ua.new_session(u["id"], request.headers.get("user-agent", ""))
         _session_cookie(response, request, token)
-        return {"ok": True, "token": token, "auth_required": True, "user": ua.public(u)}
-    if auth_sessions.verify_credentials(body.username, body.password):
+        return {"ok": True, "token": token, "auth_required": settings.web_auth_enabled, "user": ua.public(u)}
+    # legacy single env user from main
+    if legacy_studio_password_ok(body.username, body.password):
         auth_sessions.login_throttle.record_success(keys)
         token = issue_session_token(body.username)
         _session_cookie(response, request, token)
@@ -173,13 +203,13 @@ async def verify_resend(request: Request) -> dict:
 @router.post("/forgot")
 async def forgot(body: EmailBody, request: Request) -> dict:
     u = ua.get_by_login(body.email.strip())
-    out = {"ok": True, "mail_sent": False, "dev_note": None, "dev_link": None}
+    out = {"ok": True, "mail_sent": False, "dev_note": None}
     if u:  # same answer whether or not the user exists
-        link = f"{_origin(request)}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
+        link = f"{reset_link_base()}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
         sent = ua.send_mail(u["email"], "VIA — восстановление пароля", f"Ссылка для смены пароля (1 ч): {link}")
         out.update(mail_sent=sent)
         if not sent:
-            out.update(dev_note="Почта не настроена — ссылка записана в лог сервера", dev_link=link)
+            out["dev_note"] = "Почта не настроена — ссылка записана в лог сервера"
     elif not ua.mail_configured():
         out["dev_note"] = "Почта не настроена — ссылка записана в лог сервера (если аккаунт существует)"
     return out

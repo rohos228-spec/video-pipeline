@@ -1083,11 +1083,15 @@ def test_rewire_script_frames_qc_shots_to_qc() -> None:
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") not in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") not in pairs
-    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_qc"] == {
-        "main": "shots_qc_ru"
-    }
+    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_qc"]["main"] == (
+        "prompts_qc_continuity_ru"
+    )
     qc = next(
         n for n in meta["canvas_graph"]["nodes"] if n["id"] == "n_excel_gpt_fw_qc"
     )
-    assert qc["data"]["label"] == "GPT: QC кадров"
+    assert qc["data"]["label"] == "GPT: QC промптов"
+    shots = next(
+        n for n in meta["canvas_graph"]["nodes"] if n["id"] == "n_excel_gpt_fw_shots"
+    )
+    assert shots["data"]["label"] == "Шоты"
     assert ng.rewire_script_frames_qc_shots_to_qc(meta) is False

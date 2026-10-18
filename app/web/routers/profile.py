@@ -10,12 +10,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.settings import settings
+from app.web.auth_sessions import require_web_user
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -24,6 +25,7 @@ _PROFILE = _DATA / "profile.json"
 _AVATAR_DIR = _DATA / "profile"
 _REPO = Path(__file__).resolve().parents[3]
 _ENV = _REPO / ".env"
+_BACKUP_DIR = _DATA / "profile-env-backups"
 
 _DEFAULT = {
     "name": "Admin",
@@ -241,12 +243,30 @@ async def get_stats() -> dict[str, Any]:
 
 # ---------- ключи ----------
 def _mask(v: str) -> str:
-    v = v or ""
+    """Маска без кусков ключа: ни начала, ни хвоста."""
     if not v:
         return ""
-    if len(v) <= 8:
-        return "•" * len(v)
-    return v[:3] + "•" * 8 + v[-4:]
+    return "•" * 8
+
+
+def _caller_is_studio_admin(token: str | None) -> bool:
+    """Legacy-токен студии — админ. Сессия users.db — только role=admin."""
+    from app.web.auth_sessions import _TOKENS
+
+    if token and token in _TOKENS:
+        return True
+    if not token:
+        return False
+    try:
+        from app.web import user_accounts
+
+        user = user_accounts.user_for_session(token)
+    except Exception:
+        return False
+    if user is None:
+        return False
+    role = user.get("role") if isinstance(user, dict) else user["role"]
+    return role == "admin"
 
 
 def _env_value(env: str) -> str:
@@ -258,7 +278,8 @@ def _env_value(env: str) -> str:
 
 
 @router.get("/keys")
-async def get_keys() -> list[dict[str, Any]]:
+async def get_keys(request: Request) -> list[dict[str, Any]]:
+    await require_web_user(request)
     out = []
     for kid, label, env in _KEYS:
         val = _env_value(env)
@@ -270,8 +291,49 @@ class KeyUpdate(BaseModel):
     value: str
 
 
+def _origin_host(request: Request) -> str:
+    origin = (request.headers.get("origin") or "").strip()
+    if not origin or origin.lower() == "null":
+        return ""
+    rest = origin.split("://", 1)[-1]
+    return rest.split("/", 1)[0].split(":", 1)[0].lower()
+
+
+def _client_host(request: Request) -> str:
+    client = request.client
+    return str(getattr(client, "host", "") or "").strip().lower()
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("127.")
+
+
+def _origin_allowed_for_keys(request: Request) -> bool:
+    """Чужой Origin не даёт права писать ключи.
+
+    Без Origin пускаем только loopback-клиента. Удалённый клиент без Origin — 403.
+    """
+    host = _origin_host(request)
+    if not host:
+        return _is_loopback_host(_client_host(request))
+    if _is_loopback_host(host):
+        return True
+    allowed: set[str] = set()
+    for raw in (settings.fleet_public_url, settings.fleet_local_web_url):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        allowed.add(text.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower())
+    return host in allowed
+
+
 @router.put("/keys/{key_id}")
-async def put_key(key_id: str, body: KeyUpdate) -> dict[str, Any]:
+async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
+    token = await require_web_user(request)
+    if not _origin_allowed_for_keys(request):
+        raise HTTPException(403, "Только администратор студии")
+    if settings.web_auth_enabled and not _caller_is_studio_admin(token):
+        raise HTTPException(403, "Только администратор студии")
     match = next((k for k in _KEYS if k[0] == key_id), None)
     if match is None:
         raise HTTPException(404, "Неизвестный ключ")
@@ -281,7 +343,8 @@ async def put_key(key_id: str, body: KeyUpdate) -> dict[str, Any]:
         raise HTTPException(400, "Некорректное значение")
     lines: list[str] = []
     if _ENV.is_file():
-        shutil.copy2(_ENV, _ENV.with_name(f".env.bak-profile-{datetime.now():%Y%m%d-%H%M%S}"))
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_ENV, _BACKUP_DIR / f"env-{datetime.now():%Y%m%d-%H%M%S}")
         lines = _ENV.read_text(encoding="utf-8").splitlines()
     done = False
     for i, line in enumerate(lines):

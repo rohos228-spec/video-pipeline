@@ -88,22 +88,23 @@ SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 # пережидаем, а не долбим); недостающие ячейки — 2 добора.
 SHOTS_UNITS_PER_BATCH = 3
 SHOTS_PARALLEL = 16  # 2026-10-15: все пачки сразу (38 ячеек / 3 = 13)
-SHOTS_STAGGER_SEC = 3.0
+SHOTS_STAGGER_SEC = 0.0
 SHOTS_PACK_TIMEOUT_S = 900.0
 SHOTS_NET_RETRIES = 3
 SHOTS_MISSING_ROUNDS = 2
 # Пауза перед повтором пачки после сетевой/LLM ошибки, по номеру попытки.
 SHOTS_NET_RETRY_BACKOFF_S = (20.0, 60.0, 120.0)
-# Площадка: весь набор тремя пачками, старт через 30 с.
+# Площадка: весь набор тремя пачками, без сдвига старта.
 ACTION_TARGET_BATCHES = 3
-ACTION_STAGGER_SEC = 4.0  # 2026-10-15: было 30 с, пользователь: стаггер 2–5 с
+ACTION_STAGGER_SEC = 0.0
 FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 8
 FW_FRAMES_PARALLEL_BATCHES = 8
-VO_STAGGER_SEC = 5.0
+# Как в main: явный stagger_sec камеры/script_frames_qc. Сам старт пачек — 0.
+VO_STAGGER_SEC = 1.0
 # Жёсткий потолок отправки: и первая волна, и разрезанные половины.
 PACK_IN_FLIGHT_MAX = 8
-PACK_SEND_GAP_S = 5.0
+PACK_SEND_GAP_S = 0.0
 SHOT_VO_MIN_CHARS = SHOT_VO_MIN
 SHOT_VO_MAX_CHARS = SHOT_VO_MAX
 # Жирная ячейка кадров: длинная цепь действия → соло-пачка (не схлопывать в 1–5).
@@ -152,9 +153,11 @@ class _PackSendGate:
     """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
 
     def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
-        cap = PACK_IN_FLIGHT_MAX
+        from app.services.llm_pack_limit import llm_pack_limit
+
+        cap = llm_pack_limit()
         if in_flight is not None and int(in_flight) > 0:
-            cap = max(1, min(PACK_IN_FLIGHT_MAX, int(in_flight)))
+            cap = max(1, min(cap, int(in_flight)))
         self.sem = asyncio.Semaphore(cap)
         self.lock = asyncio.Lock()
         self.next_at = 0.0
@@ -1922,7 +1925,14 @@ _GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
-    _GATE_CHARACTERS.set(list(cards or []))
+    from app.services.db_v2 import entity_is_archived
+
+    live = [
+        card
+        for card in (cards or [])
+        if isinstance(card, dict) and not entity_is_archived(card)
+    ]
+    _GATE_CHARACTERS.set(live)
 
 
 _REPLY_SPLIT = re.compile(r"\s+—\s+(?=[^:.—«»]{1,40}:)")
@@ -2260,32 +2270,51 @@ def coalesce_cell_shot_ops(
                 for i, s in enumerate(slot["shots"])
                 if str(s.get("id") or "")
             }
+            incoming_ids = {
+                str(shot.get("id") or "")
+                for shot in incoming
+                if str(shot.get("id") or "")
+            }
+            unknown: list[str] = []
             for shot in incoming:
                 sid = str(shot.get("id") or "")
                 if sid and sid in index:
                     slot["shots"][index[sid]] = shot
-            # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
-            if incoming:
-                from app.services.scene_shot_grammar import is_cutaway_shot
-
-                existing_empty = sum(
-                    1
-                    for s in slot["shots"]
-                    if isinstance(s, dict)
-                    and not str(s.get("закадр") or "").strip()
-                    and not is_cutaway_shot(s)
+                elif sid:
+                    unknown.append(sid)
+                    extra = dict(shot)
+                    extra["карантин"] = True
+                    extra["пометка"] = (
+                        "QC-кадр не было в ячейке — добавлен в хвост, список не подменён"
+                    )
+                    slot["shots"].append(extra)
+                    index[sid] = len(slot["shots"]) - 1
+            if unknown:
+                logger.warning(
+                    "WARN coalesce_cell_shot_ops: QC-кадры {} нет в ячейке — "
+                    "добавлены в хвост с пометкой, список не подменён",
+                    ", ".join(unknown),
                 )
-                if existing_empty and len(incoming) < len(slot["shots"]):
-                    # REPLACE: QC-список — источник истины
-                    slot["shots"] = [dict(s) for s in incoming]
-                else:
-                    slot["shots"] = [
-                        s
-                        for s in slot["shots"]
-                        if not isinstance(s, dict)
-                        or str(s.get("закадр") or "").strip()
-                        or is_cutaway_shot(s)
-                    ]
+            # QC правит по id. Пустой закадр — норма, свежий результат QC
+            # из-за него не карантиним. Кадры, которые REPLACE выкинул бы
+            # (их нет в более коротком списке), остаются с явной причиной.
+            if incoming:
+                original_count = len(slot["shots"]) - len(unknown)
+                shorter = len(incoming) < original_count
+                for shot in slot["shots"]:
+                    if not isinstance(shot, dict) or shot.get("карантин"):
+                        continue
+                    sid = str(shot.get("id") or "")
+                    if not (shorter and sid not in incoming_ids):
+                        continue
+                    reason = "QC-список короче — кадр сохранён, список не подменён"
+                    shot["карантин"] = True
+                    shot["пометка"] = reason
+                    logger.warning(
+                        "WARN coalesce_cell_shot_ops: кадр {} помечен, не удалён: {}",
+                        sid or "?",
+                        reason,
+                    )
         else:
             slot["shots"].extend(incoming)
     out: list[dict[str, Any]] = []
@@ -2834,6 +2863,32 @@ def _scene_plan_entries(
     return out
 
 
+def apply_only_cells_hook(
+    project_dir: Path,
+    project_id: int,
+    node_key: str,
+    all_frames: list[dict[str, Any]],
+    pending: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Точечный список ячеек: только VP_ONLY_CELLS=1 и файл этого проекта."""
+    import os
+
+    if os.environ.get("VP_ONLY_CELLS") != "1":
+        return pending
+    path = Path(project_dir) / f"_only_cells_{project_id}_{node_key}.json"
+    if not path.is_file():
+        return pending
+    want = {str(item) for item in json.loads(path.read_text(encoding="utf-8"))}
+    path.replace(path.with_name(path.name + ".used"))
+    logger.warning(
+        "[#{}] apply_ops only_cells node={}: {} cells",
+        project_id,
+        node_key,
+        len(want),
+    )
+    return [f for f in all_frames if str(f.get("uuid") or "") in want]
+
+
 async def run_apply_ops_batched(
     *,
     project_dir: Path,
@@ -2883,15 +2938,10 @@ async def run_apply_ops_batched(
         skip_if_field=skip_if_field,
         force_full=force_full,
     )
-    # 2026-10-11: one-shot targeted rerun of specific cells (data/_only_cells_<node>.json = [uuid,...]).
     try:
-        import json as _j, os as _os
-        _oc = _os.path.join("data", f"_only_cells_{node_key}.json")
-        if _os.path.exists(_oc):
-            _want = set(_j.load(open(_oc, encoding="utf-8")))
-            _os.replace(_oc, _oc + ".used")
-            pending = [f for f in all_frames if str(f.get("uuid") or "") in _want]
-            logger.warning("[#{}] apply_ops only_cells node={}: {} cells", project_id, node_key, len(pending))
+        pending = apply_only_cells_hook(
+            project_dir, project_id, node_key, all_frames, pending
+        )
     except Exception as _e:  # noqa: BLE001
         logger.warning("only_cells filter failed: {}", _e)
     if not pending:
@@ -2924,11 +2974,11 @@ async def run_apply_ops_batched(
         packs = split_frames(pending, size)
     else:
         packs = [pending]
-    # В полёте не больше 8. Между отправками несколько секунд.
+    # В полёте не больше 8. Старт пачек без сдвига.
     # Разрезанные половины идут через тот же семафор.
     asked = int(parallel_max) if parallel_max and int(parallel_max) > 0 else PACK_IN_FLIGHT_MAX
     wave_n = min(PACK_IN_FLIGHT_MAX, max(1, asked), max(1, len(packs)))
-    # Боевой вызов приходит с 5 с. Тест может передать свою короткую паузу.
+    # По умолчанию gap 0. Тест может передать свою короткую паузу.
     if stagger_sec is None:
         delay_s = PACK_SEND_GAP_S
     else:
@@ -3234,7 +3284,7 @@ async def run_apply_ops_batched(
                 except Exception as e:  # noqa: BLE001
                     return f"{type(e).__name__}: {e}"
 
-            res = await asyncio.gather(*[_stag(k * 5.0, _cell(fr)) for k, fr in enumerate(todo)])
+            res = await asyncio.gather(*[_cell(fr) for fr in todo])
             nxt = []
             for fr, r in zip(todo, res):
                 if r is not None:
@@ -3359,7 +3409,7 @@ async def run_apply_ops_batched(
                 len(chunk),
                 len(parts),
             )
-            await asyncio.gather(*[_stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(parts)])  # 2026-10-11 parallel
+            await asyncio.gather(*[_run_adaptive(part, nxt, under_retries=2) for part in parts])
             return
         if not missing:
             return
@@ -3438,12 +3488,7 @@ async def run_apply_ops_batched(
             nxt,
         )
         _halves = list(split_in_half(missing))
-        await asyncio.gather(*[_run_pack(k * 5.0, part) if False else _stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(_halves)])
-
-    async def _stag(delay: float, coro: Any) -> Any:
-        if delay > 0:
-            await asyncio.sleep(delay)
-        return await coro
+        await asyncio.gather(*[_run_adaptive(part, nxt, under_retries=2) for part in _halves])
 
     async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
         if delay > 0:

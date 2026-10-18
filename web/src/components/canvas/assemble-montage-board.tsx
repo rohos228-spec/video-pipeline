@@ -43,6 +43,15 @@ import {
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
+  montageOpSelectKey,
+  montageOpsToApply,
+  pendingApplyFrameNumbers,
+  queueAfterApply,
+  queueAfterCoverageApply,
+  reconcileIdleQueue,
+  serverQueueReplacesLocal,
+} from "@/lib/montage-apply-queue";
+import {
   readMontageAiChangeText,
   writeMontageAiChangeText,
 } from "@/lib/montage-ai-change-memory";
@@ -249,7 +258,7 @@ function toastQueued(text: string): void {
 }
 
 function opSelectKey(op: MontagePendingOp): string {
-  return `${op.type}:${op.frame_number}:${op.shot}`;
+  return montageOpSelectKey(op);
 }
 
 function describePendingOp(op: MontagePendingOp): string {
@@ -1086,7 +1095,7 @@ function VoiceoverCell({
       <button
         type="button"
         className="shrink-0 rounded-md p-1 text-white/30 opacity-0 hover:bg-rose-500/15 hover:text-rose-200 group-hover/vo:opacity-100"
-        title="Удалить кадр"
+        title="Скрыть кадр"
         disabled={busy}
         onClick={onDelete}
       >
@@ -2077,6 +2086,11 @@ export function AssembleMontageBoard({
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
+  const applyRunningRef = useRef(false);
+  const setApplyRunningNow = (value: boolean) => {
+    applyRunningRef.current = value;
+    setApplyRunning(value);
+  };
   const [recoverRunning, setRecoverRunning] = useState(false);
   const [swapPick, setSwapPick] = useState<SwapSlotPick | null>(null);
   const [swapBusy, setSwapBusy] = useState(false);
@@ -2094,6 +2108,9 @@ export function AssembleMontageBoard({
     null,
   );
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
+  const sentApplyKeysRef = useRef<string[]>([]);
+  /** pending_ops чужого или своего job: done/idle сверяет очередь без submittedApplyRef. */
+  const jobAppliedOpsRef = useRef<MontagePendingOp[]>([]);
   const montageActive = montageRunning || montageBusy;
   pendingOpsRef.current = pendingOps;
   /** Пользователь набрал очередь локально — не затирать пустым meta с сервера. */
@@ -2104,8 +2121,6 @@ export function AssembleMontageBoard({
   const lastApplyToastKeyRef = useRef("");
   /** Этот прогон apply наш: принимаем done/idle даже если running не успел прийти. */
   const applySeenRunningRef = useRef(false);
-  const applyRunningRef = useRef(false);
-  applyRunningRef.current = applyRunning;
   const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
@@ -2145,7 +2160,7 @@ export function AssembleMontageBoard({
     setHighlights([]);
     setFailedHighlights([]);
     setStaleVideos([]);
-    setApplyRunning(false);
+    setApplyRunningNow(false);
     setApplyProgress(null);
     setMontageRunning(false);
     setRecoverRunning(false);
@@ -2309,7 +2324,7 @@ export function AssembleMontageBoard({
     }
     if (
       pendingOpsRef.current.length > 0 &&
-      restored.length < pendingOpsRef.current.length
+      !serverQueueReplacesLocal(pendingOpsRef.current, restored, opSelectKey)
     ) {
       return;
     }
@@ -2343,7 +2358,7 @@ export function AssembleMontageBoard({
       if (projectId == null) return;
       // Во время apply очередь пишет сам apply (_finish_op) — клиентский
       // debounce с [] или устаревшим списком иначе затирает remaining.
-      if (applyRunning) return;
+      if (applyRunningRef.current) return;
       if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
       const save = () => {
         void api
@@ -2362,7 +2377,7 @@ export function AssembleMontageBoard({
       }
       queueSaveTimerRef.current = setTimeout(save, 400);
     },
-    [projectId, trims, applyRunning],
+    [projectId, trims],
   );
 
   useEffect(() => {
@@ -2486,12 +2501,7 @@ export function AssembleMontageBoard({
         }
         localQueueDirtyRef.current = true;
         setPendingOps((prev) => {
-          let next = prev.filter(
-            (x) =>
-              !(
-                numbers.includes(x.frame_number) && changedTypes.has(String(x.type))
-              ) && !String(x.type).startsWith("coverage_"),
-          );
+          let next = queueAfterCoverageApply(prev, numbers, changedTypes);
           if (needsImage) {
             for (const frameNumber of numbers) {
               next = next.filter(
@@ -2619,34 +2629,28 @@ export function AssembleMontageBoard({
   const applyMutation = useMutation({
     mutationFn: (opts?: { frameNumbers?: number[] }) => {
       const all = pendingOpsRef.current;
-      const images = all.filter((op) => String(op.type).startsWith("image_"));
-      const rest = all.filter(
-        (op) =>
-          !String(op.type).startsWith("image_") &&
-          !String(op.type).startsWith("coverage_"),
-      );
+      const ops = montageOpsToApply(all, opts?.frameNumbers);
+      sentApplyKeysRef.current = ops.map(opSelectKey);
       const wanted = opts?.frameNumbers?.length ? new Set(opts.frameNumbers) : null;
-      const ops = wanted ? images.filter((op) => wanted.has(op.frame_number)) : images;
+      const frameNs = [...new Set(ops.map((op) => op.frame_number))];
       if (ops.length > 0) {
-        const frameNs = [...new Set(ops.map((op) => op.frame_number))];
         toast.message(
           wanted
-            ? `Картинка #${[...wanted].join(", #")}…`
-            : `Картинки: ${frameNs.length} ${framesWord(frameNs.length)}… (VIA Render)`,
+            ? `Кадр #${[...wanted].join(", #")}…`
+            : `Правки: ${frameNs.length} ${framesWord(frameNs.length)}… (VIA Render)`,
         );
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
-        pending_ops: [...ops, ...rest],
-        ...(ops.length ? { frame_numbers: [...new Set(ops.map((op) => op.frame_number))] } : {}),
+        pending_ops: ops,
+        ...(frameNs.length ? { frame_numbers: frameNs } : {}),
       });
     },
-    onSuccess: (res, opts) => {
-      const appliedFrames = opts?.frameNumbers;
-      const queued = appliedFrames?.length
-        ? pendingOpsRef.current.filter((op) => appliedFrames.includes(op.frame_number))
-            .length
-        : pendingOpsRef.current.length;
+    onSuccess: (res) => {
+      const sent = new Set(sentApplyKeysRef.current);
+      const queued = sent.size;
+      const keepUnsent = (list: MontagePendingOp[]) =>
+        queueAfterApply(list, sent, opSelectKey);
       if (res.started) {
         submittedApplyRef.current = true;
         trimsDirtyRef.current = false;
@@ -2654,27 +2658,18 @@ export function AssembleMontageBoard({
           clearTimeout(queueSaveTimerRef.current);
           queueSaveTimerRef.current = null;
         }
-        if (appliedFrames?.length) {
-          const keep = pendingOpsRef.current.filter(
-            (op) => !appliedFrames.includes(op.frame_number),
-          );
-          localQueueDirtyRef.current = keep.length > 0;
-          pendingOpsRef.current = keep;
-          setPendingOps(keep);
-          setSelectedOpKeys((prev) => {
-            const live = new Set(keep.map(opSelectKey));
-            return new Set([...prev].filter((k) => live.has(k)));
-          });
-        } else {
-          localQueueDirtyRef.current = false;
-          setPendingOps([]);
-          pendingOpsRef.current = [];
-          setSelectedOpKeys(new Set());
-        }
+        const keep = keepUnsent(pendingOpsRef.current);
+        localQueueDirtyRef.current = keep.length > 0;
+        pendingOpsRef.current = keep;
+        setPendingOps(keep);
+        setSelectedOpKeys((prev) => {
+          const live = new Set(keep.map(opSelectKey));
+          return new Set([...prev].filter((k) => live.has(k)));
+        });
         setFailedHighlights([]);
         applySeenRunningRef.current = true;
         lastPatchedPathRef.current = "";
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
@@ -2683,16 +2678,21 @@ export function AssembleMontageBoard({
       if (res.already_running) {
         // Чужой/текущий job — НЕ чистим локальную очередь пользователя.
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
         toast.message("Генерация уже выполняется");
         return;
       }
       submittedApplyRef.current = false;
-      localQueueDirtyRef.current = false;
       trimsDirtyRef.current = false;
-      setPendingOps([]);
-      pendingOpsRef.current = [];
+      const keep = keepUnsent(pendingOpsRef.current);
+      localQueueDirtyRef.current = keep.length > 0;
+      pendingOpsRef.current = keep;
+      setPendingOps(keep);
+      setSelectedOpKeys((prev) => {
+        const live = new Set(keep.map(opSelectKey));
+        return new Set([...prev].filter((k) => live.has(k)));
+      });
       if (res.meta) {
         setHighlights(res.meta.highlights ?? []);
         setFailedHighlights(res.meta.failed_highlights ?? []);
@@ -2702,8 +2702,11 @@ export function AssembleMontageBoard({
         }
         const restored = parsePendingOps(res.meta.pending_ops);
         if (restored.length > 0) {
-          pendingOpsRef.current = restored;
-          setPendingOps(restored);
+          const seen = new Set(keep.map(opSelectKey));
+          const extra = restored.filter((op) => !seen.has(opSelectKey(op)));
+          const next = [...keep, ...extra];
+          pendingOpsRef.current = next;
+          setPendingOps(next);
         }
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -2717,7 +2720,7 @@ export function AssembleMontageBoard({
         // Фоновый job должен вернуть started/already_running. Иначе не врём «завершено».
         toast.message(res.message || "Генерация принята — ждём статус…");
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
         queueMicrotask(restoreDocumentPointerEvents);
       }
     },
@@ -2776,7 +2779,7 @@ export function AssembleMontageBoard({
     void api.getMontageApplyStatus(projectId).then((st) => {
       if (st.job?.status === "running") {
         applySeenRunningRef.current = true;
-        setApplyRunning(true);
+        setApplyRunningNow(true);
       }
     }).catch(() => {});
     void api.getMontageRecoverOutseeStatus(projectId).then((st) => {
@@ -2796,18 +2799,10 @@ export function AssembleMontageBoard({
         localQueueDirtyRef.current && pendingOpsRef.current.length > 0;
       const localKept = keepLocal ? [...pendingOpsRef.current] : [];
       applySeenRunningRef.current = false;
-      setApplyRunning(false);
+      setApplyRunningNow(false);
       setApplyProgress(null);
       restoreDocumentPointerEvents();
-      if (submittedApplyRef.current && !keepLocal) {
-        // Очередь подтянется из meta после refetch (remaining / пусто).
-        localQueueDirtyRef.current = false;
-        setPendingOps([]);
-        pendingOpsRef.current = [];
-        submittedApplyRef.current = false;
-      } else if (submittedApplyRef.current) {
-        submittedApplyRef.current = false;
-      }
+      if (submittedApplyRef.current) submittedApplyRef.current = false;
       if (showToast) {
         if (status === "done") toast.success("Генерация завершена");
         else if (status === "error") toast.error(errText || "Генерация не удалась");
@@ -2829,19 +2824,17 @@ export function AssembleMontageBoard({
           const stale = data?.meta?.stale_videos;
           if (Array.isArray(stale)) setStaleVideos(stale.map(String));
           const restored = parsePendingOps(data?.meta?.pending_ops);
-          if (keepLocal) {
-            const seen = new Set(localKept.map(opSelectKey));
-            const merged = [
-              ...localKept,
-              ...restored.filter((op) => !seen.has(opSelectKey(op))),
-            ];
-            pendingOpsRef.current = merged;
-            setPendingOps(merged);
-            persistQueue(merged, true);
-            return;
-          }
-          pendingOpsRef.current = restored;
-          setPendingOps(restored);
+          const applied = new Set<string>([
+            ...sentApplyKeysRef.current,
+            ...jobAppliedOpsRef.current.map(opSelectKey),
+          ]);
+          const base = keepLocal ? localKept : pendingOpsRef.current;
+          const next = reconcileIdleQueue(base, restored, opSelectKey, applied);
+          const changed =
+            JSON.stringify(next) !== JSON.stringify(pendingOpsRef.current);
+          pendingOpsRef.current = next;
+          setPendingOps(next);
+          if (keepLocal || (changed && applied.size > 0)) persistQueue(next, true);
         })
         .catch(() => {
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -2926,7 +2919,7 @@ export function AssembleMontageBoard({
       }
       if (evt.payload?.stopped) {
         setMontageRunning(false);
-        setApplyRunning(false);
+        setApplyRunningNow(false);
         setRecoverRunning(false);
         setApplyProgress(null);
         applySeenRunningRef.current = false;
@@ -2958,7 +2951,7 @@ export function AssembleMontageBoard({
         const totalOps = evt.payload.total_ops as number | undefined;
         if (status === "running") {
           applySeenRunningRef.current = true;
-          setApplyRunning(true);
+          setApplyRunningNow(true);
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             startTransition(() => {
               setApplyProgress({ done: doneOps, total: totalOps });
@@ -3058,6 +3051,9 @@ export function AssembleMontageBoard({
         const doneOps = st.job?.done_ops;
         const totalOps = st.job?.total_ops;
         if (cancelled) return;
+        if (Array.isArray(st.job?.pending_ops)) {
+          jobAppliedOpsRef.current = st.job.pending_ops as MontagePendingOp[];
+        }
         if (status === "running") {
           applySeenRunningRef.current = true;
           if (typeof doneOps === "number" && typeof totalOps === "number") {
@@ -3165,7 +3161,7 @@ export function AssembleMontageBoard({
   const handleDeleteFrame = async (fr: MontageBoardFrame) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Удалить кадр #${fr.number}? Остальные кадры сцены останутся.`,
+      `Скрыть кадр #${fr.number}? Остальные кадры сцены останутся.`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -3181,7 +3177,7 @@ export function AssembleMontageBoard({
       persistQueue(next, true);
       await api.deleteMontageFrame(projectId, fr.frame_id);
       refreshBoard();
-      toast.success(`Кадр #${fr.number} удалён`);
+      toast.success(`Кадр #${fr.number} скрыт`);
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -3603,17 +3599,10 @@ export function AssembleMontageBoard({
     return n;
   }, [pendingSlotKeys, failedSlotKeys]);
 
-  const pendingFrameNumbers = useMemo(() => {
-    const nums = [
-      ...new Set(
-        pendingOps
-          .filter((op) => String(op.type).startsWith("image_"))
-          .map((op) => op.frame_number),
-      ),
-    ];
-    nums.sort((a, b) => a - b);
-    return nums;
-  }, [pendingOps]);
+  const pendingFrameNumbers = useMemo(
+    () => pendingApplyFrameNumbers(pendingOps),
+    [pendingOps],
+  );
 
   const isStaleVideo = (frameNumber: number, shot: 1 | 2) =>
     staleVideos.includes(trimKey(frameNumber, shot));
@@ -4332,9 +4321,7 @@ export function AssembleMontageBoard({
                   </button>
                 </div>
                 <ul className="max-h-64 space-y-1 overflow-y-auto">
-                  {pendingOps
-                    .filter((op) => String(op.type).startsWith("image_"))
-                    .map((op) => {
+                  {montageOpsToApply(pendingOps).map((op) => {
                     const key = opSelectKey(op);
                     const checked = selectedOpKeys.has(key);
                     return (
@@ -4575,7 +4562,7 @@ export function AssembleMontageBoard({
                                   </button>
                                   <button
                                     type="button"
-                                    title={`Удалить кадр #${fr.number}`}
+                                    title={`Скрыть кадр #${fr.number}`}
                                     disabled={frameEditBusy}
                                     onClick={() => void handleDeleteFrame(fr)}
                                     className="rounded p-0.5 text-white/30 transition hover:bg-rose-500/15 hover:text-rose-200 disabled:opacity-40"

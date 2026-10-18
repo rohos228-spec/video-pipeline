@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any
@@ -21,7 +22,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project
+from app.models import Entity, Frame, FrameEdge, FrameText, Project
+from app.orchestrator.validators.activity_flags import (
+    flag_is_false,
+    flag_is_true,
+    frame_is_active,
+)
+from app.orchestrator.validators.preservation import (
+    PreservationRejected,
+    collect_violations,
+    run_preservation_validators,
+)
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -30,8 +41,11 @@ from app.services.xlsx_v8_import import (
     ROW_TIMECODE_V8,
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
+    ROW_FRAME_ACTIVITY_V8,
     ROW_VOICEOVER_V8,
     SHEET_GENERAL_V8,
+    INACTIVE_COLUMN_MARK,
+    is_inactive_column_mark,
     _normalize_sheet_name,
     _resolve_plan_sheet,
 )
@@ -253,6 +267,9 @@ FIELD_ALIASES: dict[str, str] = {
     "set": "набор",
     "shot_set": "набор",
     "camera_subdivide": "camera_subdivide",
+    "child_prompts": "child_prompts",
+    "промты_детей": "child_prompts",
+    "промпты_детей": "child_prompts",
 }
 
 _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
@@ -322,6 +339,90 @@ class ApplyOpsError(ValueError):
 def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     key = str(raw).strip().lower().replace(" ", "_")
     return aliases.get(key)
+
+
+def _structured_container_empty(value: Any) -> bool:
+    """Пустой список или объект не считаем новой лестницей."""
+    return isinstance(value, (list, dict)) and len(value) == 0
+
+
+def _shot_row_id(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("id") or "").strip()
+
+
+def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
+    """Пометки скрытия старой строки переживают входящее обновление."""
+    marks: dict[str, Any] = {}
+    if flag_is_false(row.get("активен")):
+        marks["активен"] = row.get("активен")
+    for key in ("удалён", "удален"):
+        if flag_is_true(row.get(key), mark=key):
+            marks[key] = row[key]
+    if flag_is_true(row.get("карантин"), mark="карантин"):
+        marks["карантин"] = row["карантин"]
+    note = row.get("пометка")
+    if str(note or "").strip():
+        marks["пометка"] = note
+    return marks
+
+
+def merge_kadry_keep_missing(
+    old: Any, incoming: Any, *, restore_ids: Any = None
+) -> list[dict[str, Any]]:
+    """Короткий список не выкидывает старые шоты: их хвост с активен False.
+
+    Строка без id остаётся. Совпадающий id сливается как {**old, **new},
+    но пометки скрытия старой строки не стираются.
+    Пустой incoming не подменяет лестницу — это делает вызывающий код.
+    """
+    old_rows = (
+        [dict(row) for row in old if isinstance(row, dict)]
+        if isinstance(old, list)
+        else []
+    )
+    new_rows = (
+        [dict(row) for row in incoming if isinstance(row, dict)]
+        if isinstance(incoming, list)
+        else []
+    )
+    if not new_rows:
+        return old_rows
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[dict[str, Any]] = []
+    for row in old_rows:
+        sid = _shot_row_id(row)
+        if not sid:
+            old_without_id.append(dict(row))
+            continue
+        old_by_id.setdefault(sid, dict(row))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in new_rows:
+        sid = _shot_row_id(row)
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **row}
+            marks = _kept_hide_marks(old_by_id[sid])
+            if restore_ids and sid in restore_ids:
+                # Явный restore адресованного шота: снимаются только пометки,
+                # пришедшие в его строке. Остальные шоты не оживают.
+                marks = {k: v for k, v in marks.items() if k not in row}
+            merged.update(marks)
+            out.append(merged)
+            seen.add(sid)
+            continue
+        out.append(dict(row))
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
+            continue
+        kept = dict(row)
+        kept["активен"] = False
+        out.append(kept)
+    out.extend(dict(row) for row in old_without_id)
+    return out
 
 
 def _coerce_structured_attr(value: Any) -> Any:
@@ -701,6 +802,14 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
         or isinstance(closed.get("characters"), list)
         or isinstance(closed.get("scenes"), list)
     ):
+        # Дописанные скобки не делают обрезанный кадр целым: skip_if_field
+        # иначе пропустит дозаполнение.
+        ops = closed.get("ops")
+        if isinstance(ops, list) and any(
+            isinstance(op, dict) and str(op.get("frame_uuid") or "").strip()
+            for op in ops
+        ):
+            return None
         closed["_salvaged_partial"] = True
         return closed
     return None
@@ -786,8 +895,44 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
         raise ApplyOpsError("scenes: нужен список")
     if not scenes:
         return 0
-    normalized = [_normalize_scene_card(s) for s in scenes]
+    normalized_in = [_normalize_scene_card(s) for s in scenes]
     meta = dict(project.meta or {})
+    old = meta.get("scene_registry")
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[Any] = []
+    if isinstance(old, list):
+        for row in old:
+            if not isinstance(row, dict):
+                old_without_id.append(row)
+                continue
+            sid = str(row.get("id_scene") or row.get("id") or "").strip()
+            if not sid:
+                old_without_id.append(dict(row))
+                continue
+            old_by_id.setdefault(sid, dict(row))
+    normalized: list[Any] = []
+    seen: set[str] = set()
+    for card in normalized_in:
+        sid = str(card.get("id_scene") or "").strip()
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **card}
+            merged.update(_kept_hide_marks(old_by_id[sid]))
+            merged["id_scene"] = sid
+            normalized.append(merged)
+            seen.add(sid)
+            continue
+        normalized.append(card)
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
+            continue
+        kept = dict(row)
+        kept["id_scene"] = sid
+        kept["активен"] = False
+        normalized.append(kept)
+        seen.add(sid)
+    normalized.extend(old_without_id)
     meta["scene_registry"] = normalized
     project.meta = meta
     return len(normalized)
@@ -1100,7 +1245,8 @@ async def upsert_characters(
 ) -> int:
     """Записать/обновить сущности type=character по code (c01…).
 
-    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
+    replace=True: коды, которых нет в новом списке, помечаются archived
+    (карточка и hero_reference остаются)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1142,17 +1288,30 @@ async def upsert_characters(
             by_code[code] = en
         else:
             en.name = card["name"]
-            en.attrs = card["attrs"]
             en.type = "character"
+            old = dict(en.attrs) if isinstance(en.attrs, dict) else {}
+            merged = {**old, **card["attrs"]}
+            # Код снова в ответе Каркаса — карточка живая, реф не стираем.
+            merged.pop("archived", None)
+            merged.pop("inactive", None)
+            en.attrs = merged
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(en, "attrs")
         n += 1
     if replace and seen:
         from loguru import logger
+        from sqlalchemy.orm.attributes import flag_modified
 
         for code, en in list(by_code.items()):
             if code not in seen:
-                await session.delete(en)
+                attrs = dict(en.attrs or {})
+                attrs["archived"] = True
+                attrs["inactive"] = True
+                en.attrs = attrs
+                flag_modified(en, "attrs")
                 logger.info(
-                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    "[#{}] upsert_characters replace: помечен archived {} ({})",
                     project.id,
                     code,
                     en.name,
@@ -1173,10 +1332,14 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         SHEET_PERSONS,
     )
 
+    from app.services.db_v2 import entity_is_archived
+
     chars = [
         e
         for e in entities
-        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+        if getattr(e, "type", None) == "character"
+        and getattr(e, "code", None)
+        and not entity_is_archived(e)
     ]
     chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
     if SHEET_PERSONS in wb.sheetnames:
@@ -1259,10 +1422,16 @@ def export_project_xlsx(
             snap = backup_to_old(path)
         except Exception:  # noqa: BLE001
             snap = None
+        from loguru import logger
+
         cells = 0
         for fr in frames:
             col = fr.number + 2
-            attrs = fr.attrs or {}
+            raw_attrs = getattr(fr, "attrs", None)
+            inactive = not frame_is_active(
+                raw_attrs if isinstance(raw_attrs, dict) else {}
+            )
+            attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
             writes = {
                 ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
                 ROW_IMAGE_PROMPT_2_V8: str(attrs.get(SHOT2_PROMPT_ATTR) or ""),
@@ -1297,6 +1466,26 @@ def export_project_xlsx(
                     continue
                 ws.cell(row=row, column=col, value=str(val))
                 cells += 1
+            if inactive:
+                logger.warning(
+                    "WARN export_project_xlsx: кадр #{} неактивен — колонка {} помечена «{}», данные на месте",
+                    fr.number,
+                    col,
+                    INACTIVE_COLUMN_MARK,
+                )
+                label = ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1).value
+                if not str(label or "").strip():
+                    ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1, value="активен")
+                ws.cell(
+                    row=ROW_FRAME_ACTIVITY_V8,
+                    column=col,
+                    value=INACTIVE_COLUMN_MARK,
+                )
+                cells += 1
+            elif is_inactive_column_mark(
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value
+            ):
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value = None
         # Стереть хвост колонок после последнего кадра — иначе sync_project_xlsx
         # снова поднимет удалённые VO/таймкоды (было 182 после truncate до 20).
         max_col = int(ws.max_column or 2)
@@ -1311,6 +1500,7 @@ def export_project_xlsx(
                 ROW_DURATION_V8,
                 ROW_TIMECODE_V8,
                 ROW_PERSONS_PRIMARY,
+                ROW_FRAME_ACTIVITY_V8,
                 *(_ATTR_EXCEL_ROWS.values()),
             }
             for col in range(clear_from, max_col + 1):
@@ -1341,10 +1531,229 @@ def export_project_xlsx(
     }
 
 
-from app.services.observation import observe_apply
+_RESTORE_VERBS = {"activate", "set_active", "restore", "восстановить"}
 
 
-@observe_apply
+def _indexed_shot_id(op: dict[str, Any]) -> str:
+    """id шота по shot_index/index/индекс в fields.кадры[]."""
+
+    fields = op.get("fields")
+    кадры = fields.get("кадры") if isinstance(fields, dict) else None
+    if not isinstance(кадры, list):
+        return ""
+    for key in ("shot_index", "index", "индекс"):
+        if key not in op:
+            continue
+        try:
+            idx = int(op[key])
+        except (TypeError, ValueError):
+            return ""
+        if 0 <= idx < len(кадры) and isinstance(кадры[idx], dict):
+            return str(кадры[idx].get("id") or "")
+        return ""
+    return ""
+
+
+def _restore_shot_ids(op: Any) -> set[str]:
+    """id шота, который op явно восстанавливает (shot_id или индекс)."""
+
+    if not isinstance(op, dict):
+        return set()
+    verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+    if verb not in _RESTORE_VERBS:
+        return set()
+    explicit = "" if op.get("shot_id") in (None, "") else str(op["shot_id"])
+    indexed = _indexed_shot_id(op)
+    if explicit and indexed and explicit != indexed:
+        return set()
+    target = explicit or indexed
+    return {target} if target else set()
+
+
+def _ops_with_shot_address(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Явный restore/activate по индексу кадры[] получает shot_id для preservation.
+
+    Если заданы и shot_id, и индекс, они должны указывать на один шот.
+    Расхождение снимает shot_id, и оживление не разрешается.
+    """
+
+    prepared: list[dict[str, Any]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            prepared.append(op)
+            continue
+        verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+        if verb not in _RESTORE_VERBS:
+            prepared.append(op)
+            continue
+        explicit = "" if op.get("shot_id") in (None, "") else str(op["shot_id"])
+        indexed = _indexed_shot_id(op)
+        if explicit and indexed and explicit != indexed:
+            patched = dict(op)
+            patched.pop("shot_id", None)
+            prepared.append(patched)
+            continue
+        if explicit:
+            prepared.append(op)
+            continue
+        if not indexed:
+            prepared.append(op)
+            continue
+        patched = dict(op)
+        patched["shot_id"] = indexed
+        prepared.append(patched)
+    return prepared
+
+
+def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]]) -> None:
+    """Отказ, если правка добавила error. То, что уже было на before, не блокирует."""
+
+    try:
+        run_preservation_validators(before, after, ops, mode="reject")
+    except PreservationRejected as exc:
+        already = {
+            (item.code, item.path, item.id)
+            for item in collect_violations(before, before, None)
+            if item.severity == "error"
+        }
+        fresh = [
+            item
+            for item in exc.violations
+            if item.severity == "error" and (item.code, item.path, item.id) not in already
+        ]
+        if fresh:
+            raise ApplyOpsError(str(PreservationRejected(fresh))) from exc
+
+
+def _frame_preservation_id(frame: Any) -> str:
+    """Стабильный id кадра в снимке. Без uuid — первичный ключ, не номер."""
+
+    uid = str(getattr(frame, "uuid", "") or "").strip()
+    if uid:
+        return uid
+    pk = getattr(frame, "id", None)
+    if pk is not None:
+        return f"pk:{pk}"
+    number = getattr(frame, "number", None)
+    if number is not None:
+        return f"n{number}"
+    return ""
+
+
+def _preservation_view(
+    frames: list[Any],
+    texts: list[Any] | None = None,
+    edges: list[Any] | None = None,
+    characters: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Снимок кадров, текстов, связей и персонажей. Только чтение полей."""
+
+    scenes: list[dict[str, Any]] = []
+    for frame in frames:
+        attrs = getattr(frame, "attrs", None)
+        attrs = attrs if isinstance(attrs, dict) else {}
+        row: dict[str, Any] = {
+            "id": _frame_preservation_id(frame),
+            "номер": getattr(frame, "number", None),
+        }
+        if "кадры" in attrs:
+            row["кадры"] = attrs.get("кадры")
+        scenes.append(row)
+    return {
+        "сцены": scenes,
+        "frame_texts": [_text_row(item) for item in texts or []],
+        "frame_edges": [_edge_row(item) for item in edges or []],
+        "characters": [_character_row(item) for item in characters or []],
+    }
+
+
+def _text_row(item: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(item, "id", None),
+        "frame_id": getattr(item, "frame_id", None),
+        "kind": getattr(item, "kind", None),
+        "text": getattr(item, "text", None),
+    }
+
+
+def _edge_row(item: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(item, "id", None),
+        "from_frame_id": getattr(item, "from_frame_id", None),
+        "to_frame_id": getattr(item, "to_frame_id", None),
+        "type": getattr(item, "type", None),
+    }
+
+
+def _character_row(item: Any) -> dict[str, Any]:
+    attrs = getattr(item, "attrs", None)
+    attrs = dict(attrs) if isinstance(attrs, dict) else {}
+    code = str(getattr(item, "code", None) or "") or str(getattr(item, "id", None) or "")
+    row: dict[str, Any] = {
+        "id": code,
+        "code": str(getattr(item, "code", None) or ""),
+        "name": getattr(item, "name", None),
+        "attrs": attrs,
+    }
+    if attrs.get("archived"):
+        row["archived"] = True
+    if attrs.get("inactive"):
+        row["inactive"] = True
+    return row
+
+
+async def _project_preservation_view(session: AsyncSession, project: Project) -> dict[str, Any]:
+    pid = project.id
+    frames = list((await session.execute(select(Frame).where(Frame.project_id == pid))).scalars())
+    texts = list(
+        (await session.execute(select(FrameText).where(FrameText.project_id == pid))).scalars()
+    )
+    edges = list(
+        (await session.execute(select(FrameEdge).where(FrameEdge.project_id == pid))).scalars()
+    )
+    characters = list(
+        (
+            await session.execute(
+                select(Entity).where(Entity.project_id == pid, Entity.type == "character")
+            )
+        ).scalars()
+    )
+    return _preservation_view(frames, texts, edges, characters)
+
+
+def _write_voiceover_mirror(project: Project, text: str) -> None:
+    """Зеркало ``voiceover.txt`` для audio/music. Ошибки диска не роняют запись в БД."""
+
+    try:
+        vo_path = project.data_dir / "voiceover.txt"
+        vo_path.parent.mkdir(parents=True, exist_ok=True)
+        vo_path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+async def _ensure_sqlite_outer_transaction(session: AsyncSession) -> None:
+    """Настоящий BEGIN до SAVEPOINT, не трогая общий engine.
+
+    В ``app/db.py`` хук ``connect`` только ставит PRAGMA (строки 33–42).
+    Нет ``isolation_level=None`` и нет события ``begin``, которое шлёт BEGIN.
+    pysqlite тогда не открывает транзакцию перед SAVEPOINT, и RELEASE её
+    коммитит: ``rollback()`` вызывающего после успешного ``apply_ops`` пустой.
+    Если драйвер уже внутри транзакции, второй BEGIN не шлём.
+    """
+
+    def _ensure(sync_session: Any) -> None:
+        conn = sync_session.connection()
+        if conn.dialect.name != "sqlite":
+            return
+        dbapi = getattr(conn.connection, "driver_connection", None)
+        if dbapi is None or getattr(dbapi, "in_transaction", True):
+            return
+        conn.exec_driver_sql("BEGIN")
+
+    await session.run_sync(_ensure)
+
+
 async def apply_ops(
     session: AsyncSession,
     project: Project,
@@ -1378,254 +1787,308 @@ async def apply_ops(
         from app.services.node_write_contract import filter_ops_for_node
 
         ops = filter_ops_for_node(ops, node_kind=str(node_kind))
-    chars_n = 0
-    scenes_n = 0
-    if characters:
-        chars_n = await upsert_characters(session, project, characters)
-    if scenes:
-        scenes_n = upsert_scene_registry(project, scenes)
-    if not ops and not chars_n and not scenes_n:
-        raise ApplyOpsError("пустой ops — нечего применять")
-    for op in ops:
-        if op.get("target", "frame") not in TARGETS:
-            raise ApplyOpsError(
-                f"неизвестный target {op.get('target')!r}; разрешены: {list(TARGETS)}"
-            )
-
-    replace_ops = [op for op in ops if op.get("target") == "replace_frames"]
-    if len(replace_ops) > 1:
-        raise ApplyOpsError("replace_frames: только одна операция за раз")
-    if replace_ops and len(ops) > 1:
-        raise ApplyOpsError(
-            "replace_frames нельзя смешивать с другими ops в одном запросе"
-        )
-
-    frame_ops = [op for op in ops if op.get("target", "frame") == "frame"]
-    project_ops = [op for op in ops if op.get("target", "frame") == "project"]
-
-    if replace_ops:
-        specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
-        if not isinstance(specs, list):
-            raise ApplyOpsError("replace_frames: нужен список frames")
-        try:
-            created = await db_v2.replace_all_frames(session, project, specs)
-        except ValueError as e:
-            raise ApplyOpsError(str(e)) from None
-        exported = None
-        if export_xlsx:
-            exported = export_project_xlsx(project, created)
-        return {
-            "ok": True,
-            "updated": len(created),
-            "exported": exported,
-            "replace_frames": len(created),
-        }
-
-    by_uuid: dict[str, Frame] = {}
-    uuid_repairs: list[tuple[str, str]] = []
-    number_repairs: list[tuple[str, str]] = []
-    if frame_ops:
-        uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
-        if any(not u for u in uuids):
-            raise ApplyOpsError("для target=frame нужен frame_uuid")
-        # Все кадры проекта — иначе near-miss не к чему привязать.
-        frames = list(
-            (
-                await session.execute(
-                    select(Frame).where(Frame.project_id == project.id)
+    touches_preservation = bool(characters) or bool(scenes) or any(
+        (op.get("target") or "frame") in {"frame", "replace_frames", "project"}
+        for op in ops
+        if isinstance(op, dict)
+    )
+    preservation_before = (
+        copy.deepcopy(await _project_preservation_view(session, project))
+        if touches_preservation
+        else None
+    )
+    await _ensure_sqlite_outer_transaction(session)
+    pending_voiceover: str | None = None
+    async with session.begin_nested():
+        chars_n = 0
+        scenes_n = 0
+        if characters:
+            chars_n = await upsert_characters(session, project, characters)
+        if scenes:
+            scenes_n = upsert_scene_registry(project, scenes)
+        if not ops and not chars_n and not scenes_n:
+            raise ApplyOpsError("пустой ops — нечего применять")
+        for op in ops:
+            if op.get("target", "frame") not in TARGETS:
+                raise ApplyOpsError(
+                    f"неизвестный target {op.get('target')!r}; разрешены: {list(TARGETS)}"
                 )
-            ).scalars()
-        )
-        by_uuid = {f.uuid: f for f in frames}
-        # GPT часто пишет номер кадра ("78") вместо uuid — сначала remap по number.
-        by_number: dict[int, list[str]] = {}
-        for f in frames:
-            n = getattr(f, "number", None)
-            if n is None:
-                continue
+
+        replace_ops = [op for op in ops if op.get("target") == "replace_frames"]
+        if len(replace_ops) > 1:
+            raise ApplyOpsError("replace_frames: только одна операция за раз")
+        if replace_ops and len(ops) > 1:
+            raise ApplyOpsError(
+                "replace_frames нельзя смешивать с другими ops в одном запросе"
+            )
+
+        frame_ops = [op for op in ops if op.get("target", "frame") == "frame"]
+        project_ops = [op for op in ops if op.get("target", "frame") == "project"]
+
+        if replace_ops:
+            specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
+            if not isinstance(specs, list):
+                raise ApplyOpsError("replace_frames: нужен список frames")
+            if preservation_before is None:
+                preservation_before = copy.deepcopy(await _project_preservation_view(session, project))
             try:
-                ni = int(n)
-            except (TypeError, ValueError):
-                continue
-            by_number.setdefault(ni, []).append(str(f.uuid))
-        number_to_uuid = {
-            n: ids[0] for n, ids in by_number.items() if len(ids) == 1
-        }
-        number_repairs = remap_frame_number_uuids(frame_ops, number_to_uuid)
-        if number_repairs:
-            from loguru import logger
-
-            logger.warning(
-                "db_apply: frame_number→uuid remapped n={} samples={}",
-                len(number_repairs),
-                number_repairs[:5],
+                created = await db_v2.replace_all_frames(session, project, specs)
+            except ValueError as e:
+                raise ApplyOpsError(str(e)) from None
+            _raise_if_new_preservation(
+                preservation_before,
+                await _project_preservation_view(session, project),
+                _ops_with_shot_address(ops),
             )
-        uuid_repairs = repair_near_miss_frame_uuids(frame_ops, list(by_uuid.keys()))
-        if uuid_repairs:
-            from loguru import logger
+            exported = None
+            if export_xlsx:
+                exported = export_project_xlsx(project, created)
+            return {
+                "ok": True,
+                "updated": len(created),
+                "exported": exported,
+                "replace_frames": len(created),
+            }
 
-            logger.warning(
-                "db_apply: near-miss frame_uuid repaired n={} samples={}",
-                len(uuid_repairs),
-                uuid_repairs[:5],
-            )
-        uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
-        missing = [u for u in uuids if u not in by_uuid]
-        if missing:
-            raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
-
-    updated = 0
-    for op in frame_ops:
-        uuid = str(op.get("frame_uuid") or "")
-        fields = normalize_fields(op.get("fields") or {}, FIELD_ALIASES, scope=f"кадр {uuid}")
-        if not fields:
-            raise ApplyOpsError(f"кадр {uuid}: пустые fields")
-        fr = by_uuid[uuid]
-        if "voiceover_text" in fields:
-            fr.voiceover_text = str(fields["voiceover_text"] or "")
-        if "meaning" in fields:
-            fr.meaning = None if fields["meaning"] is None else str(fields["meaning"])
-        if "duration_seconds" in fields:
-            raw_dur = fields["duration_seconds"]
-            if raw_dur is None or str(raw_dur).strip() == "":
-                fr.duration_seconds = None
-            else:
-                parsed_dur = coerce_duration_seconds(raw_dur)
-                if parsed_dur is None:
-                    from loguru import logger
-
-                    logger.warning(
-                        "db_apply: кадр {}: skip non-numeric duration {!r}",
-                        uuid,
-                        raw_dur,
+        by_uuid: dict[str, Frame] = {}
+        uuid_repairs: list[tuple[str, str]] = []
+        number_repairs: list[tuple[str, str]] = []
+        if frame_ops:
+            uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
+            if any(not u for u in uuids):
+                raise ApplyOpsError("для target=frame нужен frame_uuid")
+            # Все кадры проекта — иначе near-miss не к чему привязать.
+            frames = list(
+                (
+                    await session.execute(
+                        select(Frame).where(Frame.project_id == project.id)
                     )
+                ).scalars()
+            )
+            by_uuid = {f.uuid: f for f in frames}
+            # GPT часто пишет номер кадра ("78") вместо uuid — сначала remap по number.
+            by_number: dict[int, list[str]] = {}
+            for f in frames:
+                n = getattr(f, "number", None)
+                if n is None:
+                    continue
+                try:
+                    ni = int(n)
+                except (TypeError, ValueError):
+                    continue
+                by_number.setdefault(ni, []).append(str(f.uuid))
+            number_to_uuid = {
+                n: ids[0] for n, ids in by_number.items() if len(ids) == 1
+            }
+            number_repairs = remap_frame_number_uuids(frame_ops, number_to_uuid)
+            if number_repairs:
+                from loguru import logger
+
+                logger.warning(
+                    "db_apply: frame_number→uuid remapped n={} samples={}",
+                    len(number_repairs),
+                    number_repairs[:5],
+                )
+            uuid_repairs = repair_near_miss_frame_uuids(frame_ops, list(by_uuid.keys()))
+            if uuid_repairs:
+                from loguru import logger
+
+                logger.warning(
+                    "db_apply: near-miss frame_uuid repaired n={} samples={}",
+                    len(uuid_repairs),
+                    uuid_repairs[:5],
+                )
+            uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
+            missing = [u for u in uuids if u not in by_uuid]
+            if missing:
+                raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
+
+        updated = 0
+        for op in frame_ops:
+            uuid = str(op.get("frame_uuid") or "")
+            fields = normalize_fields(op.get("fields") or {}, FIELD_ALIASES, scope=f"кадр {uuid}")
+            if not fields:
+                raise ApplyOpsError(f"кадр {uuid}: пустые fields")
+            fr = by_uuid[uuid]
+            if "voiceover_text" in fields:
+                fr.voiceover_text = str(fields["voiceover_text"] or "")
+            if "meaning" in fields:
+                fr.meaning = None if fields["meaning"] is None else str(fields["meaning"])
+            if "duration_seconds" in fields:
+                raw_dur = fields["duration_seconds"]
+                if raw_dur is None or str(raw_dur).strip() == "":
+                    fr.duration_seconds = None
                 else:
-                    fr.duration_seconds = parsed_dur
-        if "image_prompt" in fields:
-            fr.image_prompt = (
-                None if fields["image_prompt"] is None else str(fields["image_prompt"])
+                    parsed_dur = coerce_duration_seconds(raw_dur)
+                    if parsed_dur is None:
+                        from loguru import logger
+
+                        logger.warning(
+                            "db_apply: кадр {}: skip non-numeric duration {!r}",
+                            uuid,
+                            raw_dur,
+                        )
+                    else:
+                        fr.duration_seconds = parsed_dur
+            if "image_prompt" in fields:
+                fr.image_prompt = (
+                    None if fields["image_prompt"] is None else str(fields["image_prompt"])
+                )
+                await db_v2.add_prompt_version(
+                    session,
+                    project.id,
+                    fr.id,
+                    kind="img",
+                    text=fr.image_prompt or "",
+                    set_active=True,
+                )
+                # Чтобы шаг images подхватил кадр после excel_gpt/img_pr apply-ops.
+                from app.models import FrameStatus
+                from app.generation_options import is_skippable_empty_prompt
+
+                if not is_skippable_empty_prompt(fr.image_prompt or "") and fr.status not in (
+                    FrameStatus.image_generated,
+                    FrameStatus.image_approved,
+                ):
+                    fr.status = FrameStatus.image_prompt_ready
+            if "animation_prompt" in fields:
+                fr.animation_prompt = (
+                    None
+                    if fields["animation_prompt"] is None
+                    else str(fields["animation_prompt"])
+                )
+                await db_v2.add_prompt_version(
+                    session,
+                    project.id,
+                    fr.id,
+                    kind="video",
+                    text=fr.animation_prompt or "",
+                    set_active=True,
+                )
+            attrs = dict(fr.attrs or {})
+            if "image_prompt_shot2" in fields:
+                attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
+                from app.generation_options import is_skippable_empty_prompt
+
+                if not is_skippable_empty_prompt(attrs[SHOT2_PROMPT_ATTR]):
+                    attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+
+            if "animation_prompt_shot2" in fields:
+                attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
+            if "characters" in fields:
+                persons = str(fields["characters"] or "").strip()
+                attrs["characters"] = persons
+                attrs["persons"] = persons
+                attrs["персонажи"] = persons
+            if "child_prompts" in fields:
+                raw_children = fields["child_prompts"]
+                children = list(raw_children) if isinstance(raw_children, list) else []
+                attrs["child_prompts"] = children
+                attrs["промты_детей"] = children
+            if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
+                attrs = _merge_camera_subdivide(attrs, fields)
+            from loguru import logger
+
+            for attr_key in _STRUCTURED_ATTR_KEYS:
+                if attr_key not in fields:
+                    continue
+                raw_attr = fields[attr_key]
+                blank = raw_attr is None or (
+                    isinstance(raw_attr, str) and not raw_attr.strip()
+                )
+                empty_text = isinstance(raw_attr, str) and raw_attr.strip() in {"[]", "{}"}
+                empty_box = attr_key in {"кадры", "биты"} and (
+                    _structured_container_empty(raw_attr) or empty_text
+                )
+                if blank or empty_box:
+                    logger.warning(
+                        "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
+                        attr_key,
+                    )
+                    continue
+                coerced = _coerce_structured_attr(raw_attr)
+                if attr_key == "кадры" and isinstance(coerced, list):
+                    coerced = merge_kadry_keep_missing(
+                        attrs.get("кадры"),
+                        coerced,
+                        restore_ids=_restore_shot_ids(op),
+                    )
+                attrs[attr_key] = coerced
+            for attr_key in _ATTR_EXCEL_ROWS:
+                if attr_key in fields:
+                    attrs[attr_key] = str(fields[attr_key] or "")
+            fr.attrs = attrs
+            updated += 1
+
+        for op in project_ops:
+            fields = normalize_fields(
+                op.get("fields") or {}, PROJECT_FIELD_ALIASES, scope="проект"
             )
-            await db_v2.add_prompt_version(
-                session,
-                project.id,
-                fr.id,
-                kind="img",
-                text=fr.image_prompt or "",
-                set_active=True,
-            )
-            # Чтобы шаг images подхватил кадр после excel_gpt/img_pr apply-ops.
-            from app.models import FrameStatus
-            from app.generation_options import is_skippable_empty_prompt
+            if not fields:
+                raise ApplyOpsError("проект: пустые fields")
+            meta = dict(project.meta or {})
+            if "general_plan" in fields:
+                plan_val = str(fields["general_plan"] or "")
+                meta["general_plan"] = plan_val
+                # Колонка HITL/статусов — тот же SoT, что meta (не только Excel B2).
+                project.general_plan = plan_val
+            if "script_text" in fields:
+                project.script_text = str(fields["script_text"] or "")
+                # Файл пишем только после успешного выхода из savepoint:
+                # отказ откатывает БД, а зеркало на диске иначе остаётся.
+                pending_voiceover = project.script_text or ""
+            project.meta = meta
+            updated += 1
 
-            if not is_skippable_empty_prompt(fr.image_prompt or "") and fr.status not in (
-                FrameStatus.image_generated,
-                FrameStatus.image_approved,
-            ):
-                fr.status = FrameStatus.image_prompt_ready
-        if "animation_prompt" in fields:
-            fr.animation_prompt = (
-                None
-                if fields["animation_prompt"] is None
-                else str(fields["animation_prompt"])
-            )
-            await db_v2.add_prompt_version(
-                session,
-                project.id,
-                fr.id,
-                kind="video",
-                text=fr.animation_prompt or "",
-                set_active=True,
-            )
-        attrs = dict(fr.attrs or {})
-        if "image_prompt_shot2" in fields:
-            attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
-            from app.generation_options import is_skippable_empty_prompt
-
-            if not is_skippable_empty_prompt(attrs[SHOT2_PROMPT_ATTR]):
-                attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
-
-        if "animation_prompt_shot2" in fields:
-            attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
-        if "characters" in fields:
-            persons = str(fields["characters"] or "").strip()
-            attrs["characters"] = persons
-            attrs["persons"] = persons
-            attrs["персонажи"] = persons
-        if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
-            attrs = _merge_camera_subdivide(attrs, fields)
-        for attr_key in _STRUCTURED_ATTR_KEYS:
-            if attr_key not in fields:
-                continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
-        for attr_key in _ATTR_EXCEL_ROWS:
-            if attr_key in fields:
-                attrs[attr_key] = str(fields[attr_key] or "")
-        fr.attrs = attrs
-        updated += 1
-
-    for op in project_ops:
-        fields = normalize_fields(
-            op.get("fields") or {}, PROJECT_FIELD_ALIASES, scope="проект"
-        )
-        if not fields:
-            raise ApplyOpsError("проект: пустые fields")
-        meta = dict(project.meta or {})
-        if "general_plan" in fields:
-            plan_val = str(fields["general_plan"] or "")
-            meta["general_plan"] = plan_val
-            # Колонка HITL/статусов — тот же SoT, что meta (не только Excel B2).
-            project.general_plan = plan_val
-        if "script_text" in fields:
-            project.script_text = str(fields["script_text"] or "")
-            # Файл voiceover.txt — артефакт для audio/music (зеркало DB).
-            try:
-                vo_path = project.data_dir / "voiceover.txt"
-                vo_path.parent.mkdir(parents=True, exist_ok=True)
-                vo_path.write_text(project.script_text or "", encoding="utf-8")
-            except OSError:
-                pass
-        project.meta = meta
-        updated += 1
-
-    await session.flush()
-
-    # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
-    all_frames = list(
-        (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars()
-    )
-    meta_now = project.meta if isinstance(project.meta, dict) else {}
-    expanded = expand_scene_registry_onto_frames(
-        all_frames,
-        meta_now.get("scene_registry"),
-        overwrite=bool(scenes_n),
-    )
-    if expanded:
         await session.flush()
 
-    exported = None
-    if export_xlsx:
-        ents = list(
+        # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
+        all_frames = list(
             (
                 await session.execute(
-                    select(Entity).where(Entity.project_id == project.id)
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
                 )
             ).scalars()
         )
-        exported = export_project_xlsx(project, all_frames, entities=ents)
-    return {
-        "ok": True,
-        "updated": updated,
-        "characters": chars_n,
-        "scenes": scenes_n,
-        "expanded_frames": expanded,
-        "exported": exported,
-        "uuid_repairs": [
-            {"from": a, "to": b} for a, b in (number_repairs + uuid_repairs)
-        ],
-    }
+        meta_now = project.meta if isinstance(project.meta, dict) else {}
+        expanded = expand_scene_registry_onto_frames(
+            all_frames,
+            meta_now.get("scene_registry"),
+            overwrite=bool(scenes_n),
+        )
+        if expanded:
+            await session.flush()
+
+        if preservation_before is not None:
+            _raise_if_new_preservation(
+                preservation_before,
+                await _project_preservation_view(session, project),
+                _ops_with_shot_address(ops),
+            )
+
+        exported = None
+        if export_xlsx:
+            ents = list(
+                (
+                    await session.execute(
+                        select(Entity).where(Entity.project_id == project.id)
+                    )
+                ).scalars()
+            )
+            exported = export_project_xlsx(project, all_frames, entities=ents)
+        result = {
+            "ok": True,
+            "updated": updated,
+            "characters": chars_n,
+            "scenes": scenes_n,
+            "expanded_frames": expanded,
+            "exported": exported,
+            "uuid_repairs": [
+                {"from": a, "to": b} for a, b in (number_repairs + uuid_repairs)
+            ],
+        }
+    if pending_voiceover is not None:
+        _write_voiceover_mirror(project, pending_voiceover)
+    return result

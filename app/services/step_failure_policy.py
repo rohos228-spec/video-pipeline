@@ -1,9 +1,12 @@
 """Политика отказов шага.
 
 Схема (на один running-шаг):
-  - каждый fail → soft retry (файлы на диске не трогаем);
+  - fail → soft retry без wipe (файлы на диске не трогаем);
+  - enrich / excel_gpt: 1-й и 2-й fail в цикле останавливают ноду без soft retry;
+  - каждый 3-й fail (3, 6) всё равно вызывает soft retry без wipe и только потом сон.
+    Soft retry здесь не перезапуск с чистого листа: он сохраняет файлы.
+    Сон этот вызов не отменяет — так зафиксировано, wipe по-прежнему нет;
   - глобальный счётчик total_fails: 1…9;
-  - каждые 3 fail (3, 6) → сон 30 мин, затем новый цикл;
   - на 9-м fail (3 цикла × 3 попытки) → paused + следующий в gen_queue.
 
 Явный сброс шага — только через UI (reset_step), не при ошибках.
@@ -686,6 +689,8 @@ async def record_step_failure(
         )
         return "stopped"
 
+    # 3-й fail enrich/excel тоже проходит soft retry (без wipe), затем сон ниже.
+    # Это не обход паузы: файлы остаются, нода не стартует заново с нуля.
     await _soft_retry_without_wipe(session, project, step_code)
 
     fatal_config = profile.abandon_on_fatal_config and err_code in FATAL_CONFIG_ERROR_CODES
@@ -778,7 +783,7 @@ async def record_step_failure(
                     replica,
                     step_code,
                     node_key=r_meta.get("active_excel_gpt_node_key"),
-                    explicit_ui_start=True,
+                    explicit_ui_start=False,
                 )
             except Exception:
                 logger.debug(

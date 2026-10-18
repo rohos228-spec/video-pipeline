@@ -784,6 +784,29 @@ async def montage_board(
         ) from e
 
 
+@router.post("/{project_id}/montage-board/sync-roles")
+async def montage_board_sync_roles(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Явно пометить повторный закадр и пересвязать роли шотов."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board import build_montage_board
+
+    try:
+        board = await build_montage_board(session, p, sync_shot_roles=True)
+        await session.commit()
+        return board
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST /montage-board/sync-roles failed project_id={}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось связать роли шотов: {type(e).__name__}: {e}",
+        ) from e
+
+
 @router.post("/{project_id}/montage-board/frames/insert")
 async def montage_board_insert_frame(
     project_id: int,

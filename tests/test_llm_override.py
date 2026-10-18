@@ -207,6 +207,7 @@ def test_bind_script_frames_qc_forces_vibecode(monkeypatch) -> None:
         ov = current_override()
         assert ov is not None
         assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
 
 
@@ -288,11 +289,14 @@ def _route_script_frames_qc(monkeypatch, tmp_path, header: str, *, pay52: str) -
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
     }
+
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
+
         assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
+
         assert gpt_api._node_reasoning_effort() == "high"
         if pay52:
             assert ov.provider == "52pay"
@@ -346,11 +350,13 @@ def test_shots_routes_chat_to_vibecode_direct_while_header_is_kie(
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
     }
+    monkeypatch.setattr(gpt_api.settings, "pay52_gpt_api_key", "pay52-test")
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
         assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
+        assert gpt_api._node_vibecode_override() is False
         route = resolve_text("gpt-5.6-sol")
         assert route is not None and "52pay.com" in route.url
         assert "pay52-dummy" not in route.url

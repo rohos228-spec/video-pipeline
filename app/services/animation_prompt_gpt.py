@@ -522,8 +522,12 @@ def collect_shot2_batch_items(
     frames: list[Frame],
 ) -> list[FrameImageBatchItem]:
     """Кадры shot_02 с PNG на диске и без промта видео (plan R64)."""
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
     out: list[FrameImageBatchItem] = []
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         if not frame_needs_shot2_video_prompt(project, fr):
             continue
         img = scene_shot2_image_path(project, fr.number)
@@ -562,9 +566,13 @@ def collect_batch_items(
     frames: list[Frame],
 ) -> list[FrameImageBatchItem]:
     """Кадры с image_prompt и без animation_prompt (PNG опционален)."""
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
     img_index = index_scene_image_paths(project)
     out: list[FrameImageBatchItem] = []
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         if has_animation_prompt_for_frame(project, fr):
             continue
         if not frame_has_usable_image_prompt(fr):

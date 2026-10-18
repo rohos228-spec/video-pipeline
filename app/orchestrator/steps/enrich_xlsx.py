@@ -562,26 +562,35 @@ async def _run_four_node_markup_pass(
         encoding="utf-8",
     )
 
-    async def _apply_batch(payload: dict) -> None:
-        raw_ops = list(payload.get("ops") or [])
-        ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
-        if not ops:
-            logger.warning(
-                "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
-                project.id,
-                footer_kind,
-                apply_kind,
-            )
+    _db_lock = asyncio.Lock()
+
+    async def _locked_progress(msg: str) -> None:
+        if on_progress is None:
             return
-        await _db_apply.apply_ops(
-            session,
-            project,
-            ops,
-            export_xlsx=False,
-            node_kind=apply_kind,
-        )
-        await session.commit()
-        await session.refresh(project)
+        async with _db_lock:
+            await on_progress(msg)
+
+    async def _apply_batch(payload: dict) -> None:
+        async with _db_lock:
+            raw_ops = list(payload.get("ops") or [])
+            ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
+            if not ops:
+                logger.warning(
+                    "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
+                    project.id,
+                    footer_kind,
+                    apply_kind,
+                )
+                return
+            await _db_apply.apply_ops(
+                session,
+                project,
+                ops,
+                export_xlsx=False,
+                node_kind=apply_kind,
+            )
+            await session.commit()
+            await session.refresh(project)
 
     logger.info(
         "[#{}] four-node markup {} via {} frames={}",
@@ -605,10 +614,10 @@ async def _run_four_node_markup_pass(
         force_full=True,
         target_batches=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         parallel_max=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
-        stagger_sec=VO_STAGGER_SEC,
+        stagger_sec=None,
         chunk_by_vo_unit=False,
         footer_kind=footer_kind,
-        on_progress=on_progress,
+        on_progress=_locked_progress,
         allow_empty_ops=False,
     )
 
@@ -1629,17 +1638,7 @@ async def _run_fw_skeleton_node(
         trace_dir,
     )
     await session.commit()
-    # 2026-10-11: one-shot reuse of the validated skeleton.json (no LLM) when
-    # data/_reuse_skeleton.flag exists - rematerialize the 33 main cells.
-    import os as _os
-    _flag = _os.path.join("data", "_reuse_skeleton.flag")
-    if _os.path.exists(_flag) and skb.output_path(project).exists():
-        _os.replace(_flag, _flag + ".used")
-        draft = json.loads(skb.output_path(project).read_text(encoding="utf-8"))
-        rep = (draft.get("_setup") or {}).get("report") or {"reused": True}
-        logger.warning("[#{}] fw_skeleton: REUSE existing skeleton.json ({} scenes), no LLM", project.id, len(draft.get("сцены") or []))
-    else:
-        draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
+    draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
     scenes = draft["сцены"]
     cov = skb.coverage(full_vo, scenes)
     draft["_setup"] = {
@@ -1676,7 +1675,7 @@ async def _run_fw_skeleton_node(
         {"закадр": s["закадр"], "смысл": str(s.get("сцена") or "")[:500]}
         for s in scenes
     ]
-    await db_v2.replace_all_frames(session, project, specs)
+    created_frames = await db_v2.replace_all_frames(session, project, specs)
     await session.flush()
     chars_raw = draft.get("база_персонажей") or []
     characters = []
@@ -1701,16 +1700,13 @@ async def _run_fw_skeleton_node(
         n_chars = await db_apply.upsert_characters(
             session, project, characters, replace=True
         )
-    frames = list(
-        (
-            await session.execute(
-                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
-            )
+    frames = [fr for fr in created_frames if not db_v2.frame_is_archived(fr)]
+    if len(frames) != len(scenes):
+        raise RuntimeError(
+            f"#{project.id} {node_key}: каркас записал {len(frames)} кадров "
+            f"на {len(scenes)} сцен"
         )
-        .scalars()
-        .all()
-    )
-    for fr, sc in zip(frames, scenes):
+    for fr, sc in zip(frames, scenes, strict=True):
         attrs = dict(fr.attrs or {})
         attrs.update(skb.scene_attrs(sc))
         fr.attrs = attrs
@@ -1729,7 +1725,7 @@ async def _run_fw_skeleton_node(
         reply_text=(
             f"каркас: {len(scenes)} сцен (по фрагменту), персонажей {len(characters)}, "
             f"предметов {len(draft.get('предметы') or [])}, закадр переписан кодом "
-            f"{rep['zakadr_overwritten']} · model {model}"
+            f"{rep.get('zakadr_overwritten')} · model {model}"
         ),
         gate_status="pass",
     )
@@ -1741,7 +1737,7 @@ async def _run_fw_skeleton_node(
         len(frames),
         len(characters),
         n_chars,
-        rep["zakadr_overwritten"],
+        rep.get("zakadr_overwritten"),
         out_path,
     )
     meta = dict(project.meta or {})
@@ -2410,22 +2406,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,
+                    is_coverage_leftover,
                 )
 
                 collapsed = await collapse_flattened_coverage_cells(
                     session, project
                 )
-                if collapsed.get("deleted"):
+                if collapsed.get("deleted") or collapsed.get("archived"):
                     await session.flush()
-                    frames_for_map = list(
-                        (
+                    frames_for_map = [
+                        fr
+                        for fr in (
                             await session.execute(
                                 _select(Frame)
                                 .where(Frame.project_id == project.id)
                                 .order_by(Frame.sort_key, Frame.number)
                             )
                         ).scalars().all()
-                    )
+                        if not is_coverage_leftover(fr)
+                    ]
                     logger.info(
                         "[#{}] {} collapse flattened coverage {}",
                         project.id,
@@ -2887,10 +2886,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 DENSE_PARALLEL_MAX,
                 DENSE_TARGET_BATCHES,
                 FW_FRAMES_PER_BATCH,
-                ACTION_STAGGER_SEC,
                 ACTION_TARGET_BATCHES,
                 SHOTS_PARALLEL,
-                SHOTS_STAGGER_SEC,
                 SHOTS_UNITS_PER_BATCH,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
@@ -3039,19 +3036,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 elif fw_frames:
                     batch_label = (
                         f"fw_frames по {FW_FRAMES_PER_BATCH} кадров, "
-                        f"параллельно {VO_PARALLEL_MAX}, "
-                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                        f"параллельно {VO_PARALLEL_MAX}"
                     )
                 elif action_node:
-                    batch_label = (
-                        f"площадка {ACTION_TARGET_BATCHES} пачки, "
-                        f"сдвиг {ACTION_STAGGER_SEC:g}с"
-                    )
+                    batch_label = f"площадка {ACTION_TARGET_BATCHES} пачки"
                 elif shots_node:
                     batch_label = (
                         f"шоты по {SHOTS_UNITS_PER_BATCH} ячеек, "
-                        f"параллельно {SHOTS_PARALLEL}, "
-                        f"сдвиг {SHOTS_STAGGER_SEC:g}с"
+                        f"параллельно {SHOTS_PARALLEL}"
                     )
                 elif script_frames_qc:
                     batch_label = (
@@ -3066,8 +3058,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else:
                     batch_label = (
                         f"dense shot fill {DENSE_TARGET_BATCHES} пачек, "
-                        f"параллельно {DENSE_PARALLEL_MAX}, "
-                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                        f"параллельно {DENSE_PARALLEL_MAX}"
                     )
                 logger.info(
                     "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
@@ -3154,19 +3145,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     stagger_sec=(
-                        SHOTS_STAGGER_SEC
-                        if shots_node
-                        else (
-                            ACTION_STAGGER_SEC
-                            if action_node
-                            else (
-                                VO_STAGGER_SEC
-                                if fw_camera_menu_only
-                                or script_frames_qc
-                                or dense_shot_fill
-                                else None
-                            )
-                        )
+                        VO_STAGGER_SEC
+                        if fw_camera_menu_only or script_frames_qc
+                        else None
                     ),
                     chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),
                     footer_kind=(

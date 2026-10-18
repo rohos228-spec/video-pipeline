@@ -199,12 +199,7 @@ def validate_session_token(token: str | None) -> bool:
         return True
     if not token:
         return False
-    try:
-        from app.web import user_accounts
-        if user_accounts.user_for_session(token):
-            return True
-    except Exception:
-        pass
+    # Сессия users.db не подменяет WEB_AUTH_USER/PASSWORD.
     issued = _lookup(_hash_token(token))
     if issued is None:
         return False

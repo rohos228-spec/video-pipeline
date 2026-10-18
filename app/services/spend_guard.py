@@ -1,3 +1,8 @@
+"""Потолок трат, журнал платных вызовов и активный бюджет платного вызова.
+
+Нет активного бюджета — вызов не ограничен бюджетом (потолки трат и рубильник действуют всегда).
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,10 +11,12 @@ import math
 import os
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Iterator
 
 from loguru import logger
 from sqlalchemy import Float, Integer, String, DateTime, select, text
@@ -17,6 +24,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
+from app.services.style_agent.budget import LlmBudget
 
 DEFAULT_REQUEST_ESTIMATE_USD = 0.05
 MEDIA_SUBMIT_ESTIMATE_USD = 0.30
@@ -980,3 +988,46 @@ async def correlation_chain(session, request_id: str) -> list[dict]:
     sql = await session.run_sync(lambda s: _chain_sql(s.connection()))
     result = await session.execute(text(sql), {"rid": request_id})
     return [dict(r._mapping) for r in result]
+
+
+_active: ContextVar[LlmBudget | None] = ContextVar("spend_budget", default=None)
+_pipeline: LlmBudget | None = None
+# Прод без явного лимита не блокируем: бюджет нужен, чтобы записать трату.
+_PIPELINE_MAX_CALLS = 10**9
+
+
+def pipeline_spend_budget() -> LlmBudget:
+    """Общий бюджет прод-пути, если вызывающий не передал свой."""
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = LlmBudget(max_calls=_PIPELINE_MAX_CALLS)
+    return _pipeline
+
+
+def active_spend_budget() -> LlmBudget | None:
+    return _active.get()
+
+
+@contextmanager
+def use_spend_budget(budget: LlmBudget) -> Iterator[LlmBudget]:
+    token = _active.set(budget)
+    try:
+        yield budget
+    finally:
+        _active.reset(token)
+
+
+def guard_paid_spend(label: str) -> None:
+    """Если бюджет включён и исчерпан — BudgetExceeded до сетевого вызова."""
+    budget = _active.get()
+    if budget is None:
+        return
+    budget.reserve(label)
+
+
+def note_paid_spend(label: str = "") -> None:
+    """Пишет трату после успешного платного вызова, не до него."""
+    budget = _active.get()
+    if budget is None:
+        return
+    budget.note_spent(label)

@@ -1,6 +1,6 @@
 """Нода «Границы сцен» (группа script_frames_qc, шаг 1 перед «Каркасом»).
 
-Один вызов gpt-5.6-sol (vibecode через VPS, gpt_api) возвращает
+Один вызов gpt-5.6-sol (52pay через gpt_api) возвращает
 весь закадр дословно с [ ] вокруг фрагментов сцен. Проверка кодом: склейка
 фрагментов = закадр (без учёта пробелов и знаков ударения), вне скобок нет
 текста, скобки не вложены. Не прошло — один повтор. Промт и логика — как в
@@ -24,7 +24,7 @@ from typing import Any
 
 from loguru import logger
 
-URL = "vibecode chat (gpt_api, VPS /v1/chat/completions)"
+URL = "52pay chat (gpt_api)"
 MODEL = "gpt-5.6-sol"
 MAX_TOK = 64000
 PROMPT_REL = "prompts/scene_design/scene_boundaries_agent.md"
@@ -207,13 +207,16 @@ def _api_key() -> str:
 async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
     from app.services import gpt_api
     from app.services.llm_override import NodeLlmOverride, use_override
+    from app.services.pay52_routes import resolve_text
 
+    if resolve_text(MODEL) is None:
+        raise RuntimeError(f"нет маршрута 52pay для {MODEL}")
     ov = NodeLlmOverride(
         model_id=MODEL,
         channel="stable",
         kind="text",
-        provider="vibecode",
-        label=f"{MODEL} (vibecode · high)",
+        provider="52pay",
+        label=f"{MODEL} (52pay · high)",
         reasoning_effort="high",
     )
     with use_override(ov):

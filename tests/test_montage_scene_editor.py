@@ -597,7 +597,7 @@ async def test_coverage_anchors_extra_anchor_creates_shot(
 async def test_coverage_anchors_insert_shifts_queue_numbers(
     session: AsyncSession, project: Project
 ) -> None:
-    """Шот вставлен в середину — apply должен знать, куда уехали номера."""
+    """Шот вставлен в середину — старые номера кадров не сдвигаются."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
@@ -616,9 +616,12 @@ async def test_coverage_anchors_insert_shifts_queue_numbers(
         },
     )
     assert result["report"]["inserted_frames"] == 1
-    # Вставка после кадра 1: бывший кадр 2 стал третьим.
-    assert result["renumber"] == {2: 3}
+    # renumber=False: старые номера и frame_NNN не сдвигаются, новый шот = max+1.
+    assert result.get("renumber") in (None, {})
     frames = await _frames(session, project)
+    by_uuid = {fr.uuid: int(fr.number) for fr in frames}
+    assert by_uuid[parent.uuid] == 1
+    assert by_uuid[child.uuid] == 2
     joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
     assert joined == VO_CELL
 

@@ -278,12 +278,16 @@ async def _entity_name_maps(
         )
     except Exception:  # noqa: BLE001
         return chars, items
+    from app.services.db_v2 import entity_is_archived
+
     for ent in ents:
         code = str(getattr(ent, "code", "") or "").strip()
         name = str(getattr(ent, "name", "") or "").strip()
         if not code:
             continue
         kind = str(getattr(ent, "type", "") or "")
+        if kind == "character" and entity_is_archived(ent):
+            continue
         bucket = (
             chars
             if kind == "character"
@@ -949,9 +953,29 @@ def _real_frame_aspect(scenes_dir: Path, rows: list[dict[str, Any]]) -> str | No
     return None
 
 
+def sync_board_shot_roles(frames_orm, scenes_dir) -> tuple[int, int]:
+    """Пометить повторный закадр leftover и пересвязать роли шотов.
+
+    Вызывается явным POST, не чтением доски.
+    """
+    from app.services.vo_shot_expand import (
+        leftover_later_duplicate_vo_frames,
+        relink_shot_roles_by_scene,
+        sync_live_coverage_ids,
+    )
+
+    n_dup = leftover_later_duplicate_vo_frames(frames_orm, scenes_dir)
+    n_relink = relink_shot_roles_by_scene(frames_orm, resplit_places=True)
+    if n_relink:
+        sync_live_coverage_ids(frames_orm)
+    return n_dup, n_relink
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
+    *,
+    sync_shot_roles: bool = False,
 ) -> dict[str, Any]:
     # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
@@ -1042,12 +1066,7 @@ async def build_montage_board(
     frames_orm.sort(
         key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0))
     )
-    from app.services.vo_shot_expand import (
-        apply_generation_places_from_sidecars,
-        leftover_later_duplicate_vo_frames,
-        relink_shot_roles_by_scene,
-        sync_live_coverage_ids,
-    )
+    from app.services.vo_shot_expand import apply_generation_places_from_sidecars
 
     scenes_dir = data_dir / "scenes"
     n_place = apply_generation_places_from_sidecars(frames_orm, scenes_dir)
@@ -1057,21 +1076,20 @@ async def build_montage_board(
             project_id,
             n_place,
         )
-    n_dup = leftover_later_duplicate_vo_frames(frames_orm, scenes_dir)
-    if n_dup:
-        logger.info(
-            "montage_board: leftover duplicate VO project {} frames={}",
-            project_id,
-            n_dup,
-        )
-    n_relink = relink_shot_roles_by_scene(frames_orm, resplit_places=True)
-    if n_relink:
-        sync_live_coverage_ids(frames_orm)
-        logger.info(
-            "montage_board: relink shot roles project {} frames={}",
-            project_id,
-            n_relink,
-        )
+    if sync_shot_roles:
+        n_dup, n_relink = sync_board_shot_roles(frames_orm, scenes_dir)
+        if n_dup:
+            logger.info(
+                "montage_board: leftover duplicate VO project {} frames={}",
+                project_id,
+                n_dup,
+            )
+        if n_relink:
+            logger.info(
+                "montage_board: relink shot roles project {} frames={}",
+                project_id,
+                n_relink,
+            )
     frames = _snapshot_frames(frames_orm)
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
     xlsx_path = data_dir / "project.xlsx"
@@ -1164,6 +1182,8 @@ async def build_montage_board(
             layout_text,
         )
 
+        from app.orchestrator.validators.activity_flags import frame_is_active
+
         layout = layout_text(fr)
         img1_prompt = (prompts.get("image_prompt_shot1") or "").strip() or layout_start_text(
             layout
@@ -1230,6 +1250,7 @@ async def build_montage_board(
                     }
                 ),
                 "manual_refs": manual_refs_for_board(data_dir, fr),
+                "скрыт": not frame_is_active(fr.attrs or {}),
             }
         )
 

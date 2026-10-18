@@ -563,19 +563,23 @@ async def _publish(project_id: int, status: str, extra: dict[str, Any] | None = 
         logger.debug("style_agent: publish failed: {}", exc)
 
 
-def spawn_style_extract_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any] | None = None) -> asyncio.Task[None]:
-    from app.services.step_cancel import register_advance_task, unregister_advance_task
+_style_cancel: set[int] = set()
 
+
+def style_extract_cancel_requested(project_id: int) -> bool:
+    return project_id in _style_cancel
+
+
+def spawn_style_extract_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any] | None = None) -> asyncio.Task[None]:
     prev = _tasks.get(project_id)
     if prev is not None and not prev.done():
         return prev
+    _style_cancel.discard(project_id)
     task = asyncio.create_task(_run_job(project_id, node_key=node_key, overrides=overrides or {}), name=f"style-extract-{project_id}")
     _tasks[project_id] = task
-    register_advance_task(project_id, task)
 
     def _done(t: asyncio.Task[None]) -> None:
         _tasks.pop(project_id, None)
-        unregister_advance_task(project_id)
 
     task.add_done_callback(_done)
     return task
@@ -598,8 +602,8 @@ def _pipeline_text_override(model: dict[str, Any] | None) -> Any:
 async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any]) -> None:
     from app.models import Project
     from app.project_db import project_db_session_scope
-    from app.services.llm_override import NodeLlmOverride, use_override
-    from app.services.step_cancel import clear_stop, is_stop_requested
+    from app.services.llm_override import use_override
+    from app.services.step_cancel import is_stop_requested
 
     async with project_db_session_scope(project_id) as session:
         project = await session.get(Project, project_id)
@@ -627,7 +631,6 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
                 },
             },
         )
-    clear_stop(project_id)
     await _publish(project_id, "running")
 
     budget = LlmBudget(int(st["max_llm_calls"]))
@@ -651,16 +654,10 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
         except Exception as exc:  # noqa: BLE001
             logger.debug("style_agent: progress not saved: {}", exc)
 
-    ov = _pipeline_text_override(model)
-    if ov is None and model and model.get("kind") == "text":
-        ov = NodeLlmOverride(
-            model_id=str(model["id"]),
-            channel=str(model.get("channel") or "stable"),
-            kind="text",
-            provider=str(model.get("provider") or "vibecode"),
-            label=str(model.get("label") or model["id"]),
-        )
     try:
+        ov = _pipeline_text_override(model)
+        if ov is None:
+            raise RuntimeError("нет маршрута 52pay для разбора стиля")
         if not videos:
             raise RuntimeError("нет роликов: загрузите mp4 в ноду или подключите «Файлы»")
         with use_override(ov):
@@ -672,19 +669,23 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
                 project_id=project_id,
                 model_id=str((model or {}).get("id") or ""),
                 progress=_progress,
-                should_stop=lambda: is_stop_requested(project_id),
+                should_stop=lambda: (
+                    style_extract_cancel_requested(project_id)
+                    or is_stop_requested(project_id)
+                ),
             )
         stopped = bool(result["passport"].get("errors", {}).get("stopped"))
+        done_job: dict[str, Any] = {
+            "status": "stopped" if stopped else "done",
+            "finishedAt": _utc_now(),
+            "stage": "done",
+            "llm": budget.snapshot(),
+            "error": None,
+        }
         await _set_meta_retry(
             project_id,
             {
-                "job": {
-                    "status": "stopped" if stopped else "done",
-                    "finishedAt": _utc_now(),
-                    "stage": "done",
-                    "llm": budget.snapshot(),
-                    "error": None,
-                },
+                "job": done_job,
                 "passport": {"draftAt": _utc_now(), "style_id": result["passport"].get("style_id"), "approvedAt": None},
             },
         )
@@ -703,12 +704,11 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
 
 
 def stop_job(project_id: int) -> bool:
-    from app.services.step_cancel import request_stop
-
     task = _tasks.get(project_id)
     if task is None or task.done():
         return False
-    request_stop(project_id, reason="style_extract_stop")
+    _style_cancel.add(project_id)
+    task.cancel()
     return True
 
 

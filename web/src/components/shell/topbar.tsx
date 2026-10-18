@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Activity, Network, Film, Bot, Database, User, Settings, Code2, FolderOpen, HardDrive, CreditCard, Wallet } from "lucide-react";
+import { Activity, Network, Film, Bot, Database, User, Settings, FolderOpen, HardDrive, CreditCard, Wallet } from "lucide-react";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 import { TextLlmPicker } from "@/components/shell/text-llm-picker";
 import { BugReportButton } from "@/components/shell/bug-report-button";
-import { UserPanel, UserPrefsApplier } from "@/components/panels/top/user-panel";
+import { UserPrefsApplier } from "@/components/panels/top/user-panel";
 import { StoragePanel } from "@/components/panels/left-top/storage-panel";
 import { PaymentsPanel } from "@/components/panels/left-bottom/payments-panel";
 import { PayoutsPanel } from "@/components/panels/left-bottom/payouts-panel";
@@ -29,7 +29,6 @@ export function useUi(): UiState {
 export function Topbar({ children }: { children?: React.ReactNode }) {
   const [logsOpen, setLogsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [userOpen, setUserOpen] = useState(false);
   const [railPanel, setRailPanel] = useState<null | "Хранилище" | "Оплата" | "Выплаты">(null);
   const togglePanel = (k: "Хранилище" | "Оплата" | "Выплаты") => setRailPanel((v) => (v === k ? null : k));
   const [framesOpen, setFramesOpen] = useState(false);
@@ -56,6 +55,11 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         <a href="/home" title="Главная"><img src="/via-logo.png" alt="VIA" className="mb-3 w-[46px] select-none" draggable={false} /></a>
         <RailBtn icon={<Film className="h-[18px] w-[18px]" />} label="Генерация" title="Полный интерфейс генерации" onClick={() => openOutsee()} />
         <RailBtn icon={<FolderOpen className="h-[18px] w-[18px]" />} label="Проекты" title="Показать / скрыть панель проектов" onClick={() => window.dispatchEvent(new CustomEvent("studio-toggle-projects-sidebar"))} />
+        <RailBtn icon={<Activity className="h-[18px] w-[18px]" />} label="Логи" title="Журнал студии" onClick={() => setLogsOpen(true)} />
+        <RailBtn icon={<Bot className="h-[18px] w-[18px]" />} label="Чат" title="Чат GPT" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-gpt"))} />
+        <RailBtn icon={<Database className="h-[18px] w-[18px]" />} label="База" title="База проекта" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-baza"))} />
+        <RailBtn icon={<Network className="h-[18px] w-[18px]" />} label="Сеть" title="Сеть машин" onClick={() => window.dispatchEvent(new CustomEvent("studio-open-fleet"))} />
+        <BugReportButton />
         <RailBtn icon={<HardDrive className="h-[18px] w-[18px]" />} label="Хранилище" active={railPanel === "Хранилище"} onClick={() => togglePanel("Хранилище")} />
         <div className="flex-1" />
         <RailBtn icon={<CreditCard className="h-[18px] w-[18px]" />} label="Оплата" active={railPanel === "Оплата"} onClick={() => togglePanel("Оплата")} />
@@ -72,7 +76,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             <div className="rounded-lg border border-white/[0.06] bg-black/60 px-3 py-6 text-center text-[13px] text-zinc-400">скоро</div>
           </div>
         ) : null}
-        <button type="button" onClick={() => { window.location.href = "/profile"; }} className={"flex h-10 w-10 items-center justify-center hover:bg-white/[0.05] hover:text-white " + (userOpen ? "text-white" : "text-zinc-400")} title="Пользователь" aria-label="Пользователь">
+        <button type="button" onClick={() => { window.location.href = "/profile"; }} className="flex h-10 w-10 items-center justify-center text-zinc-400 hover:bg-white/[0.05] hover:text-white" title="Пользователь" aria-label="Пользователь">
           <User className="h-5 w-5" strokeWidth={1.6} />
         </button>
         <div className="relative">
@@ -92,7 +96,6 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           ) : null}
         </div>
         <UserPrefsApplier />
-        {userOpen ? <UserPanel onClose={() => setUserOpen(false)} /> : null}
       </nav>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <LogPanel open={logsOpen} onOpenChange={setLogsOpen} />

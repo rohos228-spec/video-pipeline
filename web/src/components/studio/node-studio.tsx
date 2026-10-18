@@ -102,6 +102,7 @@ export function NodeStudio({
   initialTab = "settings",
   promptFocus,
   nodeDisabled = false,
+  onEnableNode,
   promptSlots: promptSlotsProp,
   inlineTargetId = null,
 }: {
@@ -112,6 +113,7 @@ export function NodeStudio({
   initialTab?: StudioTab;
   promptFocus?: NodePromptSlot | null;
   nodeDisabled?: boolean;
+  onEnableNode?: () => void;
   promptSlots?: NodePromptSlot[];
   inlineTargetId?: string | null;
 }) {
@@ -778,11 +780,24 @@ export function NodeStudio({
         </div>
         {inTab === "settings" ? (
           <div data-vp-settings className="nodrag flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+            {nodeDisabled ? (
+              <div className="flex flex-col gap-2 rounded-[10px] border border-amber-400/30 px-4 py-3">
+                <p className="text-[13px] text-amber-300">Нода отключена в графе — шаг не запустится.</p>
+                {onEnableNode ? (
+                  <button
+                    type="button"
+                    className="h-9 w-fit rounded-md border border-amber-400/40 px-3 text-[13px] text-amber-200"
+                    onClick={onEnableNode}
+                  >
+                    Включить ноду
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {!NO_LLM_NODE_TYPES.has(nodeType) ? (
             <div className="flex items-center gap-3 rounded-[10px] border border-white/[0.06] px-4 py-3">
               <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">Модель</span>
-              {true ? (
-                <div className="min-w-0 font-mono text-[12px] [&_*]:!font-mono [&_*]:!text-[12px]">
+              <div className="min-w-0 font-mono text-[12px] [&_*]:!font-mono [&_*]:!text-[12px]">
                   <NodeModelPicker
                     nodeKey={nodeKey}
                     nodeType={nodeType}
@@ -793,7 +808,6 @@ export function NodeStudio({
                     reasoningEffort={ds.reasoningEffort || undefined}
                   />
                 </div>
-              ) : null}
               <span className="flex-1" />
               {STREAM_NODE_TYPES.has(nodeType) && projectId ? <StreamsPicker projectId={projectId} /> : null}
             </div>
@@ -807,6 +821,8 @@ export function NodeStudio({
                 {nodeType === "items" && projectId ? <ItemsConfigPanel projectId={projectId} /> : null}
                 {nodeType === "hero" && projectId ? <HeroConfigPanel projectId={projectId} /> : null}
                 {nodeType === "script" && projectId && projectUsesNii67Script(project.data ?? null) ? <Nii67CardPanel projectId={projectId} /> : null}
+                {nodeType === "sfx_plan" && projectId ? <SfxPlanSettingsPanel projectId={projectId} /> : null}
+                {(nodeType === "sfx_gen" || nodeType === "sfx") && projectId ? <SfxGenSettingsPanel projectId={projectId} /> : null}
               </div>
             ) : null}
             {promptStepCode && projectId && nodeKey ? (
@@ -821,7 +837,7 @@ export function NodeStudio({
                 description={ds.description || spec.description || ""}
               />
             ) : null}
-            {showFilesPanel && promptStepCode && !canCatalog && !promptStepCode.startsWith("") ? (
+            {showFilesPanel && promptStepCode && !canCatalog ? (
               <div className="rounded-[10px] border border-white/[0.06] bg-black/35 p-1 [&_section]:!rounded-[10px] [&_section]:!border-0 [&_section]:!bg-transparent">
                 <PromptFilesPanel
                   key={`inline-files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
@@ -836,8 +852,6 @@ export function NodeStudio({
                   activating={activateVariant.isPending}
                 />
               </div>
-            ) : promptStepCode && !canCatalog ? (
-              <p className="px-1 text-[13px] text-white/45">У ноды нет файловых промтов.</p>
             ) : null}
           </div>
         ) : inTab === "results" ? (
@@ -912,7 +926,26 @@ export function NodeStudio({
           </div>
         ) : (
           <div className="nodrag flex min-h-0 flex-auto flex-col overflow-hidden p-3">
-            {showFilesPanel && promptStepCode ? (
+            {showGptTextPanel && projectId != null && activeStepCode ? (
+              <GptTextPanel
+                key={`inline-gpt-${activeSlot?.id}-${activeStepCode}`}
+                projectId={projectId}
+                stepCode={activeStepCode}
+              />
+            ) : showFramePromptsPanel && projectId != null ? (
+              <FramePromptsPanel
+                key={`inline-frame-prompts-${projectId}-${nodeType}`}
+                projectId={projectId}
+                field={nodeType === "videos" ? "animation_prompt" : "image_prompt"}
+              />
+            ) : showFilesPanel && isCheckNode && projectId != null && nodeKey ? (
+              <CheckNodePromptPanel
+                projectId={projectId}
+                nodeKey={nodeKey}
+                resolve={operatorResolve.data}
+                loading={operatorResolve.isLoading}
+              />
+            ) : showFilesPanel && promptStepCode ? (
               <PromptFilesPanel
                 key={`inline-cat-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
                 stepCode={promptStepCode}
@@ -1316,7 +1349,7 @@ export function NodeStudio({
                     <SfxGenSettingsPanel projectId={projectId} />
                   ) : null}
                   {nodeDisabled && (
-                    <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
+                    <p className="text-amber-400">Нода отключена в графе — шаг не запустится. Кнопка включения — во встроенном меню ноды.</p>
                   )}
                 </div>
               )}

@@ -967,6 +967,9 @@ async def stage_action(
         try:
             reply = await ask(ask_text)
         except Exception as exc:  # noqa: BLE001
+            from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+            reraise_if_spend_blocked(exc)
             reply = ""
             note = f"GPT: {type(exc).__name__}: {exc}"[:160]
             break
@@ -1431,6 +1434,9 @@ async def stage_shots(
     try:
         reply = await ask(prompt)
     except Exception as exc:  # noqa: BLE001
+        from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+        reraise_if_spend_blocked(exc)
         reply = ""
         note = f"GPT: {type(exc).__name__}: {exc}"[:160]
     fields = _ops_fields(reply, str(parent.uuid or ""))
@@ -1527,16 +1533,52 @@ def _group(shots: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     return [s for s in shots if s.get("якорь_n") == n]
 
 
+def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    shot["карантин"] = True
+    shot["пометка"] = reason
+    shot["активен"] = False
+    logger.warning(
+        "WARN {}: кадр {} помечен, не удалён: {}",
+        where,
+        shot.get("id") or "?",
+        reason,
+    )
+
+
+def _shot_live(shot: dict[str, Any]) -> bool:
+    return shot.get("активен") is not False and not shot.get("карантин")
+
+
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета режем мосты и перебивки, исходные события и следствие держим."""
+    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем."""
     out = list(shots)
+    if cap < 1:
+        return out
+    live_at = [i for i, shot in enumerate(out) if _shot_live(shot)]
+    if len(live_at) <= cap:
+        return out
+    sim = [(i, out[i]) for i in live_at]
+    drop_at: set[int] = set()
     for role in ("мост", "перебивка"):
-        i = len(out) - 1
-        while len(out) > cap and i >= 1:
-            if out[i].get("роль") == role:
-                out.pop(i)
+        i = len(sim) - 1
+        while len(sim) > cap and i >= 1:
+            if sim[i][1].get("роль") == role:
+                drop_at.add(sim[i][0])
+                sim.pop(i)
             i -= 1
-    return out[:cap] if len(out) > cap else out
+    if len(sim) > cap:
+        for orig_i, _shot in sim[cap:]:
+            drop_at.add(orig_i)
+    for idx in sorted(drop_at):
+        shot = out[idx]
+        if not _shot_live(shot):
+            continue
+        _mark_shot_kept(
+            shot,
+            f"сверх бюджета {cap} — кадр сохранён",
+            where="_trim_to_cap",
+        )
+    return out
 
 
 def _ensure_coverage_angle_30(
@@ -1571,28 +1613,53 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
         stem = action_stem(str(shot.get("действие") or ""))
         alone = len(_group(shots, shot.get("якорь_n"))) <= 1
         if stem and stem in seen and not alone:
-            fixed.append(f"убран повтор «{stem[:40]}»")
-            continue
-        if stem:
+            if _shot_live(shot):
+                _mark_shot_kept(
+                    shot,
+                    f"повтор «{stem[:40]}» — кадр сохранён",
+                    where="repair_shots",
+                )
+            fixed.append(f"помечен повтор «{stem[:40]}»")
+        elif stem:
             seen.add(stem)
         kept.append(shot)
     rebuilt: list[dict[str, Any]] = []
+    placed: set[int] = set()
     for unit in units:
         group = _group(kept, unit["n"])
-        if len(group) > unit["бюджет"]:
-            fixed.append(f"якорь {unit['n']}: кадров {len(group)} > {unit['бюджет']} — мосты сжаты")
+        live_n = sum(1 for shot in group if _shot_live(shot))
+        if live_n > unit["бюджет"]:
+            fixed.append(
+                f"якорь {unit['n']}: кадров {live_n} > {unit['бюджет']} — лишние помечены"
+            )
             group = _trim_to_cap(group, unit["бюджет"])
         piece = _norm(unit["закадр"])
-        empty = any(not _norm(s.get("закадр")) for s in group)
-        if group and (_glue(group) != piece or (empty and len(piece.split()) >= len(group))):
-            for shot, part in zip(group, split_vo_for_shots(piece, len(group)), strict=False):
+        live = [shot for shot in group if _shot_live(shot)] or group
+        empty = any(not _norm(s.get("закадр")) for s in live)
+        if live and (_glue(live) != piece or (empty and len(piece.split()) >= len(live))):
+            for shot, part in zip(live, split_vo_for_shots(piece, len(live)), strict=False):
                 shot["закадр"] = part
             fixed.append(f"якорь {unit['n']}: закадр кадров = кусок якоря дословно")
         rebuilt.extend(group)
+        placed.update(id(shot) for shot in group)
+    for shot in kept:
+        if id(shot) in placed:
+            continue
+        if _shot_live(shot):
+            _mark_shot_kept(
+                shot,
+                f"якорь {shot.get('якорь_n')} не совпал — кадр сохранён",
+                where="repair_shots",
+            )
+        fixed.append(f"якорь {shot.get('якорь_n')} не совпал — кадр сохранён")
+        rebuilt.append(shot)
     shots[:] = rebuilt
-    fixed.extend(smooth_plan_sequence(shots))
+    live_shots = [shot for shot in shots if _shot_live(shot)]
+    fixed.extend(smooth_plan_sequence(live_shots))
     prev: dict[str, Any] | None = None
     for shot in shots:
+        if not _shot_live(shot):
+            continue
         note = _ensure_coverage_angle_30(shot, prev)
         if note:
             fixed.append(note)
@@ -1622,12 +1689,13 @@ def qc_reasons(
     """(брак, замечания) по разделу режиссуры и shots_qc_ru."""
     hard: list[str] = []
     soft: list[str] = []
-    if not shots:
+    live_shots = [shot for shot in shots if isinstance(shot, dict) and _shot_live(shot)]
+    if not live_shots:
         return ["пустые кадры"], soft
-    if not anchors_grouped(shots, len(units)):
+    if not anchors_grouped(live_shots, len(units)):
         hard.append("кадры не разложены по якорям подряд")
     for unit in units:
-        group = _group(shots, unit["n"])
+        group = _group(live_shots, unit["n"])
         if group and _glue(group) != _norm(unit["закадр"]):
             hard.append(f"якорь {unit['n']}: склейка закадра кадров ≠ куску якоря")
         if len(_norm(unit["закадр"]).split()) >= len(group):
@@ -1636,7 +1704,7 @@ def qc_reasons(
                     hard.append(f"кадр {shot.get('порядок')}: пустой закадр")
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
-    for shot in shots:
+    for shot in live_shots:
         n = shot.get("порядок")
         step = str(shot.get("действие") or "")
         if _COGNITIVE_ONLY_RE.search(step):
@@ -1721,6 +1789,9 @@ async def stage_qc(
                 )
             )
         except Exception as exc:  # noqa: BLE001
+            from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+            reraise_if_spend_blocked(exc)
             reply = ""
             notes.append(f"GPT QC: {type(exc).__name__}"[:80])
         raw = _ops_fields(reply, str(parent.uuid or "")).get("кадры")
@@ -1729,6 +1800,10 @@ async def stage_qc(
                 raw, cell_number=int(parent.number), place=place, anchors=len(units)
             )
             if candidate and len(candidate) == len(shots):
+                for i, shot in enumerate(candidate):
+                    src_anchor = shots[i].get("якорь_n") if isinstance(shots[i], dict) else None
+                    if src_anchor is not None:
+                        shot["якорь_n"] = src_anchor
                 extra = repair_shots(candidate, units)
                 c_hard, c_soft = qc_reasons(candidate, units)
                 if len(c_hard) < len(hard):

@@ -1618,7 +1618,9 @@ def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
     qc_spec = next(s for s in group.nodes if s.local_key == "qc")
     qc = by_id[qc_id]
     data = dict(qc.get("data") or {})
-    if data.get("label") != qc_spec.label:
+    qc_label = str(data.get("label") or "").strip()
+    qc_legacy_labels = _SCRIPT_FRAMES_QC_LEGACY_LABELS.get("qc", frozenset())
+    if (not qc_label or qc_label in qc_legacy_labels) and qc_label != qc_spec.label:
         data["label"] = qc_spec.label
         data["description"] = qc_spec.description
         data["groupTitle"] = group.title
@@ -1627,13 +1629,20 @@ def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
     variants = meta.get("prompt_slot_variants")
     variants = dict(variants) if isinstance(variants, dict) else {}
     cur = variants.get(qc_id)
-    if not isinstance(cur, dict) or str(cur.get("main") or "") != "shots_qc_ru":
-        variants[qc_id] = {"main": "shots_qc_ru"}
-        changed = True
+    qc_main = str(cur.get("main") or "") if isinstance(cur, dict) else ""
+    qc_legacy_prompts = _SCRIPT_FRAMES_QC_LEGACY_PROMPTS.get("qc", frozenset())
+    if not qc_main or qc_main in qc_legacy_prompts:
+        upd = dict(cur) if isinstance(cur, dict) else {}
+        if upd.get("main") != "shots_qc_ru":
+            upd["main"] = "shots_qc_ru"
+            variants[qc_id] = upd
+            changed = True
     shots_spec = next(s for s in group.nodes if s.local_key == "shots")
     shots_n = by_id[shots_id]
     sdata = dict(shots_n.get("data") or {})
-    if sdata.get("label") != shots_spec.label:
+    shots_label = str(sdata.get("label") or "").strip()
+    shots_legacy = _SCRIPT_FRAMES_QC_LEGACY_LABELS.get("shots", frozenset())
+    if (not shots_label or shots_label in shots_legacy) and shots_label != shots_spec.label:
         sdata["label"] = shots_spec.label
         sdata["description"] = shots_spec.description
         shots_n["data"] = sdata

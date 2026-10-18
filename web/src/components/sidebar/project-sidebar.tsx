@@ -529,6 +529,22 @@ export function ProjectSidebar({
           </div>
         </div>
         <div className="flex items-center gap-1">
+          <NewProjectWizard
+            folderId={activeFolderId}
+            onCreated={(p) => onSelect(p.id)}
+            trigger={
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 rounded-none bg-transparent text-zinc-400 hover:bg-[#1a1a1e] hover:text-white"
+                title="Новый проект"
+                aria-label="Новый проект"
+              >
+                <Plus className="h-4 w-4" strokeWidth={1.75} />
+              </Button>
+            }
+          />
           <Button
             type="button"
             size="icon"

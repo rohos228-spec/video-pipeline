@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
+from loguru import logger
+
 from app.services.db_apply import extract_apply_ops_json
 from app.services.volume_batches import (
     MIN_CONTINUE_SIZE,
@@ -247,7 +249,9 @@ _SHOT2_PROMPT_KEYS = (
 _PROMPT_FIELD_KEYS = _SHOT1_PROMPT_KEYS + _SHOT2_PROMPT_KEYS
 
 
-_FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
+_FRAME_UUID_RE = re.compile(
+    r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[a-fA-F0-9]{3,64})$"
+)
 _PLACEHOLDER_PROMPT = frozenset({"", "…", "...", "—", "-"})
 # Запись в DB: короче — заглушка (портрет 1 строка / «…»), не сцена+STYLE.
 IMG_PR_MIN_WRITE_CHARS = 200
@@ -321,6 +325,38 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     return clean
 
 
+def merge_img_pr_checkpoint(
+    raw_ops: list[Any],
+    applied: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """applied + ещё не применённые writeable + rejected.
+
+    ``_apply_img_pr_ops_now`` может вернуть ``[]`` (сессия не в ту БД).
+    Короткие опы не должны вытеснить из чекпоинта полные промты.
+    """
+    writeable, rejected = partition_img_pr_checkpoint(raw_ops)
+    applied_ids = {uuid_of_op(op) for op in applied if uuid_of_op(op)}
+    pending = [op for op in writeable if uuid_of_op(op) not in applied_ids]
+    stored = list(applied) + pending + list(rejected)
+    if not stored:
+        stored = [op for op in raw_ops if isinstance(op, dict)]
+    done = [uuid_of_op(op) for op in applied if uuid_of_op(op)]
+    return stored, done
+
+
+def partition_img_pr_checkpoint(ops: list[Any]) -> tuple[list[dict], list[dict]]:
+    """Пишемые опы и отброшенные. Чекпоинт хранит оба списка, не только фильтр."""
+    raw = [op for op in ops if isinstance(op, dict)]
+    writeable = writeable_img_pr_ops(raw)
+    writeable_ids = {uuid_of_op(op) for op in writeable if uuid_of_op(op)}
+    rejected = [
+        op
+        for op in raw
+        if not uuid_of_op(op) or uuid_of_op(op) not in writeable_ids
+    ]
+    return writeable, rejected
+
+
 def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
     """Ops, которые можно писать в DB: реальный uuid + полный промт."""
     kept: list[dict] = []
@@ -332,6 +368,13 @@ def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
             len(shot1) < IMG_PR_MIN_WRITE_CHARS
             and len(shot2) < IMG_PR_MIN_WRITE_CHARS
         ):
+            logger.warning(
+                "img_pr: промт короче {} симв., кадр {} не записан (shot1={} shot2={})",
+                IMG_PR_MIN_WRITE_CHARS,
+                op.get("frame_uuid") or op.get("uuid") or "?",
+                len(shot1),
+                len(shot2),
+            )
             continue
         kept.append(op)
     return kept

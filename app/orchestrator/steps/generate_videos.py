@@ -116,7 +116,11 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не вызывать outsee, если клип уже есть на диске или одобрен."""
+    """Не вызывать outsee, если кадр скрыт, клип уже есть или одобрен."""
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
+    if frame_hidden_from_paid_generation(fr):
+        return True
     if getattr(fr, "status", None) == FrameStatus.video_approved:
         return True
     return bool(has_video_file)
@@ -336,9 +340,13 @@ async def _claim_shot2_video_batch(
     from app.services.freeze_stills import frame_is_freeze
     from app.services.vo_shot_expand import is_shot_child
 
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
         if fr.number in exclude_numbers:
+            continue
+        if frame_hidden_from_paid_generation(fr):
             continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
@@ -430,6 +438,7 @@ async def _generate_shot1_one(
         duplicate_check_paths=dups,
         idempotent=True,
     )
+    sub_line = getattr(result, "model_substitution", None)
     session.add(
         Artifact(
             project_id=project.id,
@@ -437,9 +446,13 @@ async def _generate_shot1_one(
             kind=ArtifactKind.scene_video,
             uuid=uuid.uuid4().hex,
             path=str(result.file_path),
-            meta={"shot": 1},
+            meta={"shot": 1, **({"model_substitution": str(sub_line)} if sub_line else {})},
         )
     )
+    if sub_line:
+        from app.services.model_substitution import frame_card_with_substitution
+
+        fr.attrs = frame_card_with_substitution(fr.attrs, str(sub_line))
     fr.status = FrameStatus.video_generated
     await session.flush()
     await _mark_clip_request_consumed(project.id, result.file_path)

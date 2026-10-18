@@ -817,6 +817,8 @@ class GenerationResult:
     # какая-то кнопка (aspect/relax/etc.). Оркестратор отправляет их
     # в TG для отладки селекторов.
     dumps: list[Path] | None = None
+    # Строка отчёта, если генерация прошла на подменённой модели.
+    model_substitution: str | None = None
 
     @property
     def image_path(self) -> Path:

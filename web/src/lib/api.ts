@@ -1210,6 +1210,7 @@ export const api = {
     const params = new URLSearchParams();
     if (opts?.dryRun) params.set("dry_run", "true");
     if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
+    // Явный resume: повтор шага не делает wipe. Серверный дефолт сюда не подставляется.
     params.set("mode", opts?.mode ?? "resume");
     if (opts?.forceWipe != null) params.set("force_wipe", String(opts.forceWipe));
     const q = params.toString() ? `?${params.toString()}` : "";
@@ -1714,6 +1715,7 @@ export const api = {
       900_000,
     ),
 
+  /** Только ручное удаление после confirm. Автоматика этот метод не вызывает. */
   deleteMontageFrame: (projectId: number, frameId: number) =>
     http<{ ok: boolean; frame_id: number; number: number; deleted: number }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}`,
@@ -1793,6 +1795,13 @@ export const api = {
             frame_number?: number;
             shot?: number;
           };
+        }>;
+        pending_ops?: Array<{
+          type: string;
+          frame_number: number;
+          shot?: number | string;
+          slot?: string;
+          instruction?: string;
         }>;
       };
     }>(`/api/projects/${projectId}/montage-board/apply-status`),

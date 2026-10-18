@@ -542,6 +542,16 @@ async def _load_refs_for_frame(
     return refs[:_OUTSEE_MAX_REFS]
 
 
+def frame_hidden_from_paid_generation(fr: Frame) -> bool:
+    """Скрытый кадр не ставим в платную очередь."""
+    from app.orchestrator.validators.activity_flags import frame_is_active
+
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return not frame_is_active(attrs)
+
+
 def requeue_failed_frames_without_png(
     frames: list[Frame],
     out_dir: Path,
@@ -551,6 +561,8 @@ def requeue_failed_frames_without_png(
     """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
     n = 0
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         if (
             fr.status is FrameStatus.failed
             and not (fr.attrs or {}).get("rejected_by_human")
@@ -683,6 +695,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     queued = 0
     requeue_failed_frames_without_png(frames, out_dir, project_id=project.id)
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         if disk_has_valid_frame_image(out_dir, fr.number):
             if fr.status not in (
                 FrameStatus.image_approved,
@@ -2062,6 +2076,7 @@ async def _generate_and_send(
         await session.commit()
         return
 
+    sub_line = getattr(result, "model_substitution", None)
     art = Artifact(
         project_id=project.id,
         frame_id=frame.id,
@@ -2073,6 +2088,11 @@ async def _generate_and_send(
             "raw_url": result.raw_url or "",
             "shot": shot,
             **({"provider_task_id": result.gen_id} if result.gen_id and result.gen_id != gen_id else {}),
+            **(
+                {"model_substitution": str(sub_line)}
+                if sub_line
+                else {}
+            ),
         },
     )
     from app.services.media_jobs import persist_artifact
@@ -2083,6 +2103,10 @@ async def _generate_and_send(
         frame.attrs = attrs
     else:
         frame.status = FrameStatus.image_generated
+    if sub_line:
+        from app.services.model_substitution import frame_card_with_substitution
+
+        frame.attrs = frame_card_with_substitution(frame.attrs, str(sub_line))
     await session.flush()
 
     try:

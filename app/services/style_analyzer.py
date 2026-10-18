@@ -16,6 +16,37 @@ from typing import Any
 
 from loguru import logger
 
+
+async def _paid_ask(
+    budget: Any,
+    text: str,
+    files: list[Path] | None,
+    *,
+    system: str,
+    timeout: float,
+    label: str,
+    project_id: int | None = None,
+) -> str:
+    """Платный разбор стиля: kill switch, маршрут 52pay, бюджет агента."""
+    from app.services.api_tracker_hook import check_api_allowed
+    from app.services.llm_override import use_override
+    from app.services.style_agent.job import _pipeline_text_override
+    from app.services.style_agent.llm import ask
+
+    check_api_allowed(provider="52pay", model="gpt-5.6-sol")
+    route = _pipeline_text_override({"id": "gpt-5.6-sol"})
+    with use_override(route):
+        return await ask(
+            text,
+            files=list(files or []),
+            system=system,
+            budget=budget,
+            label=label,
+            timeout=timeout,
+            project_id=project_id,
+        )
+
+
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 BATCH_SIZE = 8  # лимит vision-входа gpt_api: до 8 изображений / 4MB каждое
 MAX_IMAGES = 64
@@ -157,26 +188,29 @@ async def analyze_style_images(
     paths: list[str | Path],
     *,
     name_hint: str | None = None,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     """Изображения → запись стиля {name, desc, category, prompt_core} + сырые заметки."""
     images = collect_image_paths(paths)
-    from app.services.gpt_client import get_gpt_client
+    from app.services.style_agent.budget import LlmBudget
 
-    client = get_gpt_client()
+    batches = batch_paths(images)
+    budget = LlmBudget(max_calls=max(1, len(batches) + 2))
 
     # 1) Пачки → заметки по общим критериям
     notes: list[dict[str, Any]] = []
     async def _ask(i: int, batch: Any) -> Any:
-        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
-        return await client.ask_with_files(
+        return await _paid_ask(
+            budget,
             "Проанализируй эту пачку референсов по критериям из system-промпта.",
             batch,
             system=_NOTES_SYSTEM,
             timeout=240,
-            max_retries=1,
+            label="style_notes",
+            project_id=project_id,
         )
 
-    _raws = await asyncio.gather(*[_ask(i, b) for i, b in enumerate(batch_paths(images))])
+    _raws = await asyncio.gather(*[_ask(i, b) for i, b in enumerate(batches)])
     for i, raw in enumerate(_raws):
         note = parse_json_object(raw)
         if note:
@@ -190,8 +224,14 @@ async def analyze_style_images(
     synth_user = json.dumps(notes, ensure_ascii=False, indent=2)
     if name_hint:
         synth_user += f"\n\nПодсказка названия от пользователя: {name_hint}"
-    raw = await client.ask_with_files(
-        synth_user, [], system=_SYNTH_SYSTEM, timeout=240, max_retries=1
+    raw = await _paid_ask(
+        budget,
+        synth_user,
+        [],
+        system=_SYNTH_SYSTEM,
+        timeout=240,
+        label="style_synth",
+        project_id=project_id,
     )
     data = parse_json_object(raw)
     if not data:
@@ -321,26 +361,29 @@ async def build_style_agent(
     *,
     user_request: str = "",
     name_hint: str | None = None,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     """Референсы (+ пожелание пользователя) → готовый текст агента стиля."""
     images = collect_image_paths(paths)
-    from app.services.gpt_client import get_gpt_client
+    from app.services.style_agent.budget import LlmBudget
 
-    client = get_gpt_client()
+    batches = batch_paths(images)
+    budget = LlmBudget(max_calls=max(1, len(batches) + 3))
 
     notes: list[dict[str, Any]] = []
     last_err = ""
     async def _ask2(i: int, batch: Any) -> Any:
-        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
-        return await client.ask_with_files(
+        return await _paid_ask(
+            budget,
             "Проанализируй эту пачку референсов по критериям из system-промпта.",
             batch,
             system=_NOTES_SYSTEM,
             timeout=240,
-            max_retries=1,
+            label="style_agent_notes",
+            project_id=project_id,
         )
 
-    _raws2 = await asyncio.gather(*[_ask2(i, b) for i, b in enumerate(batch_paths(images))], return_exceptions=True)
+    _raws2 = await asyncio.gather(*[_ask2(i, b) for i, b in enumerate(batches)], return_exceptions=True)
     for i, raw in enumerate(_raws2):
         try:
             if isinstance(raw, BaseException):
@@ -356,12 +399,14 @@ async def build_style_agent(
             logger.warning("build_style_agent: пачка {} — нечитаемый ответ, пропуск", i + 1)
     if not notes and len(images) > 1 and not _gpt_host_dead(last_err):
         try:
-            raw = await client.ask_with_files(
+            raw = await _paid_ask(
+                budget,
                 "Проанализируй эту пачку референсов по критериям из system-промпта.",
                 images[:1],
                 system=_NOTES_SYSTEM,
                 timeout=240,
-                max_retries=1,
+                label="style_agent_notes_retry",
+                project_id=project_id,
             )
             note = parse_json_object(raw)
             if note:
@@ -382,8 +427,14 @@ async def build_style_agent(
         user += f"\n\nПодсказка названия: {name_hint}"
     await asyncio.sleep(2.0)
     try:
-        raw = await client.ask_with_files(
-            user, [], system=_AGENT_SYSTEM, timeout=300, max_retries=1
+        raw = await _paid_ask(
+            budget,
+            user,
+            [],
+            system=_AGENT_SYSTEM,
+            timeout=300,
+            label="style_agent",
+            project_id=project_id,
         )
         entry = parse_agent_reply(raw, name_hint=name_hint)
     except Exception as e:  # noqa: BLE001 — шлюз часто рвёт второй вызов
@@ -405,13 +456,17 @@ async def build_style_agent(
     }
 
 
-async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:
+async def categorize_styles(
+    entries: list[dict[str, Any]],
+    *,
+    project_id: int | None = None,
+) -> dict[str, Any]:
     """Список записей стилей → категории по общим критериям."""
     if not entries:
         raise ValueError("Пустой список стилей")
-    from app.services.gpt_client import get_gpt_client
+    from app.services.style_agent.budget import LlmBudget
 
-    client = get_gpt_client()
+    budget = LlmBudget(max_calls=1)
     slim = [
         {
             "name": e.get("name"),
@@ -421,12 +476,14 @@ async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:
         }
         for e in entries
     ]
-    raw = await client.ask_with_files(
+    raw = await _paid_ask(
+        budget,
         json.dumps(slim, ensure_ascii=False, indent=2),
         [],
         system=_CATEGORIES_SYSTEM,
         timeout=240,
-        max_retries=1,
+        label="style_categories",
+        project_id=project_id,
     )
     data = parse_json_object(raw)
     cats = data.get("categories") if data else None

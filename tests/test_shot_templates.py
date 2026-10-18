@@ -90,7 +90,9 @@ def test_police_catalog_fills_sequential_ladders() -> None:
     ]
     for shots in by_scene.values():
         assert shots
-        assert all(str(s.get("закадр") or "").strip() for s in shots)
+        live = [s for s in shots if not s.get("карантин")]
+        assert live
+        assert all(str(s.get("закадр") or "").strip() for s in live)
         acts = [str(s.get("действие") or "").casefold() for s in shots]
         assert len(acts) == len(set(acts))
     assert not any("{" in str(sh.get("действие") or "") for sh in filled)
@@ -121,7 +123,9 @@ def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
     assert filled
     acts = [str(sh.get("действие") or "") for sh in filled]
     assert len(acts) == len({a.casefold() for a in acts})
-    assert all(str(sh.get("закадр") or "").strip() for sh in filled)
+    live = [sh for sh in filled if not sh.get("карантин")]
+    assert live
+    assert all(str(sh.get("закадр") or "").strip() for sh in live)
     for sh in filled:
         act = str(sh.get("действие") or "")
         assert "понял / испугался" not in act
@@ -576,7 +580,9 @@ def test_catalog_fill_keeps_unique_gpt_actions() -> None:
     acts = [str(s.get("действие") or "") for s in filled]
     assert k1 in acts[0]
     assert len({a.casefold() for a in acts}) == len(acts)
-    assert all(str(s.get("закадр") or "").strip() for s in filled)
+    live = [s for s in filled if not s.get("карантин")]
+    assert live
+    assert all(str(s.get("закадр") or "").strip() for s in live)
     assert "Средний план по пояс" not in "".join(acts)
 
 

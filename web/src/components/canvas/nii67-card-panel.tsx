@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
+import { clearNii67ProjectViews } from "@/lib/nii67-project-state";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
   BLOCK_KINDS,
@@ -666,8 +667,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const [frames, setFrames] = useState<Nii67Frame[]>([]);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const dirtyRef = useRef(false);
+  const framesDirtyRef = useRef(false);
   const cardRef = useRef(card);
   const editGen = useRef(0);
+  const projectRef = useRef(projectId);
+  projectRef.current = projectId;
   const previewsRef = useRef(previews);
   cardRef.current = card;
   previewsRef.current = previews;
@@ -680,16 +684,20 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
 
   useEffect(() => {
     dirtyRef.current = false;
-    editGen.current = 0;
+    framesDirtyRef.current = false;
+    editGen.current += 1;
     setDirty(false);
     setCard(defaultCard());
     setPreviewText(null);
+    const cleared = clearNii67ProjectViews(previewsRef.current);
+    setFrames(cleared.frames);
+    setPreviews(cleared.previews);
   }, [projectId]);
 
   useEffect(() => {
-    if (!cardQ.data || dirtyRef.current) return;
-    setCard(cardFromUnknown(cardQ.data.card));
-    if (Array.isArray(cardQ.data.frames)) setFrames(cardQ.data.frames);
+    if (!cardQ.data) return;
+    if (!dirtyRef.current) setCard(cardFromUnknown(cardQ.data.card));
+    if (!framesDirtyRef.current && Array.isArray(cardQ.data.frames)) setFrames(cardQ.data.frames);
   }, [cardQ.data]);
 
   useEffect(
@@ -698,6 +706,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     },
     [],
   );
+
+  function onFramesChange(next: Nii67Frame[]) {
+    framesDirtyRef.current = true;
+    setFrames(next);
+  }
 
   function change(mutator: (current: Nii67Card) => Nii67Card) {
     editGen.current += 1;
@@ -713,8 +726,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     applyName: (name: string) => void,
   ) {
     setUploading(slot);
+    const pid = projectId;
+    const gen = editGen.current;
     try {
-      const res = await api.uploadNii67(projectId, slot, file);
+      const res = await api.uploadNii67(pid, slot, file);
+      if (pid !== projectRef.current || gen !== editGen.current) return;
       applyName(res.name);
       toast.success("Файл сохранён в проект");
     } catch (error) {
@@ -736,10 +752,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const save = useMutation({
     mutationFn: async (mode: "draft" | "save") => {
       const gen = editGen.current;
-      const res = await api.putNii67(projectId, cardRef.current, mode);
-      return { res, gen, mode };
+      const pid = projectId;
+      const res = await api.putNii67(pid, cardRef.current, mode);
+      return { res, gen, mode, pid };
     },
-    onSuccess: ({ res, gen, mode }) => {
+    onSuccess: ({ res, gen, mode, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
@@ -758,8 +776,14 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   });
 
   const saveFrames = useMutation({
-    mutationFn: (list: Nii67Frame[]) => api.putNii67Frames(projectId, list),
-    onSuccess: (res) => {
+    mutationFn: async (list: Nii67Frame[]) => {
+      const pid = projectId;
+      const res = await api.putNii67Frames(pid, list);
+      return { res, pid };
+    },
+    onSuccess: ({ res, pid }) => {
+      if (pid !== projectRef.current) return;
+      framesDirtyRef.current = false;
       setFrames(res.frames);
       toast.success("Кадры сохранены");
     },
@@ -769,10 +793,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const makePlan = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
-      const res = await api.planNii67(projectId, cardRef.current);
-      return { res, gen };
+      const pid = projectId;
+      const res = await api.planNii67(pid, cardRef.current);
+      return { res, gen, pid };
     },
-    onSuccess: ({ res, gen }) => {
+    onSuccess: ({ res, gen, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
@@ -790,16 +816,19 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const generate = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
-      const res = await api.storyboardNii67(projectId, cardRef.current);
-      return { res, gen };
+      const pid = projectId;
+      const res = await api.storyboardNii67(pid, cardRef.current);
+      return { res, gen, pid };
     },
-    onSuccess: ({ res, gen }) => {
+    onSuccess: ({ res, gen, pid }) => {
+      if (pid !== projectRef.current) return;
       if (editGen.current === gen) {
         dirtyRef.current = false;
         setDirty(false);
         setCard(cardFromUnknown(res.card));
       }
       setPreviewText(res.general_plan);
+      framesDirtyRef.current = false;
       if (Array.isArray(res.frames)) setFrames(res.frames);
       toast.success("Раскадровка готова и записана в общий план");
       void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
@@ -813,13 +842,12 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     onSuccess: (res) => {
       editGen.current += 1;
       dirtyRef.current = false;
+      framesDirtyRef.current = false;
       setDirty(false);
       setCard(cardFromUnknown(res.card));
       setPreviewText(null);
-      setPreviews((prev) => {
-        Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
-        return {};
-      });
+      setFrames([]);
+      setPreviews((prev) => clearNii67ProjectViews(prev).previews);
       toast.success("Карточка сброшена");
       void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
     },
@@ -1178,7 +1206,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
                   Сохранить кадры
                 </Button>
               </div>
-              <Nii67FrameList frames={frames} onChange={setFrames} />
+              <Nii67FrameList frames={frames} onChange={onFramesChange} />
             </section>
           ) : null}
           <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-white/10 px-4 py-3">

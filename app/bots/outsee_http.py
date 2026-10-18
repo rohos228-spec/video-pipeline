@@ -56,6 +56,19 @@ class OutseeApiError(OutseeImageError):
     """Ошибка Outsee Developer API (совместима с outsee_retry)."""
 
 
+class OutseeSubmitUncertain(OutseeApiError):
+    """POST на генерацию мог уже уйти, исход неизвестен.
+
+    Повтор создаст второй платный запрос. ``generate_image_with_retries``
+    этот тип не повторяет.
+    """
+
+    def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
+        ctx = dict(context or {})
+        ctx["submit_uncertain"] = True
+        super().__init__(reason, context=ctx)
+
+
 class NanoBananaProOutseeBannedError(OutseeApiError):
     """Жёсткий запрет: Nano Banana Pro через Outsee нельзя никогда."""
 
@@ -330,71 +343,126 @@ def _prefer_curl_download(url: str) -> bool:
     return any(h in low for h in ("yandexcloud.net", "outseehistory"))
 
 
+def write_curl_header_file(headers: dict[str, str]) -> Path:
+    """Заголовки во временный файл 0600. В argv curl их нет."""
+    import os
+    import tempfile
+
+    fd, name = tempfile.mkstemp(prefix="outsee_hdr_", suffix=".txt")
+    os.close(fd)
+    path = Path(name)
+    path.write_text(
+        "".join(f"{key}: {value}\n" for key, value in headers.items()),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
+def curl_post_argv(
+    *,
+    curl: str,
+    url: str,
+    header_file: Path,
+    body_file: Path,
+    connect_timeout: int,
+    max_time: int,
+) -> list[str]:
+    return [
+        curl,
+        "-sS",
+        "-X",
+        "POST",
+        "--connect-timeout",
+        str(int(connect_timeout)),
+        "--max-time",
+        str(int(max_time)),
+        *_curl_tls_args(),
+        "-H",
+        f"@{header_file}",
+        "--data-binary",
+        f"@{body_file}",
+        url,
+    ]
+
+
 async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
     """Fallback, когда httpx не коннектится к outsee.io (Windows / долгий handshake)."""
     import os
     import shutil
     import tempfile
 
+    from app.services.api_tracker_hook import check_api_allowed
+    from app.services.spend_guard import (
+        active_spend_budget,
+        guard_paid_spend,
+        note_paid_spend,
+        pipeline_spend_budget,
+        use_spend_budget,
+    )
+
+    check_api_allowed(provider="outsee", model="generate")
+    if active_spend_budget() is None:
+        with use_spend_budget(pipeline_spend_budget()):
+            return await _post_generate_via_curl(path, body)
+    guard_paid_spend("outsee_generate_curl")
     curl = shutil.which("curl")
     if not curl:
         return None
     url = f"{_base_url()}{path}"
-    headers = _headers()
+    headers = {
+        **_headers(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     fd, tmp_name = tempfile.mkstemp(prefix="outsee_gen_", suffix=".json")
     os.close(fd)
     tmp = Path(tmp_name)
+    hdr: Path | None = None
     try:
         tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        hdr = write_curl_header_file(headers)
         proc = await asyncio.create_subprocess_exec(
-            curl,
-            "-sS",
-            "-X",
-            "POST",
-            "--connect-timeout",
-            str(int(_GENERATE_CONNECT_S)),
-            "--max-time",
-            str(int(_GENERATE_TOTAL_S)),
-            *_curl_tls_args(),
-            "-H",
-            f"Authorization: {headers['Authorization']}",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            "Accept: application/json",
-            "--data-binary",
-            f"@{tmp}",
-            url,
+            *curl_post_argv(
+                curl=curl,
+                url=url,
+                header_file=hdr,
+                body_file=tmp,
+                connect_timeout=int(_GENERATE_CONNECT_S),
+                max_time=int(_GENERATE_TOTAL_S),
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
+            code = int(proc.returncode)
             logger.warning(
                 "outsee_api.generate curl failed code={} err={}",
-                proc.returncode,
+                code,
                 (stderr or b"")[:200],
             )
-            if proc.returncode in _CURL_SENT_CODES:
-                _probe_mark(maybe_sent=True)
-                raise OutseeSubmitUnknownError(
-                    f"Outsee API {path}: curl оборвался после отправки (код {proc.returncode}); "
-                    "задача могла быть принята и оплачена, повторный submit не делаю",
-                    context={"path": path, "network": True, "curl_code": proc.returncode},
+            # 6/7 — хост не резолвится / нет соединения: POST ещё не ушёл.
+            # 28 и прочие — тело уже могло уйти, повтор создаст второй платёж.
+            if code not in (6, 7):
+                raise OutseeSubmitUncertain(
+                    f"Outsee generate curl: code {code}",
+                    context={"path": path, "curl_code": code},
                 )
             return None
         try:
             data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             logger.warning("outsee_api.generate curl: ответ не JSON")
-            _probe_mark(maybe_sent=True)
-            raise OutseeSubmitUnknownError(
-                f"Outsee API {path}: ответ на submit не разобран; задача могла быть принята и оплачена, "
-                "повторный submit не делаю",
-                context={"path": path},
-            )
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: ответ не JSON",
+                context={"path": path, "json": False},
+            ) from None
         if not isinstance(data, dict):
-            return None
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: ответ не объект",
+                context={"path": path, "json": False},
+            )
         err = data.get("error")
         if isinstance(err, dict):
             raise OutseeApiError(
@@ -402,11 +470,9 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
                 context={"path": path, "code": str(err.get("code") or "")},
             )
         if data.get("id") is None:
-            _probe_mark(maybe_sent=True)
-            raise OutseeSubmitUnknownError(
-                f"Outsee API {path}: ответ без id; задача могла быть принята и оплачена, "
-                "повторный submit не делаю",
-                context={"path": path, "body": data},
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: нет id",
+                context={"path": path},
             )
         logger.info(
             "outsee_api.submitted via curl path={} id={} status={}",
@@ -414,6 +480,7 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
             data.get("id"),
             data.get("status"),
         )
+        note_paid_spend("outsee_generate_curl")
         return data
     except OutseeApiError:
         raise
@@ -422,6 +489,8 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
         return None
     finally:
         tmp.unlink(missing_ok=True)
+        if hdr is not None:
+            hdr.unlink(missing_ok=True)
 
 
 def _generate_estimate(args: tuple, kwargs: dict) -> float:
@@ -450,12 +519,16 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 _probe_mark(in_flight=False)
                 if r.status_code >= 400:
                     _raise_api(r, where=path)
-                data = r.json()
+                try:
+                    data = r.json()
+                except ValueError as json_err:
+                    raise OutseeSubmitUncertain(
+                        "Outsee generate: ответ не JSON",
+                        context={"path": path, "json": False},
+                    ) from json_err
                 if not isinstance(data, dict) or data.get("id") is None:
-                    _probe_mark(maybe_sent=True)
-                    raise OutseeSubmitUnknownError(
-                        "Outsee generate: ответ на submit без id; задача могла быть принята и оплачена, "
-                        "повторный submit не делаю",
+                    raise OutseeSubmitUncertain(
+                        "Outsee generate: нет id",
                         context={"path": path, "body": data},
                     )
                 logger.info(
@@ -485,14 +558,7 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
             continue
         except (httpx.HTTPError, OSError) as e:
             detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
-            if isinstance(e, _SENT_ERRORS):
-                _probe_mark(maybe_sent=True)
-                raise OutseeSubmitUnknownError(
-                    f"Outsee API {path}: ответа нет после отправки ({type(e).__name__}); "
-                    "задача могла быть принята и оплачена, повторный submit не делаю",
-                    context={"path": path, "network": True, "exc_type": type(e).__name__},
-                ) from e
-            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException)):
+            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError)):
                 try:
                     via_curl = await _post_generate_via_curl(path, body)
                 except OutseeApiError as curl_err:
@@ -525,6 +591,16 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     )
                     await asyncio.sleep(delay)
                     continue
+            # Таймаут после отправки: исход платежа неизвестен, повтор не делаем.
+            if type(e).__name__ in {"ReadTimeout", "WriteTimeout", "RemoteProtocolError"}:
+                raise OutseeSubmitUncertain(
+                    f"Outsee API network {path}: {detail}",
+                    context={
+                        "path": path,
+                        "network": True,
+                        "exc_type": type(e).__name__,
+                    },
+                ) from e
             raise OutseeApiError(
                 f"Outsee API network {path}: {detail}",
                 context={
@@ -636,6 +712,7 @@ async def _download_via_curl(url: str, out_path: Path) -> bool:
     curl = shutil.which("curl")
     if not curl:
         return False
+    # Результат уже оплачен на создании: скачивание не режется бюджетом.
     try:
         proc = await asyncio.create_subprocess_exec(
             curl,

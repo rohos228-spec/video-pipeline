@@ -95,13 +95,8 @@ def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
         "```"
     )
     assert db_apply.salvage_ops_from_partial_json(text) == []
-    data = db_apply.extract_apply_ops_json(text)
-    assert data is not None
-    assert data["_salvaged_partial"] is True
-    assert data["ops"][0]["frame_uuid"] == "98ce4c2b0697437bad9f71d8"
-    bits = data["ops"][0]["fields"]["биты"]
-    assert len(bits) == 2
-    assert bits[1]["глагол"] == "оставляет"
+    # Обрезанный op с frame_uuid не закрываем: ячейка не должна считаться целой.
+    assert db_apply.extract_apply_ops_json(text) is None
 
 
 def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
@@ -111,12 +106,8 @@ def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
         '{"порядок":1,"изменение":"а","якорь":"раз"},'
         '{""порядок":27,"изменение":"б","якорь":"два"}'
     )
-    data = db_apply.extract_apply_ops_json(text)
-    assert data is not None
-    bits = data["ops"][0]["fields"]["биты"]
-    assert len(bits) == 2
-    assert bits[1]["порядок"] == 27
-    assert bits[1]["якорь"] == "два"
+    # Хвост оборван и в op есть frame_uuid — extract не отдаёт дописанный кадр.
+    assert db_apply.extract_apply_ops_json(text) is None
 
 
 def test_extract_apply_ops_json_strips_trailing_commas() -> None:

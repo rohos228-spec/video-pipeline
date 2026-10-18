@@ -392,7 +392,8 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
         {"type": "coverage_delete", "frame_number": 2},
     )
     gone = await session.get(Frame, child.id)
-    assert gone is None
+    assert gone is not None
+    assert (gone.attrs or {}).get("активен") is False
 
 
 @pytest.mark.asyncio

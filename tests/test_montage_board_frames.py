@@ -180,7 +180,8 @@ async def test_edit_and_clear_voiceover(
             )
         )
     ).scalars().all()
-    assert left == []
+    assert len(left) == 1
+    assert left[0].text == ""
 
 
 @pytest.mark.asyncio
@@ -223,9 +224,10 @@ async def test_delete_parent_keeps_children(
             )
         ).scalars()
     )
-    assert [fr.number for fr in left] == [2, 3]
-    assert left[0].voiceover_text == "кусок"
-    assert left[1].voiceover_text == "дальше"
+    assert [fr.number for fr in left] == [1, 2, 3]
+    assert (left[0].attrs or {}).get("активен") is False
+    assert left[1].voiceover_text == "кусок"
+    assert left[2].voiceover_text == "дальше"
 
 
 @pytest.mark.asyncio
@@ -526,8 +528,12 @@ async def test_delete_does_not_resurrect_from_disk_png(
     await session.commit()
     assert not png.exists()
     assert await ensure_frames_from_disk_media(session, project) == []
+    hidden = await session.get(Frame, fr.id)
+    assert hidden is not None
+    assert (hidden.attrs or {}).get("активен") is False
     board = await build_montage_board(session, project)
-    assert [row["number"] for row in board["frames"]] == [20]
+    assert 19 in [row["number"] for row in board["frames"]]
+    assert 20 in [row["number"] for row in board["frames"]]
 
 
 @pytest.mark.asyncio

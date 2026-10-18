@@ -266,10 +266,44 @@ def _stream_should_salvage_nostream(stream_err: BaseException | None) -> bool:
     )
 
 
-_HOST_IPV4: dict[str, str] = {}
+# ip, monotonic timestamp. Без TTL смена IP relay держит старый адрес до рестарта.
+_DNS_TTL_SEC = 60.0
+_HOST_IPV4: dict[str, tuple[str, float]] = {}
 _GETADDRINFO_ORIG = socket.getaddrinfo
 _GETADDRINFO_PATCHED = False
 _DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
+
+
+def _dns_host_key(host: str | None) -> str:
+    return str(host or "").strip().lower().rstrip(".")
+
+
+def _cached_ipv4(host: str | None) -> str | None:
+    key = _dns_host_key(host)
+    entry = _HOST_IPV4.get(key)
+    if not entry:
+        return None
+    ip, stored = entry
+    if time.monotonic() - stored > _DNS_TTL_SEC:
+        _HOST_IPV4.pop(key, None)
+        return None
+    return ip
+
+
+def forget_host_ipv4(host: str | None) -> None:
+    key = _dns_host_key(host)
+    if key:
+        _HOST_IPV4.pop(key, None)
+
+
+def note_gpt_connect_error(url: str | None, exc: BaseException | None) -> None:
+    """ConnectError сбрасывает кэш хоста, чтобы следующий заход резолвил IP заново."""
+    if not isinstance(exc, httpx.ConnectError) or not url:
+        return
+    host = urlparse(url).hostname
+    if host and _dns_host_key(host) in _HOST_IPV4:
+        forget_host_ipv4(host)
+        logger.warning("GPT DNS cache dropped after ConnectError host={}", host)
 
 
 def _install_gpt_getaddrinfo_cache() -> None:
@@ -286,12 +320,8 @@ def _install_gpt_getaddrinfo_cache() -> None:
         proto: int = 0,
         flags: int = 0,
     ):
-        key = str(host or "").lower().rstrip(".")
-        ip = _HOST_IPV4.get(key)
-        if ip:
-            # IPv6-сокет + IPv4-адрес на Windows → ConnectError errno=8.
-            if family == socket.AF_INET6:
-                return []
+        ip = _cached_ipv4(host)
+        if ip and family != socket.AF_INET6:
             return _GETADDRINFO_ORIG(
                 ip, port, socket.AF_INET, type, proto, flags
             )
@@ -384,7 +414,7 @@ def _dns_query_a_udp(host: str, server: str, timeout: float = 1.5) -> str | None
 
 
 def _remember_host_ipv4(host: str, ip: str) -> None:
-    _HOST_IPV4[host.strip(".").lower()] = ip
+    _HOST_IPV4[_dns_host_key(host)] = (ip, time.monotonic())
     _install_gpt_getaddrinfo_cache()
 
 
@@ -393,8 +423,7 @@ async def _ensure_url_host_resolves(url: str) -> None:
     host = urlparse(url).hostname
     if not host:
         return
-    key = host.lower().rstrip(".")
-    if key in _HOST_IPV4:
+    if _cached_ipv4(host):
         _install_gpt_getaddrinfo_cache()
         return
     loop = asyncio.get_running_loop()
@@ -2604,6 +2633,9 @@ async def _chat_completions_nostream(
     use_model: str,
 ) -> GptChatResult:
     """Один non-stream POST — когда SSE пришёл пустым или без ``data:``."""
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider="gpt", model=use_model)
     nostream = {**body, "stream": False}
     async with _async_client(timeout=_http_timeout(timeout)) as client:
         resp = await client.post(url, headers=headers, json=nostream)
@@ -3138,9 +3170,6 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
-_LLM_PACK_PARALLEL = 4
-
-
 def _merge_packed_apply_ops(texts: list[str]) -> str:
     from app.services.db_apply import extract_apply_ops_json
 
@@ -3180,9 +3209,10 @@ async def _chat_packed_parallel(
     """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
     import asyncio
 
+    from app.services.llm_pack_limit import llm_pack_limit
     from app.services.volume_batches import is_db_frames_path
 
-    sem = asyncio.Semaphore(_LLM_PACK_PARALLEL)
+    sem = asyncio.Semaphore(llm_pack_limit())
 
     async def _one(slice_path: Path, idx: int) -> GptChatResult:
         async with sem:
@@ -3400,13 +3430,19 @@ async def _chat_single(
             on_delta=on_delta,
         )
 
-    from app.services.llm_override import current_text_model_id
+    from app.services.llm_override import current_override, current_text_model_id
     from app.services.pay52_routes import resolve_text
 
     use_model = (
         model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
     ).strip()
     routed = resolve_text(use_model)
+    ov_now = current_override()
+    if routed is None and ov_now is not None and ov_now.provider == "52pay":
+        raise GptApiError(
+            f"нет маршрута 52pay для модели {use_model}",
+            context={"error_kind": "no_pay52_route", "model": use_model},
+        )
     if routed is not None:
         use_model = routed.api_model
         headers = routed.headers()
@@ -3524,6 +3560,8 @@ async def _chat_single(
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
+        check_api_allowed(provider=provider_label, model=use_model)
+        t0 = time.perf_counter()
         try:
             await _ensure_url_host_resolves(url)
             if is_anthropic:
@@ -3862,6 +3900,7 @@ async def _chat_single(
             )
             logger.warning(str(last_exc))
         except httpx.HTTPError as e:
+            note_gpt_connect_error(url, e)
             last_exc = GptApiError(
                 f"GPT сетевая ошибка: {type(e).__name__}: {_httpx_error_detail(e)}",
                 context={"error_kind": "network", "retryable": True, "model": use_model},
@@ -4955,6 +4994,7 @@ async def download_content(
             content_type = r.headers.get("content-type")
             out_path.write_bytes(r.content)
     except httpx.HTTPError as e:
+        note_gpt_connect_error(url, e)
         raise GptApiError(
             f"download сетевая ошибка: {type(e).__name__}: {e}",
             context={"url": url},
