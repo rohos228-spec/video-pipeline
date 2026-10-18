@@ -511,7 +511,7 @@ test("восстановление мягкого удаления идёт по
 test("предупреждения и пропущенное на частичной правке", async ({ page }) => {
   const broken = structuredClone(EXAMPLE_PARTIAL_EDIT);
   (broken.result as { skipped?: string[] }).skipped = [];
-  expect(readActionEnvelope(broken, 1)).toBeNull();
+  expect(readActionEnvelope(broken, 1)?.kind).toBe("invalid");
 
   await openWithToken(page, "act-partial");
   await emit(page, "act-partial", "step_finished", EXAMPLE_PARTIAL_EDIT);
@@ -677,6 +677,14 @@ test("ok-карточки edit, delete и report не содержат риск"
 test("approval без needsApproval даёт invalid", () => {
   const view = readActionEnvelope(EXAMPLE_UNKNOWN_APPROVAL, 1);
   expect(view?.kind).toBe("invalid");
+});
+
+test("partial true без skipped невалиден", () => {
+  const broken = structuredClone(EXAMPLE_PARTIAL_EDIT);
+  (broken.result as { skipped?: string[] }).skipped = [];
+  const view = readActionEnvelope(broken, 1);
+  expect(view?.kind).toBe("invalid");
+  expect(view?.error).toBe("Некорректный ответ действия");
 });
 
 test("плохой restore мягкого удаления даёт invalid", () => {

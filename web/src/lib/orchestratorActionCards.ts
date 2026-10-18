@@ -388,6 +388,12 @@ function skippedWithoutPartial(result: Record<string, unknown> | null): boolean 
   return stringList(result.skipped).length > 0 && result.partial !== true;
 }
 
+/** partial=true без списка пропущенного — пустая пометка, ответ невалиден. */
+function partialWithoutSkipped(result: Record<string, unknown> | null): boolean {
+  if (!result) return false;
+  return result.partial === true && stringList(result.skipped).length === 0;
+}
+
 function blankRef(value: unknown): boolean {
   return typeof value === "string" && value.trim() === "";
 }
@@ -487,7 +493,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   if (result && badActionName(result.restore_action) && !confirmedSoftDelete(result)) return null;
   const metaRaw = result ? plainObject(result.metadata) : null;
   if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);
-  if (skippedWithoutPartial(result)) return invalidView(seq);
+  if (skippedWithoutPartial(result) || partialWithoutSkipped(result)) return invalidView(seq);
   if (status === "approval_required") {
     const metadata = metadataFrom(metaRaw);
     if (!metadata || !needsApproval(metadata)) return invalidView(seq);
