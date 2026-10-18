@@ -16,12 +16,6 @@ from app.web.deps import get_session
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "app/services/montage_coverage_ops.py:1247 "
-        "attrs['кадры'] = kadry выкидывает 3-K9; файл WS1, не трогаем"
-    ),
-)
 async def test_apply_coverage_scene_action_keeps_frames_and_shot_ids() -> None:
     """apply_coverage_scene_action не удаляет кадры и не выкидывает id шота."""
     from app.services.montage_coverage_ops import apply_coverage_scene_action
