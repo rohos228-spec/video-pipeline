@@ -382,42 +382,49 @@ def test_restore_copied_inactive_shot_passes() -> None:
     assert run_preservation_validators(before, after, ops, mode="reject") == []
 
 
-def test_same_id_active_elsewhere_before_is_not_revived() -> None:
-    """Id неактивен в кадре A и уже активен в B — не revived.
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_same_id_active_elsewhere_before_is_not_revived(mode: str) -> None:
+    """A/k1 неактивен, B/k1 уже активен.
 
-    after == before, правка соседа и soft не должны отказывать.
-    То же для сцен без id, сопоставленных по номеру.
+    Запись без изменений и правка B/k2 проходят в reject и в soft.
+    Копия неактивного A/k1 в новый кадр как активный — по-прежнему revived.
     """
 
-    def project(*, by_number: bool) -> dict:
-        frame_a: dict = {
-            "номер": 1,
-            "кадры": [{"id": "k", "активен": False, "закадр": ""}],
-        }
-        frame_b: dict = {
-            "номер": 2,
-            "кадры": [
-                {"id": "k", "закадр": "живой"},
-                {"id": "neighbor", "закадр": "сосед"},
-            ],
-        }
-        if not by_number:
-            frame_a["id"] = "frame-a"
-            frame_b["id"] = "frame-b"
-        return {"сцены": [frame_a, frame_b]}
+    before = {
+        "сцены": [
+            {
+                "id": "A",
+                "номер": 1,
+                "кадры": [{"id": "k1", "активен": False, "закадр": ""}],
+            },
+            {
+                "id": "B",
+                "номер": 2,
+                "кадры": [
+                    {"id": "k1", "закадр": "живой"},
+                    {"id": "k2", "закадр": "сосед"},
+                ],
+            },
+        ]
+    }
+    unchanged = run_preservation_validators(before, copy.deepcopy(before), mode=mode)
+    assert all(item.code != "inactive_shot_revived" for item in unchanged)
 
-    def assert_not_revived(before: dict, after: dict, *, mode: str) -> None:
-        got = run_preservation_validators(before, after, mode=mode)
-        assert all(item.code != "inactive_shot_revived" for item in got)
+    edited = copy.deepcopy(before)
+    edited["сцены"][1]["кадры"][1]["закадр"] = "другой сосед"
+    touched = run_preservation_validators(before, edited, mode=mode)
+    assert all(item.code != "inactive_shot_revived" for item in touched)
 
-    for by_number in (False, True):
-        before = project(by_number=by_number)
-        assert_not_revived(before, copy.deepcopy(before), mode="reject")
-        assert_not_revived(before, copy.deepcopy(before), mode="soft")
-        neighbor = copy.deepcopy(before)
-        neighbor["сцены"][1]["кадры"][1]["закадр"] = "другой сосед"
-        assert_not_revived(before, neighbor, mode="reject")
-        assert_not_revived(before, copy.deepcopy(neighbor), mode="soft")
+    copied = copy.deepcopy(before)
+    copied["сцены"].append(
+        {"id": "C", "номер": 3, "кадры": [{"id": "k1", "активен": True, "закадр": ""}]}
+    )
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, copied, mode=mode)
+    assert any(
+        item.code == "inactive_shot_revived" and item.id == "k1"
+        for item in raised.value.violations
+    )
 
 
 def test_restore_scoped_to_frame_does_not_revive_copy() -> None:
