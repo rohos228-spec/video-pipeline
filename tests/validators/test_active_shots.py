@@ -382,6 +382,44 @@ def test_restore_copied_inactive_shot_passes() -> None:
     assert run_preservation_validators(before, after, ops, mode="reject") == []
 
 
+def test_same_id_active_elsewhere_before_is_not_revived() -> None:
+    """Id неактивен в кадре A и уже активен в B — не revived.
+
+    after == before, правка соседа и soft не должны отказывать.
+    То же для сцен без id, сопоставленных по номеру.
+    """
+
+    def project(*, by_number: bool) -> dict:
+        frame_a: dict = {
+            "номер": 1,
+            "кадры": [{"id": "k", "активен": False, "закадр": ""}],
+        }
+        frame_b: dict = {
+            "номер": 2,
+            "кадры": [
+                {"id": "k", "закадр": "живой"},
+                {"id": "neighbor", "закадр": "сосед"},
+            ],
+        }
+        if not by_number:
+            frame_a["id"] = "frame-a"
+            frame_b["id"] = "frame-b"
+        return {"сцены": [frame_a, frame_b]}
+
+    def assert_not_revived(before: dict, after: dict, *, mode: str) -> None:
+        got = run_preservation_validators(before, after, mode=mode)
+        assert all(item.code != "inactive_shot_revived" for item in got)
+
+    for by_number in (False, True):
+        before = project(by_number=by_number)
+        assert_not_revived(before, copy.deepcopy(before), mode="reject")
+        assert_not_revived(before, copy.deepcopy(before), mode="soft")
+        neighbor = copy.deepcopy(before)
+        neighbor["сцены"][1]["кадры"][1]["закадр"] = "другой сосед"
+        assert_not_revived(before, neighbor, mode="reject")
+        assert_not_revived(before, copy.deepcopy(neighbor), mode="soft")
+
+
 def test_restore_scoped_to_frame_does_not_revive_copy() -> None:
     """Один shot_id в двух кадрах: restore по frame_uuid оживляет только свой."""
 

@@ -63,6 +63,7 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
     seen: set[tuple[str, str, str]] = set()
     before_scenes = _scene_nodes(before)
     before_inactive = _inactive_pairs(before_scenes)
+    before_active = _active_pairs(before_scenes)
     inactive_ids = {shot_id for _owner, shot_id in before_inactive}
     before_by_id, before_by_number = _index_scenes(before_scenes)
     activated = _activated_pairs(operations, before_inactive)
@@ -88,7 +89,13 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
             fid = frame_id(shot) or ""
             # Id был неактивен в любом кадре. Копия в другом кадре — тоже revived,
             # пока restore не разрешил именно эту пару (кадр, shot_id).
-            if fid and fid in inactive_ids and (entity, fid) not in activated:
+            # Пара, которая в before уже была активной, — не оживление.
+            if (
+                fid
+                and fid in inactive_ids
+                and (entity, fid) not in activated
+                and (entity, fid) not in before_active
+            ):
                 _add(
                     violations,
                     seen,
@@ -156,6 +163,24 @@ def _inactive_pairs(scenes: list[dict[str, Any]]) -> set[tuple[str, str]]:
         entity = scene_id(scene) or scene_number(scene) or ""
         for shot in raw:
             if not isinstance(shot, dict) or shot_counts_as_active(shot):
+                continue
+            fid = frame_id(shot)
+            if fid:
+                found.add((entity, fid))
+    return found
+
+
+def _active_pairs(scenes: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Уже живые шоты как (кадр, shot_id). Тот же id в другом кадре их не оживляет."""
+
+    found: set[tuple[str, str]] = set()
+    for scene in scenes:
+        raw = scene.get("кадры")
+        if not isinstance(raw, list):
+            continue
+        entity = scene_id(scene) or scene_number(scene) or ""
+        for shot in raw:
+            if not isinstance(shot, dict) or not shot_counts_as_active(shot):
                 continue
             fid = frame_id(shot)
             if fid:
