@@ -16,6 +16,20 @@ import {
 } from "../../src/lib/orchestratorApi";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
+test("postOrchKill принимает 200 и null", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response("null", { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    const result = await postOrchKill(
+      { apiBase: "", session: "studio", token: "tok", scenario: "kill" },
+      { session_id: "studio", reason: "kill switch из чата" },
+    );
+    expect(result).toEqual({ status: 200, body: null });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("терминальное событие чужой сессии не закрывает свою задачу", () => {
   const opened = reduceOrchScreen(initialOrchScreen("own"), {
     type: "event",

@@ -281,7 +281,7 @@ export type OrchHttpResult<T> = {
   body: T | null;
 };
 
-async function readJsonObject<T>(res: Response): Promise<T | null> {
+async function readJsonObject<T>(res: Response, nullBodyOk = false): Promise<T | null> {
   const text = await res.text();
   if (!text.trim()) return null;
   let parsed: unknown;
@@ -290,13 +290,20 @@ async function readJsonObject<T>(res: Response): Promise<T | null> {
   } catch {
     throw new OrchApiError(res.status, text.slice(0, 300));
   }
+  if (parsed == null && nullBodyOk) return null;
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new OrchApiError(res.status, "ответ не объект");
   }
   return parsed as T;
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<OrchHttpResult<T>> {
+async function postJson<T>(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+  nullBodyOk = false,
+): Promise<OrchHttpResult<T>> {
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -313,7 +320,7 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
     throw new OrchApiError(res.status, await readError(res));
   }
   if (res.status === 204) return { status: 204, body: null };
-  return { status: res.status, body: await readJsonObject<T>(res) };
+  return { status: res.status, body: await readJsonObject<T>(res, nullBodyOk) };
 }
 
 function requireJsonBody<T>(result: OrchHttpResult<T>): T {
@@ -405,7 +412,7 @@ export function postOrchKill(
   body: OrchKillRequest,
   signal?: AbortSignal,
 ): Promise<OrchHttpResult<OrchKillHttpBody>> {
-  return postJson(cfg, "/api/orchestrator/kill", body, signal);
+  return postJson(cfg, "/api/orchestrator/kill", body, signal, true);
 }
 
 /** Проверка Bearer до записи в localStorage. Тело стрима закрывается сразу после статуса. */
