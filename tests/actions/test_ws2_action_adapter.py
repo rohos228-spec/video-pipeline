@@ -415,3 +415,58 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
     assert list(env.tmp_path.rglob("deleted-*")) == []
     restore = await execute("frame.restore", {"project_id": pid, "frame_id": ids[1]}, bare)
     assert restore.status == "failed"
+
+
+def _action_names(node, key=None):
+    found = []
+    if isinstance(node, dict):
+        for child_key, value in node.items():
+            found.extend(_action_names(value, child_key))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_action_names(value, key))
+    elif isinstance(node, str) and key in {"action", "restore_action", "name"}:
+        found.append(node)
+    return found
+
+
+async def test_adapter_result_matches_contract_schema(env) -> None:
+    """Ответ адаптера проходит JSON Schema влитого #378. В action нет «@»."""
+
+    import jsonschema
+
+    from app.models import Frame
+    from app.orchestrator.action_contracts.contracts import export_action_result_schema
+    from app.orchestrator.actions.executor import execute
+
+    schema = export_action_result_schema()["models"]["ActionResult"]
+    pid = await env.add_project(frames=1)
+    ids = await env.frame_ids(pid)
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.attrs = {"кадры": [{"id": "s1", "номер": 1, "активен": True, "текст": "первый"}]}
+        await session.commit()
+
+    bare = {"app": env.app, "operator": "adapter-test"}
+    held = await execute("montage.delete_frame", {"project_id": pid, "frame_id": ids[1]}, bare)
+    done = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        {
+            **bare,
+            "approval": {
+                "change_id": "orch-appr-4-1",
+                "action": "montage.delete_frame",
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": None,
+            },
+        },
+    )
+    for result in (held, done):
+        payload = result.model_dump(mode="json")
+        jsonschema.validate(payload, schema)
+        names = _action_names(payload)
+        assert names
+        assert all("@" not in name for name in names)
