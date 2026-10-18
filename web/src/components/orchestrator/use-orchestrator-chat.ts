@@ -10,12 +10,14 @@ import {
   orchTaskModeEnabled,
   parseOrchProjectId,
   parseOrchTaskId,
+  bindTaskId,
   projectBindWireBody,
   postOrchProject,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
   isForeignTaskBindError,
   PROJECT_BIND_INVALID,
+  PROJECT_BIND_TASK_INVALID,
   PROJECT_BIND_VALIDATION,
   OrchApiError,
   postOrchApprove,
@@ -395,11 +397,20 @@ export function useOrchestratorChat() {
         setDecisionError({ id: approvalId, message: PROJECT_BIND_INVALID });
         return;
       }
+      let taskNum: number | null;
+      try {
+        taskNum = bindTaskId(taskId);
+      } catch (error) {
+        setDecisionError({
+          id: approvalId,
+          message: error instanceof Error ? error.message : PROJECT_BIND_TASK_INVALID,
+        });
+        return;
+      }
       if (decisionLock.current) return;
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
-      const taskNum = parseOrchTaskId(taskId);
       try {
         await postOrchProject(cfg, projectBindWireBody(projectId, taskNum));
         dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });

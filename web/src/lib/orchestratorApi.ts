@@ -153,13 +153,22 @@ export function projectBindWireBody(projectId: number, taskId: number | null): O
   const body: OrchProjectBindRequest = { project_id: projectId };
   if (taskId == null) return body;
   if (!Number.isInteger(taskId) || taskId < 1) {
-    throw new Error(PROJECT_BIND_INVALID);
+    throw new Error(PROJECT_BIND_TASK_INVALID);
   }
   body.task_id = taskId;
   return body;
 }
 
+/** null — поля task_id нет. Непустая неверная строка — явная ошибка, на сервер не уходит. */
+export function bindTaskId(taskId: string | null): number | null {
+  if (taskId == null || taskId.trim() === "") return null;
+  const id = parseOrchTaskId(taskId);
+  if (id == null) throw new Error(PROJECT_BIND_TASK_INVALID);
+  return id;
+}
+
 export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
+export const PROJECT_BIND_TASK_INVALID = "Нужен целый task_id от 1";
 export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
 export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";
 export const PROJECT_BIND_FOREIGN = "Это не активная задача";

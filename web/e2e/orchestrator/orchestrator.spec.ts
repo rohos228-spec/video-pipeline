@@ -15,7 +15,9 @@ import {
   parseOrchProjectId,
   parseOrchTaskId,
   isForeignTaskBindError,
+  bindTaskId,
   projectBindWireBody,
+  PROJECT_BIND_TASK_INVALID,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
   PROJECT_BIND_INVALID,
@@ -80,6 +82,14 @@ test("not_the_active_task узнаётся по коду, а не по подс�
   expect(isForeignTaskBindError("not_the_active_task")).toBe(true);
   expect(isForeignTaskBindError("conflict not_the_active_task")).toBe(false);
   expect(isForeignTaskBindError("see not_the_active_task in the log")).toBe(false);
+});
+
+test("неверный task_id при bind даёт явную ошибку", () => {
+  expect(() => bindTaskId("0")).toThrow(PROJECT_BIND_TASK_INVALID);
+  expect(() => bindTaskId("1e21")).toThrow(PROJECT_BIND_TASK_INVALID);
+  expect(() => bindTaskId("abc")).toThrow(PROJECT_BIND_TASK_INVALID);
+  expect(bindTaskId(null)).toBeNull();
+  expect(bindTaskId("4")).toBe(4);
 });
 
 test("task_id вне безопасного целого не уходит в bind", () => {
