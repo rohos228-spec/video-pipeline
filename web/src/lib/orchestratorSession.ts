@@ -4,6 +4,11 @@
  */
 
 import {
+  readPaidOutcomeForecast,
+  readPaidOutcomeRestartOffered,
+  readPaidOutcomeRetryArmed,
+} from "./orchestratorPaidOutcome";
+import {
   AGENT_ROLES,
   BLOCK_OUTCOMES,
   type AgentRole,
@@ -163,13 +168,23 @@ export interface ApprovalView {
   id: string;
   /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
   serverId: boolean;
+  /** Серверный `change_id` карточки, формат `orch-appr-<задача>-<n>`. `step_change_id` сюда не попадает. */
+  changeId: string | null;
+  /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
+  sessionId: string | null;
   taskId: string | null;
   title: string;
   reason: string;
   risk: string;
   action: string;
   costEstimate: number | null;
-  resolved: "approved" | "rejected" | "closed" | null;
+  /** Прогноз paid_outcome_unknown (`forecast_usd`). */
+  forecast: number | null;
+  /** В `decisions` есть `retry_step`. Иначе кнопка перезапуска неактивна. */
+  restartOffered: boolean;
+  /** Первое `approval_required` несёт `retry_armed: false`. Подтверждение только при true. */
+  retryArmed: boolean;
+  resolved: "approved" | "rejected" | "retried" | "closed" | null;
 }
 
 export interface TaskView {
@@ -209,6 +224,8 @@ export interface KillNoticeView {
   /** Задача, которую останавливали. Чужой task_id баннер не двигает. */
   taskId: string | null;
   sessionId: string | null;
+  /** Поздний stop_key_set=false. «Остановлено» не откатывается. */
+  lateStopWarning: string;
 }
 
 export interface OrchScreenState {
@@ -232,7 +249,8 @@ export type OrchScreenAction =
       taskId?: string | null;
       sessionId?: string | null;
     }
-  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
+  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "retried" | "closed" }
+  | { type: "snapshot"; taskId: string | null; status: string }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -303,6 +321,16 @@ export function isTerminalBlock(reason: string): boolean {
   return outcome != null && TERMINAL_TASK.has(outcome);
 }
 
+export type ApprovalButton = "approve" | "deny" | "retry_step";
+
+/** Кнопки карточки. `missing_project_id` снимается через POST .../project, не через /approve. */
+export function approvalButtons(reason: string): ApprovalButton[] {
+  if (reason === "missing_project_id") return [];
+  if (reason === "paid_outcome_unknown" || reason === "paid_unknown_outcome") return ["retry_step", "deny"];
+  if (isTerminalBlock(reason)) return [];
+  return ["approve", "deny"];
+}
+
 function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
@@ -314,18 +342,46 @@ export function serverApprovalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Серверный id карточки approval. `step_change_id` — id шага, не карточки. */
+const APPROVAL_CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
+
+export function approvalChangeId(value: unknown): string | null {
+  const id = serverApprovalId(value);
+  return id && APPROVAL_CHANGE_ID.test(id) ? id : null;
+}
+
 /**
- * Id решения из шины ws3-r3.3: `ApprovalEvent.change_id`.
- * Явный `approval_id` оставлен для моков, у которых это поле уже есть.
- * Вложенный `payload` — тот же объект, если событие завернуло ApprovalEvent.
+ * Id карточки из шины: `approval_id`, иначе серверный `change_id`.
+ * `step_change_id` карточку не открывает и в /approve не уходит.
  */
 export function approvalServerKey(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.approval_id) ?? serverApprovalId(body.change_id);
+  const direct = serverApprovalId(body.approval_id) ?? approvalChangeId(body.change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
   const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.approval_id) ?? serverApprovalId(inner.change_id);
+  return serverApprovalId(inner.approval_id) ?? approvalChangeId(inner.change_id);
+}
+
+/** `change_id` события. `step_change_id` не подставляется. */
+function approvalEventChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
+}
+
+/**
+ * `change_id` для `ApproveIn`: только `^orch-appr-[0-9]+-[0-9]+$` с карточки.
+ * `step_change_id` не подставляется, даже если другого id нет.
+ */
+export function approvalWireChangeId(body: Record<string, unknown>): string | null {
+  const direct = approvalChangeId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return approvalChangeId((nested as Record<string, unknown>).change_id);
 }
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
@@ -334,10 +390,83 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
   return null;
 }
 
-function closeServerApproval(state: OrchScreenState, id: string, decision: "approved" | "rejected"): void {
-  const item = state.approvals.find((entry) => entry.id === id && entry.serverId);
-  if (!item || item.resolved) return;
+function approvalLegacyId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.approval_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).approval_id);
+}
+
+/**
+ * Ключ закрытия: `change_id`, иначе старый `approval_id`.
+ *
+ * ws3-r3.4 (#370 @ 1cfbcb7c) в `publish_approval_required` и payload
+ * `approval_decided` всегда кладёт серверный id `orch-appr-<task_id>-<n>`
+ * (`app/orchestrator/agents/supervisor.py`, `_mint_change_id` / `_APPR_ID`).
+ * `ApprovalEvent.change_id` в `app/orchestrator/contracts.py` на том же
+ * коммите остаётся `str | None`; `app/orchestrator/events.py` payload не
+ * проверяет. События #342 могли прийти только с `approval_id`.
+ */
+function approvalDecisionKey(body: Record<string, unknown>): string | null {
+  return approvalEventChangeId(body) ?? approvalLegacyId(body);
+}
+
+function approvalDecidedResolution(
+  body: Record<string, unknown>,
+): "approved" | "rejected" | "closed" | null {
+  if (!Object.prototype.hasOwnProperty.call(body, "decision")) return null;
+  const value = body.decision;
+  // #358: пустой decision — прежний grant, не кнопка «одобрить».
+  if (value == null) return "closed";
+  if (value === "approve" || value === "approved") return "approved";
+  if (value === "deny" || value === "rejected" || value === "reject") return "rejected";
+  if (value === "retry_step") return "closed";
+  return null;
+}
+
+function closeServerApproval(
+  state: OrchScreenState,
+  body: Record<string, unknown>,
+  decision: "approved" | "rejected" | "closed",
+): void {
+  const changeId = approvalEventChangeId(body);
+  const legacyId = approvalLegacyId(body);
+  const item = state.approvals.find((entry) => {
+    if (!entry.serverId || entry.resolved) return false;
+    if (entry.changeId) return changeId != null && entry.changeId === changeId;
+    // Карточка хранит только approval_id. change_id в том же событии её не прячет.
+    return legacyId != null && entry.id === legacyId;
+  });
+  if (!item) return;
   item.resolved = decision;
+}
+
+/**
+ * Карточка без id сервера и без change_id закрывается сменой статуса своей задачи и сессии.
+ * Старая карточка с serverId сравнивается по approval_id, статус её не закрывает.
+ */
+function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, sessionId: string | null): void {
+  if (!taskId || !sessionId) return;
+  for (const item of state.approvals) {
+    if (item.resolved || item.changeId || item.serverId) continue;
+    if (item.taskId !== taskId || item.sessionId !== sessionId) continue;
+    item.resolved = "closed";
+  }
+}
+
+function applyTaskStatus(
+  state: OrchScreenState,
+  taskId: string,
+  status: TaskStatus,
+  sessionId: string | null,
+): TaskView {
+  const task = ensureTask(state.tasks, taskId);
+  if (task.status !== status) {
+    closeApprovalsWithoutChange(state, taskId, sessionId);
+    task.status = status;
+  }
+  return task;
 }
 
 function isTerminalKillStatus(value: string): boolean {
@@ -366,6 +495,7 @@ function markKill(
     paidBoundary,
     taskId: target?.taskId ?? current?.taskId ?? null,
     sessionId: target?.sessionId ?? current?.sessionId ?? null,
+    lateStopWarning: "",
   };
 }
 
@@ -382,6 +512,13 @@ function noteKillRequested(
     return;
   }
   if (stopKey === false) {
+    if (next.killNotice?.phase === "stopped") {
+      next.killNotice = {
+        ...next.killNotice,
+        lateStopWarning: detail || "Поздний ответ: стоп-ключ не установлен",
+      };
+      return;
+    }
     markKill(next, "error", detail || "Стоп-ключ не установлен", false, target);
     return;
   }
@@ -402,40 +539,54 @@ function noteTaskCancelled(next: OrchScreenState, event: OrchEvent): void {
     paidBoundary: false,
     taskId: notice.taskId,
     sessionId: notice.sessionId,
+    lateStopWarning: "",
   };
 }
 
-function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>, seq: number): void {
-  const status = asTaskStatus(str(payload.task_status));
-  if (taskId && status) {
-    ensureTask(state.tasks, taskId).status = status;
-  }
+function absorbLlmSignal(
+  state: OrchScreenState,
+  taskId: string | null,
+  payload: Record<string, unknown>,
+  seq: number,
+  sessionId: string | null,
+): void {
+  const reported = asTaskStatus(str(payload.task_status));
   const approval = payload.approval;
-  if (!approval || typeof approval !== "object") return;
-  const body = approval as Record<string, unknown>;
-  const reason = str(body.reason);
-  if (!reason) return;
+  const body = approval && typeof approval === "object" ? (approval as Record<string, unknown>) : null;
+  const reason = body ? str(body.reason) : "";
+  let nextStatus = reported;
+  if (reason && isTerminalBlock(reason)) {
+    nextStatus = blockOutcome(reason) ?? "failed";
+  } else if (
+    reason &&
+    (reported === "waiting_approval" || blockOutcome(reason) === "waiting_approval" || reason === "budget_exhausted")
+  ) {
+    nextStatus = "waiting_approval";
+  }
+  if (taskId && nextStatus) {
+    const task = applyTaskStatus(state, taskId, nextStatus, sessionId);
+    if (reason && isTerminalBlock(reason)) task.error = reason;
+  }
+  if (!reason || !body) return;
   const fromServer = approvalServerKey(body);
   const id = fromServer ?? `local-llm-${seq}`;
   if (!state.approvals.some((item) => item.id === id)) {
     state.approvals.push({
       id,
       serverId: fromServer != null,
+      changeId: approvalEventChangeId(body),
+      sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
       risk: str(body.risk),
       action: str(body.action),
       costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      forecast: readPaidOutcomeForecast(body),
+      restartOffered: readPaidOutcomeRestartOffered(body),
+      retryArmed: readPaidOutcomeRetryArmed(body),
       resolved: null,
     });
-  }
-  if (taskId && isTerminalBlock(reason)) {
-    const task = ensureTask(state.tasks, taskId);
-    task.status = blockOutcome(reason) ?? "failed";
-    task.error = reason;
-  } else if (taskId && (status === "waiting_approval" || blockOutcome(reason) === "waiting_approval" || reason === "budget_exhausted")) {
-    ensureTask(state.tasks, taskId).status = "waiting_approval";
   }
 }
 
@@ -500,9 +651,23 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         phase: action.phase,
         taskId: action.taskId ?? state.killNotice?.taskId ?? null,
         sessionId: action.sessionId ?? state.killNotice?.sessionId ?? null,
+        lateStopWarning: action.phase === "stopped" ? state.killNotice?.lateStopWarning ?? "" : "",
       },
     };
   }
+  if (action.type === "snapshot") {
+    const status = asTaskStatus(action.status);
+    if (!status) return state;
+    const wanted = action.taskId;
+    const known = wanted != null && state.tasks.some((task) => task.id === wanted);
+    const target = known ? wanted : state.tasks.at(-1)?.id;
+    if (!target) return state;
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => (task.id === target ? { ...task, status } : task)),
+    };
+  }
+
   if (action.type === "approval-resolved") {
     return {
       ...state,
@@ -533,10 +698,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   };
   const payload = asRecord(event.payload);
   const taskId = taskKey(event.task_id);
+  if (event.type === "approval_decided") {
+    const resolution = approvalDecidedResolution(payload);
+    if (approvalDecisionKey(payload) && resolution) closeServerApproval(next, payload, resolution);
+    return next;
+  }
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const decidedId = serverApprovalId(payload.approval_id);
-    if (decided && decidedId) closeServerApproval(next, decidedId, decided);
+    if (decided && approvalDecisionKey(payload)) closeServerApproval(next, payload, decided);
   }
 
   if (event.type === "ack") {
@@ -565,14 +734,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         noteKillRequested(next, payload, { taskId, sessionId: event.session_id || null });
       }
     }
-    absorbLlmSignal(next, taskId, payload, event.seq);
+    absorbLlmSignal(next, taskId, payload, event.seq, event.session_id || null);
     return next;
   }
 
   if (event.type === "message") {
     const text = str(payload.text);
     if (text && str(payload.role) !== "user") appendToken(next, taskId, text);
-    absorbLlmSignal(next, taskId, payload, event.seq);
+    absorbLlmSignal(next, taskId, payload, event.seq, event.session_id || null);
     return next;
   }
 
@@ -596,15 +765,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const taskStatusRaw = str(payload.task_status);
     if (isTerminalKillStatus(taskStatusRaw)) noteTaskCancelled(next, event);
     if (!taskId) return next;
-    const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
+    ensureTask(next.tasks, taskId, str(payload.title) || undefined);
     const taskStatus = asTaskStatus(taskStatusRaw);
-    if (taskStatus) task.status = taskStatus;
+    if (taskStatus) applyTaskStatus(next, taskId, taskStatus, event.session_id || null);
     return next;
   }
 
   if ((event.type === "step_started" || event.type === "step_finished") && taskId) {
     const task = ensureTask(next.tasks, taskId);
-    if (event.type === "step_started" && task.status === "queued") task.status = "executing";
+    if (event.type === "step_started" && task.status === "queued") {
+      applyTaskStatus(next, taskId, "executing", event.session_id || null);
+    }
     const stepId = str(payload.step_id, `step-${event.seq}`);
     let step = task.steps.find((item) => item.id === stepId);
     if (!step) {
@@ -625,6 +796,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     step.note = str(payload.note, step.note);
     const node = readNodeDef(payload.node);
     if (node) step.node = node;
+    if (event.type === "step_started") step.status = "running";
     if (event.type === "step_finished") {
       const body = payload as StepPayload & Record<string, unknown>;
       step.status = body.ok === false ? "failed" : "done";
@@ -663,56 +835,73 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "approval_required") {
     const body = payload as ApprovalPayload & Record<string, unknown>;
-    const fromServer = approvalServerKey(body);
-    const id = fromServer ?? `local-${event.seq}`;
-    if (!next.approvals.some((item) => item.id === id)) {
-      next.approvals.push({
-        id,
-        serverId: fromServer != null,
-        taskId,
-        title: str(body.title, "Нужно подтверждение"),
-        reason: str(body.reason),
-        risk: str(body.risk, "medium"),
-        action: str(body.action),
-        costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
-        resolved: null,
-      });
-    }
+    const reason = str(body.reason);
+    const sessionId = event.session_id || null;
     if (taskId) {
-      const task = ensureTask(next.tasks, taskId);
-      const reason = str(body.reason);
       if (isTerminalBlock(reason)) {
-        task.status = blockOutcome(reason) ?? "failed";
+        const task = applyTaskStatus(next, taskId, blockOutcome(reason) ?? "failed", sessionId);
         task.error = reason;
       } else {
-        task.status = "waiting_approval";
+        applyTaskStatus(next, taskId, "waiting_approval", sessionId);
       }
+    }
+    const fromServer = approvalServerKey(body);
+    const id = fromServer ?? `local-${event.seq}`;
+    const incoming = {
+      id,
+      serverId: fromServer != null,
+      changeId: approvalEventChangeId(body),
+      sessionId,
+      taskId,
+      title: str(body.title, "Нужно подтверждение"),
+      reason,
+      risk: str(body.risk, "medium"),
+      action: str(body.action),
+      costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
+      forecast: readPaidOutcomeForecast(body),
+      restartOffered: readPaidOutcomeRestartOffered(body),
+      retryArmed: readPaidOutcomeRetryArmed(body),
+      resolved: null as ApprovalView["resolved"],
+    };
+    const existing = next.approvals.find((item) => item.id === id);
+    if (!existing) {
+      next.approvals.push(incoming);
+    } else {
+      existing.changeId = incoming.changeId ?? existing.changeId;
+      existing.forecast = incoming.forecast;
+      existing.restartOffered = incoming.restartOffered;
+      existing.retryArmed = incoming.retryArmed;
+      existing.serverId = existing.serverId || incoming.serverId;
+      if (incoming.retryArmed) existing.resolved = null;
     }
     return next;
   }
 
   if (event.type === "task_done" && taskId) {
-    const task = ensureTask(next.tasks, taskId);
-    task.status = "done";
+    const task = applyTaskStatus(next, taskId, "done", event.session_id || null);
     task.summary = str(payload.summary);
     return next;
   }
 
   if (event.type === "task_failed" && taskId) {
-    const task = ensureTask(next.tasks, taskId);
-    task.status = "failed";
+    const task = applyTaskStatus(next, taskId, "failed", event.session_id || null);
     const error = str(payload.error, str(payload.summary, "задача упала"));
     task.error = error;
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
       next.approvals.push({
         id: `block-${event.seq}`,
         serverId: false,
+        changeId: null,
+        sessionId: event.session_id || null,
         taskId,
         title: "",
         reason: error,
         risk: "",
         action: "",
         costEstimate: null,
+        forecast: null,
+        restartOffered: false,
+        retryArmed: false,
         resolved: null,
       });
     }

@@ -6,22 +6,53 @@
  * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
- * Approve/kill в том роутере нет — мок держит их до WS2.
+ * Все решения: POST `.../chat/{session}/approve`, тело `{change_id, decision}`.
+ * Платный повтор добавляет `retry_grant`. `approval_id` и `task_id` не отправляются.
+ * Успех — 200 и JSON. 204 пустым телом успехом не считается.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
-import type {
-  OrchApprovalDecision,
-  OrchEvent,
-  OrchKillRequest,
-  OrchKillResult,
-  OrchMessageAckHttp,
-  OrchOutboundMessage,
-  OrchReportsRow,
-  OrchReportVersionsRow,
+import {
+  paidOutcomeApprovePath,
+  paidOutcomeRetryReady,
+  paidOutcomeWireBody,
+  parsePaidOutcomeJson,
+  readPaidOutcomeExecuted,
+  readPaidOutcomeFailureReason,
+  readPaidOutcomeForecast,
+  type PaidOutcomeApproveBody,
+} from "./orchestratorPaidOutcome";
+import {
+  ORCH_CONTRACT_VERSION,
+  type OrchEvent,
+  type OrchKillRequest,
+  type OrchKillResult,
+  type OrchMessageAckHttp,
+  type OrchOutboundMessage,
+  type OrchReportsRow,
+  type OrchReportVersionsRow,
 } from "./orchestratorTypes";
+
+/** #358: ws3-r3.3.1 добавляет approval_decided и не ломает провод r3.3. */
+const ACCEPTED_ORCH_CONTRACT_VERSIONS = ["ws3-r3.3", "ws3-r3.3.1"] as const;
+
+export function acceptsOrchContractVersion(version: string): boolean {
+  return (ACCEPTED_ORCH_CONTRACT_VERSIONS as readonly string[]).includes(version);
+}
+
+let contractVersionWarned = false;
+
+/** Чужая версия — один warn. r3.3 и r3.3.1 молчат. Пустая строка не версия. */
+export function noteOrchContractVersion(version: string): void {
+  if (!version || acceptsOrchContractVersion(version)) return;
+  if (contractVersionWarned) return;
+  contractVersionWarned = true;
+  console.warn(`версия контракта не из ws3-r3.3 / ws3-r3.3.1: ${version}`);
+}
+
+noteOrchContractVersion(ORCH_CONTRACT_VERSION);
 
 export const ORCH_TOKEN_STORAGE_KEY = "vp-orch-api-token";
 
@@ -97,9 +128,60 @@ export function readOrchProjectId(): number | null {
   }
 }
 
-/** Абсолютный хост API из сборки. Пусто — относительный `/api/...` на том же origin. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * `NEXT_PUBLIC_ORCH_API`: https на любом хосте, http только на localhost / 127.0.0.1 / [::1].
+ * Возвращает origin + pathname без query, hash и хвостового слэша.
+ * Userinfo, протокол-относительный адрес и прочие схемы — null.
+ */
+export function normalizedOrchEnvApi(value: string): string | null {
+  const raw = value.trim();
+  if (!raw || raw.startsWith("//")) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password) return null;
+  const loopback = url.protocol === "http:" && isLoopbackHost(url.hostname);
+  if (url.protocol !== "https:" && !loopback) return null;
+  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  return `${url.origin}${path}`;
+}
+
+/** В лог — только origin. Userinfo, query и неразобранная строка не печатаются. */
+function discardedOrchApiLabel(raw: string): string {
+  try {
+    const url = new URL(raw.trim());
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.origin;
+  } catch {
+    return "некорректный адрес";
+  }
+}
+
+function warnDiscardedOrchApi(raw: string): void {
+  console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
+}
+
+/** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
 export function envOrchApiBase(): string {
-  return (process.env.NEXT_PUBLIC_ORCH_API || "").trim().replace(/\/$/, "");
+  const raw = (process.env.NEXT_PUBLIC_ORCH_API || "").trim();
+  if (!raw) return "";
+  const normalized = normalizedOrchEnvApi(raw);
+  if (!normalized) {
+    warnDiscardedOrchApi(raw);
+    return "";
+  }
+  return normalized;
 }
 
 function queryApiOverrideEnabled(): boolean {
@@ -111,20 +193,26 @@ function normalizeBase(value: string): string {
   return value.trim().replace(/\/$/, "");
 }
 
-/** Same-origin `/api` или `/api/...`. `//host` — чужой origin, не путь. */
+/** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
 export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
   const raw = normalizeBase(value);
   if (!raw || !pageOrigin) return false;
-  if (raw.startsWith("/") && !raw.startsWith("//")) {
+  if (raw.startsWith("//")) return false;
+  if (raw.startsWith("/")) {
     return raw === "/api" || raw.startsWith("/api/");
   }
+  let url: URL;
+  let page: URL;
   try {
-    const url = new URL(raw);
-    if (url.origin !== new URL(pageOrigin).origin) return false;
-    return url.pathname === "/api" || url.pathname.startsWith("/api/");
+    url = new URL(raw);
+    page = new URL(pageOrigin);
   } catch {
     return false;
   }
+  if (url.username || url.password) return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.origin !== page.origin) return false;
+  return url.pathname === "/api" || url.pathname.startsWith("/api/");
 }
 
 /**
@@ -140,7 +228,7 @@ export function resolveOrchApiBase(queryApi: string | null, pageOrigin: string):
   return envOrchApiBase();
 }
 
-/** Пустая база, env-хост или same-origin `/api/...`. Чужой origin — нет. */
+/** Пустая база, разрешённый env-хост или same-origin `/api/...`. Чужой origin — нет. */
 export function bearerTargetAllowed(apiBase: string, pageOrigin = ""): boolean {
   const base = normalizeBase(apiBase);
   if (!base) return true;
@@ -193,7 +281,13 @@ async function readError(res: Response): Promise<string> {
   return text.slice(0, 300);
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+async function postJsonParsed<T>(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal: AbortSignal | undefined,
+  parse: (text: string) => unknown,
+): Promise<T> {
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -210,7 +304,21 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
     throw new OrchApiError(res.status, await readError(res));
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  try {
+    return parse(text) as T;
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
+}
+
+async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return postJsonParsed(cfg, path, body, signal, (text) => JSON.parse(text) as unknown);
+}
+
+async function postPaidJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return postJsonParsed(cfg, path, body, signal, parsePaidOutcomeJson);
 }
 
 export function postOrchMessage(
@@ -221,20 +329,202 @@ export function postOrchMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
-export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
-    cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
-    body,
+export type ApprovalHttpResult = {
+  status: number;
+  body: { ok?: boolean; matched?: boolean; approval_id?: string } | null;
+};
+
+/** Approve/reject. Пустое тело — успех только при status === 204. Остальные 2xx без тела — не успех. */
+async function postApproval(
+  cfg: OrchClientConfig,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<ApprovalHttpResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const res = await fetch(apiUrl(cfg.apiBase, path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
     signal,
-  );
+  });
+  if (res.status === 401) {
+    throw new OrchApiError(401, "401 — токен не принят");
+  }
+  if (!res.ok) {
+    throw new OrchApiError(res.status, await readError(res));
+  }
+  if (res.status === 204) return { status: 204, body: null };
+  const text = await res.text();
+  if (!text.trim()) return { status: res.status, body: null };
+  try {
+    const parsed = JSON.parse(text) as ApprovalHttpResult["body"];
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { status: res.status, body: null };
+    }
+    return { status: res.status, body: parsed };
+  } catch {
+    throw new OrchApiError(res.status, text.slice(0, 300));
+  }
 }
 
-export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
+/** Тело `ApproveIn` (#370). Лишние поля (`approval_id`, `task_id`) не отправляются. */
+export interface OrchApproveIn {
+  change_id: string;
+  decision: "approve" | "retry_step" | "deny";
+  retry_grant?: boolean;
+}
+
+/** Успешный `POST .../approve`: 200 и JSON, не 204. */
+export interface OrchApproveResult {
+  executed?: boolean;
+  reason?: string | null;
+  forecast_usd?: number | null;
+  retry_armed?: boolean;
+  change_id?: string | null;
+  decision?: string | null;
+  ok?: boolean;
+  matched?: boolean;
+  approval_id?: string;
+}
+
+const APPROVE_NOT_JSON = "ответ approve — не JSON 200";
+
+const APPROVE_REFUSAL: Record<number, string> = {
+  401: "401 — нет токена или токен неверный",
+  400: "400 — плохой session_id",
+  422: "422 — тело не по схеме",
+  404: "404 — нет сессии, change_id из чужой сессии или неизвестный change_id",
+  409: "409 — решение уже принято, change_id не текущий или переход недопустим",
+  403: "403 — not_in_whitelist",
+};
+
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. 204 — отказ. */
+export async function postOrchDecision(
+  cfg: OrchClientConfig,
+  body: OrchApproveIn,
+  signal?: AbortSignal,
+): Promise<OrchApproveResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const payload: { change_id: string; decision: OrchApproveIn["decision"]; retry_grant?: boolean } = {
+    change_id: body.change_id,
+    decision: body.decision,
+  };
+  if (body.retry_grant === true) payload.retry_grant = true;
+  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (res.status === 204) throw new OrchApiError(204, APPROVE_NOT_JSON);
+  const refusal = APPROVE_REFUSAL[res.status];
+  if (refusal) throw new OrchApiError(res.status, refusal);
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  if (res.status !== 200) throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  }
+  if (!json || typeof json !== "object") throw new OrchApiError(200, APPROVE_NOT_JSON);
+  return json as OrchApproveResult;
+}
+
+export interface PaidOutcomeDecisionResult {
+  ok: boolean;
+  changeId: string | null;
+  decision: string | null;
+  forecast: number | null;
+  executed: boolean;
+  reason: string | null;
+  retryArmed: boolean;
+  /** Ответ `retry_step` с прогнозом и без отказа: можно слать `retry_grant`. */
+  retryReady: boolean;
+}
+
+function readPaidChangeId(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const value = (body as Record<string, unknown>).change_id;
+  return typeof value === "string" ? value : null;
+}
+
+function readPaidDecision(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const value = (body as Record<string, unknown>).decision;
+  return typeof value === "string" ? value : null;
+}
+
+function readPaidRetryArmed(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  return (body as Record<string, unknown>).retry_armed === true;
+}
+
+function readPaidRawReason(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const reason = (body as Record<string, unknown>).reason;
+  return typeof reason === "string" && reason ? reason : null;
+}
+
+export function readPaidOutcomeDecisionResult(raw: unknown): PaidOutcomeDecisionResult {
+  const known = readPaidOutcomeFailureReason(raw);
+  const rawReason = readPaidRawReason(raw);
+  const executed = readPaidOutcomeExecuted(raw);
+  const unknownRefusal = !executed && known == null && rawReason != null;
+  return {
+    ok: known == null && !unknownRefusal,
+    changeId: readPaidChangeId(raw),
+    decision: readPaidDecision(raw),
+    forecast: readPaidOutcomeForecast(raw),
+    executed,
+    reason: known ?? (unknownRefusal ? rawReason : null),
+    retryArmed: readPaidRetryArmed(raw),
+    retryReady: paidOutcomeRetryReady(raw),
+  };
+}
+
+/** Grant закрывает карточку только когда шаг реально выполнен. */
+export function paidGrantAccepted(result: PaidOutcomeDecisionResult, changeId: string): boolean {
+  if (!result.ok || result.executed !== true) return false;
+  if (result.changeId != null && result.changeId !== changeId) return false;
+  return true;
+}
+
+/** Три `decision` на `POST /chat/{session}/approve`. Лишних полей нет. */
+export async function postPaidOutcomeDecision(
+  cfg: OrchClientConfig,
+  body: PaidOutcomeApproveBody,
+  signal?: AbortSignal,
+): Promise<PaidOutcomeDecisionResult> {
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), paidOutcomeWireBody(body), signal);
+  return readPaidOutcomeDecisionResult(raw);
+}
+
+/** Второй шаг: `{change_id, decision:null, retry_grant:true}`. Шаг исполняется один раз. */
+export async function postPaidOutcomeRestartGrant(
+  cfg: OrchClientConfig,
+  body: PaidOutcomeApproveBody,
+  signal?: AbortSignal,
+): Promise<PaidOutcomeDecisionResult> {
+  const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), paidOutcomeWireBody(body), signal);
+  return readPaidOutcomeDecisionResult(raw);
+}
+
+/** Снять `missing_project_id`. Это не /approve. */
+export function postOrchProject(
+  cfg: OrchClientConfig,
+  projectId: number,
+  signal?: AbortSignal,
+): Promise<{ ok?: boolean; project_id?: number }> {
   return postJson(
     cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
-    body,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+    { project_id: projectId },
     signal,
   );
 }
@@ -282,6 +572,17 @@ export interface ReportMutation {
   report_id: number;
   version: number;
   change_id: string;
+}
+
+export interface OrchSessionSnapshot {
+  session: string;
+  task_id: number | null;
+  status: string;
+  resume_allowed: boolean;
+}
+
+export function getOrchSessionStatus(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchSessionSnapshot> {
+  return getJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/status`, signal);
 }
 
 async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSignal): Promise<T> {
@@ -367,7 +668,7 @@ function readTaskId(value: unknown): number | null {
 /** data — JSON OrchEvent: type, task_id (int|null), payload, seq, session_id. id кадра = seq. */
 export function eventFromSse(parsed: ParsedSse): OrchEvent | null {
   try {
-    const json = JSON.parse(parsed.data) as Partial<OrchEvent> & { seq?: number };
+    const json = parsePaidOutcomeJson(parsed.data) as Partial<OrchEvent> & { seq?: number };
     const seqFromId = parsed.id ? Number(parsed.id) : NaN;
     const seq = typeof json.seq === "number" ? json.seq : seqFromId;
     if (!Number.isFinite(seq)) return null;

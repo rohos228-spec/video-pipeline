@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
+  approvalButtons,
+  approvalChangeId,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -27,7 +29,15 @@ import {
   type StepView,
 } from "@/lib/orchestratorSession";
 import type { ApprovalReason, NodeDef, TaskStatus } from "@/lib/orchestratorTypes";
-import { orchTaskModeEnabled, readOrchProjectId } from "@/lib/orchestratorApi";
+import { orchTaskModeEnabled, readOrchProjectId, type PaidOutcomeDecisionResult } from "@/lib/orchestratorApi";
+import {
+  formatPaidOutcomeForecast,
+  PAID_OUTCOME_COPY,
+  PAID_OUTCOME_DECISION,
+  PAID_OUTCOME_UNKNOWN_REASON,
+  paidOutcomeRetryReady,
+  type PaidOutcomeDecision,
+} from "@/lib/orchestratorPaidOutcome";
 import { cn } from "@/lib/utils";
 import { useOrchestratorChat } from "./use-orchestrator-chat";
 
@@ -68,6 +78,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     title: "Шаг с риском: нужно подтверждение",
     body: "Реестр действий просит одобрение. Шаг не стартует, пока его не подтвердят.",
     testId: "orch-risk",
+  },
+  [PAID_OUTCOME_UNKNOWN_REASON]: {
+    title: PAID_OUTCOME_COPY.title,
+    body: PAID_OUTCOME_COPY.body,
+    testId: "orch-paid-outcome",
   },
   deletion_blocked: {
     title: "Удаление запрещено",
@@ -216,17 +231,22 @@ export function OrchestratorWorkspace() {
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
-          {chat.state.killNotice.phase === "error" ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="mt-2 h-7 text-[11px]"
-              data-testid="orch-kill-retry"
-              onClick={() => void chat.kill()}
-            >
-              Повторить
-            </Button>
+          {chat.state.killNotice.phase === "error" || chat.state.killNotice.lateStopWarning ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {chat.state.killNotice.lateStopWarning ? (
+                <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                data-testid="orch-kill-retry"
+                onClick={() => void chat.kill()}
+              >
+                Повторить
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -274,7 +294,11 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onRetry={() => void chat.decide(approval.id, approval.taskId, "retry_step")}
+                  onBindProject={(projectId) => void chat.bindProject(approval.id, projectId)}
                   onClose={() => chat.dismissBlock(approval.id)}
+                  onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, decision)}
+                  onPaidGrant={() => chat.confirmPaidRestart(approval.id)}
                 />
               ))}
             </div>
@@ -403,7 +427,13 @@ export function OrchestratorWorkspace() {
                     {item.plan.length > 0 ? <PlanList steps={item.plan} /> : null}
                     <ul className="mt-2 space-y-1.5">
                       {item.steps.map((step) => (
-                        <li key={step.id} className="text-[11px] text-white/75">
+                        <li
+                          key={step.id}
+                          className="text-[11px] text-white/75"
+                          data-testid="orch-step"
+                          data-step-id={step.id}
+                          data-status={step.status}
+                        >
                           <span className="text-white/40">{step.status === "running" ? "…" : step.status === "done" ? "●" : "○"}</span>{" "}
                           {step.title}
                           {step.paid ? " · платный" : ""}
@@ -610,23 +640,38 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onRetry,
+  onBindProject,
   onClose,
+  onPaidDecision,
+  onPaidGrant,
 }: {
   approval: ApprovalView;
   pending: boolean;
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
+  onBindProject: (projectId: number) => void;
   onClose: () => void;
+  onPaidDecision: (decision: PaidOutcomeDecision) => Promise<PaidOutcomeDecisionResult>;
+  onPaidGrant: () => Promise<PaidOutcomeDecisionResult | null>;
 }) {
+  const [projectDraft, setProjectDraft] = useState("");
   const copy = BLOCK_COPY[approval.reason];
+  const paidOutcome = approval.reason === PAID_OUTCOME_UNKNOWN_REASON;
   const terminal = isTerminalBlock(approval.reason);
+  const buttons = approvalButtons(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
+  const showCost = !paidOutcome && approval.costEstimate != null;
+  const projectId = Number(projectDraft);
   return (
     <div
       data-testid="orch-approval"
       data-terminal={terminal ? "true" : "false"}
+      data-retry-armed={paidOutcome && approval.retryArmed ? "true" : "false"}
+      data-forecast={paidOutcome && approval.forecast != null ? String(approval.forecast) : ""}
       className={`mb-3 rounded-xl border px-3 py-3 ${
         terminal ? "border-destructive/40 bg-destructive/10" : "border-warning/40 bg-warning/10"
       }`}
@@ -638,25 +683,54 @@ function ApprovalCard({
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}
         {approval.risk ? ` · ${approval.risk}` : ""}
-        {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
+        {showCost ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {terminal ? (
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.serverId ? (
+        ) : approval.reason === MISSING_PROJECT ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (Number.isInteger(projectId) && projectId >= 1) onBindProject(projectId);
+            }}
+          >
+            <Input
+              value={projectDraft}
+              inputMode="numeric"
+              data-testid="orch-project-id"
+              className="h-8 w-24"
+              placeholder="project"
+              onChange={(event) => setProjectDraft(event.target.value)}
+            />
+            <Button type="submit" size="sm" data-testid="orch-bind-project" disabled={pending}>
+              Привязать проект
+            </Button>
+          </form>
+        ) : approvalChangeId(approval.changeId) && buttons.length > 0 ? (
           <>
-            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-              Approve
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-              Reject
-            </Button>
+            {buttons.includes("approve") ? (
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+                Approve
+              </Button>
+            ) : null}
+            {buttons.includes("retry_step") ? (
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+                Перезапустить шаг
+              </Button>
+            ) : null}
+            {buttons.includes("deny") ? (
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+                Reject
+              </Button>
+            ) : null}
           </>
         ) : (
-          <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
+          <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+            Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
           </p>
         )}
       </div>
@@ -664,6 +738,94 @@ function ApprovalCard({
         <p data-testid="orch-approval-error" className="mt-2 text-[11px] text-destructive">
           {error}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+function PaidOutcomeActions({
+  pending,
+  restartOffered,
+  retryOpen,
+  forecast,
+  retryReady,
+  confirmHidden,
+  onDone,
+  onRetry,
+  onDeny,
+  onConfirm,
+}: {
+  pending: boolean;
+  restartOffered: boolean;
+  retryOpen: boolean;
+  forecast: number | null;
+  retryReady: boolean;
+  confirmHidden: boolean;
+  onDone: () => void;
+  onRetry: () => void;
+  onDeny: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" data-testid="orch-paid-done" disabled={pending || retryOpen} onClick={onDone}>
+          {PAID_OUTCOME_COPY.done}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-testid="orch-paid-retry"
+          disabled={pending || retryOpen || !restartOffered}
+          title={restartOffered ? undefined : PAID_OUTCOME_COPY.retryUnsupported}
+          onClick={onRetry}
+        >
+          {PAID_OUTCOME_COPY.retry}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-testid="orch-paid-deny"
+          disabled={pending || retryOpen}
+          onClick={onDeny}
+        >
+          {PAID_OUTCOME_COPY.deny}
+        </Button>
+      </div>
+      {!restartOffered ? (
+        <p data-testid="orch-paid-retry-hint" className="text-[11px] text-white/55">
+          {PAID_OUTCOME_COPY.retryUnsupported}
+        </p>
+      ) : null}
+      {retryOpen ? (
+        <div data-testid="orch-paid-forecast" className="rounded-md border border-white/10 px-2 py-2">
+          <p className="text-[11px] text-white/80">
+            {forecast != null ? formatPaidOutcomeForecast(forecast) : PAID_OUTCOME_COPY.forecastMissing}
+          </p>
+          <p data-testid="orch-paid-kill-hint" className="mt-1 text-[11px] text-white/55">
+            {PAID_OUTCOME_COPY.killAfterRetry}
+          </p>
+          {!confirmHidden && forecast != null ? (
+            <Button
+              type="button"
+              size="sm"
+              className="mt-2"
+              data-testid="orch-paid-retry-confirm"
+              disabled={pending || !retryReady}
+              title={retryReady ? undefined : PAID_OUTCOME_COPY.grantMissing}
+              onClick={onConfirm}
+            >
+              {PAID_OUTCOME_COPY.confirmRetry}
+            </Button>
+          ) : null}
+          {!confirmHidden && !retryReady && forecast != null ? (
+            <p data-testid="orch-paid-grant-hint" className="mt-1 text-[11px] text-white/55">
+              {PAID_OUTCOME_COPY.grantMissing}
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

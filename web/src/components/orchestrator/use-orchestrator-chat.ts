@@ -6,24 +6,35 @@ import {
   isAbortError,
   orchTaskModeEnabled,
   OrchApiError,
-  postOrchApprove,
+  getOrchSessionStatus,
+  postOrchDecision,
   postOrchKill,
   postOrchMessage,
+  paidGrantAccepted,
+  postPaidOutcomeDecision,
+  postPaidOutcomeRestartGrant,
+  postOrchProject,
   readOrchProjectId,
-  postOrchReject,
   probeOrchAuth,
   readOrchBoot,
   readOrchToken,
   sleepWithSignal,
   writeOrchToken,
   type OrchClientConfig,
+  type PaidOutcomeDecisionResult,
 } from "@/lib/orchestratorApi";
+import {
+  PAID_OUTCOME_DECISION,
+  paidOutcomeDecisionBody,
+  paidOutcomeGrantBody,
+  paidOutcomeGrantNotice,
+  type PaidOutcomeDecision,
+} from "@/lib/orchestratorPaidOutcome";
 import {
   initialOrchScreen,
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
-
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
 /** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
@@ -35,6 +46,12 @@ function approvalPostAccepted(
 ): boolean {
   if (!result || result.ok === false || result.matched === false) return false;
   if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
+  return true;
+}
+
+function paidPostAccepted(result: PaidOutcomeDecisionResult, changeId: string): boolean {
+  if (!result.ok) return false;
+  if (result.changeId != null && result.changeId !== changeId) return false;
   return true;
 }
 
@@ -203,29 +220,49 @@ export function useOrchestratorChat() {
   );
 
   const decide = useCallback(
-    async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
+    async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected" | "retry_step") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+      if (!card?.changeId || !/^orch-appr-[0-9]+-[0-9]+$/.test(card.changeId)) {
+        setDecisionError({ id: approvalId, message: "нет change_id формата orch-appr" });
         return;
       }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-        const body = { approval_id: approvalId, task_id: taskId };
-        const result =
-          decision === "approved"
-            ? await postOrchApprove(cfg, body)
-            : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
-        if (!approvalPostAccepted(result, approvalId)) {
-          setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
+        const result = await postOrchDecision(cfg, {
+          change_id: card.changeId,
+          decision: decision === "approved" ? "approve" : decision === "retry_step" ? "retry_step" : "deny",
+          ...(decision === "retry_step" ? { retry_grant: true } : {}),
+        });
+        const refusal =
+          typeof result.reason === "string" && result.reason
+            ? paidOutcomeGrantNotice(result.reason) || result.reason
+            : "";
+        if (!approvalPostAccepted(result, card.changeId) || refusal) {
+          setDecisionError({ id: approvalId, message: refusal || "сервер не подтвердил это решение" });
           return;
         }
-        dispatch({ type: "approval-resolved", id: approvalId, decision });
+        dispatch({
+          type: "approval-resolved",
+          id: approvalId,
+          decision: decision === "retry_step" ? "retried" : decision,
+        });
         setSendError("");
       } catch (error) {
+        if (error instanceof OrchApiError && error.status === 409) {
+          try {
+            const snap = await getOrchSessionStatus(cfg);
+            dispatch({
+              type: "snapshot",
+              taskId: snap.task_id == null ? null : String(snap.task_id),
+              status: snap.status,
+            });
+          } catch {
+            /* отказ остаётся на карточке, повтор сам не уходит */
+          }
+        }
         if (!noteAuth(error)) {
           setDecisionError({
             id: approvalId,
@@ -240,9 +277,132 @@ export function useOrchestratorChat() {
     [cfg, noteAuth, state.approvals],
   );
 
+  const bindProject = useCallback(
+    async (approvalId: string, projectId: number) => {
+      if (decisionLock.current) return;
+      if (!Number.isInteger(projectId) || projectId < 1) {
+        setDecisionError({ id: approvalId, message: "нужен целый project_id" });
+        return;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        await postOrchProject(cfg, projectId);
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        setSendError("");
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "проект не привязался",
+          });
+        }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
+  );
+
   const dismissBlock = useCallback((approvalId: string) => {
     dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
   }, []);
+
+  const decidePaidOutcome = useCallback(
+    async (approvalId: string, decision: PaidOutcomeDecision): Promise<PaidOutcomeDecisionResult> => {
+      const rejected: PaidOutcomeDecisionResult = {
+        ok: false,
+        changeId: null,
+        decision: null,
+        forecast: null,
+        executed: false,
+        reason: null,
+        retryArmed: false,
+        retryReady: false,
+      };
+      if (decisionLock.current) return rejected;
+      const card = state.approvals.find((item) => item.id === approvalId);
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
+        return rejected;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        const result = await postPaidOutcomeDecision(cfg, paidOutcomeDecisionBody(card.changeId, decision));
+        if (!paidPostAccepted(result, card.changeId)) {
+          setDecisionError({
+            id: approvalId,
+            message: paidOutcomeGrantNotice(result.reason) || result.reason || "сервер не подтвердил это решение",
+          });
+          return { ...result, ok: false, retryReady: false };
+        }
+        if (decision !== PAID_OUTCOME_DECISION.retryStep) {
+          dispatch({
+            type: "approval-resolved",
+            id: approvalId,
+            decision: decision === PAID_OUTCOME_DECISION.approve ? "approved" : "rejected",
+          });
+        }
+        setSendError("");
+        return result;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "не записалось решение",
+          });
+        }
+        throw error;
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth, state.approvals],
+  );
+
+  const confirmPaidRestart = useCallback(
+    async (approvalId: string): Promise<PaidOutcomeDecisionResult | null> => {
+      if (decisionLock.current) return null;
+      const card = state.approvals.find((item) => item.id === approvalId);
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
+        return null;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        const result = await postPaidOutcomeRestartGrant(cfg, paidOutcomeGrantBody(card.changeId));
+        if (!paidGrantAccepted(result, card.changeId)) {
+          setDecisionError({
+            id: approvalId,
+            message: paidOutcomeGrantNotice(result.reason) || result.reason || "сервер не подтвердил это решение",
+          });
+          return { ...result, ok: false, retryReady: false, retryArmed: false };
+        }
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        setSendError("");
+        return result;
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "не записалось решение",
+          });
+        }
+        throw error;
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth, state.approvals],
+  );
 
   const killTaskId = state.killNotice?.taskId ?? null;
   const killSessionId = state.killNotice?.sessionId ?? null;
@@ -321,6 +481,9 @@ export function useOrchestratorChat() {
     submitToken,
     sendMessage,
     decide,
+    decidePaidOutcome,
+    confirmPaidRestart,
+    bindProject,
     dismissBlock,
     kill,
   };

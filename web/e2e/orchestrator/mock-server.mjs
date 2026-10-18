@@ -5,7 +5,14 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvallegacy | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
+ *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid409transition | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
+ *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
+ *
+ * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
+ * paid_outcome_unknown: POST /api/orchestrator/chat/{session}/approve
+ * тело {change_id, decision, retry_grant}. Карточки change_control — POST /approvals/{id}/approve|reject.
  * mode=task в теле POST ставит новую задачу в очередь за активной.
  *
  * Формат как у WS3 (PR #346): SSE id=seq, data=OrchEvent JSON
@@ -43,6 +50,12 @@ function sessionOf(id) {
       queue: [],
       killed: false,
       approvalWait: null,
+      grantWait: null,
+      grantUsed: false,
+      grantedId: null,
+      issued: new Set(),
+      decided: new Set(),
+      taskStarted: false,
       reconnectDropped: false,
     });
   }
@@ -60,10 +73,24 @@ function cors(res) {
 }
 
 function sendJson(res, status, body) {
+  sendRawJson(res, status, JSON.stringify(body));
+}
+
+function sendRawJson(res, status, raw) {
   cors(res);
-  const raw = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(raw);
+}
+
+/** Литерал forecast_usd в теле ответа. null — поля нет. Не сериализовать через JSON.stringify: NaN стал бы null. */
+function paidBadForecastLiteral(scenario) {
+  if (scenario === "paidbad-nan") return "NaN";
+  if (scenario === "paidbad-inf") return "Infinity";
+  if (scenario === "paidbad-ninf") return "-Infinity";
+  if (scenario === "paidbad-neg") return "-1.5";
+  if (scenario === "paidbad-str") return '"2.4"';
+  if (scenario === "paidzero") return "0";
+  return null;
 }
 
 function authorized(req) {
@@ -100,7 +127,76 @@ function writeEvent(res, event) {
   res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
+let busClock = 0;
+
+function touchSession(session) {
+  session.clock = ++busClock;
+}
+
+/** Несколько сессий могут держать один id. Живой SSE важнее, но REST без стрима тоже находит ожидание. */
+function pickLiveWait(field, approvalId) {
+  let live = null;
+  let idle = null;
+  for (const session of sessions.values()) {
+    const wait = session[field];
+    if (!wait || wait.id !== approvalId) continue;
+    const newer = (candidate) => !candidate || (session.clock || 0) >= (candidate.clock || 0);
+    if (session.clients.size > 0) {
+      if (newer(live)) live = session;
+    } else if (newer(idle)) {
+      idle = session;
+    }
+  }
+  return live || idle;
+}
+
+function noteIssued(session, changeId) {
+  if (typeof changeId === "string" && changeId) session.issued.add(changeId);
+}
+
+function noteDecided(session, changeId) {
+  if (typeof changeId === "string" && changeId) session.decided.add(changeId);
+}
+
+function parseLooseJson(text) {
+  const marked = text
+    .replace(/([:\[,]\s*)NaN(?=\s*[,}\]])/g, '$1"__NaN__"')
+    .replace(/([:\[,]\s*)-Infinity(?=\s*[,}\]])/g, '$1"__-Infinity__"')
+    .replace(/([:\[,]\s*)Infinity(?=\s*[,}\]])/g, '$1"__Infinity__"');
+  return JSON.parse(marked, (_key, value) => {
+    if (value === "__NaN__") return Number.NaN;
+    if (value === "__Infinity__") return Number.POSITIVE_INFINITY;
+    if (value === "__-Infinity__") return Number.NEGATIVE_INFINITY;
+    return value;
+  });
+}
+
+function emitRaw(session, type, taskId, rawPayload, sessionId = session.id) {
+  touchSession(session);
+  const payload = parseLooseJson(rawPayload);
+  if (type === "approval_required" && payload && typeof payload.change_id === "string") {
+    noteIssued(session, payload.change_id);
+  }
+  const seq = ++session.seq;
+  const event = { type, task_id: taskId, payload, seq, session_id: sessionId };
+  session.events.push(event);
+  const wire = `{"type":${JSON.stringify(type)},"task_id":${taskId == null ? "null" : String(taskId)},"payload":${rawPayload},"seq":${seq},"session_id":${JSON.stringify(sessionId)}}`;
+  const frame = `id: ${seq}\nevent: ${type}\ndata: ${wire}\n\n`;
+  for (const client of session.clients) {
+    try {
+      client.write(frame);
+    } catch {
+      session.clients.delete(client);
+    }
+  }
+  return event;
+}
+
 function emit(session, type, taskId, payload, sessionId = session.id) {
+  touchSession(session);
+  if (type === "approval_required" && payload && typeof payload.change_id === "string") {
+    noteIssued(session, payload.change_id);
+  }
   const event = {
     type,
     task_id: taskId,
@@ -319,7 +415,9 @@ function runInterruptFollowup(session, taskId, echo) {
   }, 80);
 }
 
-async function runApproval(session, taskId) {
+async function runApproval(session, taskId, options = {}) {
+  const approvalId = options.approvalId || "appr-1";
+  const includeChangeId = options.changeId !== false;
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(30);
   emit(session, "classification", taskId, {
@@ -355,16 +453,19 @@ async function runApproval(session, taskId) {
     ok: true,
     node: NODE_STALE,
   });
-  emit(session, "approval_required", taskId, {
-    approval_id: "appr-1",
+  const wireId = includeChangeId ? (typeof options.changeId === "string" ? options.changeId : "orch-appr-1-1") : null;
+  const approval = {
+    approval_id: approvalId,
     title: "Запустить run_node",
     reason: "Платный шаг, риск high. Лимит прогона $50.",
     risk: "high",
     action: "run_node",
     cost_estimate: 4,
-  });
+  };
+  if (wireId) approval.change_id = wireId;
+  emit(session, "approval_required", taskId, approval);
   const decision = await new Promise((resolve) => {
-    session.approvalWait = { id: "appr-1", resolve };
+    session.approvalWait = { id: wireId || approvalId, resolve };
   });
   session.approvalWait = null;
   if (decision === "approve") {
@@ -460,7 +561,7 @@ async function runReconnect(session, taskId) {
   emit(session, "task_done", taskId, { summary: "" });
 }
 
-async function runBudget(session, taskId) {
+async function runBudget(session, taskId, withChangeId = true) {
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(20);
   emit(session, "classification", taskId, classPayload("append", "лимит бюджета"));
@@ -471,14 +572,16 @@ async function runBudget(session, taskId) {
     title: "Бюджет",
     detail: "budget_exhausted",
   });
-  const approvalId = "chg-budget-d4";
-  emit(session, "approval_required", taskId, {
-    change_id: approvalId,
+  const approvalId = "orch-appr-4-1";
+  const payload = {
     reason: "budget_exhausted",
     action: "run_node",
     risk: "high",
     title: "Добавить суб-бюджет",
-  });
+  };
+  if (withChangeId) payload.change_id = approvalId;
+  emit(session, "approval_required", taskId, payload);
+  if (!withChangeId) return;
   const decision = await new Promise((resolve) => {
     session.approvalWait = { id: approvalId, resolve };
   });
@@ -492,6 +595,34 @@ async function runBudget(session, taskId) {
     detail: "суб-бюджет выдан",
   });
   emit(session, "message", taskId, { role: "assistant", text: "Суб-бюджет добавлен." });
+}
+
+async function runStepChange(session, taskId, withCardId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Платный шаг",
+    detail: "paid_outcome_unknown",
+  });
+  const payload = {
+    approval_id: withCardId ? "orch-appr-9-3" : "ap-step-only",
+    step_change_id: "cc-step-88",
+    reason: "paid_outcome_unknown",
+    action: "run_node",
+    title: "Исход платного шага неизвестен",
+  };
+  if (withCardId) payload.change_id = "orch-appr-9-3";
+  emit(session, "approval_required", taskId, payload);
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: withCardId ? "orch-appr-9-3" : "cc-step-88", resolve };
+  });
+  session.approvalWait = null;
+  if (decision === "deny" || decision === "retry_step") {
+    emit(session, "message", taskId, { role: "assistant", text: "решение принято" });
+  }
 }
 
 async function runPlan(session, taskId) {
@@ -695,7 +826,14 @@ async function runLlmBudget(session, taskId) {
   });
 }
 
+function paidRearmOnRetry(scenario) {
+  // paidbad и paidzero тоже проходят повторное approval_required.
+  // Проверку прогноза делает клиент, мок её не отключает.
+  return scenario !== "paidnoarmed";
+}
+
 function startScenario(session, scenario, text, mode) {
+  session.scenario = scenario;
   session.messageCount += 1;
   session.lastEcho = text;
   if (mode === "task") {
@@ -708,6 +846,7 @@ function startScenario(session, scenario, text, mode) {
   }
   session.taskSeq = (session.taskSeq || 0) + 1;
   session.currentTaskId = session.taskSeq;
+  session.taskStarted = true;
   const id = session.currentTaskId;
   session.killed = false;
   session.interrupted = false;
@@ -715,12 +854,20 @@ function startScenario(session, scenario, text, mode) {
     void runInterruptStart(session, id);
     return;
   }
-  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409") {
+  if (scenario === "approvallegacy") {
+    void runApproval(session, id, { approvalId: "appr-legacy", changeId: false });
+    return;
+  }
+  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409" || scenario === "approve422") {
     void runApproval(session, id);
     return;
   }
-  if (scenario === "budget") {
-    void runBudget(session, id);
+  if (scenario === "budget" || scenario === "budgetnoid") {
+    void runBudget(session, id, scenario === "budget");
+    return;
+  }
+  if (scenario === "stepchange" || scenario === "stepchangeboth") {
+    void runStepChange(session, id, scenario === "stepchangeboth");
     return;
   }
   if (scenario === "kill") {
@@ -775,7 +922,456 @@ function startScenario(session, scenario, text, mode) {
     void runRiskApproval(session, id);
     return;
   }
+  if (
+    scenario === "paidoutcome" ||
+    scenario === "paid404" ||
+    scenario === "paid404foreign" ||
+    scenario === "paid404nostep" ||
+    scenario === "paid409" ||
+    scenario === "paid409stale" ||
+    scenario === "paid409transition" ||
+    scenario === "paid422" ||
+    scenario === "paidgrant409" ||
+    scenario === "paidnoarmed" ||
+    scenario === "paidspent" ||
+    scenario === "paidrequired" ||
+    scenario === "paidzero" ||
+    scenario.startsWith("paidbad-")
+  ) {
+    void runPaidOutcome(session, id, true);
+    return;
+  }
+  if (scenario === "paidoutcomeoff") {
+    void runPaidOutcome(session, id, false);
+    return;
+  }
+  if (scenario === "destructive" || scenario === "partialwrite" || scenario === "paidunknown") {
+    const reason =
+      scenario === "destructive" ? "destructive" : scenario === "partialwrite" ? "partial_write" : "paid_outcome_unknown";
+    void runReasonApproval(
+      session,
+      id,
+      reason,
+      scenario === "paidunknown" ? "orch-appr-3-1" : scenario === "destructive" ? "orch-appr-2-1" : "orch-appr-8-1",
+    );
+    return;
+  }
   void runStream(session, id);
+}
+
+const PAID_FORECAST_USD = 2.4;
+const PAID_DECISIONS = [
+  { decision: "approve", label: "Шаг выполнен, продолжить" },
+  { decision: "retry_step", label: "Перезапустить шаг" },
+  { decision: "deny", label: "Остановить задачу" },
+];
+const PAID_STEP = {
+  step_id: "s-paid",
+  title: "Платная генерация",
+  action: "run_node",
+  paid: true,
+};
+
+async function runPaidOutcome(session, taskId, restartOffered) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "неизвестный исход"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Платный шаг",
+    detail: "paid_outcome_unknown",
+  });
+  emit(session, "step_started", taskId, PAID_STEP);
+  const approvalId = `orch-appr-${taskId}-1`;
+  const approval = {
+    change_id: approvalId,
+    title: "Исход платного шага неизвестен",
+    reason: "paid_outcome_unknown",
+    action: "run_node",
+    risk: "high",
+    decisions: restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+    retry_armed: false,
+  };
+  if (restartOffered) approval.forecast_usd = PAID_FORECAST_USD;
+  emit(session, "approval_required", taskId, approval);
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: approvalId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision === "approve") {
+    emit(session, "step_finished", taskId, { ...PAID_STEP, ok: true });
+    emit(session, "step_started", taskId, {
+      step_id: "s-next",
+      title: "Следующий шаг",
+      action: "read_pipeline_code",
+      paid: false,
+    });
+    emit(session, "agent_status", taskId, {
+      agent: "executor",
+      status: "running",
+      task_status: "executing",
+      detail: "план продолжен без повторного execute",
+    });
+    return;
+  }
+  if (decision === "deny") {
+    emit(session, "step_finished", taskId, { ...PAID_STEP, ok: false, note: "остановлено" });
+    emit(session, "task_failed", taskId, { error: "задача остановлена" });
+    emit(session, "agent_status", taskId, {
+      agent: "supervisor",
+      status: "failed",
+      task_status: "failed",
+      detail: "deny",
+    });
+    return;
+  }
+  if (decision === "retry_step" || decision === "retry_step_grant") {
+    // Боевой поток #358: решение закрывает карточку, затем новое
+    // approval_required с retry_armed снова показывает прогноз.
+    // Один запрос retry_step+retry_grant сразу исполняет шаг.
+    if (paidRearmOnRetry(session.scenario)) {
+      emit(session, "approval_decided", taskId, {
+        change_id: approvalId,
+        decision: "retry_step",
+        task_id: taskId,
+      });
+      const decisions = JSON.stringify(
+        restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+      );
+      // paidbad-miss — поля нет. Остальные paidbad несут свой литерал. Иначе 2.4.
+      // Мок не подменяет плохой прогноз валидным.
+      const literal = paidBadForecastLiteral(session.scenario);
+      const forecastField =
+        session.scenario === "paidbad-miss" ? "" : `,"forecast_usd":${literal == null ? String(PAID_FORECAST_USD) : literal}`;
+      emitRaw(
+        session,
+        "approval_required",
+        taskId,
+        `{"change_id":${JSON.stringify(approvalId)},"title":"Исход платного шага неизвестен","reason":"paid_outcome_unknown","action":"run_node","risk":"high","decisions":${decisions},"retry_armed":true${forecastField}}`,
+      );
+    }
+    if (decision !== "retry_step_grant") {
+      await new Promise((resolve) => {
+        session.grantWait = { id: approvalId, resolve };
+      });
+      session.grantWait = null;
+    }
+    if (session.killed) return;
+    emit(session, "step_started", taskId, { ...PAID_STEP, note: "повтор после grant" });
+    emit(session, "agent_status", taskId, {
+      agent: "executor",
+      status: "running",
+      task_status: "executing",
+      detail: "перезапуск после одноразового grant",
+    });
+  }
+}
+
+const PAID_BODY_KEYS = new Set(["change_id", "decision", "retry_grant"]);
+const PAID_DECISION_VALUES = new Set(["approve", "retry_step", "deny"]);
+
+function invalidPaidBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "invalid body";
+  for (const key of Object.keys(body)) {
+    if (!PAID_BODY_KEYS.has(key)) return "unexpected field";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "change_id")) {
+    const id = body.change_id;
+    if (id != null && typeof id !== "string") return "invalid change_id";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "decision") && body.decision != null && !PAID_DECISION_VALUES.has(body.decision)) {
+    return "invalid decision";
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "retry_grant") && typeof body.retry_grant !== "boolean") {
+    return "invalid retry_grant";
+  }
+  return null;
+}
+
+function paidWire({ executed, reason, forecast, retryArmed, changeId, decision }) {
+  return {
+    executed: executed === true,
+    reason: reason ?? null,
+    forecast_usd: forecast === undefined ? null : forecast,
+    retry_armed: retryArmed === true,
+    change_id: changeId ?? null,
+    decision: decision ?? null,
+  };
+}
+
+function sessionHoldsChange(session, changeId) {
+  return session.approvalWait?.id === changeId || session.grantWait?.id === changeId;
+}
+
+/** Свой id сессии из URL важнее такого же id у другой сессии мока. */
+function classifyChange(session, changeId) {
+  if (typeof changeId !== "string" || !changeId) return "unknown";
+  if (sessionHoldsChange(session, changeId)) return "own";
+  if (session.decided.has(changeId)) return "decided";
+  if (session.issued.has(changeId)) return "stale";
+  for (const other of sessions.values()) {
+    if (other.id === session.id) continue;
+    if (sessionHoldsChange(other, changeId) || other.issued.has(changeId) || other.decided.has(changeId)) {
+      return "foreign";
+    }
+  }
+  return "unknown";
+}
+
+function finishPaidGrant(res, session, changeId) {
+  if (session.grantedId === changeId) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: "retry_grant_spent",
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
+  if (!session.grantWait || session.grantWait.id !== changeId) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: "retry_grant_required",
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
+  session.grantUsed = true;
+  session.grantedId = changeId;
+  session.grantWait.resolve(true);
+  session.grantWait = null;
+  sendJson(res, 200, paidWire({
+    executed: true,
+    reason: null,
+    forecast: PAID_FORECAST_USD,
+    retryArmed: false,
+    changeId,
+    decision: "retry_step",
+  }));
+}
+
+async function handleChatApprove(req, res, url, sessionId) {
+  const body = await readBody(req);
+  if (invalidPaidBody(body)) {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
+  const scenario = scenarioOf(req, url);
+  const session = sessionOf(sessionId);
+  const changeId = typeof body.change_id === "string" ? body.change_id : null;
+  const decision = body.decision ?? null;
+  const retryGrant = body.retry_grant === true;
+
+  if (scenario === "paid404") {
+    sendJson(res, 404, { detail: "unknown change_id" });
+    return;
+  }
+  if (scenario === "paid404foreign") {
+    sendJson(res, 404, { detail: "foreign change_id" });
+    return;
+  }
+  if (scenario === "paid409") {
+    sendJson(res, 409, { detail: "change_id already decided" });
+    return;
+  }
+  if (scenario === "paid409transition") {
+    sendJson(res, 409, { detail: "invalid transition" });
+    return;
+  }
+  if (scenario === "paid409stale" || (scenario === "paidgrant409" && retryGrant)) {
+    sendJson(res, 409, { detail: "change_id is not current" });
+    return;
+  }
+  if (scenario === "paid422") {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
+  if (scenario === "paid404nostep") {
+    sendJson(res, 404, { detail: "not found" });
+    return;
+  }
+  if (scenario === "approvefail" && decision === "approve") {
+    await sleep(800);
+    sendJson(res, 500, { detail: "approve failed" });
+    return;
+  }
+  if (scenario === "approve404" && decision === "approve") {
+    sendJson(res, 404, { detail: "approval not found" });
+    return;
+  }
+  if (scenario === "approve409" && decision === "approve") {
+    sendJson(res, 409, { detail: "approval conflict" });
+    return;
+  }
+  if (scenario === "approve422" && decision === "approve") {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
+  if (!session.taskStarted && session.approvalWait && session.approvalWait.id === changeId) {
+    session.approvalWait.resolve(decision);
+    session.approvalWait = null;
+    sendJson(res, 200, paidWire({
+      executed: decision === "approve",
+      reason: null,
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision,
+    }));
+    return;
+  }
+  if (!session.taskStarted) {
+    sendJson(res, 404, { detail: "not found" });
+    return;
+  }
+
+  const ownership = classifyChange(session, changeId);
+  if (ownership === "unknown") {
+    sendJson(res, 404, { detail: "unknown change_id" });
+    return;
+  }
+  if (ownership === "foreign") {
+    sendJson(res, 404, { detail: "foreign change_id" });
+    return;
+  }
+  if (ownership === "decided" && !retryGrant) {
+    sendJson(res, 409, { detail: "change_id already decided" });
+    return;
+  }
+  if (ownership === "stale") {
+    sendJson(res, 409, { detail: "change_id is not current" });
+    return;
+  }
+  if (ownership === "decided" && retryGrant) {
+    finishPaidGrant(res, session, changeId);
+    return;
+  }
+
+  if (retryGrant && decision === "retry_step" && session.approvalWait?.id === changeId) {
+    if (scenario === "paidspent") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_spent",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    if (scenario === "paidrequired" && !session.requiredArmed) {
+      session.requiredArmed = true;
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_required",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    session.approvalWait.resolve("retry_step_grant");
+    session.approvalWait = null;
+    noteDecided(session, changeId);
+    session.grantedId = changeId;
+    sendJson(res, 200, paidWire({
+      executed: true,
+      reason: null,
+      forecast: PAID_FORECAST_USD,
+      retryArmed: false,
+      changeId,
+      decision: "retry_step",
+    }));
+    return;
+  }
+
+  if (retryGrant) {
+    if (scenario === "paidspent") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_spent",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    if (scenario === "paidrequired") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_required",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    finishPaidGrant(res, session, changeId);
+    return;
+  }
+
+  if (decision == null) {
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: null,
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision: null,
+    }));
+    return;
+  }
+
+  if (scenario === "paidrequired" && decision === "retry_step" && !session.requiredArmed) {
+    session.requiredArmed = true;
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: null,
+      forecast: PAID_FORECAST_USD,
+      retryArmed: true,
+      changeId,
+      decision,
+    }));
+    return;
+  }
+
+  if (session.approvalWait?.id !== changeId) {
+    sendJson(res, 409, { detail: session.grantWait?.id === changeId ? "change_id already decided" : "change_id is not current" });
+    return;
+  }
+  session.approvalWait.resolve(decision);
+  noteDecided(session, changeId);
+  session.approvalWait = null;
+
+  if (decision === "retry_step" && (scenario.startsWith("paidbad-") || scenario === "paidzero")) {
+    const literal = paidBadForecastLiteral(scenario);
+    const forecastField = literal == null ? "" : `,"forecast_usd":${literal}`;
+    sendRawJson(
+      res,
+      200,
+      `{"executed":false,"reason":null,"retry_armed":true,"change_id":${JSON.stringify(changeId)},"decision":"retry_step"${forecastField}}`,
+    );
+    return;
+  }
+
+  sendJson(res, 200, paidWire({
+    executed: false,
+    reason: null,
+    forecast: decision === "retry_step" ? PAID_FORECAST_USD : null,
+    retryArmed: decision === "retry_step" && scenario !== "paidnoarmed",
+    changeId,
+    decision,
+  }));
 }
 
 async function runMissingProject(session, taskId) {
@@ -791,6 +1387,7 @@ async function runMissingProject(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-missing-project",
+    change_id: "orch-appr-6-1",
     title: "Запустить run_node",
     reason: "missing_project_id",
     risk: "high",
@@ -825,11 +1422,39 @@ async function runRiskApproval(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-risk",
+    change_id: "orch-appr-5-1",
     title: "Запустить test.medium_touch",
     reason: "risk",
     risk: "medium",
     action: "test.medium_touch",
   });
+}
+
+async function runReasonApproval(session, taskId, reason, changeId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: reason,
+    detail: reason,
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: changeId,
+    change_id: changeId,
+    title: reason,
+    reason,
+    action: "run_node",
+    ...(reason === "paid_outcome_unknown" ? { step_change_id: "cc-step-88" } : {}),
+  });
+  const decision = await new Promise((resolve) => {
+    session.approvalWait = { id: changeId, resolve };
+  });
+  session.approvalWait = null;
+  if (decision) {
+    emit(session, "message", taskId, { role: "assistant", text: `решение ${decision}` });
+  }
 }
 
 async function runUnknownReason(session, taskId) {
@@ -844,6 +1469,7 @@ async function runUnknownReason(session, taskId) {
   });
   emit(session, "approval_required", taskId, {
     approval_id: "ap-unknown",
+    change_id: "orch-appr-7-1",
     title: "Проверьте план",
     reason: "plan_sanity",
     risk: "low",
@@ -907,11 +1533,12 @@ function handleStream(req, res, sessionId) {
     if (event.seq > last) writeEvent(res, event);
   }
   session.clients.add(res);
-  const detach = () => {
+  touchSession(session);
+  // req «close» у GET приходит сразу после заголовков и снимает живого клиента.
+  // Отписка — по закрытию ответа, когда браузер обрывает SSE.
+  res.on("close", () => {
     session.clients.delete(res);
-  };
-  req.on("close", detach);
-  res.on("close", detach);
+  });
 }
 
 const ALLOWLIST = JSON.parse(
@@ -1147,6 +1774,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "approve") {
+    await handleChatApprove(req, res, url, decodeURIComponent(parts[3]));
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "message") {
     const body = await readBody(req);
     const text = String(body.text || "").trim();
@@ -1165,34 +1797,57 @@ const server = http.createServer(async (req, res) => {
     req.method === "POST" &&
     parts[0] === "api" &&
     parts[1] === "orchestrator" &&
+    parts[2] === "chat" &&
+    parts[4] === "project"
+  ) {
+    const body = await readBody(req);
+    const projectId = body.project_id;
+    if (typeof projectId !== "number" || !Number.isInteger(projectId) || projectId < 1) {
+      sendJson(res, 422, { detail: "project_id" });
+      return;
+    }
+    if ("approval_id" in body || "change_id" in body || "decision" in body) {
+      sendJson(res, 422, { detail: "extra" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, project_id: projectId, session: decodeURIComponent(parts[3]) });
+    return;
+  }
+
+  if (
+    req.method === "POST" &&
+    parts[0] === "api" &&
+    parts[1] === "orchestrator" &&
     parts[2] === "approvals" &&
     (parts[4] === "approve" || parts[4] === "reject")
   ) {
     const approvalId = decodeURIComponent(parts[3]);
-    const decision = parts[4] === "approve" ? "approve" : "reject";
+    const body = await readBody(req);
     const scenario = scenarioOf(req, url);
+    const wireDecision = typeof body.decision === "string" ? body.decision : "";
+    const decision = wireDecision || (parts[4] === "approve" ? "approve" : "reject");
     if (decision === "approve" && scenario === "approvefail") {
       await sleep(800);
       sendJson(res, 500, { detail: "approve failed" });
       return;
     }
-    if (decision === "approve" && scenario === "approve404") {
+    if (scenario === "approve404" && decision === "approve") {
       sendJson(res, 404, { detail: "approval not found" });
       return;
     }
-    if (decision === "approve" && scenario === "approve409") {
+    if (scenario === "approve409" && decision === "approve") {
       sendJson(res, 409, { detail: "approval conflict" });
       return;
     }
-    let matched = false;
-    for (const session of sessions.values()) {
-      const wait = session.approvalWait;
-      if (wait && wait.id === approvalId) {
-        wait.resolve(decision);
-        session.approvalWait = null;
-        matched = true;
-        break;
-      }
+    if (scenario === "approve422" && decision === "approve") {
+      sendJson(res, 422, { detail: "approval unprocessable" });
+      return;
+    }
+    const session = pickLiveWait("approvalWait", approvalId);
+    const matched = session != null;
+    if (matched) {
+      session.approvalWait.resolve(decision);
+      session.approvalWait = null;
     }
     if (!matched) {
       sendJson(res, 404, { detail: "approval not found" });
