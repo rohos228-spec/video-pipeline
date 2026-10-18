@@ -215,6 +215,22 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def active_planned_shots(frame: Any) -> list[dict[str, Any]]:
+    """Живые шоты лестницы: активен False в раскладку закадра не входят."""
+    return [
+        shot
+        for shot in planned_shots_from_attrs(frame)
+        if shot.get("активен") is not False
+    ]
+
+
+def _frame_row_hidden(frame: Any) -> bool:
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+
+
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
     """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
     for item in planned or []:
@@ -2129,17 +2145,19 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
+        stored = planned_shots_from_attrs(parent)
+        planned = active_planned_shots(parent)
+        live_members = [fr for fr in members if not _frame_row_hidden(fr)] or list(members)
         ladder_parts: list[str] | None = None
         if planned:
             ladder_parts = kadry_vo_pieces(planned, full, main_action_text(parent))
-        parts = _vo_parts_without_empty(full, len(members))
+        parts = _vo_parts_without_empty(full, len(live_members))
         if ladder_parts:
             from app.services.scene_design.camera_expand import vo_chunk_is_dangling
 
-            head = [p for p in ladder_parts[: len(members)] if p]
+            head = [p for p in ladder_parts[: len(live_members)] if p]
             if head and not any(vo_chunk_is_dangling(p) for p in head):
-                parts = ladder_parts[: len(members)]
+                parts = ladder_parts[: len(live_members)]
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
         if planned and ladder_parts:
@@ -2150,10 +2168,10 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = list(planned)
+            attrs["кадры"] = list(stored)
         parent.attrs = attrs
         _flag_attrs(parent)
-        for i, fr in enumerate(members):
+        for i, fr in enumerate(live_members):
             piece = parts[i] if i < len(parts) else ""
             if not piece:
                 continue
@@ -2210,7 +2228,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
+        planned = active_planned_shots(parent)
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 

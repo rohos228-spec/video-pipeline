@@ -2101,6 +2101,11 @@ async def _load_img_pr_context(
             continue
         if not (fr.voiceover_text or "").strip():
             continue
+        fr_attrs = fr.attrs or {}
+        if isinstance(fr_attrs, dict) and (
+            fr_attrs.get("активен") is False or fr_attrs.get("удалён")
+        ):
+            continue
         if is_shot_child(fr):
             n_child += 1
             continue
