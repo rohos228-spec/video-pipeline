@@ -299,6 +299,24 @@ test.describe("orchestrator chat", () => {
       .toBe(false);
   });
 
+  test("releaseRequested сбрасывается при kill", async ({ page }) => {
+    const headers = { Authorization: `Bearer ${TOKEN}` };
+    const arm = await page.request.post(`${MOCK}/api/orchestrator/test/release-stream`, {
+      headers,
+      data: { session_id: "hold-flag" },
+    });
+    expect(arm.ok()).toBeTruthy();
+    const before = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-flag`, { headers });
+    expect(await before.json()).toMatchObject({ holding: false, releaseRequested: true });
+    const killed = await page.request.post(`${MOCK}/api/orchestrator/kill`, {
+      headers,
+      data: { session_id: "hold-flag", reason: "stop" },
+    });
+    expect(killed.ok()).toBeTruthy();
+    const after = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-flag`, { headers });
+    expect(await after.json()).toMatchObject({ releaseRequested: false });
+  });
+
   test("kill → stopped → resume снова включает kill", async ({ page }) => {
     await openWithToken(page, "kill", "kill-resume");
     await page.getByTestId("orch-composer").fill("платная генерация");

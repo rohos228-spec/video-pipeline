@@ -920,6 +920,7 @@ async function runUnknownReason(session, taskId) {
 function dropStreamHold(session) {
   const release = session.releaseStream;
   session.releaseStream = null;
+  session.releaseRequested = false;
   if (typeof release === "function") release();
 }
 
