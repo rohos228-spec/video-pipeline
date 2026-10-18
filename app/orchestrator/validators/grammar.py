@@ -26,7 +26,7 @@ def _external_shot_is_active() -> Any:
         return _SHOT_IS_ACTIVE
     try:
         from app.services.frame_tombstones import shot_is_active
-    except Exception:  # noqa: BLE001 — на #351 модуля нет
+    except ImportError:  # на #351 модуля нет; прочие ошибки не глотаем
         shot_is_active = None
     _SHOT_IS_ACTIVE = shot_is_active if callable(shot_is_active) else None
     return _SHOT_IS_ACTIVE

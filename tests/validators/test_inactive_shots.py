@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import copy
+
+import pytest
 
 from app.orchestrator.validators import run
 from app.orchestrator.validators.grammar import (
@@ -111,6 +114,40 @@ def test_run_keeps_inactive_shot_and_no_deletions_stays_quiet() -> None:
     assert removed.passed is False
     assert removed.blocking is True
     assert removed.details["frames"]["missing_ids"] == ["dead"]
+
+
+def test_tombstone_lookup_does_not_swallow_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сломанный frame_tombstones не прячется: ловим только ImportError."""
+
+    import app.orchestrator.validators.grammar as grammar
+
+    real_import = builtins.__import__
+
+    def raising(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
+        if name == "app.services.frame_tombstones":
+            raise RuntimeError("broken tombstones")
+        return real_import(name, globals, locals, fromlist, level)
+
+    grammar._SHOT_IS_ACTIVE = grammar._re
+    monkeypatch.setattr(builtins, "__import__", raising)
+    try:
+        with pytest.raises(RuntimeError, match="broken tombstones"):
+            grammar.shot_counts_as_active({"id": "a"})
+    finally:
+        grammar._SHOT_IS_ACTIVE = grammar._re
+
+    def missing(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
+        if name == "app.services.frame_tombstones":
+            raise ImportError("no module")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing)
+    grammar._SHOT_IS_ACTIVE = grammar._re
+    try:
+        assert grammar.shot_counts_as_active({"активен": False}) is False
+        assert grammar.shot_counts_as_active({"id": "z"}) is True
+    finally:
+        grammar._SHOT_IS_ACTIVE = grammar._re
 
 
 def test_merge_skips_order_held_by_middle_inactive() -> None:
