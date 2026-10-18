@@ -83,8 +83,85 @@ def test_filter_assembly_keeps_overlapping_scenes_and_shots():
     assert chunk2["scenes_chrono"][0]["id_scene"] == "scene_02"
 
 
+def test_filter_drops_ghost_scene_and_inactive_shots_from_llm_input():
+    """Призрак сцены и неактивный шот остаются в хранилище, но не уходят в LLM."""
+    from app.services.frame_tombstones import shot_is_active
+
+    vo = "Альфа один. Бета два. Гамма три."
+    frames = [
+        _fr(1, "a", "Альфа один."),
+        _fr(2, "b", "Бета два."),
+    ]
+    dead_frame = _fr(9, "parked", "Бета два.")
+    dead_frame.attrs = {"активен": False, "удалён": True}
+    assembly = {
+        "characters": [],
+        "locations": [],
+        "style_arc": [],
+        "scenes_chrono": [
+            {
+                "id_scene": "scene_live",
+                "start_words": "Альфа один",
+                "end_words": "Бета два",
+                "кадры": [
+                    {"uuid": "a", "id": "a", "время_сек": 5, "закадр": "Альфа"},
+                    {
+                        "uuid": "a",
+                        "id": "dead-shot",
+                        "время_сек": 5,
+                        "закадр": "скрытый",
+                        "активен": False,
+                        "карантин": True,
+                    },
+                ],
+            },
+            {
+                "id_scene": "scene_ghost",
+                "start_words": "Альфа один",
+                "end_words": "Бета два",
+                "активен": False,
+                "кадры": [
+                    {"uuid": "a", "id": "ghost-kid", "время_сек": 5, "закадр": "призрак"},
+                ],
+            },
+            {
+                "id_scene": "scene_empty_overlap",
+                "start_words": "Альфа один",
+                "end_words": "Альфа один",
+                "кадры": [
+                    {"uuid": "not-in-chunk", "id": "stranger", "время_сек": 5},
+                ],
+            },
+        ],
+        "shot_plan_chrono": [
+            {"цитата": "Альфа один", "набор": "SET_LIVE"},
+            {
+                "цитата": "Альфа один",
+                "набор": "SET_DEAD",
+                "активен": False,
+                "карантин": True,
+            },
+        ],
+    }
+    stored_ids = [s["id_scene"] for s in assembly["scenes_chrono"]]
+    chunk = ac.filter_assembly_input_for_frames(
+        assembly, [frames[0], dead_frame], frames, vo, include_characters=False
+    )
+    scene_ids = [s["id_scene"] for s in chunk["scenes_chrono"]]
+    assert scene_ids == ["scene_live"]
+    kids = chunk["scenes_chrono"][0]["кадры"]
+    assert [k["id"] for k in kids] == ["a"]
+    assert all(shot_is_active(k) for k in kids)
+    assert [s["набор"] for s in chunk["shot_plan_chrono"]] == ["SET_LIVE"]
+    assert [s["id_scene"] for s in assembly["scenes_chrono"]] == stored_ids
+    assert assembly["scenes_chrono"][0]["кадры"][1]["id"] == "dead-shot"
+    assert assembly["scenes_chrono"][0]["кадры"][1]["активен"] is False
+    assert assembly["scenes_chrono"][1]["id_scene"] == "scene_ghost"
+    assert assembly["shot_plan_chrono"][1]["набор"] == "SET_DEAD"
+
+
 def test_filter_keeps_frame_outside_chunk_inactive():
-    """Кадр сцены вне чанка остаётся в хвосте с активен: False, id не меняется."""
+    """Кадр вне чанка не уходит в LLM. В хранилище id и флаг не меняются."""
     vo = "Альфа один. Бета два. Гамма три. Дельта четыре."
     frames = [
         _fr(1, "a", "Альфа один."),
@@ -123,11 +200,10 @@ def test_filter_keeps_frame_outside_chunk_inactive():
     )
     kids = chunk["scenes_chrono"][0]["кадры"]
     by_id = {k["id"]: k for k in kids}
-    assert [k["id"] for k in kids] == ["a", "b", "gone"]
+    assert [k["id"] for k in kids] == ["a", "b"]
+    assert "gone" not in by_id
     assert by_id["a"].get("активен") is not False
     assert by_id["b"].get("активен") is not False
-    assert by_id["gone"]["активен"] is False
-    assert by_id["gone"]["закадр"] == "вне чанка"
     assert chunk["scenes_chrono"][0]["кадров"] == 2
     assert [k["id"] for k in assembly["scenes_chrono"][0]["кадры"]] == [
         "a",
