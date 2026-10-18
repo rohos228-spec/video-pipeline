@@ -1322,13 +1322,14 @@ class Supervisor:
         if not plan:
             await self._apply_block(task_id, session_id, "plan_sanity")
             return True
-        if ceiling_blocks(server_forecast_limit()) or forecast_unknown(plan):
-            await self._apply_block(task_id, session_id, "unknown_cost")
-            return True
         for step in plan:
             if not_in_whitelist(step.action, self.actions):
                 await self._apply_block(task_id, session_id, "not_in_whitelist")
                 return True
+        if ceiling_blocks(server_forecast_limit()) or forecast_unknown(plan):
+            await self._apply_block(task_id, session_id, "unknown_cost")
+            return True
+        for step in plan:
             if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True

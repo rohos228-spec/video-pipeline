@@ -841,11 +841,17 @@ RUN_NODE_ACTIONS: frozenset[str] = frozenset({"run_node", "node.run_step", "step
 ACTION_DENYLIST: frozenset[str] = frozenset(
     {
         "edit_files",
+        "edit_file",
         "exec",
         "fix_bugs",
         "run_tests",
         "shell",
         "write_file",
+        "write_files",
+        "apply_patch",
+        "run_command",
+        "bash",
+        "python",
     }
 )
 DELETION_ACTIONS: frozenset[str] = frozenset(
@@ -1151,16 +1157,30 @@ def lookup_action_metadata(action: str, registry: Any | None) -> tuple[str, Any]
         return "miss", None
 
 
+def canonical_action_name(action: str) -> str:
+    """``strip`` + ``casefold`` + последний сегмент после ``.``."""
+    text = (action or "").strip().casefold()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
 def not_in_whitelist(action: str, registry: Any | None) -> bool:
     """Имя нельзя ни одобрить, ни выполнить.
 
-    Явный denylist ядра или ``KeyError`` из ``metadata_of`` (имени нет в реестре).
-    Открытый мок без ``metadata_of`` сюда не попадает: это не закрытый реестр.
+    Разрешено только явное metadata реестра. Нет ``metadata_of``, ``KeyError``
+    и ``@`` в имени — отказ. Denylist остаётся вторым слоем и бьёт даже
+    безопасную metadata. ``allow_unlisted=True`` — только явный тестовый флаг.
     """
-    if action in ACTION_DENYLIST:
+    raw = action or ""
+    if "@" in raw:
         return True
-    kind, _meta = lookup_action_metadata(action, registry)
-    return kind == "miss"
+    if canonical_action_name(raw) in ACTION_DENYLIST:
+        return True
+    if getattr(registry, "allow_unlisted", False) is True:
+        return False
+    kind, meta = lookup_action_metadata(action, registry)
+    return kind != "value" or meta is None
 
 
 def _meta_field(meta: Any, key: str, default: Any = None) -> Any:

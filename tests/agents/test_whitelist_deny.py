@@ -9,12 +9,19 @@ from httpx import ASGITransport, AsyncClient
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.agents.supervisor import ApprovalGrantError
 from app.orchestrator.auth import OrchestratorAuthMiddleware
-from app.orchestrator.contracts import CheckpointData, PlanStep, TaskStatus
+from app.orchestrator.contracts import (
+    ACTION_DENYLIST,
+    CheckpointData,
+    PlanStep,
+    TaskStatus,
+    canonical_action_name,
+    not_in_whitelist,
+)
 from app.web.routers.orchestrator_chat import router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
 
-_FORBIDDEN = ("exec", "edit_files", "fix_bugs")
+_FORBIDDEN = ("exec", "edit_files", "fix_bugs", "edit_file", "bash", "frobnicate")
 
 
 def _app() -> FastAPI:
@@ -52,11 +59,25 @@ class _ClosedRegistry:
         return {"ok": True, "data": {}, "change_id": None, "cost": 0.0}
 
 
+def test_denylist_normalizes_and_at_sign_is_refused() -> None:
+    registry = _ClosedRegistry(safe={"bash", "create_node", "create_node@new_group"})
+    assert not_in_whitelist(" tools.Bash ", registry) is True
+    assert not_in_whitelist("create_node@new_group", registry) is True
+    assert not_in_whitelist("create_node", registry) is False
+
+
+def _registry_for(action: str) -> _ClosedRegistry:
+    """Denylist остаётся запретом, даже если metadata называет имя безопасным."""
+    if canonical_action_name(action) in ACTION_DENYLIST:
+        return _ClosedRegistry(safe={action})
+    return _ClosedRegistry()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", _FORBIDDEN)
 async def test_forbidden_action_is_not_executed(token: str, action: str) -> None:
     del token
-    actions = _ClosedRegistry()
+    actions = _registry_for(action)
     runtime = build_runtime(
         actions=actions,
         validators=MockValidators(),
@@ -82,7 +103,7 @@ async def test_forbidden_action_is_not_executed(token: str, action: str) -> None
 @pytest.mark.parametrize("action", _FORBIDDEN)
 async def test_grant_refuses_forbidden_action(token: str, action: str) -> None:
     del token
-    actions = _ClosedRegistry(safe={action})
+    actions = _registry_for(action)
     runtime = build_runtime(
         actions=actions,
         validators=MockValidators(),
@@ -114,7 +135,7 @@ async def test_grant_refuses_forbidden_action(token: str, action: str) -> None:
 @pytest.mark.parametrize("action", _FORBIDDEN)
 async def test_http_forbidden_action_rejected_at_approve_and_run(token: str, action: str) -> None:
     del token
-    actions = _ClosedRegistry(safe={action})
+    actions = _registry_for(action)
     runtime = build_runtime(
         actions=actions,
         validators=MockValidators(),
@@ -174,9 +195,10 @@ async def test_http_forbidden_action_rejected_at_approve_and_run(token: str, act
 
 
 @pytest.mark.asyncio
-async def test_execute_refuses_denylist_after_risk_grant(token: str) -> None:
+@pytest.mark.parametrize("action", _FORBIDDEN)
+async def test_execute_refuses_denylist_after_risk_grant(token: str, action: str) -> None:
     del token
-    actions = _ClosedRegistry(safe={"exec"})
+    actions = _registry_for(action)
     runtime = build_runtime(
         actions=actions,
         validators=MockValidators(),
@@ -187,7 +209,7 @@ async def test_execute_refuses_denylist_after_risk_grant(token: str) -> None:
     session = "wl-execute"
     try:
         task_id = runtime.tasks.insert(session, "цель", TaskStatus.executing.value, project_id=13)
-        step = PlanStep(action="exec", risk="high")
+        step = PlanStep(action=action, risk="high")
         runtime.supervisor._risk_granted.add(runtime.supervisor._risk_grant_key(task_id, 0, step))
         await runtime.supervisor._execute_plan(task_id, session, [step], 0, "цель")
         assert actions.calls == []
@@ -198,9 +220,44 @@ async def test_execute_refuses_denylist_after_risk_grant(token: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_known_look_still_runs(token: str) -> None:
+class _BareRegistry:
+    """Реестр без metadata_of и без тестового флага. Любое имя — отказ."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def execute(self, name: str, params: dict, task_ctx: dict) -> dict:
+        del params, task_ctx
+        self.calls.append(name)
+        return {"ok": True, "data": {}, "cost": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_open_mock_without_metadata_is_refused(token: str) -> None:
+    del token
+    actions = _BareRegistry()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="look", risk="none")]),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("wl-open", "смотри")
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert runtime.tasks.get(task_id)["error"] == "not_in_whitelist"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_flagged_mock_still_runs_look(token: str) -> None:
     del token
     actions = MockActions()
+    assert actions.allow_unlisted is True
     runtime = build_runtime(
         actions=actions,
         validators=MockValidators(),

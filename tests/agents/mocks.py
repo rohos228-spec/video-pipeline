@@ -138,6 +138,8 @@ class MockActions:
         # None — открытый мок: все имена известны как none, старые тесты не эскалируют.
         # Словарь — закрытый реестр: нет ключа → high.
         self.risks = dict(risks) if risks is not None else None
+        # Явный тестовый флаг: без metadata_of прод-реестр закрыт.
+        self.allow_unlisted = True
 
     def risk_of(self, action_name: str) -> Risk:
         if self.risks is None:
