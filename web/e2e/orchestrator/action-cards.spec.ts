@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 import {
   ACTION_CONTRACT_REF,
   ACTION_CONTRACT_VERSION,
@@ -424,4 +425,33 @@ test("поля r2.1: предупреждения, пропуск, конфли�
     name: "prompt.restore_master",
     snapshot_id: "snap-r21-6",
   });
+});
+
+test("новая версия отчёта заменяет карточку", () => {
+  const older = structuredClone(EXAMPLE_REPORT);
+  const newer = structuredClone(EXAMPLE_REPORT);
+  const olderResult = older.result as { version?: number; html?: string };
+  const newerResult = newer.result as { version?: number; html?: string };
+  olderResult.version = 1;
+  olderResult.html = "<p>старый</p>";
+  newerResult.version = 2;
+  newerResult.html = "<p>новый</p>";
+  const event = (seq: number, payload: Record<string, unknown>) =>
+    ({
+      type: "event" as const,
+      event: { type: "step_finished", task_id: 1, seq, payload },
+    });
+  let state = reduceOrchScreen(initialOrchScreen(), event(1, older));
+  state = reduceOrchScreen(state, event(2, newer));
+  expect(state.actionResults).toHaveLength(1);
+  expect(state.actionResults[0]?.id).toBe("report-7-v2");
+  expect(state.actionResults[0]?.html).toContain("новый");
+  expect(state.actionResults[0]?.version).toBe(2);
+  const stale = structuredClone(EXAMPLE_REPORT);
+  const staleResult = stale.result as { version?: number; html?: string };
+  staleResult.version = 1;
+  staleResult.html = "<p>старее</p>";
+  state = reduceOrchScreen(state, event(3, stale));
+  expect(state.actionResults).toHaveLength(1);
+  expect(state.actionResults[0]?.html).toContain("новый");
 });

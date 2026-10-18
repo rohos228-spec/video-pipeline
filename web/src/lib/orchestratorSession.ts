@@ -484,6 +484,14 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 function rememberActionResult(state: OrchScreenState, payload: Record<string, unknown>, seq: number): void {
   const view = readActionEnvelope(payload, seq);
   if (!view) return;
+  if (view.reportId != null) {
+    const index = state.actionResults.findIndex((item) => item.reportId === view.reportId);
+    if (index >= 0) {
+      const current = state.actionResults[index];
+      if (current && (view.version ?? 0) > (current.version ?? 0)) state.actionResults[index] = view;
+      return;
+    }
+  }
   if (state.actionResults.some((item) => item.id === view.id)) return;
   state.actionResults.push(view);
 }
