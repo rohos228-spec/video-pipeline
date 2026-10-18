@@ -75,6 +75,7 @@ from app.orchestrator.contracts import (
     TaskStatus,
     ValidatorResult,
     approval_decision_choices,
+    approval_view,
     block_status,
     budget_exhausted_response,
     can_transition,
@@ -206,6 +207,7 @@ class Supervisor:
         self._appr_loaded: set[int] = set()
         self._decided_change_id: dict[tuple[int, str], str] = {}
         self._card_action: dict[str, str] = {}
+        self._cc_change_id: dict[tuple[int, str], str] = {}
 
     async def start_task(
         self,
@@ -1374,6 +1376,25 @@ class Supervisor:
     def _risk_grant_key(self, task_id: int, index: int, step: PlanStep) -> tuple[int, int, str]:
         return (task_id, index, paid_step_identity(step.action, step.params))
 
+    def _executor_approval(self, task_id: int, index: int, step: PlanStep) -> dict[str, Any] | None:
+        """Контекст одобрения для исполнителя и plan-sanity. Без гранта ключа нет."""
+        if self._risk_grant_key(task_id, index, step) not in self._risk_granted:
+            return None
+        risk = effective_risk(self.actions, step)
+        rule = escalation_for(step.action, step.params)
+        if rule is not None:
+            risk = max_risk(risk, coerce_risk(getattr(rule, "risk", "high")))
+        view = approval_view(step.action, step.params, self.actions, fallback_risk=risk.value)
+        cc = self._cc_change_id.get((task_id, step.action))
+        return {
+            "change_id": self._decided_change_id.get((task_id, step.action)),
+            "action": step.action,
+            "risk": view["risk"],
+            "destructive": view["destructive"] is True,
+            "granted": True,
+            "cc_change_id": cc if isinstance(cc, str) else None,
+        }
+
     def _save_plan(self, task_id: int, plan: list[PlanStep], position: int | None = None) -> None:
         """Новый план сбрасывает гранты риска и отметку approve этой задачи."""
         self._forget_risk_grants(task_id)
@@ -1527,7 +1548,7 @@ class Supervisor:
             for item in batch:
                 if step_is_readonly(item, self.actions):
                     continue
-                outcome, verdict = await self._validate(task_id, session_id, item, "before")
+                outcome, verdict = await self._validate(task_id, session_id, item, "before", index)
                 if outcome == "budget":
                     await self._halt_for_validator_budget(task_id, session_id, plan, index, verdict)
                     return
@@ -1545,6 +1566,10 @@ class Supervisor:
                 "run_id": orch_run_id(task_id=task_id),
                 "budget_scope": BudgetScope.pipeline.value,
             }
+            if len(batch) == 1:
+                granted = self._executor_approval(task_id, index, step)
+                if granted is not None:
+                    ctx["approval"] = granted
             started: list[tuple[PlanStep, int]] = []
             db_pos = self._next_step_position(task_id)
             for offset, item in enumerate(batch):
@@ -1684,7 +1709,9 @@ class Supervisor:
             for offset, (item, _result) in enumerate(zip(started, results, strict=True)):
                 done_step, _step_id = item
                 if not step_is_readonly(done_step, self.actions):
-                    outcome, verdict = await self._validate(task_id, session_id, done_step, "after")
+                    outcome, verdict = await self._validate(
+                        task_id, session_id, done_step, "after", index + offset
+                    )
                     if outcome == "budget":
                         await self._halt_for_validator_budget(
                             task_id,
@@ -1986,6 +2013,7 @@ class Supervisor:
         session_id: str,
         step: PlanStep,
         phase: str,
+        index: int | None = None,
     ) -> tuple[str, ValidatorResult | None]:
         project_id = self._task_project_id(task_id)
         if project_id is None:
@@ -1994,12 +2022,17 @@ class Supervisor:
                 return "project", None
             return "ok", None
         names = ("no_deletions", "plan_sanity", "spend_guard") if phase == "after" else ("plan_sanity", "no_deletions")
+        payload: dict[str, Any] = {"action": step.action, "phase": phase, "project_id": project_id}
+        if index is not None:
+            granted = self._executor_approval(task_id, index, step)
+            if granted is not None:
+                payload["approval"] = granted
         for name in names:
             result = await run_validator(
                 self.validators,
                 name,
                 project_id,
-                {"action": step.action, "phase": phase, "project_id": project_id},
+                payload,
                 run_id=orch_run_id(task_id=task_id),
                 task_id=task_id,
             )
@@ -2401,6 +2434,9 @@ class Supervisor:
         action = body.get("action")
         if isinstance(card, str) and isinstance(action, str) and action:
             self._card_action[card] = action
+            cc = body.get("cc_change_id")
+            if isinstance(cc, str) and task_id is not None:
+                self._cc_change_id[(int(task_id), action)] = cc
         reason = str(body.get("reason") or "")
         if reason in _PAID_OUTCOME_REASONS:
             body["actions"] = ["approve", "retry_step", "deny"]
@@ -2558,6 +2594,9 @@ class Supervisor:
                 self._appr_owner.pop(change_id, None)
                 self._appr_decided.pop(change_id, None)
                 self._card_action.pop(change_id, None)
+        for pair in list(self._cc_change_id):
+            if pair[0] == key:
+                self._cc_change_id.pop(pair, None)
 
     def _merge_appr_pack(self, key: int, session_id: str, packed: dict[str, Any] | None) -> None:
         if not packed:

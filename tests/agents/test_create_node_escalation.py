@@ -23,7 +23,7 @@ from tests.agents.mocks import FixedPlanner, MockValidators, ScriptedCritic, Scr
 
 class _Registry:
     def __init__(self, *, risk: str) -> None:
-        self.calls: list[str] = []
+        self.calls: list[dict] = []
         self.risk = risk
 
     def metadata_of(self, name: str) -> dict[str, object]:
@@ -41,8 +41,8 @@ class _Registry:
         return Risk(str(self.metadata_of(name)["risk"]))
 
     async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
-        del params, task_ctx
-        self.calls.append(name)
+        del params
+        self.calls.append({"name": name, "ctx": dict(task_ctx)})
         return ActionResult(ok=True, data={"name": name}, change_id=None, cost=0.0)
 
 
@@ -116,9 +116,10 @@ def _statuses(runtime, task_id: int) -> list[str]:
 @pytest.mark.asyncio
 async def test_create_node_new_group_needs_approval_then_runs() -> None:
     actions = _Registry(risk="low")
+    validators = MockValidators()
     runtime = build_runtime(
         actions=actions,
-        validators=MockValidators(),
+        validators=validators,
         router=ScriptedRouter(),
         planner=FixedPlanner(
             [
@@ -143,7 +144,21 @@ async def test_create_node_new_group_needs_approval_then_runs() -> None:
         assert opened[-1].payload["risk"] == "high"
         await runtime.supervisor.grant_approval("cn-new")
         await runtime.supervisor.wait(task_id, timeout=5)
-        assert actions.calls == ["create_node"]
+        assert [call["name"] for call in actions.calls] == ["create_node"]
+        approval = actions.calls[0]["ctx"]["approval"]
+        assert approval["action"] == "create_node"
+        assert approval["risk"] == "high"
+        assert approval["destructive"] is True
+        assert approval["granted"] is True
+        assert approval["change_id"].startswith(f"orch-appr-{task_id}-")
+        assert approval["cc_change_id"] is None
+        sanity = [
+            call
+            for call in validators.calls
+            if call["name"] == "plan_sanity" and call["context"].get("phase") == "before"
+        ]
+        assert sanity
+        assert sanity[-1]["context"]["approval"] == approval
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
     finally:
         set_runtime(None)
@@ -152,7 +167,8 @@ async def test_create_node_new_group_needs_approval_then_runs() -> None:
 @pytest.mark.asyncio
 async def test_create_node_existing_group_follows_base_risk() -> None:
     runtime, actions, task_id = await _run({"group_is_new": False})
-    assert actions.calls == ["create_node"]
+    assert [call["name"] for call in actions.calls] == ["create_node"]
+    assert "approval" not in actions.calls[0]["ctx"]
     assert "waiting_approval" not in _statuses(runtime, task_id)
     assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
 
