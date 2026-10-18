@@ -253,6 +253,52 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("отменено");
   });
 
+  test("kill и interrupt не держат streamhold", async ({ page }) => {
+    await openWithToken(page, "streamhold", "hold-kill");
+    await page.getByTestId("orch-composer").fill("долгий поток");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-transcript")).toContainText("ДЕРЖУ-ПОТОК");
+    await expect
+      .poll(async () => {
+        const res = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-kill`, {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        });
+        return (await res.json()).holding;
+      })
+      .toBe(true);
+    const killed = await page.request.post(`${MOCK}/api/orchestrator/kill`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      data: { session_id: "hold-kill", reason: "stop" },
+    });
+    expect(killed.ok()).toBeTruthy();
+    const hold = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-kill`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(await hold.json()).toMatchObject({ holding: false });
+
+    await openWithToken(page, "interrupt", "hold-interrupt");
+    await page.getByTestId("orch-composer").fill("генерируй кадры");
+    await page.getByTestId("orch-send").click();
+    await expect
+      .poll(async () => {
+        const res = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-interrupt`, {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        });
+        return (await res.json()).holding;
+      })
+      .toBe(true);
+    await page.getByTestId("orch-composer").fill("стой");
+    await page.getByTestId("orch-send").click();
+    await expect
+      .poll(async () => {
+        const res = await page.request.get(`${MOCK}/api/orchestrator/test/stream-hold?session=hold-interrupt`, {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        });
+        return (await res.json()).holding;
+      })
+      .toBe(false);
+  });
+
   test("kill → stopped → resume снова включает kill", async ({ page }) => {
     await openWithToken(page, "kill", "kill-resume");
     await page.getByTestId("orch-composer").fill("платная генерация");

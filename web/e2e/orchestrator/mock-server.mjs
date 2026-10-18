@@ -330,9 +330,22 @@ async function runInterruptStart(session, taskId) {
     paid: true,
   });
   const text = "Генерирую кадры. ".repeat(12);
+  let emitted = 0;
   for (const ch of text) {
     if (session.killed || session.interrupted) break;
     emit(session, "token", taskId, { text: ch });
+    emitted += 1;
+    if (emitted === 9) {
+      if (session.killed || session.interrupted) break;
+      if (!session.releaseRequested) {
+        await new Promise((resolve) => {
+          session.releaseStream = resolve;
+        });
+      }
+      session.releaseStream = null;
+      session.releaseRequested = false;
+      if (session.killed || session.interrupted) break;
+    }
     await sleep(30);
   }
 }
@@ -341,6 +354,7 @@ function runInterruptFollowup(session, taskId, echo) {
   emit(session, "ack", taskId, { text: echo, accepted: true });
   setTimeout(() => {
     session.interrupted = true;
+    dropStreamHold(session);
     emit(session, "classification", taskId, {
       mode: "interrupt",
       deterministic: true,
@@ -903,8 +917,15 @@ async function runUnknownReason(session, taskId) {
   });
 }
 
+function dropStreamHold(session) {
+  const release = session.releaseStream;
+  session.releaseStream = null;
+  if (typeof release === "function") release();
+}
+
 function handleKill(session) {
   session.killed = true;
+  dropStreamHold(session);
   const taskId = session.currentTaskId;
   if (taskId) {
     emit(session, "agent_status", taskId, {
@@ -1174,6 +1195,15 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     sendJson(res, 401, { detail: "unauthorized" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/orchestrator/test/stream-hold") {
+    const session = sessionOf(url.searchParams.get("session") || "studio");
+    sendJson(res, 200, {
+      holding: typeof session.releaseStream === "function",
+      releaseRequested: session.releaseRequested === true,
+    });
     return;
   }
 
