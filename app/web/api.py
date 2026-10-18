@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.services.event_bus import get_bus
 from app.web.routers import (
     artifacts as artifacts_router,
@@ -66,6 +67,9 @@ from app.web.routers import (
 )
 from app.web.routers import (
     node_groups as node_groups_router,
+)
+from app.web.routers import (
+    orchestrator_chat as orchestrator_chat_router,
 )
 from app.web.routers import (
     outsee_create as outsee_create_router,
@@ -117,6 +121,12 @@ async def _lifespan(app: FastAPI):
     Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
+    import os
+
+    if os.environ.get("ORCH_RUNTIME", "").strip() == "r6-fixture":
+        from app.orchestrator.agents.testkit import enforce_r6_gate
+
+        enforce_r6_gate()
     try:
         from app.db import engine
         from app.models import Base
@@ -210,6 +220,15 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("montage job reconcile failed (non-fatal)")
 
+    try:
+        from app.orchestrator.agents.runtime import get_runtime
+
+        recovered = await get_runtime().start()
+        if recovered:
+            logger.info("orchestrator recovered tasks {}", recovered)
+    except Exception:  # noqa: BLE001
+        logger.exception("orchestrator restart recovery failed (non-fatal)")
+
     if settings.vps_relay_base_url:
         logger.warning(
             "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
@@ -237,6 +256,9 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
+    # Auth оркестратора — внутренний слой, CORS остаётся снаружи.
+    # BaseHTTPMiddleware не используем: он буферизует SSE.
+    app.add_middleware(OrchestratorAuthMiddleware)
     # Локальный фронт ходит с localhost:3000 в dev — открываем CORS.
     app.add_middleware(
         CORSMiddleware,
@@ -275,6 +297,7 @@ def create_app() -> FastAPI:
     app.include_router(db_browser_router.router, prefix=API_PREFIX)
     app.include_router(node_groups_router.router, prefix=API_PREFIX)
     app.include_router(meta_agent_router.router, prefix=API_PREFIX)
+    app.include_router(orchestrator_chat_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

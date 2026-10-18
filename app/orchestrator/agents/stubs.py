@@ -1,0 +1,174 @@
+"""Заглушки planner / critic / executor / роутера до R2–R3.
+
+Реальных LLM и платных действий нет (D7, R0b ещё не в main).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.orchestrator.contracts import (
+    ORCH_DEFAULT_TIER,
+    ActionMetadata,
+    ActionResult,
+    ClassifyResult,
+    LLMResponse,
+    MessageMode,
+    PlanStep,
+    Risk,
+    ValidatorResult,
+    require_internal_run_id,
+)
+
+
+class StubPlanner:
+    async def make_plan(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[PlanStep]:
+        del run_id, task_id, agent_role, budget_scope, reasoning_effort
+        return [
+            PlanStep(
+                action="noop",
+                params={"goal": goal, "context": context},
+                expected="ok",
+                paid=False,
+                mutating=False,
+            )
+        ]
+
+
+class StubCritic:
+    async def review(
+        self,
+        plan: list[PlanStep],
+        context: str = "",
+        *,
+        run_id: str | None = None,
+        task_id: str | int | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        del plan, context, run_id, task_id, agent_role, budget_scope, reasoning_effort
+        return "approve"
+
+
+class ActionBackedExecutor:
+    """Шаг плана → ``actions.execute``. До WS2 подставляется ``UnlinkedActions``.
+
+    Перед действием LLM не вызывается: лишний internal-ход съедал суб-бюджет.
+    ``router`` остаётся в конструкторе для совместимости и не используется.
+    ``last_response`` здесь всегда ``None``. Супервизор читает его после шага
+    как задел: кастомный исполнитель или будущий WS2 может положить туда
+    ответ роутера с ``budget_exhausted``. Боевой ``actions.execute`` этого не делает.
+    """
+
+    def __init__(self, actions: Any, router: Any | None = None) -> None:
+        self.actions = actions
+        self.router = router
+        self.last_response: Any = None
+
+    async def run(self, step: PlanStep, ctx: dict[str, Any]) -> Any:
+        self.last_response = None
+        result = await self.actions.execute(step.action, dict(step.params), dict(ctx))
+        if isinstance(result, ActionResult):
+            return result
+        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        if status in {"ok", "failed", "approval_required"}:
+            return result
+        return ActionResult.model_validate(result)
+
+
+class UnlinkedActions:
+    """Мок-заглушка, пока WS2 не отдал ``actions.execute``.
+
+    ``noop`` остаётся ``Risk.none`` и read-only. Любое другое имя — ``KeyError``
+    из ``metadata_of`` и ``Risk.high``: реестра WS2 ещё нет, мутация платная.
+    """
+
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
+        del params, task_ctx
+        return ActionResult(
+            ok=False,
+            data={"error": "actions.execute не подключён (ждёт WS2)", "action": name},
+            change_id=None,
+            cost=0.0,
+        )
+
+    def risk_of(self, action_name: str) -> Risk:
+        if action_name == "noop":
+            return Risk.none
+        return Risk.high
+
+    def metadata_of(self, action_name: str) -> ActionMetadata:
+        if action_name == "noop":
+            return ActionMetadata(risk=Risk.none.value, read_only=True, destructive=False)
+        raise KeyError(action_name)
+
+
+class UnlinkedValidators:
+    """Мок-заглушка, пока WS1 не отдал ``validators.run``. Сигнатура синхронная."""
+
+    def run(self, name: str, project_id: int, context: dict[str, Any]) -> ValidatorResult:
+        del project_id, context
+        return ValidatorResult(name=name, passed=True, details="validators.run не подключён (ждёт WS1)", blocking=False)
+
+
+class FallbackRouter:
+    """Роутер-заглушка до WS5. Сеть не вызывает.
+
+    До D6 спорная классификация — append и tier ``strong``.
+    ``on_delta`` принимается и не вызывается: стрим из готового текста — заглушка очереди.
+    """
+
+    async def classify(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+    ) -> ClassifyResult:
+        del message, run_id, task_id
+        return ClassifyResult(
+            tier=ORCH_DEFAULT_TIER,
+            mode=MessageMode.append,
+            deterministic=False,
+            confidence=0.5,
+        )
+
+    async def call(
+        self,
+        tier: str,
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        budget_scope: str | None = None,
+        reasoning_effort: str | None = None,
+        on_delta: Any = None,
+    ) -> LLMResponse:
+        require_internal_run_id(run_id, budget_scope)
+        del messages, stream, run_id, task_id, agent_role, budget_scope, reasoning_effort, on_delta
+        return LLMResponse(
+            text="",
+            call_id="",
+            model="stub",
+            provider="",
+            tier=tier or ORCH_DEFAULT_TIER,
+            finish_reason="stop",
+            cost_usd=0.0,
+            latency_ms=0,
+            fallback_index=0,
+            deterministic=True,
+            fixture_key=None,
+        )
