@@ -16,6 +16,55 @@ import {
 } from "../../src/lib/orchestratorApi";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
 
+test("терминальное событие чужой сессии не закрывает свою задачу", () => {
+  const opened = reduceOrchScreen(initialOrchScreen("own"), {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 1,
+      session_id: "own",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  const foreign = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "task_done",
+      task_id: 1,
+      seq: 2,
+      session_id: "other",
+      payload: { summary: "чужое" },
+    },
+  });
+  expect(foreign.tasks[0]?.status).toBe("executing");
+  expect(foreign.tasks[0]?.summary).toBe("");
+  const failed = reduceOrchScreen(foreign, {
+    type: "event",
+    event: {
+      type: "task_failed",
+      task_id: 1,
+      seq: 3,
+      session_id: "other",
+      payload: { error: "чужая ошибка" },
+    },
+  });
+  expect(failed.tasks[0]?.status).toBe("executing");
+  expect(failed.tasks[0]?.error).toBe("");
+  const own = reduceOrchScreen(failed, {
+    type: "event",
+    event: {
+      type: "task_done",
+      task_id: 1,
+      seq: 4,
+      session_id: "own",
+      payload: { summary: "своё" },
+    },
+  });
+  expect(own.tasks[0]?.status).toBe("done");
+  expect(own.tasks[0]?.summary).toBe("своё");
+});
+
 test("ownSession не замораживается первым рендером, boot.session не пустой", () => {
   expect(readOrchBoot().session.length).toBeGreaterThan(0);
   const first = initialOrchScreen(null);

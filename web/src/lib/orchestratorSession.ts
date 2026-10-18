@@ -800,13 +800,17 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   }
 
   if (event.type === "task_done" && taskId) {
-    const task = applyTaskStatus(next, taskId, "done", event.session_id || null);
+    const sessionId = event.session_id || null;
+    const task = applyTaskStatus(next, taskId, "done", sessionId);
+    if (next.ownSession && sessionId !== next.ownSession) return next;
     task.summary = str(payload.summary);
     return next;
   }
 
   if (event.type === "task_failed" && taskId) {
-    const task = applyTaskStatus(next, taskId, "failed", event.session_id || null);
+    const sessionId = event.session_id || null;
+    const task = applyTaskStatus(next, taskId, "failed", sessionId);
+    if (next.ownSession && sessionId !== next.ownSession) return next;
     const error = str(payload.error, str(payload.summary, "задача упала"));
     task.error = error;
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
