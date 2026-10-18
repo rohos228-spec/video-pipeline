@@ -231,10 +231,17 @@ def load_book(meta: dict | None) -> MetaBook:
     return book
 
 
-def expected_version(params: dict, book: MetaBook) -> int:
-    """Версия, с которой писатель читал meta. Без ключа — текущая."""
+def checked_meta_version(params: dict, book: MetaBook) -> int:
+    """Если ключ передан — его сверяет expected_version. Иначе версия уже прочитанной книги."""
     if "expected_meta_version" not in params:
         return book.version
+    return expected_version(params, book)
+
+
+def expected_version(params: dict, book: MetaBook) -> int:
+    """Версия из запроса. Без ключа это не текущая книга: сравнение с собой — конфликт."""
+    if "expected_meta_version" not in params:
+        raise VersionConflict("нет expected_meta_version")
     try:
         return int(params["expected_meta_version"])
     except (TypeError, ValueError) as exc:

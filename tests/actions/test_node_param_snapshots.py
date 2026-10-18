@@ -8,7 +8,9 @@ import copy
 import pytest
 
 from app.models import Project
-from app.orchestrator.node_store.meta_book import MetaBook, VersionConflict
+from app.orchestrator.node_store.meta_book import (
+    MetaBook, VersionConflict, expected_version, load_book,
+)
 from app.services.action_layer import executor, store
 from app.services.action_layer.builtin_group import _node_set_disabled, _node_set_prompt_variant
 from app.services.action_layer.builtin_montage_more import _set_assemble_params
@@ -18,6 +20,33 @@ from app.services.project_meta import merge_project_meta
 from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
+
+
+def test_omitted_expected_meta_version_is_a_conflict() -> None:
+    book = load_book({
+        "meta_version": 3,
+        "prompt_slot_variants": {"hero": {"main": "old.md"}},
+    })
+    with pytest.raises(VersionConflict):
+        expected_version({}, book)
+    with pytest.raises(VersionConflict):
+        book.set_prompt_variant(
+            node_key="hero",
+            slot_id="main",
+            variant="new.md",
+            version=expected_version({"expected_meta_version": 1}, book),
+        )
+    assert book.version == 3
+    assert book.meta["prompt_slot_variants"]["hero"]["main"] == "old.md"
+    book.set_prompt_variant(
+        node_key="hero",
+        slot_id="alt",
+        variant="b.md",
+        version=expected_version({"expected_meta_version": 3}, book),
+    )
+    assert book.meta["prompt_slot_variants"]["hero"] == {"main": "old.md", "alt": "b.md"}
+    with pytest.raises(VersionConflict):
+        expected_version({"expected_meta_version": "нет"}, book)
 
 
 def test_set_prompt_variant_concurrent_slots_both_kept() -> None:
