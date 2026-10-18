@@ -147,7 +147,7 @@ def test_contour_b_profile_records_the_measured_default() -> None:
     assert CONTOUR_B_RERANK_MAX_LENGTH == 256
     assert CONTOUR_B_RERANK_FUSION == "rrf"
     assert (CONTOUR_B_FUSION_BM25, CONTOUR_B_FUSION_RERANK) == (0.25, 1.5)
-    assert CONTOUR_B_BM25_PROTECT == 0.0
+    assert CONTOUR_B_BM25_PROTECT == 2.0
     assert CONTOUR_B_FAMILY_BOOST == 1.0
     assert build_reranker("none") is None
     kept = choose_default(

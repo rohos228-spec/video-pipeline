@@ -42,6 +42,31 @@ def test_choose_requires_hit_then_max_ndcg_and_ignores_p95() -> None:
     assert choose_dev_v2([{"key": "no", "hit_at_5": 0.5, "ndcg_at_8": 0.9}]) is None
 
 
+def test_saved_winner_is_bm25_protect_and_matches_the_profile() -> None:
+    import json
+
+    from evals.orchestrator.dev_v2_grid import GRID_PATH
+    from evals.orchestrator.dev_v2_p95 import profile_matches
+
+    document = json.loads(GRID_PATH.read_text(encoding="utf-8"))
+    assert len(document["configs"]) == len(GRID)
+    assert document["chosen_key"] == "expand-tail-rrf-0.25-1.5-k20-protect2"
+    chosen = choose_dev_v2(document["configs"])
+    assert chosen is not None
+    assert chosen["key"] == document["chosen_key"]
+    assert profile_matches(chosen)
+    assert round(chosen["hit_at_5"], 4) == 0.9
+    assert round(chosen["ndcg_at_8"], 4) == 0.6711
+    assert round(chosen["dev70_hit_at_5"], 4) == 0.9286
+    assert round(chosen["dev70_ndcg_at_8"], 4) == 0.7007
+    assert document["prod_p95_s"] == [
+        0.9208534205536125,
+        0.9095817077541142,
+        0.9275235502500436,
+    ]
+    assert max(document["prod_p95_s"]) <= 1.2
+
+
 def test_dev_v2_loader_is_the_hundred_and_not_holdout_ids() -> None:
     queries = load_dev_v2()
     assert [query["id"] for query in queries[:70]] == dev_plus_ids()

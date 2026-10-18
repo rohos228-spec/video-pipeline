@@ -48,6 +48,9 @@ Dev-70 (live-01..50 и hold-01..20) через choose_default выбрал ``exp
 и слияние BM25/реранкер 0.25/1.5 при RRF k=20: hit@5 0.9286, nDCG@8 0.7007.
 Top-5 как у ``none``, места 6–8 — соседние части тех же промптов.
 Порог nDCG@8 0.65 не снижался. Флаг эксперимента снят. Holdout-3 в выборе не участвовал.
+Dev-v2 (те же 70 плюс d2-01..30) оставил expand_tail, слияние 0.25/1.5 и k=20
+и включил защиту топ-1 BM25 с порогом 2: hit@5 0.9000, nDCG@8 0.6711.
+Срез dev-70 у этого варианта 0.9286 / 0.7007, как у прежнего дефолта.
 Лексика/вектор остаются 0.5/1.5. BM25 full, реранк топ-12, family_boost 1, 256 токенов.
 Три холодных p95 прод-пути на dev-70, кэш сброшен, реранкер top-12:
 0.904 / 1.053 / 0.956 с, каждый ≤ 1.2. Это не p95 fp32-эвала.
@@ -78,9 +81,9 @@ CONTOUR_B_RERANK_MAX_LENGTH = 256
 CONTOUR_B_RERANK_FUSION = "rrf"
 CONTOUR_B_FUSION_BM25 = 0.25
 CONTOUR_B_FUSION_RERANK = 1.5
-CONTOUR_B_BM25_PROTECT = 0.0
+CONTOUR_B_BM25_PROTECT = 2.0
 CONTOUR_B_FAMILY_BOOST = 1.0
-# Dev-70 choose_default: expand_tail + слияние 0.25/1.5, k=20.
-# hit@5 0.9286, nDCG@8 0.7007. Порог 0.65 не снижался. Флаг снят.
+# Dev-v2: expand_tail + слияние 0.25/1.5, k=20, защита топ-1 BM25 = 2.
+# hit@5 0.9000, nDCG@8 0.6711. На dev-70 0.9286 / 0.7007. Порог 0.65 не снижался.
 CONTOUR_B_EXPERIMENTAL = False
 CONTOUR_B_R5_NOTE = ""
