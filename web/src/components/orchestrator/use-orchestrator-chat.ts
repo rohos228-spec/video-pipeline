@@ -9,6 +9,7 @@ import {
   postOrchDecision,
   postOrchKill,
   postOrchMessage,
+  postOrchProject,
   readOrchProjectId,
   probeOrchAuth,
   readOrchBoot,
@@ -202,7 +203,7 @@ export function useOrchestratorChat() {
   );
 
   const decide = useCallback(
-    async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected") => {
+    async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected" | "retry_step") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
       if (!card?.changeId || !/^orch-appr-[0-9]+-[0-9]+$/.test(card.changeId)) {
@@ -215,13 +216,18 @@ export function useOrchestratorChat() {
       try {
         const result = await postOrchDecision(cfg, {
           change_id: card.changeId,
-          decision: decision === "approved" ? "approve" : "deny",
+          decision: decision === "approved" ? "approve" : decision === "retry_step" ? "retry_step" : "deny",
+          ...(decision === "retry_step" ? { retry_grant: true } : {}),
         });
         if (!approvalPostAccepted(result, approvalId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }
-        dispatch({ type: "approval-resolved", id: approvalId, decision });
+        dispatch({
+          type: "approval-resolved",
+          id: approvalId,
+          decision: decision === "retry_step" ? "retried" : decision,
+        });
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
@@ -236,6 +242,35 @@ export function useOrchestratorChat() {
       }
     },
     [cfg, noteAuth, state.approvals],
+  );
+
+  const bindProject = useCallback(
+    async (approvalId: string, projectId: number) => {
+      if (decisionLock.current) return;
+      if (!Number.isInteger(projectId) || projectId < 1) {
+        setDecisionError({ id: approvalId, message: "нужен целый project_id" });
+        return;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        await postOrchProject(cfg, projectId);
+        dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        setSendError("");
+      } catch (error) {
+        if (!noteAuth(error)) {
+          setDecisionError({
+            id: approvalId,
+            message: error instanceof Error ? error.message : "проект не привязался",
+          });
+        }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth],
   );
 
   const dismissBlock = useCallback((approvalId: string) => {
@@ -319,6 +354,7 @@ export function useOrchestratorChat() {
     submitToken,
     sendMessage,
     decide,
+    bindProject,
     dismissBlock,
     kill,
   };
