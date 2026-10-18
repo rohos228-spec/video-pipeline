@@ -280,6 +280,26 @@ def test_experimental_flag_in_code_artifact_and_note_agree() -> None:
     assert "0.96" in note and "0.80" in note and "1.00" in note and "0.75" in note
 
 
+def test_note_experimental_follows_the_code_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Непустая заметка R5 не держит experimental, когда флаг контура выключен."""
+    import app.orchestrator.rag.profile as profile
+    from evals.orchestrator.precision_live import acceptance_for_remeasure
+
+    monkeypatch.setattr(
+        profile,
+        "CONTOUR_B_R5_NOTE",
+        "R5 на этом PR не взят: hit@5 0.88 < 0.9, обязательный порог choose_default.",
+    )
+    monkeypatch.setattr(profile, "CONTOUR_B_EXPERIMENTAL", True)
+    enabled = acceptance_for_remeasure(0.65)
+    assert enabled["mark"] == ""
+    assert enabled["experimental"] is True
+    monkeypatch.setattr(profile, "CONTOUR_B_EXPERIMENTAL", False)
+    disabled = acceptance_for_remeasure(0.65)
+    assert disabled["mark"] == ""
+    assert disabled["experimental"] is False
+
+
 def test_regenerated_artifact_with_empty_mark_stays_experimental() -> None:
     """Повторная сборка при пустом mark сохраняет experimental и совпадает с файлом."""
     import inspect

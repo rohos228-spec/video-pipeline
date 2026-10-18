@@ -1184,18 +1184,16 @@ def contour_c_acceptance(test_ndcg: float) -> dict[str, Any]:
 
 
 def acceptance_for_remeasure(test_ndcg: float) -> dict[str, Any]:
-    """experimental из флага контура и промаха порога, не из текста mark.
+    """experimental из флага контура и промаха порога, не из текста заметки.
 
-    Пустой mark значит, что nDCG@8 порог взят. Флаг ``CONTOUR_B_EXPERIMENTAL``
-    и непустая заметка R5 всё равно оставляют контур экспериментальным.
+    Пустой mark значит, что nDCG@8 порог взят. Непустая заметка R5 сама
+    experimental не включает: это решает ``CONTOUR_B_EXPERIMENTAL``.
     """
-    from app.orchestrator.rag.profile import CONTOUR_B_EXPERIMENTAL, CONTOUR_B_R5_NOTE
+    from app.orchestrator.rag.profile import CONTOUR_B_EXPERIMENTAL
 
     acceptance = contour_c_acceptance(test_ndcg)
     missed_threshold = test_ndcg < NDCG_AT_8_MIN
-    acceptance["experimental"] = (
-        bool(CONTOUR_B_EXPERIMENTAL) or bool(CONTOUR_B_R5_NOTE.strip()) or missed_threshold
-    )
+    acceptance["experimental"] = bool(CONTOUR_B_EXPERIMENTAL) or missed_threshold
     return acceptance
 
 
