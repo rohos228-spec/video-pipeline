@@ -754,6 +754,47 @@ async def test_deleted_net_stays_active(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_match_keeps_fields_and_second_id_copy(session: AsyncSession) -> None:
+    """Совпадение дописывает поля старого шота. Вторая копия того же id не исчезает."""
+    project = Project(slug="ws1-overlay", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "overlay-id",
+        [
+            {"id": "a", "закадр": "альфа", "камера": "wide", "img": 1},
+            {"id": "a", "закадр": "альфа", "камера": "close", "img": 2},
+        ],
+        number=1,
+    )
+    await session.commit()
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": frame.uuid,
+                "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]},
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(frame)
+    shots = list(frame.attrs["кадры"])
+    assert len(shots) == 2, shots
+    merged = next(shot for shot in shots if shot_is_active(shot))
+    kept = next(shot for shot in shots if not shot_is_active(shot))
+    assert merged["закадр"] == "альфа новая"
+    assert merged["камера"] == "wide"
+    assert merged["img"] == 1
+    assert kept["камера"] == "close"
+    assert kept["img"] == 2
+    assert kept["активен"] is False
+
+
+@pytest.mark.asyncio
 async def test_null_kadry_keeps_old_shots_active(
     session: AsyncSession, warn_log: list[str]
 ) -> None:

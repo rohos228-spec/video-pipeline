@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
+from loguru import logger
 
 from app.models import Frame, Project
 from app.orchestrator.validators.activity_flags import shot_is_active
@@ -385,6 +386,23 @@ def _shot_payload_key(shot: Any) -> tuple:
     )
 
 
+def _overlay_old_fields(old_shot: dict[str, Any], target: dict[str, Any]) -> None:
+    """Поля старого шота остаются, входящие их перекрывают."""
+    merged = {**old_shot, **target}
+    target.clear()
+    target.update(merged)
+
+
+def _drop_payload_slot(
+    slots_by_key: dict[tuple, list[dict[str, Any]]],
+    target: dict[str, Any],
+) -> None:
+    key = _shot_payload_key(target)
+    slots = slots_by_key.get(key)
+    if slots and target in slots:
+        slots.remove(target)
+
+
 def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     """Новый список ``кадры`` не выбрасывает старые шоты.
 
@@ -405,7 +423,6 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     Скрыть все шоты можно только явным ``[]``.
     """
     if not isinstance(new, list):
-        from loguru import logger
 
         logger.warning(
             "WARN apply-ops кадры: новое значение не список ({}) — поле не меняется",
@@ -413,7 +430,6 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         )
         return old
     incoming: list[Any] = []
-    seen_ids: set[str] = set()
     incoming_by_id: dict[str, list[dict[str, Any]]] = {}
     new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     incoming_by_content: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
@@ -425,7 +441,6 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         incoming.append(item)
         sid = _shot_id(item)
         if sid:
-            seen_ids.add(sid)
             incoming_by_id.setdefault(sid, []).append(item)
             continue
         ident = _shot_content_identity(item)
@@ -438,12 +453,17 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     for item in incoming:
         if isinstance(item, dict):
             payload_slots.setdefault(_shot_payload_key(item), []).append(item)
+    old_id_left: dict[str, int] = {}
     old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     for shot in old:
         if isinstance(shot, dict) and _shot_id(shot) is None:
             ident = _shot_content_identity(shot)
             if ident is not None:
                 old_content_counts[ident] = old_content_counts.get(ident, 0) + 1
+        elif isinstance(shot, dict):
+            sid = _shot_id(shot)
+            if sid:
+                old_id_left[sid] = old_id_left.get(sid, 0) + 1
     kept: list[Any] = []
     for shot in old:
         if not isinstance(shot, dict):
@@ -452,10 +472,18 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
             continue
         sid = _shot_id(shot)
         if sid:
-            if sid in seen_ids:
-                if not shot_is_active(shot):
-                    for item in incoming_by_id.get(sid) or []:
-                        _stamp_tombstone_marks(shot, item)
+            bucket = incoming_by_id.get(sid) or []
+            if bucket:
+                target = bucket.pop(0)
+                _drop_payload_slot(payload_slots, target)
+                _overlay_old_fields(shot, target)
+                _stamp_tombstone_marks(shot, target)
+                old_id_left[sid] -= 1
+                if old_id_left[sid] <= 0:
+                    while bucket:
+                        extra = bucket.pop(0)
+                        _drop_payload_slot(payload_slots, extra)
+                        _stamp_tombstone_marks(shot, extra)
                 continue
         else:
             ident = _shot_content_identity(shot)
@@ -464,9 +492,10 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 and old_content_counts.get(ident) == 1
                 and new_content_counts.get(ident) == 1
             ):
-                if not shot_is_active(shot):
-                    for item in incoming_by_content.get(ident) or []:
-                        _stamp_tombstone_marks(shot, item)
+                for item in incoming_by_content.get(ident) or []:
+                    _drop_payload_slot(payload_slots, item)
+                    _overlay_old_fields(shot, item)
+                    _stamp_tombstone_marks(shot, item)
                 continue
         key = _shot_payload_key(shot)
         slots = payload_slots.get(key)
@@ -1310,7 +1339,6 @@ async def upsert_characters(
             en.type = "character"
         n += 1
     if replace and seen:
-        from loguru import logger
 
         for code, en in list(by_code.items()):
             if code not in seen:
@@ -1440,7 +1468,6 @@ def export_project_xlsx(
         for fr in frames:
             col = fr.number + 2
             if not frame_is_active(fr):
-                from loguru import logger
 
                 logger.warning(
                     "WARN export_project_xlsx: кадр #{} помечен — колонка плана очищена, строка БД на месте",
@@ -1637,7 +1664,6 @@ async def apply_ops(
         }
         number_repairs = remap_frame_number_uuids(frame_ops, number_to_uuid)
         if number_repairs:
-            from loguru import logger
 
             logger.warning(
                 "db_apply: frame_number→uuid remapped n={} samples={}",
@@ -1646,7 +1672,6 @@ async def apply_ops(
             )
         uuid_repairs = repair_near_miss_frame_uuids(frame_ops, list(by_uuid.keys()))
         if uuid_repairs:
-            from loguru import logger
 
             logger.warning(
                 "db_apply: near-miss frame_uuid repaired n={} samples={}",
@@ -1676,7 +1701,6 @@ async def apply_ops(
             else:
                 parsed_dur = coerce_duration_seconds(raw_dur)
                 if parsed_dur is None:
-                    from loguru import logger
 
                     logger.warning(
                         "db_apply: кадр {}: skip non-numeric duration {!r}",
@@ -1749,7 +1773,6 @@ async def apply_ops(
             if attr_key == "кадры" and _kadry_blank_means_untouched(raw_value):
                 old_kadry = attrs.get("кадры")
                 if isinstance(old_kadry, list) and old_kadry:
-                    from loguru import logger
 
                     logger.warning(
                         "WARN apply-ops кадры: null или пустая строка — поле не меняется"
