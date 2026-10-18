@@ -2372,7 +2372,7 @@ async def rebuild_vo_cells_from_shots(
     frames: list[Any],
 ) -> tuple[list[Any], dict[str, Any]]:
     """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame — leftover, не delete."""
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
     from app.models import FrameEdge, FrameText
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
@@ -2419,13 +2419,21 @@ async def rebuild_vo_cells_from_shots(
         await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     work = [f for f in ordered if _is_pipeline_frame(f)]
-    await session.execute(
-        delete(FrameEdge).where(
-            FrameEdge.project_id == project.id,
-            FrameEdge.type == "next",
-        )
-    )
+    existing_next = {
+        (int(edge.from_frame_id), int(edge.to_frame_id))
+        for edge in (
+            await session.execute(
+                select(FrameEdge).where(
+                    FrameEdge.project_id == project.id,
+                    FrameEdge.type == "next",
+                )
+            )
+        ).scalars().all()
+    }
     for a, b in zip(work, work[1:]):
+        pair = (int(a.id), int(b.id))
+        if pair in existing_next:
+            continue
         session.add(
             FrameEdge(
                 project_id=project.id,
@@ -2434,6 +2442,7 @@ async def rebuild_vo_cells_from_shots(
                 type="next",
             )
         )
+        existing_next.add(pair)
     await session.flush()
     work_ids = [int(fr.id) for fr in work if getattr(fr, "id", None)]
     existing_vo: dict[int, Any] = {}

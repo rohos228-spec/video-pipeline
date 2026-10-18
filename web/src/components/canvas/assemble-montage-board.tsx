@@ -1092,7 +1092,7 @@ function VoiceoverCell({
       <button
         type="button"
         className="shrink-0 rounded-md p-1 text-white/30 opacity-0 hover:bg-rose-500/15 hover:text-rose-200 group-hover/vo:opacity-100"
-        title="Удалить кадр"
+        title="Скрыть кадр"
         disabled={busy}
         onClick={onDelete}
       >
@@ -3160,7 +3160,7 @@ export function AssembleMontageBoard({
   const handleDeleteFrame = async (fr: MontageBoardFrame) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Удалить кадр #${fr.number}? Остальные кадры сцены останутся.`,
+      `Скрыть кадр #${fr.number}? Остальные кадры сцены останутся.`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -3176,7 +3176,7 @@ export function AssembleMontageBoard({
       persistQueue(next, true);
       await api.deleteMontageFrame(projectId, fr.frame_id);
       refreshBoard();
-      toast.success(`Кадр #${fr.number} удалён`);
+      toast.success(`Кадр #${fr.number} скрыт`);
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -4540,7 +4540,7 @@ export function AssembleMontageBoard({
                                   </button>
                                   <button
                                     type="button"
-                                    title={`Удалить кадр #${fr.number}`}
+                                    title={`Скрыть кадр #${fr.number}`}
                                     disabled={frameEditBusy}
                                     onClick={() => void handleDeleteFrame(fr)}
                                     className="rounded p-0.5 text-white/30 transition hover:bg-rose-500/15 hover:text-rose-200 disabled:opacity-40"
