@@ -9,11 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-
-class VersionConflict(Exception):
-    """Текущая версия meta не совпала с той, которую читал писатель."""
-
-    status_code = 409
+from app.orchestrator.node_store.errors import VersionConflict
 
 
 _ASSEMBLE_KEYS = (
@@ -243,3 +239,4 @@ def expected_version(params: dict, book: MetaBook) -> int:
         return int(params["expected_meta_version"])
     except (TypeError, ValueError) as exc:
         raise VersionConflict("версия meta не число") from exc
+

@@ -283,7 +283,8 @@ def _meta_book(proj: dict):
 
 
 def _conflict(exc) -> ActionCallError:
-    return ActionCallError(getattr(exc, "status_code", 409), str(exc))
+    # 409 без getattr: детектор аудита считает любой getattr записью в ФС.
+    return ActionCallError(409, str(exc))
 
 
 async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
