@@ -52,6 +52,17 @@ def test_edit_files_rejected_by_fallback_whitelist() -> None:
     assert result.details["errors"][0]["reason"] == "not_in_whitelist"
 
 
+def test_montage_delete_child_frame_is_blocked() -> None:
+    plan = [{"action": "montage.delete_child_frame", "params": {"frame_id": "f1"}}]
+    result = run(
+        "plan_sanity",
+        1,
+        {"plan": plan, "whitelist": ["montage.delete_child_frame"]},
+    )
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
 def test_deletion_action_blocked_even_inside_whitelist() -> None:
     plan = [{"action": "delete_frame", "params": {"id": "f1"}}]
     result = run("plan_sanity", 1, {"plan": plan, "whitelist": ["delete_frame", "run_node"]})
