@@ -1522,7 +1522,8 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-composer").fill("ещё бюджет");
     await page.getByTestId("orch-send").click();
     await expect(page.getByTestId("orch-approval")).toBeVisible();
-    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval-noid")).toContainText("orch-appr");
     await page.getByTestId("orch-approval-hide").click();
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     expect(posts).toEqual([]);
