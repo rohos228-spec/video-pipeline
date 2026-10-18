@@ -645,7 +645,7 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.serverId ? (
+        ) : approval.changeId ? (
           <>
             <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
               Approve
@@ -656,7 +656,7 @@ function ApprovalCard({
           </>
         ) : (
           <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
+            Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
           </p>
         )}
       </div>
