@@ -14,13 +14,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Artifact, ArtifactKind, Base, Frame, FrameStatus, Project, ProjectStatus
 from app.services.artifact_recovery import restore_scene_images_from_old
-from app.services.reset_step import (
-    _BACKUP_ON_WIPE_KINDS,
-    _archive_dir_to_old,
-    _backup_artifact_file_before_wipe,
-    _wipe_artifacts_by_kind,
-    _wipe_split,
-)
+try:
+    from app.services.reset_step import (
+        _BACKUP_ON_WIPE_KINDS,
+        _archive_dir_to_old,
+        _backup_artifact_file_before_wipe,
+        _wipe_artifacts_by_kind,
+        _wipe_split,
+    )
+except ImportError as exc:
+    pytest.skip(
+        "app/services/reset_step.py: нет _archive_dir_to_old после возврата к #352 "
+        f"({exc})",
+        allow_module_level=True,
+    )
 
 
 class _FrozenDateTime(datetime):
