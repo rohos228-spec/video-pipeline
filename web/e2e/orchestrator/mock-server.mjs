@@ -1281,52 +1281,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "approve") {
-    const body = await readBody(req);
-    const allowed = new Set(["change_id", "decision", "retry_grant"]);
-    if (Object.keys(body).some((key) => !allowed.has(key))) {
-      sendJson(res, 422, { detail: "extra forbidden" });
-      return;
-    }
-    const decision = body.decision == null ? null : String(body.decision);
-    if (decision != null && decision !== "approve" && decision !== "retry_step" && decision !== "deny") {
-      sendJson(res, 422, { detail: "bad decision" });
-      return;
-    }
-    const session = sessionOf(decodeURIComponent(parts[3]));
-    const changeId = typeof body.change_id === "string" ? body.change_id : null;
-    if (session.unlisted) {
-      const taskId = session.snapshot?.task_id || session.currentTaskId || session.activeTaskId || 1;
-      session.snapshot = { task_id: taskId, status: "failed", resume_allowed: false };
-      emit(session, "agent_status", taskId, {
-        status: "failed",
-        agent: "supervisor",
-        task_id: taskId,
-        resume_allowed: false,
-      });
-      if (decision === "deny") {
-        sendJson(res, 200, {
-          executed: false,
-          decision: "deny",
-          reason: "not_in_whitelist",
-          retry_armed: false,
-          change_id: changeId,
-        });
-        return;
-      }
-      sendJson(res, 403, { detail: "not_in_whitelist" });
-      return;
-    }
-    sendJson(res, 200, {
-      executed: false,
-      decision,
-      reason: null,
-      retry_armed: false,
-      change_id: changeId,
-    });
-    return;
-  }
-
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "resume") {
     const session = sessionOf(decodeURIComponent(parts[3]));
     const taskId = session.currentTaskId || session.activeTaskId || 1;
@@ -1382,8 +1336,17 @@ const server = http.createServer(async (req, res) => {
     parts[4] === "approve"
   ) {
     const body = await readBody(req);
+    const allowed = new Set(["change_id", "decision", "retry_grant"]);
+    if (Object.keys(body).some((key) => !allowed.has(key))) {
+      sendJson(res, 422, { detail: "extra forbidden" });
+      return;
+    }
+    const decision = body.decision == null ? null : String(body.decision);
+    if (decision != null && decision !== "approve" && decision !== "retry_step" && decision !== "deny") {
+      sendJson(res, 422, { detail: "bad decision" });
+      return;
+    }
     const changeId = typeof body.change_id === "string" ? body.change_id : "";
-    const decision = typeof body.decision === "string" ? body.decision : "";
     const scenario = scenarioOf(req, url);
     if (decision === "approve" && scenario === "approvefail") {
       await sleep(800);
@@ -1396,6 +1359,29 @@ const server = http.createServer(async (req, res) => {
     }
     if (decision === "approve" && scenario === "approve409") {
       sendJson(res, 409, { detail: "approval conflict" });
+      return;
+    }
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    if (session.unlisted) {
+      const taskId = session.snapshot?.task_id || session.currentTaskId || session.activeTaskId || 1;
+      session.snapshot = { task_id: taskId, status: "failed", resume_allowed: false };
+      emit(session, "agent_status", taskId, {
+        status: "failed",
+        agent: "supervisor",
+        task_id: taskId,
+        resume_allowed: false,
+      });
+      if (decision === "deny") {
+        sendJson(res, 200, {
+          executed: false,
+          decision: "deny",
+          reason: "not_in_whitelist",
+          retry_armed: false,
+          change_id: changeId,
+        });
+        return;
+      }
+      sendJson(res, 403, { detail: "not_in_whitelist" });
       return;
     }
     let matched = false;

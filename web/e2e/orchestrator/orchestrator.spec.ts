@@ -382,14 +382,16 @@ test.describe("orchestrator chat", () => {
       await page.getByTestId("orch-composer").fill("ещё кадры");
       await page.getByTestId("orch-send").click();
       await expect(page.getByTestId("orch-approve")).toBeVisible();
+      await expect.poll(() => snapshots).toBeGreaterThan(0);
+      const snapshotsBefore = snapshots;
       await page.getByTestId("orch-approve").click();
       await expect(page.getByText(text).first()).toBeVisible();
       await expect.poll(() => posts).toBe(1);
       if (status === 409) {
-        await expect.poll(() => snapshots).toBeGreaterThan(0);
+        await expect.poll(() => snapshots).toBeGreaterThan(snapshotsBefore);
         await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
       } else {
-        expect(snapshots).toBe(0);
+        expect(snapshots).toBe(snapshotsBefore);
       }
       await page.unroute("**/api/orchestrator/chat/*/approve");
       await page.unroute("**/api/orchestrator/chat/*/status");
