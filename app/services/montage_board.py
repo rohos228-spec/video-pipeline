@@ -301,7 +301,11 @@ async def _entity_name_maps(
         )
     except Exception:  # noqa: BLE001
         return chars, items
+    from app.services.frame_tombstones import entity_is_marked
+
     for ent in ents:
+        if entity_is_marked(ent):
+            continue
         code = str(getattr(ent, "code", "") or "").strip()
         name = str(getattr(ent, "name", "") or "").strip()
         if not code:

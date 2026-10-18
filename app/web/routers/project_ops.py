@@ -1011,10 +1011,13 @@ async def _scene_editor_state(session: AsyncSession, project: Project, frame_id:
             .scalars()
             .all()
         )
+        from app.services.frame_tombstones import entity_is_marked
+
         names = {
             str(getattr(e, "code", "") or "").strip(): str(getattr(e, "name", "") or "").strip()
             for e in ents
-            if str(getattr(e, "type", "") or "") == "character"
+            if not entity_is_marked(e)
+            and str(getattr(e, "type", "") or "") == "character"
             and str(getattr(e, "code", "") or "").strip()
         }
         raw = str((state.get("scene") or {}).get("characters") or "")

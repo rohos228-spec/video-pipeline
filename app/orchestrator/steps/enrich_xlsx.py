@@ -2095,13 +2095,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
-            ents = list(
-                (
+            from app.services.frame_tombstones import entity_is_marked
+
+            ents = [
+                row
+                for row in (
                     await session.execute(
                         _select(Entity).where(Entity.project_id == project.id)
                     )
                 ).scalars().all()
-            )
+                if not entity_is_marked(row)
+            ]
             meta = project.meta if isinstance(project.meta, dict) else {}
             from app.services.db_frames_context import build_excel_gpt_check_context
 
@@ -2408,13 +2412,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         node_key,
                         collapsed,
                     )
-            ents = list(
-                (
+            from app.services.frame_tombstones import entity_is_marked
+
+            ents = [
+                row
+                for row in (
                     await session.execute(
                         _select(Entity).where(Entity.project_id == project.id)
                     )
                 ).scalars().all()
-            )
+                if not entity_is_marked(row)
+            ]
             if str(node_key or "").endswith("_fw_frames"):
                 from app.services.vo_shot_expand import (
                     apply_shot_coverage_to_vo_cells,

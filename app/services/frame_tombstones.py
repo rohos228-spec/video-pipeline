@@ -37,6 +37,14 @@ def _flag_frame(frame) -> None:
         pass
 
 
+def entity_is_marked(entity) -> bool:
+    """Сущность помечена удалён/archived и не должна идти в LLM или платные референсы."""
+    attrs = getattr(entity, "attrs", None)
+    if not isinstance(attrs, dict):
+        return False
+    return bool(attrs.get(DELETED_MARK) or attrs.get("archived"))
+
+
 def deleted_numbers(project) -> set[int]:
     raw = (getattr(project, "meta", None) or {}).get(_KEY) or []
     out: set[int] = set()

@@ -263,6 +263,9 @@ async def ingest_scene(
             .order_by(Entity.sort_key, Entity.id)
         )
     ).scalars().all()
+    from app.services.frame_tombstones import entity_is_marked
+
+    entities = [row for row in entities if not entity_is_marked(row)]
     codes = _character_codes(list(entities), frames)
     plan, axes = default_plan(codes)
     if existing and existing.get("plan"):

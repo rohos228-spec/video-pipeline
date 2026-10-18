@@ -3210,8 +3210,9 @@ async def patch_entity(
 
 
 def _entity_marked(en: Entity) -> bool:
-    attrs = en.attrs if isinstance(en.attrs, dict) else {}
-    return bool(attrs.get("удалён") or attrs.get("archived"))
+    from app.services.frame_tombstones import entity_is_marked
+
+    return entity_is_marked(en)
 
 
 @router.delete("/entities/{entity_id}")

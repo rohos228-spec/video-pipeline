@@ -152,7 +152,11 @@ async def _resolve_item_descriptions(
                 .order_by(Entity.id)
             )
         ).scalars().all()
+        from app.services.frame_tombstones import entity_is_marked
+
         for e in ents:
+            if entity_is_marked(e):
+                continue
             attrs = e.attrs or {}
             desc_val = (attrs.get("description") or attrs.get("описание") or "").strip()
             name_val = (e.name or "").strip()

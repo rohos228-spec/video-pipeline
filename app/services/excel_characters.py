@@ -218,8 +218,12 @@ def _cell_text(ws, row: int, col: int) -> str:
 
 def characters_from_entities(entities: list[Any]) -> list[ExcelCharacter]:
     """Entity(type=character) → ExcelCharacter (тот же shape, что лист «Персонажи»)."""
+    from app.services.frame_tombstones import entity_is_marked
+
     rows: list[Any] = []
     for e in entities or []:
+        if entity_is_marked(e):
+            continue
         code = str(getattr(e, "code", None) or "").strip()
         etype = str(getattr(e, "type", None) or "").strip()
         if etype != "character" or not code or not _ID_RE.match(code):
