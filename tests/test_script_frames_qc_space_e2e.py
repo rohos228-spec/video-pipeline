@@ -111,4 +111,4 @@ async def test_space_plan_through_six_node_group(monkeypatch, tmp_path) -> None:
 
     html = Path(out["report"]).read_text(encoding="utf-8")
     assert "Площадка" in html
-    assert "<svg" in html
+    assert "data:image/svg+xml;base64," in html
