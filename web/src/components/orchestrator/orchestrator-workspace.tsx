@@ -26,6 +26,7 @@ import {
   NOT_IN_WHITELIST_TEXT,
   PAID_DECISION_LABEL,
   paidDecisionsOf,
+  partialDecisionsOf,
   TASK_STATUS_LABEL,
   type ApprovalView,
   type KillNoticeView,
@@ -95,6 +96,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     title: "План пустой",
     body: "В чекпоинте нет шагов. Продолжать нечего, задача остановлена.",
     testId: "orch-empty-plan",
+  },
+  partial_write: {
+    title: "Частичная запись",
+    body: "Принять — закрыть шаг и запустить следующий. Отказать — остановить задачу, строка change_id остаётся.",
+    testId: "orch-partial-decision",
   },
   paid_outcome_unknown: {
     title: "Исход платного шага неизвестен",
@@ -770,7 +776,7 @@ function ApprovalCard({
 }) {
   const copy = BLOCK_COPY[approval.reason];
   const terminal = isTerminalBlock(approval.reason);
-  const decisions = paidDecisionsOf(approval);
+  const decisions = paidDecisionsOf(approval) ?? partialDecisionsOf(approval);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
   return (

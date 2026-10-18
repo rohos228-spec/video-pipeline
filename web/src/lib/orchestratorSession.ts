@@ -199,6 +199,15 @@ export function paidDecisionsOf(approval: ApprovalView): PaidDecision[] | null {
   return known.length ? known : null;
 }
 
+/**
+ * partial_write: grant принимает approve и deny.
+ * На проводе `actions` обычно только `["approve"]` — deny всё равно есть.
+ */
+export function partialDecisionsOf(approval: ApprovalView): PaidDecision[] | null {
+  if (approval.reason !== "partial_write") return null;
+  return ["approve", "deny"];
+}
+
 export interface TaskView {
   id: string;
   title: string;

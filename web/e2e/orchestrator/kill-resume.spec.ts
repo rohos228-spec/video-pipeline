@@ -315,6 +315,107 @@ test("paid_outcome_unknown берёт step_change_id и кнопки approve ret
   expect(JSON.parse(posted)).toEqual({ change_id: "orch-appr-9-1", decision: "deny" });
 });
 
+test("partial_write: approve идёт дальше, deny ставит failed и оставляет строку", async ({ page }) => {
+  const session = "partial-decide";
+  await openWithToken(page, session);
+  const seeded = await page.request.post(`${MOCK}/api/orchestrator/test/partial-changes`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: session, task_id: 1, change_ids: ["chg-partial-row"] },
+  });
+  expect(seeded.ok()).toBeTruthy();
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-partial",
+    plan: [{ action: "write", paid: false, risk: "none", estimated_cost: 0 }],
+    position: 0,
+    change_ids: ["chg-partial-row"],
+    context: "",
+  });
+  await emit(page, session, "partial_write", {
+    level: "WARN",
+    change_ids: ["chg-partial-row"],
+    position: 0,
+    task_id: 1,
+  });
+  await emit(page, session, "approval_required", {
+    reason: "partial_write",
+    change_id: "orch-appr-5-1",
+    action: "write",
+    actions: ["approve"],
+    task_id: 1,
+  });
+
+  await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-partial-row");
+  const decisions = page.getByTestId("orch-decision");
+  await expect(decisions).toHaveCount(2);
+  await expect(decisions.nth(0)).toHaveAttribute("data-decision", "approve");
+  await expect(decisions.nth(1)).toHaveAttribute("data-decision", "deny");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+
+  let posted = "";
+  await page.route(`**/api/orchestrator/chat/${session}/approve`, async (route) => {
+    posted = route.request().postData() ?? "";
+    const body = JSON.parse(posted) as { decision?: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        executed: false,
+        decision: body.decision,
+        retry_armed: false,
+        change_id: "orch-appr-5-1",
+      }),
+    });
+  });
+  await decisions.nth(1).click();
+  await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+  await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-partial-row");
+  expect(JSON.parse(posted)).toEqual({ change_id: "orch-appr-5-1", decision: "deny" });
+
+  const accept = "partial-accept";
+  await openWithToken(page, accept);
+  const seededAccept = await page.request.post(`${MOCK}/api/orchestrator/test/partial-changes`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: accept, task_id: 1, change_ids: ["chg-partial-row"] },
+  });
+  expect(seededAccept.ok()).toBeTruthy();
+  await emit(page, accept, "partial_write", {
+    level: "WARN",
+    change_ids: ["chg-partial-row"],
+    position: 0,
+    task_id: 1,
+  });
+  await emit(page, accept, "approval_required", {
+    reason: "partial_write",
+    change_id: "orch-appr-5-2",
+    action: "write",
+    actions: ["approve"],
+    task_id: 1,
+  });
+  let accepted = "";
+  await page.route(`**/api/orchestrator/chat/${accept}/approve`, async (route) => {
+    accepted = route.request().postData() ?? "";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        executed: false,
+        decision: "approve",
+        retry_armed: false,
+        change_id: "orch-appr-5-2",
+      }),
+    });
+  });
+  await page.getByTestId("orch-decision").first().click();
+  await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  await expect(page.getByTestId("orch-partial-change")).toHaveText("chg-partial-row");
+  expect(JSON.parse(accepted)).toEqual({ change_id: "orch-appr-5-2", decision: "approve" });
+});
+
 test("deletion_forbidden объясняет отказ без soft_delete и гранта", async ({ page }) => {
   const session = "del-forbidden";
   await openWithToken(page, session);
