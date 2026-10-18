@@ -45,7 +45,7 @@ async def test_build_assembly_timeline_aligns_full_script_filters_output(tmp_pat
             return_value=False,
         ),
     ):
-        clips, master, scale, per_frame = await build_assembly_timeline(
+        clips, master, scale, per_frame, mux_audio = await build_assembly_timeline(
             tmp_path,
             voice,
             [1, 3, 5],
@@ -57,6 +57,7 @@ async def test_build_assembly_timeline_aligns_full_script_filters_output(tmp_pat
     assert master == 7.0
     assert scale == 1.0
     assert per_frame is False
+    assert mux_audio == voice
     assert [c.frame_number for c in clips] == [1, 3, 5]
     # Кадр 3 должен начинаться после речи кадра 2 (~3s), не сразу после кадра 1
     assert clips[1].start_ts >= 2.5

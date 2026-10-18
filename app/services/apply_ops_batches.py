@@ -37,20 +37,20 @@ from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
-    fill_bit_spans,
-    is_cutaway_shot,
-    merge_same_place_scenes,
     carry_pose,
     character_id_problems,
     ensure_character_ids,
+    ensure_wide_before_dialogue,
+    fill_bit_spans,
+    is_cutaway_shot,
+    merge_same_place_scenes,
+    merge_trivial_shots,
     normalize_reply_cameras,
     reflow_vo_by_sentences,
-    merge_trivial_shots,
-    ensure_wide_before_dialogue,
-    spread_vo_sentences,
     repair_shot_vo_lengths,
     shots_continuity_problems,
     shots_grammar_reason,
+    spread_vo_sentences,
     vo_piece_ends_sentence,
     vo_sentence_problems,
 )
@@ -1876,7 +1876,7 @@ def shots_reply_gate_problems(
 import contextvars as _cv
 
 # база персонажей для гейта/фикса id (ставит нода Кадры перед пачками)
-_GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE_CHARACTERS", default=[])
+_GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_CHARACTERS", default=[])
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:

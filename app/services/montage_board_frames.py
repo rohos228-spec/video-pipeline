@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from loguru import logger
@@ -15,6 +16,7 @@ from app.services.montage_coverage_ops import (
     _clear_child_scene_chain,
     _load_frames,
     _refresh_shots_in_beat,
+    _stamp_deleted_shot,
     delete_coverage_child,
 )
 from app.services.montage_board_meta import (
@@ -157,22 +159,162 @@ async def _drop_frame_rows(
     frames_to_drop: list[Frame],
 ) -> None:
     """Пометить кадры. Строки, тексты, промты и связи не стираются."""
+    from app.services.frame_tombstones import mark_frame_deleted
+
     pending = [fr for fr in frames_to_drop if getattr(fr, "id", None)]
     if not pending:
         return
     for fr in pending:
-        attrs = dict(getattr(fr, "attrs", None) or {})
-        attrs["активен"] = False
-        attrs["удалён"] = True
-        attrs["карантин"] = True
-        attrs["пометка"] = "_drop_frame_rows: кадр скрыт, не удалён"
-        fr.attrs = attrs
-        _flag_attrs(fr)
+        mark_frame_deleted(
+            fr,
+            project,
+            "_drop_frame_rows: кадр помечен, не удалён",
+        )
     await session.flush()
     logger.warning(
-        "WARN _drop_frame_rows: кадры {} скрыты, строки сохранены",
+        "WARN _drop_frame_rows: кадры {} помечены, строки сохранены",
         [int(fr.number) for fr in pending],
     )
+
+
+_HEAD_ROLLBACK_KEY = "head_promotion_rollback"
+
+
+def _store_head_rollback(parent: Frame, kids: list[Frame]) -> None:
+    """Запомнить голову и шоты до повышения, чтобы restore вернул роли."""
+    snap = {
+        "head_voiceover": parent.voiceover_text,
+        "head_attrs": copy.deepcopy(dict(getattr(parent, "attrs", None) or {})),
+        "members": [
+            {
+                "id": int(fr.id),
+                "voiceover_text": fr.voiceover_text,
+                "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
+            }
+            for fr in kids
+        ],
+    }
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs[_HEAD_ROLLBACK_KEY] = snap
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+
+def _seal_head_rollback(parent: Frame, kids: list[Frame]) -> None:
+    """Зафиксировать состояние после повышения, чтобы restore не стёр поздние правки."""
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    snap = attrs.get(_HEAD_ROLLBACK_KEY)
+    if not isinstance(snap, dict):
+        return
+    snap = dict(snap)
+    snap["head_voiceover_after"] = parent.voiceover_text
+    head_after = dict(attrs)
+    head_after.pop(_HEAD_ROLLBACK_KEY, None)
+    snap["head_attrs_after"] = copy.deepcopy(head_after)
+    snap["members_after"] = [
+        {
+            "id": int(fr.id),
+            "voiceover_text": fr.voiceover_text,
+            "attrs": copy.deepcopy(dict(getattr(fr, "attrs", None) or {})),
+        }
+        for fr in kids
+        if getattr(fr, "id", None)
+    ]
+    attrs[_HEAD_ROLLBACK_KEY] = snap
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+
+def _rollback_mapping(current: Any, before: Any, after: Any) -> dict[str, Any]:
+    """Откат ключей повышения. Ключ, изменённый после снимка, остаётся как есть."""
+    cur = current if isinstance(current, dict) else {}
+    pre = before if isinstance(before, dict) else {}
+    post = after if isinstance(after, dict) else None
+    if post is None:
+        return copy.deepcopy(pre)
+    out: dict[str, Any] = {}
+    for key in set(cur) | set(pre) | set(post):
+        if key == _HEAD_ROLLBACK_KEY:
+            continue
+        has_c, has_b, has_a = key in cur, key in pre, key in post
+        c, b, a = cur.get(key), pre.get(key), post.get(key)
+        if (
+            has_c
+            and has_b
+            and has_a
+            and isinstance(c, dict)
+            and isinstance(b, dict)
+            and isinstance(a, dict)
+        ):
+            out[key] = _rollback_mapping(c, b, a)
+            continue
+        if has_c and (not has_a or c != a):
+            out[key] = copy.deepcopy(c)
+            continue
+        if has_b:
+            out[key] = copy.deepcopy(b)
+    return out
+
+
+def _rollback_text(current: Any, before: Any, after: Any, *, has_after: bool) -> Any:
+    if not has_after or current == after:
+        return before
+    return current
+
+
+def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
+    """Вернуть роли повышения. Правки, сделанные после него, не затираются."""
+    raw = dict(getattr(frame, "attrs", None) or {})
+    snap = raw.get(_HEAD_ROLLBACK_KEY)
+    if not isinstance(snap, dict):
+        return False
+    by_id = {int(fr.id): fr for fr in frames if getattr(fr, "id", None)}
+    has_head_after = "head_voiceover_after" in snap
+    frame.voiceover_text = _rollback_text(
+        frame.voiceover_text,
+        snap.get("head_voiceover"),
+        snap.get("head_voiceover_after"),
+        has_after=has_head_after,
+    )
+    frame.attrs = _rollback_mapping(
+        raw,
+        snap.get("head_attrs") or {},
+        snap.get("head_attrs_after") if "head_attrs_after" in snap else None,
+    )
+    _flag_attrs(frame)
+    after_by_id = {
+        int(row["id"]): row
+        for row in (snap.get("members_after") or [])
+        if isinstance(row, dict) and row.get("id") is not None
+    }
+    for member in snap.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        try:
+            mid = int(member.get("id"))
+        except (TypeError, ValueError):
+            continue
+        kid = by_id.get(mid)
+        if kid is None or kid is frame:
+            continue
+        after = after_by_id.get(mid)
+        if after is None:
+            kid.voiceover_text = member.get("voiceover_text")
+            kid.attrs = copy.deepcopy(member.get("attrs") or {})
+        else:
+            kid.voiceover_text = _rollback_text(
+                kid.voiceover_text,
+                member.get("voiceover_text"),
+                after.get("voiceover_text"),
+                has_after=True,
+            )
+            kid.attrs = _rollback_mapping(
+                getattr(kid, "attrs", None) or {},
+                member.get("attrs") or {},
+                after.get("attrs") or {},
+            )
+        _flag_attrs(kid)
+    return True
 
 
 def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
@@ -263,18 +405,39 @@ async def delete_montage_frame(
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
-    kids = _children_of(frames, frame)
-    new_head = _promote_first_child(frame, kids)
+    from app.services.frame_tombstones import frame_is_active, mark_frame_deleted
+
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    if kids:
+        _store_head_rollback(frame, kids)
+    reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, number)
-    await _drop_frame_rows(session, project, [frame])
+    mark_frame_deleted(frame, project, reason)
+    _stamp_deleted_shot(frames, frame, reason)
+    new_head = _promote_first_child(frame, kids)
+    promoted_number: int | None = None
     if new_head is not None:
-        leftover = await _load_frames(session, int(project.id))
-        live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
-        _refresh_shots_in_beat(leftover, live)
-        await session.flush()
+        src_vo = (frame.voiceover_text or "").strip()
+        dst = dict(getattr(new_head, "attrs", None) or {})
+        if src_vo and not str(dst.get("vo_cell_full") or "").strip():
+            dst["vo_cell_full"] = src_vo
+            new_head.attrs = dst
+            _flag_attrs(new_head)
+        if src_vo and not (new_head.voiceover_text or "").strip():
+            new_head.voiceover_text = frame.voiceover_text
+        _refresh_shots_in_beat(frames, new_head)
+        promoted_number = int(new_head.number)
+    if kids:
+        _seal_head_rollback(frame, kids)
+    await session.flush()
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
+    logger.warning(
+        "WARN delete_montage_frame: кадр #{} помечен, дети сцены на месте (шотов {})",
+        number,
+        len(kids),
+    )
     logger.info(
         "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,
@@ -285,8 +448,9 @@ async def delete_montage_frame(
         "ok": True,
         "frame_id": frame_id,
         "number": number,
-        "deleted": 1,
-        "promoted": int(new_head.number) if new_head is not None else None,
+        "deleted": 0,
+        "marked": 1,
+        "promoted": promoted_number,
     }
 
 
@@ -394,6 +558,42 @@ async def merge_montage_scenes(
         "parent_number": int(live_left.number),
         "merged_frames": len(right_members),
         "vo_scene_size": len(members),
+    }
+
+
+async def restore_montage_frame(
+    session: AsyncSession,
+    project: Project,
+    frame_id: int,
+) -> dict[str, Any]:
+    """Снять пометку «удалён». Строка кадра и шоты в ``кадры[]`` остаются."""
+    from app.services.frame_tombstones import forget_deleted
+    from app.services.montage_coverage_ops import _unstamp_deleted_shot
+
+    frames = await _load_frames(session, int(project.id))
+    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
+    if frame is None:
+        raise RuntimeError(f"кадр {frame_id} не найден")
+    rolled = _apply_head_rollback(frames, frame)
+    if not rolled:
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        for key in ("удалён", "пометка", "карантин", "активен"):
+            attrs.pop(key, None)
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    _unstamp_deleted_shot(frames, frame)
+    forget_deleted(project, int(frame.number))
+    await session.flush()
+    logger.warning(
+        "WARN restore_montage_frame: кадр #{} id={} снова активен, строка на месте",
+        frame.number,
+        frame.id,
+    )
+    return {
+        "ok": True,
+        "frame_id": int(frame.id),
+        "number": int(frame.number),
+        "restored": 1,
     }
 
 

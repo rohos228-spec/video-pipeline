@@ -28,8 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Entity, Frame, Project
 from app.project_db import (
     project_db_session_scope as _isolated_project_scope,
+)
+from app.project_db import (
     sync_project_row_to_master_db,
 )
+from app.services.frame_tombstones import PaidFrameSkipped
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
@@ -449,6 +452,12 @@ async def _run_op_with_short_sessions(
             fr = await _frame_by_number(session, project.id, frame_number)
             if fr is None:
                 raise RuntimeError(f"кадр {frame_number} не найден")
+            from app.services.frame_tombstones import log_paid_frame_skip
+
+            if log_paid_frame_skip(fr, where="montage_ai_change"):
+                raise PaidFrameSkipped(
+                    f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
+                )
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
@@ -695,18 +704,37 @@ async def _run_ops_phase(
     meta_lock = asyncio.Lock()
     total = len(all_ops)
 
+    def _op_open(status: str | None) -> bool:
+        return status not in ("ok", "skip")
+
     def _pending_snapshot() -> list[dict[str, Any]]:
-        open_ops = [all_ops[i] for i, st in enumerate(op_status) if st != "ok"]
+        open_ops = [all_ops[i] for i, st in enumerate(op_status) if _op_open(st)]
         return merge_kept_ops(open_ops, held_ops)
 
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
+            if result.get("paid_frame_skipped"):
+                op_status[idx] = "skip"
+                results.append(result)
+                board["pending_ops"] = _pending_snapshot()
+                async with session_scope(project_id) as session:
+                    project = await session.get(Project, project_id)
+                    if project is not None:
+                        set_montage_meta(project, board)
+                        await session.commit()
+                        try:
+                            await sync_project_row_to_master_db(project)
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("sync_project_row_to_master_db failed: {}", e)
+                if on_progress is not None:
+                    await on_progress(len(results), max(total, 1), result)
+                return
             op_status[idx] = "ok" if ok else "fail"
             mapping = result.get("renumber") if ok else None
             if isinstance(mapping, dict) and mapping:
                 # Якорь создал шот → номера кадров сдвинулись: чиним ещё не
                 # применённые операции, иначе правка уедет на соседний кадр.
-                rest = [o for i, o in enumerate(all_ops) if op_status[i] != "ok"]
+                rest = [o for i, o in enumerate(all_ops) if _op_open(op_status[i])]
                 moved = remap_frame_numbers(rest, mapping)
                 remap_board_slot_keys(board, mapping)
                 logger.info(
@@ -770,6 +798,23 @@ async def _run_ops_phase(
             try:
                 result = await _run_op_with_short_sessions(project_id, op, board)
                 await _finish_op(idx, True, result)
+            except PaidFrameSkipped as exc:
+                logger.warning(
+                    "WARN montage apply #{} кадр {} пропущен: {}",
+                    project_id,
+                    frame,
+                    exc,
+                )
+                await _finish_op(
+                    idx,
+                    False,
+                    {
+                        "ok": False,
+                        "skipped": str(exc),
+                        "paid_frame_skipped": True,
+                        "op": op,
+                    },
+                )
             except Exception as exc:  # noqa: BLE001
                 msg = str(exc)
                 logger.warning(
@@ -921,7 +966,7 @@ async def apply_montage_board(
         held_ops=held,
     )
 
-    remaining = [ops[i] for i, st in enumerate(op_status) if st != "ok"]
+    remaining = [ops[i] for i, st in enumerate(op_status) if st not in ("ok", "skip")]
     board["pending_ops"] = remaining + held
     touch_applied(board)
     set_montage_meta(project, board)

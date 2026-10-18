@@ -16,6 +16,62 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def fold_inactive_shot_voiceover(shots: list[Any]) -> list[str]:
+    """Закадр неактивного шота переезжает на живого соседа. Шот остаётся в списке."""
+    from app.services.frame_tombstones import shot_is_active
+
+    notes: list[str] = []
+    if not isinstance(shots, list):
+        return notes
+    rows = [shot for shot in shots if isinstance(shot, dict)]
+
+    def _host(index: int) -> dict[str, Any] | None:
+        for j in range(index - 1, -1, -1):
+            if shot_is_active(rows[j]):
+                return rows[j]
+        for j in range(index + 1, len(rows)):
+            if shot_is_active(rows[j]):
+                return rows[j]
+        return None
+
+    for index, shot in enumerate(rows):
+        if shot_is_active(shot):
+            continue
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if not piece:
+            continue
+        host = _host(index)
+        if host is None:
+            continue
+        host_text = " ".join(str(host.get("закадр") or "").split())
+        if piece not in host_text:
+            host["закадр"] = f"{host_text} {piece}".strip()
+        shot["закадр"] = ""
+        notes.append(
+            f"{shot.get('id') or '?'} закадр перенесён на {host.get('id') or '?'}"
+        )
+        logger.warning(
+            "WARN fold_inactive_shot_voiceover: закадр шота {} перенесён на живой {}, шот сохранён",
+            shot.get("id") or "?",
+            host.get("id") or "?",
+        )
+    return notes
+
+
+def cover_voiceover_with_shots(full: str, shots: list[Any]) -> str:
+    """Текст ячейки плюс куски, которые есть только на шотах."""
+    covered = " ".join(str(full or "").split())
+    folded = " ".join(covered.split())
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece and piece not in folded:
+            covered = f"{covered} {piece}".strip()
+            folded = " ".join(covered.split())
+    return covered
+
+
 def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
     """Сверх лимита кадры остаются в списке с активен False."""
     if limit <= 0 or len(out) <= limit:
@@ -36,6 +92,7 @@ def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
                 f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
                 where="merge_gpt_shots_with_action",
             )
+    fold_inactive_shot_voiceover(out)
 
 
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
@@ -697,6 +754,26 @@ def _prefer_full_action_text(*candidates: str) -> str:
     return best
 
 
+def _append_unmatched_gpt_shots(
+    out: list[dict[str, Any]],
+    cleaned: list[dict[str, Any]],
+    matched_sources: set[int],
+) -> None:
+    """Шоты GPT, не попавшие в склейку, остаются в хвосте."""
+    seen_ids = {str(row.get("id") or "") for row in out if str(row.get("id") or "")}
+    for shot in cleaned:
+        if id(shot) in matched_sources:
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid in seen_ids:
+            continue
+        if any(shot is row for row in out):
+            continue
+        out.append(shot)
+        if sid:
+            seen_ids.add(sid)
+
+
 def merge_gpt_shots_with_action(
     gpt_shots: list[Any],
     action: str,
@@ -715,14 +792,16 @@ def merge_gpt_shots_with_action(
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # убрать наследие авто-«общий вид …»
-    cleaned = [
-        s
-        for s in dict_shots
-        if not str(s.get("действие") or "").casefold().startswith("общий вид")
-    ]
-    if not cleaned:
-        cleaned = dict_shots
+    # Наследие авто-«общий вид …» помечаем, но не выкидываем.
+    cleaned: list[dict[str, Any]] = []
+    for shot in dict_shots:
+        if str(shot.get("действие") or "").casefold().startswith("общий вид"):
+            _mark_shot_kept(
+                shot,
+                "наследие авто-«общий вид» — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+        cleaned.append(shot)
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
@@ -759,6 +838,7 @@ def merge_gpt_shots_with_action(
             by_stem[stem] = s
     out: list[dict[str, Any]] = []
     missing: list[str] = []
+    matched_sources: set[int] = set()
     for i, can in enumerate(canonical):
         stem = action_stem(str(can.get("действие") or ""))
         gpt = by_stem.get(stem)
@@ -795,7 +875,11 @@ def merge_gpt_shots_with_action(
         for key in ("id", "parent_id", "порядок", "сцена", "место"):
             if gpt.get(key) not in (None, ""):
                 row[key] = gpt[key]
+        for key in ("реплика", "говорит", "select_fix"):
+            if gpt.get(key) not in (None, ""):
+                row[key] = gpt[key]
         out.append(row)
+        matched_sources.add(id(gpt))
     if missing:
         # Mild: почти все шаги покрыты (≤2 дырки и ≥70% canonical) → WARN.
         # Severe → PassStop на retry, без silent invent и без принятия 1/N.
@@ -809,27 +893,24 @@ def merge_gpt_shots_with_action(
             and covered >= 1
         )
         if mild:
+            keep = out if out else list(cleaned)
+            if out:
+                _append_unmatched_gpt_shots(keep, cleaned, matched_sources)
             soft = (
                 f"WARN underproduction: GPT не покрыл {len(missing)} шагов действия "
                 f"({'; '.join(missing[:5])}) — пишем покрытие "
-                f"(кадров {len(out or cleaned)}), repair VO, без invent шагов"
+                f"(кадров {len(keep)}), repair VO, без invent шагов"
             )
-            keep = out if out else cleaned
             return keep, soft
         return None, (
             "GPT не покрыл шаги действия: "
             + "; ".join(missing[:5])
             + " — нужен добор GPT"
         )
-    # если GPT дал больше кадров (осознанные вставки) — дописать хвост GPT
-    if len(cleaned) > len(out):
-        seen_ids = {str(r.get("id") or "") for r in out}
-        for s in cleaned[len(out) :]:
-            sid = str(s.get("id") or "")
-            if sid and sid in seen_ids:
-                continue
-            out.append(s)
-    # VO-cap / expected: не держим десятки кадров на короткий закадр.
+    # Кадры GPT, которые не попали в склейку (в том числе помеченный
+    # «общий вид»), дописываем. Идентификаторы не теряем.
+    _append_unmatched_gpt_shots(out, cleaned, matched_sources)
+    # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
     _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
 
@@ -1117,6 +1198,8 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
 
     if not isinstance(shots, list) or not shots:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     warnings: list[str] = []
     norm_vo = " ".join((vo or "").split())
 
@@ -1148,6 +1231,9 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             if _vo(shots[j]):
                 break
             if _reply(shots[j]):
+                j += 1
+                continue
+            if not shot_is_active(shots[j]):
                 j += 1
                 continue
             empties.append(j)
@@ -1193,8 +1279,11 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         if not chunk or n >= SHOT_VO_MIN or is_cutaway_shot(shot):
             i += 1
             continue
-        nxt = next((j for j in range(i + 1, len(shots)) if _vo(shots[j])), None)
-        prv = next((j for j in range(i - 1, -1, -1) if _vo(shots[j])), None)
+        def _live_vo(j: int) -> bool:
+            return _vo(shots[j]) and shot_is_active(shots[j])
+
+        nxt = next((j for j in range(i + 1, len(shots)) if _live_vo(j)), None)
+        prv = next((j for j in range(i - 1, -1, -1) if _live_vo(j)), None)
         if nxt is not None and _reply(shots[nxt]):
             nxt = None
         if prv is not None and _reply(shots[prv]):
@@ -1349,6 +1438,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
 
 # ---- R-VO-SENTENCE (c61): закадр режется ТОЛЬКО по концу предложения ----
 import re as _re
+
 _SENT_END = _re.compile(r'(?<=[.!?…])["»)]*\s+(?=["«(]?[A-ZА-ЯЁ0-9—–-])')
 _END_OK = _re.compile(r'[.!?…]["»)]*\s*$')
 
@@ -1774,6 +1864,8 @@ def merge_trivial_shots(shots):
     реплики, POV после «заметил», установочный перед диалогом. Закадр не теряется."""
     if not isinstance(shots, list) or len(shots) < 2:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     notes = []
     out = [shots[0]]
     merged_into = {}
@@ -1781,6 +1873,10 @@ def merge_trivial_shots(shots):
     for i in range(1, len(shots)):
         a, b = out[-1], shots[i]
         nxt = shots[i + 1] if i + 1 < len(shots) else None
+        if not shot_is_active(a) or not shot_is_active(b):
+            out.append(b)
+            chain = 1
+            continue
         if chain < 2 and _can_merge_trivial(a, b, nxt):
             act = _shot_s(a, "действие").rstrip(".")
             a["действие"] = (act + "; " + _shot_s(b, "действие")).strip()
@@ -1823,31 +1919,37 @@ def spread_vo_sentences(shots):
     rows = [s for s in shots if isinstance(s, dict)] if isinstance(shots, list) else []
     if len(rows) < 2:
         return []
-    pieces = [_shot_s(s, "закадр") for s in rows]
+    from app.services.frame_tombstones import shot_is_active
+
+    fold_inactive_shot_voiceover(rows)
+    live = [i for i, s in enumerate(rows) if shot_is_active(s)]
+    if len(live) < 2:
+        return []
+    pieces = [_shot_s(rows[i], "закадр") for i in live]
     full = " ".join(p for p in pieces if p)
     sents = split_vo_sentences(full)
-    nonempty = [i for i, p in enumerate(pieces) if p]
+    nonempty = [k for k, p in enumerate(pieces) if p]
     if len(sents) <= len(nonempty):
         return []
-    free = [i for i, s in enumerate(rows) if not _is_reply(s)]
+    free = [k for k, i in enumerate(live) if not _is_reply(rows[i])]
     if len(free) < 2:
         return []
     start = nonempty[0] if nonempty else free[0]
-    free = [i for i in free if i >= start] or free
+    free = [k for k in free if k >= start] or free
     n, m = len(sents), len(free)
     owner = []
     for k in range(n):
         owner.append(free[min(m - 1, (k * m) // n)])
-    new = {i: "" for i in range(len(rows))}
+    new = {k: "" for k in range(len(live))}
     for k, sent in enumerate(sents):
         new[owner[k]] = (new[owner[k]] + " " + sent).strip()
-    if " ".join(new[i] for i in range(len(rows)) if new[i]) != full:
+    if " ".join(new[k] for k in range(len(live)) if new[k]) != full:
         return []
     notes = []
-    for i, s in enumerate(rows):
-        if pieces[i] != new[i]:
-            s["закадр"] = new[i]
-            notes.append(f"{s.get('id')}: закадр разнесён по предложениям")
+    for k, i in enumerate(live):
+        if pieces[k] != new[k]:
+            rows[i]["закадр"] = new[k]
+            notes.append(f"{rows[i].get('id')}: закадр разнесён по предложениям")
     return notes
 
 
@@ -1863,11 +1965,16 @@ def ensure_wide_before_dialogue(shots):
 
     if not isinstance(shots, list) or not shots:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     notes = []
     i = 0
     while i < len(shots):
         s = shots[i]
-        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])):
+        if isinstance(s, dict) and not shot_is_active(s):
+            i += 1
+            continue
+        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1]) and shot_is_active(shots[i - 1])):
             i += 1
             continue
         j = i

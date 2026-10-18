@@ -1224,8 +1224,13 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
-    seq = [s.get("якорь_n") for s in shots]
+    """Живые кадры идут по якорям подряд 1..k, у каждого якоря есть кадр.
+
+    Помеченные (карантин) в проверку не входят: они лежат в хвосте и не
+    ломают раскладку.
+    """
+    live = [s for s in shots if not s.get("карантин")]
+    seq = [s.get("якорь_n") for s in (live or shots)]
     if any(not isinstance(v, int) for v in seq):
         return False
     return seq == sorted(seq) and set(seq) == set(range(1, k + 1))
@@ -1537,6 +1542,7 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     shot["карантин"] = True
     shot["пометка"] = reason
     shot["активен"] = False
+    shot["fw_qc"] = reason
     logger.warning(
         "WARN {}: кадр {} помечен, не удалён: {}",
         where,
@@ -1550,7 +1556,10 @@ def _shot_live(shot: dict[str, Any]) -> bool:
 
 
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем."""
+    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем.
+
+    Бюджет считается по живым кадрам: уже помеченные в лимит не входят.
+    """
     out = list(shots)
     if cap < 1:
         return out
@@ -1653,7 +1662,10 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
             )
         fixed.append(f"якорь {shot.get('якорь_n')} не совпал — кадр сохранён")
         rebuilt.append(shot)
+    # Порядок якорей (units), не исходный порядок GPT. Несовпавшие — в хвост.
     shots[:] = rebuilt
+    # План и ракурс правим от последнего живого кадра — той же точки, что qc_reasons.
+    # Помеченный между двумя живыми не должен уводить угол и плодить новый ремонт.
     live_shots = [shot for shot in shots if _shot_live(shot)]
     fixed.extend(smooth_plan_sequence(live_shots))
     prev: dict[str, Any] | None = None

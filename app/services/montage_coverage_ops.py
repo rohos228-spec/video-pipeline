@@ -6,17 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Artifact,
     Frame,
-    FrameEdge,
     FrameStatus,
-    FrameText,
     Project,
-    PromptVersion,
 )
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
@@ -419,7 +415,15 @@ def _detach_from_coverage_ancestor(
 
 
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
-    kids = _children_of(frames, parent)
+    from app.services.frame_tombstones import frame_is_active
+
+    if not frame_is_active(parent):
+        logger.warning(
+            "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
+            getattr(parent, "number", None),
+        )
+        return
+    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -798,19 +802,22 @@ async def _grow_cell_shots(
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
     """Живые шоты ячейки: leftover и скрытый кадр не получают слот покрытия.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
+    а помеченный шот возвращается новым активным кадром.
     """
     from app.orchestrator.validators.activity_flags import frame_is_active
+
+    def _shown(fr: Frame) -> bool:
+        return frame_is_active(getattr(fr, "attrs", None) or {})
 
     live = [
         m
         for m in members
-        if not bool(_cs(m).get("leftover"))
-        and frame_is_active(getattr(m, "attrs", None) or {})
+        if not bool(_cs(m).get("leftover")) and _shown(m)
     ]
     if not live:
         live = [parent]
-    elif parent not in live:
+    elif parent not in live and _shown(parent):
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1072,19 +1079,128 @@ def apply_coverage_kind(
     _refresh_shots_in_beat(frames, vo_head)
 
 
+def _stamp_matching_shot(host: Frame, shot_id: str, fields: dict[str, Any]) -> bool:
+    """Пометить элемент ``кадры[]`` с этим id. Список не укорачивается."""
+    sid = (shot_id or "").strip()
+    if not sid:
+        return False
+    planned = planned_shots_from_attrs(host)
+    hit = False
+    for item in planned:
+        if str(item.get("id") or "").strip() == sid:
+            item.update(fields)
+            hit = True
+    if not hit:
+        return False
+    attrs = dict(getattr(host, "attrs", None) or {})
+    attrs["кадры"] = planned
+    host.attrs = attrs
+    _flag_attrs(host)
+    return True
+
+
+def _stamp_deleted_shot(frames: list[Frame], frame: Frame, reason: str) -> None:
+    """Пометить шот в собственных «кадрах» и в лестнице родителя.
+
+    Совпадение только по id шота: индексный fallback не используется,
+    чтобы не пометить чужой K1. Элементы из списка не выкидываются.
+    """
+    fields: dict[str, Any] = {
+        "карантин": True,
+        "пометка": reason,
+        "удалён": True,
+        "активен": False,
+    }
+    sid = coverage_shot_id(frame)
+    if not sid:
+        return
+    own = planned_shots_from_attrs(frame)
+    if own:
+        for item in own:
+            item_id = str(item.get("id") or "").strip()
+            if item_id == sid:
+                item.update(fields)
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs["кадры"] = own
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    parent = _vo_parent_frame(frames, frame)
+    if parent is None:
+        return
+    seen: set[int] = set()
+    for host in _vo_members(frames, parent):
+        if host is frame:
+            continue
+        key = int(getattr(host, "id", 0) or 0) or int(host.number)
+        if key in seen:
+            continue
+        seen.add(key)
+        _stamp_matching_shot(host, sid, fields)
+
+
+def _unstamp_deleted_shot(frames: list[Frame], frame: Frame) -> None:
+    """Снять пометку удаления с шота. Список ``кадры[]`` не укорачивается."""
+    clear = ("карантин", "пометка", "удалён", "активен")
+
+    def _clear(item: dict[str, Any]) -> None:
+        for key in clear:
+            item.pop(key, None)
+
+    sid = coverage_shot_id(frame)
+    if not sid:
+        return
+    own = planned_shots_from_attrs(frame)
+    if own:
+        for item in own:
+            item_id = str(item.get("id") or "").strip()
+            if item_id == sid:
+                _clear(item)
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs["кадры"] = own
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    parent = _vo_parent_frame(frames, frame)
+    if parent is None:
+        return
+    seen: set[int] = set()
+    for host in _vo_members(frames, parent):
+        if host is frame:
+            continue
+        key = int(getattr(host, "id", 0) or 0) or int(host.number)
+        if key in seen:
+            continue
+        seen.add(key)
+        planned = planned_shots_from_attrs(host)
+        hit = False
+        for item in planned:
+            if str(item.get("id") or "").strip() == sid:
+                _clear(item)
+                hit = True
+        if not hit:
+            continue
+        attrs = dict(getattr(host, "attrs", None) or {})
+        attrs["кадры"] = planned
+        host.attrs = attrs
+        _flag_attrs(host)
+
+
 async def delete_coverage_child(
     session: AsyncSession,
     project: Project,
     frame: Frame,
     frames: list[Frame],
 ) -> None:
+    """Мягкая пометка дочернего кадра. Строка Frame и тексты остаются."""
     parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):
         raise RuntimeError("удалять можно только дочерний кадр")
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
+    reason = "delete_coverage_child: дочерний кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, int(frame.number))
+    from app.services.frame_tombstones import remember_deleted
+
     sid = coverage_shot_id(frame)
     attrs = dict(getattr(frame, "attrs", None) or {})
     attrs["активен"] = False
@@ -1094,6 +1210,8 @@ async def delete_coverage_child(
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(frame, leftover=True)
+    remember_deleted(project, int(frame.number))
+    _stamp_deleted_shot(frames, frame, reason)
     logger.warning(
         "WARN delete_coverage_child: кадр #{} id={} помечен, строка и промты на месте",
         frame.number,
@@ -1447,7 +1565,26 @@ async def apply_coverage_op(
             parent_number=parent_number,
         )
     elif op_type == "coverage_delete":
+        parent = _vo_parent_frame(frames, frame)
+        is_child = parent is not None and int(parent.number) != int(frame.number)
+        if not (is_shot_child(frame) or is_child):
+            logger.warning(
+                "WARN coverage_delete: кадр #{} не дочерний — отказ, без пометки и без отвязки",
+                frame.number,
+            )
+            return {
+                "ok": False,
+                "refused": "not_child",
+                "highlight": slot_key_from_op(op),
+                "frame_number": frame_number,
+                "op": op,
+                "regen_image": False,
+            }
         await delete_coverage_child(session, project, frame, frames)
+        logger.warning(
+            "WARN coverage_delete: кадр #{} помечен, строка и промты на месте",
+            frame.number,
+        )
 
     await session.flush()
     highlight = slot_key_from_op(op)

@@ -864,14 +864,19 @@ def _assign_scene_vo(
         kept.append(sh)
     if vo and shots and not any(str(s.get("закадр") or "").strip() for s in kept):
         shots[0]["закадр"] = vo
-        # Весь закадр теперь на первом кадре: пометка «пустой кусок» его спрятала бы.
+        # Весь закадр теперь на первом кадре. Снимаем только свой карантин
+        # «пустой кусок», который только что поставили в этом проходе.
+        # Чужую пометку и удалён не трогаем.
         mark = str(shots[0].get("пометка") or "")
+        own_empty_piece = mark in (
+            "пустой кусок закадра — кадр сохранён",
+            "нет куска закадра — кадр сохранён",
+        )
         if (
             id(shots[0]) not in pre_hidden
             and shots[0].get("карантин")
-            and (
-            "пуст" in mark or "нет куска" in mark or "кадры сцены сохранены" in mark
-            )
+            and own_empty_piece
+            and not shots[0].get("удалён")
         ):
             shots[0].pop("карантин", None)
             shots[0].pop("пометка", None)
@@ -900,16 +905,43 @@ def fill_kadry_from_catalog(
     incoming = [dict(s) for s in shots if isinstance(s, dict)]
     consumed: set[int] = set()
     by_scene: dict[int, list[dict[str, Any]]] = {}
+    unmatched: list[dict[str, Any]] = []
+    parsed: list[tuple[int | None, dict[str, Any]]] = []
     for sh in incoming:
         try:
-            n = int(sh.get("сцена"))
+            parsed.append((int(sh.get("сцена")), sh))
         except (TypeError, ValueError):
-            continue
-        by_scene.setdefault(n, []).append(sh)
-    if not by_scene and incoming and chain:
-        for i, sh in enumerate(incoming):
+            parsed.append((None, sh))
+    chain_ns = {int(scene["n"]) for scene in chain} if chain else set()
+    if not any(n is not None for n, _sh in parsed) and incoming and chain:
+        for i, (_n, sh) in enumerate(parsed):
             if i < len(chain):
                 by_scene.setdefault(int(chain[i]["n"]), []).append(sh)
+            else:
+                _mark_shot_kept(
+                    sh,
+                    "кадр сверх цепи сцен — сохранён",
+                    where="fill_kadry_from_catalog",
+                )
+                unmatched.append(sh)
+    else:
+        for n, sh in parsed:
+            if n is None:
+                _mark_shot_kept(
+                    sh,
+                    "нет номера сцены — кадр сохранён",
+                    where="fill_kadry_from_catalog",
+                )
+                unmatched.append(sh)
+            elif chain and n not in chain_ns:
+                _mark_shot_kept(
+                    sh,
+                    f"сцена {n} вне цепи — кадр сохранён",
+                    where="fill_kadry_from_catalog",
+                )
+                unmatched.append(sh)
+            else:
+                by_scene.setdefault(n, []).append(sh)
     scenes = chain or [
         {"n": 1, "place": "", "action": "", "vo": "", "blob": action}
     ]
@@ -984,24 +1016,25 @@ def fill_kadry_from_catalog(
             plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
             cat = str(row.get("action") or "")
-            shot = {
-                "id": sid,
-                "parent_id": None if i == 0 else master_id,
-                "порядок": i + 1,
-                "сцена": n,
-                "шаблон": tid,
-                "план": plan_name,
-                "ракурс": angle if angle != "—" else "",
-                "место": place,
-                "действие": compose_shot_action(
-                    plan=plan_name,
-                    place=place,
-                    scene_action=act,
-                    catalog_action=cat,
-                    catalog_role=str(row.get("role") or ""),
-                ),
-                "закадр": incoming_vo[i] if i < len(incoming_vo) else "",
-            }
+            # #352: лестница не подменяет id позицией и копирует медиа.
+            # Пометка и остальные поля источника остаются на кадре.
+            shot = dict(src) if isinstance(src, dict) else {}
+            shot["id"] = sid
+            shot["parent_id"] = None if i == 0 else master_id
+            shot["порядок"] = i + 1
+            shot["сцена"] = n
+            shot["шаблон"] = tid
+            shot["план"] = plan_name
+            shot["ракурс"] = angle if angle != "—" else ""
+            shot["место"] = place
+            shot["действие"] = compose_shot_action(
+                plan=plan_name,
+                place=place,
+                scene_action=act,
+                catalog_action=cat,
+                catalog_role=str(row.get("role") or ""),
+            )
+            shot["закадр"] = incoming_vo[i] if i < len(incoming_vo) else ""
             if src and src.get("закадр"):
                 shot["закадр"] = str(src.get("закадр") or shot.get("закадр") or "")
             if src and not is_stub_shot_action(str(src.get("действие") or "")):
@@ -1025,6 +1058,18 @@ def fill_kadry_from_catalog(
             )
             scene_acc.append(shot)
         out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
+    seen_ns = {int(scene["n"]) for scene in scenes}
+    for n, group in by_scene.items():
+        if int(n) in seen_ns:
+            continue
+        for sh in group:
+            if not sh.get("карантин"):
+                _mark_shot_kept(
+                    sh,
+                    f"сцена {n} вне цепи — кадр сохранён",
+                    where="fill_kadry_from_catalog",
+                )
+            unmatched.append(sh)
     if not out:
         leftover: list[dict[str, Any]] = []
         for sh in incoming:
@@ -1049,7 +1094,8 @@ def fill_kadry_from_catalog(
         if shot_is_active(marked):
             marked["активен"] = False
             marked["карантин"] = True
-            marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
+            if not str(marked.get("пометка") or "").strip():
+                marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
         else:
             marked["активен"] = False
         tail.append(marked)

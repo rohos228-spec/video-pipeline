@@ -32,6 +32,7 @@ from app.generation_options import is_skippable_empty_prompt
 from app.models import Frame, FrameStatus, Project
 from app.orchestrator.validators.activity_flags import frame_is_active
 from app.services.content_locks import is_ui_locked
+from app.services.frame_tombstones import seal_import_skip
 from app.services.plan_validation import is_meaningful_general_plan
 
 # --- константы под v8-шаблон ---------------------------------------------
@@ -595,6 +596,13 @@ async def bootstrap_frames_for_image_step(
     for num in frame_nums:
         prompt = prompts_shot1.get(num, "")
         fr = by_number.get(num)
+        skip = seal_import_skip(project, fr, num)
+        if skip:
+            logger.warning(
+                "WARN bootstrap_frames_for_image_step: {} ",
+                skip,
+            )
+            continue
         if fr is None and rows:
             # FIX 2026-10-15: кадры уже в БД — не создавать строки из xlsx.
             continue
@@ -637,7 +645,7 @@ async def bootstrap_frames_for_image_step(
         if not info.has_shot2:
             continue
         fr = by_number.get(num)
-        if fr is None:
+        if fr is None or seal_import_skip(project, fr, num):
             continue
         attrs = dict(fr.attrs or {})
         attrs[SHOT2_PROMPT_ATTR] = info.prompt
@@ -830,6 +838,10 @@ async def import_v8_xlsx(
             if fr is not None:
                 raw_attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
                 if not frame_is_active(raw_attrs) or fields.get("hidden_marker"):
+                    skip = seal_import_skip(project, fr, number)
+                    if skip:
+                        logger.warning("WARN import_v8_xlsx: {}", skip)
+                        summary.setdefault("frames_kept_marked", []).append(number)
                     t = end_ts
                     continue
             elif fields.get("hidden_marker"):

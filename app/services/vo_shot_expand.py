@@ -679,9 +679,8 @@ async def collapse_flattened_coverage_cells(
         "archived": archived,
     }
     if merged or archived:
-        logger.info(
-            "[#{}] collapse flattened coverage: groups={} archived={}",
-            project.id,
+        logger.warning(
+            "WARN collapse_flattened_coverage_cells: groups={} archived={} deleted=0, строки на месте",
             merged,
             archived,
         )
@@ -933,6 +932,17 @@ def _archive_frames_as_leftover(frames: list[Any]) -> int:
         if is_coverage_leftover(fr):
             continue
         _set_cs(fr, leftover=True)
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        attrs["активен"] = False
+        attrs["карантин"] = True
+        attrs["пометка"] = "archived leftover — кадр сохранён"
+        fr.attrs = attrs
+        _flag_attrs(fr)
+        logger.warning(
+            "WARN archive leftover: кадр #{} id={} помечен archived, строка сохранена",
+            getattr(fr, "number", None),
+            getattr(fr, "id", None),
+        )
         n += 1
     return n
 
@@ -1093,8 +1103,14 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
     У VO-родителя без явной роли child сбрасывает leftover coverage_parent_id.
     """
     changed = 0
+    from app.services.frame_tombstones import frame_is_active
+
     for members in _group_by_parent(frames).values():
-        live = [m for m in members if not is_coverage_leftover(m)]
+        live = [
+            m
+            for m in members
+            if not is_coverage_leftover(m) and frame_is_active(m)
+        ]
         if not live:
             continue
         parent = next((m for m in live if not is_shot_child(m)), live[0])
@@ -2842,13 +2858,22 @@ async def apply_shot_coverage_to_vo_cells(
         "dist": n_dist,
         "xlsx": xlsx,
     }
-    logger.info(
-        "[#{}] shot coverage → VO cells: pipeline={} deleted={} expand={}",
-        project.id,
-        out.get("pipeline"),
-        out.get("deleted"),
-        exp,
-    )
+    if out.get("archived") or out.get("deleted"):
+        logger.warning(
+            "WARN apply_shot_coverage_to_vo_cells: pipeline={} deleted={} archived={} expand={}, строки на месте",
+            out.get("pipeline"),
+            out.get("deleted"),
+            out.get("archived"),
+            exp,
+        )
+    else:
+        logger.info(
+            "[#{}] shot coverage → VO cells: pipeline={} deleted={} expand={}",
+            project.id,
+            out.get("pipeline"),
+            out.get("deleted"),
+            exp,
+        )
     return out
 
 
@@ -3012,7 +3037,21 @@ async def _expand_vo_cells_into_shots_default(
     inserted = 0
     for parent in reversed(parents):
         original_vo = parent.voiceover_text or ""
-        planned = planned_shots_from_attrs(parent)
+        planned_all = planned_shots_from_attrs(parent)
+        from app.services.frame_tombstones import shot_is_active
+        from app.services.scene_shot_grammar import (
+            cover_voiceover_with_shots,
+            fold_inactive_shot_voiceover,
+        )
+
+        fold_inactive_shot_voiceover(planned_all)
+        planned = [s for s in planned_all if shot_is_active(s)]
+        if len(planned) < len(planned_all):
+            logger.warning(
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром, закадр у живого соседа",
+                len(planned_all) - len(planned),
+            )
+        original_vo = cover_voiceover_with_shots(original_vo, planned)
         need, vo_parts = resolve_shot_plan(
             original_vo, planned, action=main_action_text(parent)
         )
@@ -3123,9 +3162,23 @@ async def _expand_vo_cells_into_shots_group(
         if parent not in members:
             members = [parent, *[m for m in members if m is not parent]]
         members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0))
-        planned = planned_for_parent_expand(
+        planned_all = planned_for_parent_expand(
             parent, planned_shots_from_attrs(parent)
         )
+        from app.services.frame_tombstones import frame_is_active, shot_is_active
+
+        from app.services.scene_shot_grammar import (
+            cover_voiceover_with_shots,
+            fold_inactive_shot_voiceover,
+        )
+
+        fold_inactive_shot_voiceover(planned_all)
+        planned = [s for s in planned_all if shot_is_active(s)]
+        if len(planned) < len(planned_all):
+            logger.warning(
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром, закадр у живого соседа",
+                len(planned_all) - len(planned),
+            )
         original_vo = _cell_full_text(parent, members)
         if _cs(parent).get("scene_split"):
             joined = " ".join(
@@ -3136,6 +3189,7 @@ async def _expand_vo_cells_into_shots_group(
             joined = " ".join(joined.split())
             if joined:
                 original_vo = joined
+        original_vo = cover_voiceover_with_shots(original_vo, planned)
         # Полный закадр ячейки — в vo_cell_full ДО раздачи кусков детям:
         # иначе _cell_full_text дальше склеит «полный текст родителя + куски
         # детей» и закадр задвоится (promote_shots_to_vo_cells).
@@ -3151,7 +3205,9 @@ async def _expand_vo_cells_into_shots_group(
             need, vo_parts = resolve_shot_plan(
                 original_vo, planned, action=main_action_text(parent)
             )
-        children = [m for m in members if m is not parent]
+        children = [
+            m for m in members if m is not parent and frame_is_active(m)
+        ]
         have = 1 + len(children)
         parent_uuid = parent.uuid
         total_sec = vo_duration_sec(original_vo, shots=need)

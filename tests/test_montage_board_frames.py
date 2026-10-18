@@ -213,7 +213,8 @@ async def test_delete_parent_keeps_children(
 
     result = await delete_montage_frame(session, project, parent_id)
     await session.commit()
-    assert result["deleted"] == 1
+    assert result["deleted"] == 0
+    assert result["marked"] == 1
     assert result["promoted"] == 2
     left = list(
         (
@@ -532,8 +533,13 @@ async def test_delete_does_not_resurrect_from_disk_png(
     assert hidden is not None
     assert (hidden.attrs or {}).get("активен") is False
     board = await build_montage_board(session, project)
-    assert 19 in [row["number"] for row in board["frames"]]
-    assert 20 in [row["number"] for row in board["frames"]]
+    assert [row["number"] for row in board["frames"]] == [19, 20]
+    marked = next(row for row in board["frames"] if row["number"] == 19)
+    live = await session.get(Frame, fr.id)
+    assert live is not None and (live.attrs or {}).get("удалён") is True
+    assert marked["удалён"] is True
+    assert marked["активен"] is False
+    assert marked["карантин"] is True
 
 
 @pytest.mark.asyncio

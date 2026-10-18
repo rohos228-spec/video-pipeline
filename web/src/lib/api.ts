@@ -1696,9 +1696,15 @@ export const api = {
     ),
 
   deleteMontageFrame: (projectId: number, frameId: number) =>
-    http<{ ok: boolean; frame_id: number; number: number; deleted: number }>(
+    http<{ ok: boolean; frame_id: number; number: number; deleted: number; marked?: number }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}`,
       { method: "DELETE" },
+    ),
+
+  restoreMontageFrame: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; number: number; restored: number }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/restore`,
+      { method: "POST" },
     ),
 
   applyMontageCoverage: (projectId: number, body: MontagePendingOp) =>
