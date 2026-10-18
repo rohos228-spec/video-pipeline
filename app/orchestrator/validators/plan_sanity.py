@@ -1,7 +1,8 @@
 """План: только whitelist, схемы аргументов, verify перед run_node, без удалений.
 
 Источник истины — реестр ``app.orchestrator.actions.registry`` или
-``app.services.action_layer.spec.registry``, если модуль импортируется.
+``app.services.action_layer.spec.registry`` после ``ensure_builtin_actions()``,
+если модуль импортируется.
 Иначе временный ``FALLBACK_WHITELIST``: 11 новых действий §6 плюс read-only
 имена из того же параграфа, ``run_node`` и ``verify_code_state``.
 ``context["whitelist"]`` и ``context["registry"]`` могут только сузить это
@@ -182,6 +183,12 @@ def _import_registry() -> tuple[set[str], Any]:
             module = importlib.import_module(module_name)
         except Exception:  # noqa: BLE001 — реестра ещё нет
             continue
+        ensure = getattr(module, "ensure_builtin_actions", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception:  # noqa: BLE001 — пустой реестр уйдёт в fallback
+                pass
         registry = getattr(module, attr, None)
         if callable(registry):
             try:
