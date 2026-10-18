@@ -943,12 +943,16 @@ def fill_kadry_from_catalog(
             continue
         for sh in existing[: len(rows)]:
             consumed.add(id(sh))
-        seed = existing[0] if existing else {}
         incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
-        master_id = f"{cell_number}-S{n}-K1"
+        master_id = ""
         scene_acc = []
         for i, row in enumerate(rows):
+            src = existing[i] if i < len(existing) else None
             sid = f"{cell_number}-S{n}-K{i + 1}"
+            if src and str(src.get("id") or "").strip():
+                sid = str(src["id"]).strip()
+            if not master_id:
+                master_id = sid
             plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
             cat = str(row.get("action") or "")
@@ -970,11 +974,20 @@ def fill_kadry_from_catalog(
                 ),
                 "закадр": incoming_vo[i] if i < len(incoming_vo) else "",
             }
-            src = existing[i] if i < len(existing) else None
             if src and src.get("закадр"):
                 shot["закадр"] = str(src.get("закадр") or shot.get("закадр") or "")
             if src and not is_stub_shot_action(str(src.get("действие") or "")):
                 shot["действие"] = str(src.get("действие") or shot["действие"])
+            for media_key in (
+                "png",
+                "video",
+                "media",
+                "image_prompt",
+                "animation_prompt",
+                "child_prompts",
+            ):
+                if src and src.get(media_key) not in (None, "", []):
+                    shot[media_key] = src[media_key]
             _ensure_full_shot_action(
                 shot,
                 place=place,
