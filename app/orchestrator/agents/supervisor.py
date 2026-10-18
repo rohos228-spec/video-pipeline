@@ -121,6 +121,37 @@ _APPR_MARK = "\n\x1eorappr:"
 _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
+
+def _router_visible_cost(owner: Any) -> float:
+    """Цена, которую реальный router уже положил на себя или на ответ.
+
+    ``partial_cost_usd`` у WS5 нет. Берём ``cost_usd`` (поле ``LLMResponse``)
+    с обёртки, с ``inner`` и с ``last_response``.
+    """
+    pending: list[Any] = [owner]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop(0)
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        raw = getattr(item, "cost_usd", None)
+        if not callable(raw):
+            try:
+                value = float(raw or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                return value
+        response = getattr(item, "last_response", None)
+        if response is not None and response is not item:
+            pending.append(response)
+        inner = getattr(item, "inner", None)
+        if inner is not None and inner is not item:
+            pending.append(inner)
+    return 0.0
+
+
 _APPROVED_MARK = "\n\x1eorchfp:"
 _PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
 
@@ -1244,6 +1275,10 @@ class Supervisor:
                 result = await original(*args, **kwargs)
             except asyncio.CancelledError:
                 self._take_partial_cost(owner)
+                if task_key is not None and task_key not in self._partial_llm_cost:
+                    extra = _router_visible_cost(owner)
+                    if extra > 0:
+                        self._partial_llm_cost[task_key] = extra
                 raise
             else:
                 if task_key is not None and slot["credit"]:
