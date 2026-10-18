@@ -141,6 +141,7 @@ _DELETE_KINDS = frozenset(
         "os.link",
         "Path.symlink_to",
         "Path.hardlink_to",
+        "_winapi.CreateJunction",
     }
 )
 _SQL_NAMES = frozenset({"execute", "executescript", "executemany", "text"})
@@ -1534,6 +1535,12 @@ _PRIVATE_ATOMIC = frozenset(
 )
 
 
+def _is_create_junction(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute) and node.attr == "CreateJunction":
+        return isinstance(node.value, ast.Name) and node.value.id in {"_winapi", "winapi"}
+    return isinstance(node, ast.Name) and node.id == "CreateJunction"
+
+
 def _is_atomic_module(module: str | None) -> bool:
     if not module:
         return False
@@ -1696,6 +1703,8 @@ def _write_hit(
         kind = "atomic_private"
     elif _call_name(func) in _PRIVATE_ATOMIC:
         kind = "atomic_private"
+    elif _is_create_junction(func):
+        kind = "_winapi.CreateJunction"
     elif _call_name(func) == "__import__":
         kind = "__import__"
     elif _call_name(func) == "import_module":
@@ -1894,6 +1903,8 @@ def _dangerous_value_kind(
     os_open_names = os_open_names or set()
     atomic_modules = atomic_modules or set()
     atomic_aliases = atomic_aliases or {}
+    if _is_create_junction(node):
+        return "_winapi.CreateJunction"
     if isinstance(node, ast.Attribute) and (
         node.attr in _PRIVATE_ATOMIC
         or (

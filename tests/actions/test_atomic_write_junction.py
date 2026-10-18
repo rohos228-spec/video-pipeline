@@ -11,6 +11,7 @@ import pytest
 
 from app.orchestrator.node_store import atomic_write as mod
 from app.settings import settings
+from tests.actions.test_whitelist_no_exec import analyze_module_source
 
 
 def _force_windows_writer(monkeypatch) -> None:
@@ -60,6 +61,18 @@ def test_create_junction_args_are_target_then_link(tmp_path: Path, monkeypatch) 
     outside.mkdir()
     _make_old_junction(old, outside, monkeypatch, windows=True)
     assert calls == [(str(outside), str(old))]
+
+
+def test_create_junction_is_denied() -> None:
+    source = (
+        "import _winapi\n"
+        "def save(src):\n"
+        "    _winapi.CreateJunction(src, 'data/node_overrides/old')\n"
+        "    link = _winapi.CreateJunction\n"
+    )
+    hits = analyze_module_source(source, "node.set_config")
+    assert [hit.kind for hit in hits] == ["_winapi.CreateJunction", "_winapi.CreateJunction"]
+    assert all(hit.allowed is False for hit in hits)
 
 
 def test_old_junction_cannot_escape_windows(tmp_path: Path, monkeypatch) -> None:
