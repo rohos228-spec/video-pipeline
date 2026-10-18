@@ -32,6 +32,8 @@ _CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
 _SOFT_FRAME_DELETE = frozenset({"montage.delete_frame", "montage.delete_child_frame"})
 # Имена из SOFT_DELETE_RESTORE, у которых есть исполнитель. Остальные — только метаданные.
 _IMPLEMENTED_RESTORES = frozenset({"frame.restore"})
+# Помечены мягкими, но исполнитель необратим. До R2 их нет ни в списке, ни в вызове.
+_HELD_UNTIL_R2 = frozenset({"group.delete", "prompt.delete_master"})
 
 
 class BoundResult(ActionResult):
@@ -136,6 +138,7 @@ def whitelist() -> list[str]:
 
     ensure_builtin_actions()
     names = {spec.id for spec in registry.list()}
+    names.difference_update(_HELD_UNTIL_R2)
     names.update(
         restore
         for restore in SOFT_DELETE_RESTORE.values()
@@ -513,6 +516,8 @@ async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
 
     ensure_builtin_actions()
     params = dict(params or {})
+    if str(name) in _HELD_UNTIL_R2:
+        return _failed("до R2 недоступно")
     if str(name) == "frame.restore":
         return await _frame_restore(params, ctx)
     spec = registry.find(str(name))

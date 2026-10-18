@@ -321,9 +321,12 @@ def test_whitelist_built_from_registry_matches_audit() -> None:
     assert "actions_audit.md" not in source
     assert "AUDIT_ACTION_IDS" not in source
     names = whitelist()
+    held = {"group.delete", "prompt.delete_master"}
     assert names == sorted(names)
     assert len(names) == len(set(names))
-    assert set(names) == set(AUDIT_ACTION_IDS) | {"frame.restore"}
+    assert set(names) == (set(AUDIT_ACTION_IDS) - held) | {"frame.restore"}
+    assert "group.delete" not in names
+    assert "prompt.delete_master" not in names
     assert "group.restore" not in names
     assert "prompt.restore_master" not in names
 
@@ -341,15 +344,68 @@ async def test_whitelist_names_match_action_pattern() -> None:
 
     pattern = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
     names = whitelist()
+    held = {"group.delete", "prompt.delete_master"}
     assert "frame.restore" in names
     assert pattern.fullmatch("frame.restore")
-    assert set(names) == set(AUDIT_ACTION_IDS) | {"frame.restore"}
+    assert set(names) == (set(AUDIT_ACTION_IDS) - held) | {"frame.restore"}
     assert all(pattern.fullmatch(name) for name in names)
     meta = metadata_of("frame.restore")
     assert meta.risk == "high"
     assert meta.needs_approval is True
     held = await execute("frame.restore", {}, {})
     assert held.status == "approval_required"
+
+
+async def test_group_and_prompt_delete_held_until_r2(env, monkeypatch) -> None:
+    """group.delete и prompt.delete_master до R2 не исполняются и не стирают данные."""
+
+    from app.services import node_groups, prompt_library
+    from app.orchestrator.actions.executor import execute, whitelist
+
+    monkeypatch.setattr(node_groups, "custom_groups_dir", lambda: env.tmp_path / "groups")
+    monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", env.tmp_path / "prompts")
+    group = node_groups.save_custom_group({
+        "group_id": "r2hold",
+        "title": "Держим",
+        "category": "planning",
+        "nodes": [{"local_key": "a", "node_type": "excel_gpt", "label": "A"}],
+        "exit_key": "a",
+    })
+    group_path = node_groups._group_file(group.group_id)
+    group_bytes = group_path.read_bytes()
+    prompt_path = prompt_library.write_prompt("plan", "r2hold", "текст промта")
+    prompt_bytes = prompt_path.read_bytes()
+    assert group_path.is_relative_to(env.tmp_path)
+    assert prompt_path.is_relative_to(env.tmp_path)
+    assert "group.delete" not in whitelist()
+    assert "prompt.delete_master" not in whitelist()
+
+    def grant(action: str) -> dict:
+        return {
+            "app": env.app,
+            "operator": "adapter-test",
+            "approval": {
+                "change_id": "orch-appr-9-1",
+                "action": action,
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": "cc-hold",
+            },
+        }
+
+    group_result = await execute("group.delete", {"group_id": "r2hold"}, grant("group.delete"))
+    prompt_result = await execute(
+        "prompt.delete_master",
+        {"step_code": "plan", "name": "r2hold"},
+        grant("prompt.delete_master"),
+    )
+    assert group_result.status == "failed"
+    assert prompt_result.status == "failed"
+    assert group_result.error == "до R2 недоступно"
+    assert prompt_result.error == "до R2 недоступно"
+    assert group_path.read_bytes() == group_bytes
+    assert prompt_path.read_bytes() == prompt_bytes
 
 
 async def test_delete_frame_via_adapter_is_soft(env) -> None:
