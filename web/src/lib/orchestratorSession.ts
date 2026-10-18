@@ -353,11 +353,12 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
 
 /** change_id решения. Чужой или пустой id карточку не закрывает. */
 function approvalChangeId(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.change_id);
+  const direct = serverApprovalId(body.change_id) ?? serverApprovalId(body.step_change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
-  return serverApprovalId((nested as Record<string, unknown>).change_id);
+  const inner = nested as Record<string, unknown>;
+  return serverApprovalId(inner.change_id) ?? serverApprovalId(inner.step_change_id);
 }
 
 function approvalLegacyId(body: Record<string, unknown>): string | null {

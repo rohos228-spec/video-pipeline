@@ -1150,6 +1150,32 @@ async function handleChatApprove(req, res, url, sessionId) {
     sendJson(res, 404, { detail: "not found" });
     return;
   }
+  if (scenario === "approvefail" && decision === "approve") {
+    await sleep(800);
+    sendJson(res, 500, { detail: "approve failed" });
+    return;
+  }
+  if (scenario === "approve404" && decision === "approve") {
+    sendJson(res, 404, { detail: "approval not found" });
+    return;
+  }
+  if (scenario === "approve409" && decision === "approve") {
+    sendJson(res, 409, { detail: "approval conflict" });
+    return;
+  }
+  if (!session.taskStarted && session.approvalWait && session.approvalWait.id === changeId) {
+    session.approvalWait.resolve(decision);
+    session.approvalWait = null;
+    sendJson(res, 200, paidWire({
+      executed: decision === "approve",
+      reason: null,
+      forecast: null,
+      retryArmed: false,
+      changeId,
+      decision,
+    }));
+    return;
+  }
   if (!session.taskStarted) {
     sendJson(res, 404, { detail: "not found" });
     return;
