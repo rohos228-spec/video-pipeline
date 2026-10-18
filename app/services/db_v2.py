@@ -210,7 +210,10 @@ async def replace_all_frames(
                 "replace_all_frames: кадр заменён новым списком",
             )
     await session.flush()
+    from app.services.frame_tombstones import deleted_numbers
+
     used_numbers = {int(fr.number) for fr in old_frames if fr.number is not None}
+    used_numbers.update(deleted_numbers(project))
     number_cursor = max(used_numbers, default=0)
 
     def _take_number() -> int:

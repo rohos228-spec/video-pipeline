@@ -530,3 +530,39 @@ async def test_repeated_same_text_without_id_does_not_grow(session: AsyncSession
     assert inactive[0]["закадр"] == "другой"
     assert inactive[0]["описание"] == "только у него"
     assert inactive[0]["активен"] is False
+
+
+@pytest.mark.asyncio
+async def test_replace_all_frames_skips_tombstone_numbers(session: AsyncSession) -> None:
+    """Номер из ``deleted_frame_numbers`` без строки кадра не достаётся новому."""
+    project = Project(slug="ws1-tomb-num", topic="t", status=None)  # type: ignore[arg-type]
+    project.meta = {"deleted_frame_numbers": [3]}
+    session.add(project)
+    await session.flush()
+    old = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="tomb-old",
+        voiceover_text="старая ячейка",
+        sort_key=1.0,
+    )
+    session.add(old)
+    await session.commit()
+
+    created = await db_v2.replace_all_frames(
+        session,
+        project,
+        [
+            {"voiceover_text": "первая новая ячейка"},
+            {"voiceover_text": "вторая новая ячейка"},
+        ],
+    )
+    await session.commit()
+    numbers = {int(fr.number) for fr in created}
+    assert numbers.isdisjoint(deleted_numbers(project)), (numbers, deleted_numbers(project))
+    assert 3 not in numbers
+    rows = list(
+        (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars()
+    )
+    assert len(rows) == 3
+    assert any(fr.uuid == "tomb-old" and int(fr.number) == 1 for fr in rows)
