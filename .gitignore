@@ -24,9 +24,14 @@ env/
 .env.local
 .env.bak
 .env.bak-*
+.env.fleet.example
 Data_video_pipeline.env
 STUDIO-LOCAL.cmd
 *.pem
+
+# Локальные бэкапы правок (не коммитить)
+*.bak
+*.with_spacing*
 
 # MCP / local tools
 .ai-orchestra-mcp/node_modules/
@@ -35,18 +40,18 @@ STUDIO-LOCAL.cmd
 .idea/
 .vscode/
 *.swp
+.cursor/hooks/state/
 
 # Data (артефакты проектов — не коммитим в git)
 data/
 browser_profile/
 scratch/
+.worktrees/
+tasks/out/
 *.db
 *.db-shm
 *.db-wal
 *.spec
-api-tracker/*.db
-api-tracker/*.db-shm
-api-tracker/*.db-wal
 
 # OS
 .DS_Store
@@ -56,10 +61,23 @@ Thumbs.db
 *.log
 /logs/
 
+# API Tracker local DB
+api-tracker/*.db
+api-tracker/*.db-shm
+api-tracker/*.db-wal
+
 # Локальная история версий промтов (не коммитим)
 prompts/**/.history/
 
-# Все промты — только локально (не тянуть с GitHub при install/update)
+# Лаборатория: раунды, ответы моделей, свои копии промтов
+/lab/threads/
+
+# Черновики агента в корне репозитория
+/_tmp*
+
+# Неотслеживаемые новые файлы в prompts/ остаются локальными.
+# Уже добавленные промты git видит: ignore не скрывает правки tracked-файлов.
+# Новый промт в репозиторий — через исключение ниже или явный git add -f.
 prompts/*
 !prompts/.gitkeep
 # Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git

@@ -25,6 +25,7 @@ def validate_session_token(token: str | None) -> bool:
         return True
     if not token:
         return False
+    # Сессия users.db не подменяет WEB_AUTH_USER/PASSWORD.
     issued = _TOKENS.get(token)
     if issued is None:
         return False

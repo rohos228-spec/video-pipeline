@@ -184,15 +184,50 @@ def clear_scene_grammar_checkpoint(out_dir: Path) -> None:
         pass
 
 
+def _unclosed_brackets_outside_strings(text: str) -> bool:
+    """Незакрытые { } [ ] вне строковых литералов. Скобки внутри кавычек — разметка, не обрыв."""
+    curly = square = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            curly += 1
+        elif ch == "}":
+            curly -= 1
+        elif ch == "[":
+            square += 1
+        elif ch == "]":
+            square -= 1
+    return curly > 0 or square > 0
+
+
 def diagnose_apply_ops_text(text: str) -> tuple[str, dict[str, Any] | None]:
     """Почему ответ не годится: reason + распарсенный dict если есть."""
     raw = text or ""
     if not raw.strip():
         return "empty_body", None
+    stripped = raw.strip()
+    has_payload_key = (
+        '"scenes"' in stripped or '"characters"' in stripped or '"ops"' in stripped
+    )
+    # close_truncated_json дописывает скобки, и extract вернёт dict.
+    # Для грамматики сцен незакрытый ответ — обрыв, не «ok».
+    if has_payload_key and _unclosed_brackets_outside_strings(stripped):
+        return "json_truncated", None
     data = extract_apply_ops_json(raw)
     if data is None:
         has_scenes_key = '"scenes"' in raw or '"characters"' in raw or '"ops"' in raw
-        if has_scenes_key and raw.count("{") > raw.count("}"):
+        if has_scenes_key and _unclosed_brackets_outside_strings(raw):
             return "json_truncated", None
         if has_scenes_key:
             return "json_unparseable", None

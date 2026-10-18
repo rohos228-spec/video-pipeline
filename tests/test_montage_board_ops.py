@@ -199,7 +199,7 @@ async def test_apply_keeps_failed_pending_ops(
     await session.flush()
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
@@ -248,7 +248,7 @@ async def test_apply_finalizes_when_file_ready_despite_execute_error(
     old.write_bytes(b"x" * 128)
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)

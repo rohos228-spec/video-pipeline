@@ -46,7 +46,11 @@ async def load_character_rows(
             .order_by(Entity.sort_key, Entity.id)
         )
     ).scalars().all()
+    from app.services.db_v2 import entity_is_archived
+
     for e in ents:
+        if entity_is_archived(e):
+            continue
         code = (e.code or "").strip().lower()
         if not code:
             continue

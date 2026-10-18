@@ -13,9 +13,12 @@ from loguru import logger
 
 from app.services.prompt_library import (
     DEFAULT_NAME,
+    is_excel_gpt_prompt_step,
+    is_script_frames_qc_prompt,
     is_valid_prompt_name,
     list_prompts,
     prompt_path,
+    resolve_excel_gpt_prompt_path,
     step_dir,
     write_prompt,
 )
@@ -150,7 +153,10 @@ def archive_prompt_version(step_code: str, name: str, content: str) -> str | Non
 
 
 def write_prompt_with_history(step_code: str, name: str, content: str) -> Path:
-    p = prompt_path(step_code, name)
+    if is_excel_gpt_prompt_step(step_code):
+        p = resolve_excel_gpt_prompt_path(name)
+    else:
+        p = prompt_path(step_code, name)
     if p.exists():
         try:
             old = p.read_text(encoding="utf-8")
@@ -225,6 +231,10 @@ def rename_prompt_version_label(
 def rename_prompt_file(step_code: str, old_name: str, new_name: str) -> str:
     if old_name == DEFAULT_NAME:
         raise ValueError("default переименовывать нельзя")
+    if is_script_frames_qc_prompt(old_name) or is_script_frames_qc_prompt(new_name):
+        raise ValueError(
+            "промт группы script_frames_qc нельзя переименовать — привязан к нодам группы"
+        )
     if not is_valid_prompt_name(new_name):
         raise ValueError(f"invalid prompt name: {new_name!r}")
     src = prompt_path(step_code, old_name)

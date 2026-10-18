@@ -817,6 +817,8 @@ class GenerationResult:
     # какая-то кнопка (aspect/relax/etc.). Оркестратор отправляет их
     # в TG для отладки селекторов.
     dumps: list[Path] | None = None
+    # Строка отчёта, если генерация прошла на подменённой модели.
+    model_substitution: str | None = None
 
     @property
     def image_path(self) -> Path:
@@ -937,6 +939,9 @@ _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "отклонен",
     "не прошёл модерацию модели",
     "не прошел модерацию модели",
+    "не прошли модерацию",
+    "не прошла модерацию",
+    "content_policy",
     "попробуйте изменить описание",
     "попробуйте переформулировать",
 )
@@ -1000,6 +1005,9 @@ def outsee_error_is_moderation(err: OutseeImageError) -> bool:
     if isinstance(err, OutseeContentRejectedError):
         return True
     ctx = err.context or {}
+    code = str(ctx.get("code") or "").lower().replace("-", "_")
+    if code in {"content_policy", "moderation", "content_rejected"}:
+        return True
     if ctx.get("kind") == "moderation" or ctx.get("ui_kind") == "moderation":
         return True
     failure = str(ctx.get("failure") or "")
@@ -1041,6 +1049,8 @@ def outsee_error_kind(err: OutseeImageError) -> str:
         return "moderation"
     if ctx.get("kind") == "generation":
         return "generation"
+    if outsee_error_is_moderation(err):
+        return "moderation"
     return "other"
 
 

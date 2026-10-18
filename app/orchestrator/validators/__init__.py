@@ -15,7 +15,8 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
-from . import no_deletions, plan_sanity, shot_merge, spend_guard, wide_before_dialogue
+from . import no_deletions, plan_sanity, preservation, shot_merge, spend_guard, wide_before_dialogue
+from .preservation import PreservationRejected, run_preservation_validators
 from .result import (
     VALIDATOR_CONTEXT_DRY_RUN,
     dry_run_key,
@@ -35,6 +36,7 @@ _ORDER = (
     "shot_merge",
     "spend_guard",
     "plan_sanity",
+    "preservation",
 )
 
 _CHECKS: dict[str, Checker] = {
@@ -43,6 +45,7 @@ _CHECKS: dict[str, Checker] = {
     "shot_merge": shot_merge.check,
     "spend_guard": spend_guard.check,
     "plan_sanity": plan_sanity.check,
+    "preservation": preservation.check,
 }
 
 VO_LENGTH = "vo_length"
@@ -168,6 +171,7 @@ def _dump(result: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "PreservationRejected",
     "VALIDATOR_CONTEXT_DRY_RUN",
     "VO_LENGTH",
     "dry_run_key",
@@ -176,6 +180,7 @@ __all__ = [
     "registered_names",
     "reset_contract_cache",
     "run",
+    "run_preservation_validators",
     "using_contracts",
     "validator_budget_exhausted",
     "vo_length_available",

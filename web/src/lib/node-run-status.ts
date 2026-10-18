@@ -82,9 +82,46 @@ export function reconcileNodeRunStatus(
   nodeType: string,
   runStatus: NodeRunStatus,
   projectStatus?: ProjectStatus | unknown,
-  _opts?: { slotIndex?: number },
+  opts?: {
+    slotIndex?: number;
+    nodeKey?: string;
+    activeExcelGptKey?: string;
+    completedExcelGptKeys?: string[];
+  },
 ): NodeRunStatus {
   const ps = projectStatus as ProjectStatus | undefined;
+  if (
+    (ps === "paused" || ps === "failed") &&
+    (runStatus === "running" || runStatus === "queued")
+  ) {
+    return ps === "failed" ? "failed" : "pending";
+  }
+  const nodeKey = opts?.nodeKey;
+  if (
+    nodeType === "excel_gpt" &&
+    typeof ps === "string" &&
+    ps.startsWith("enriching_") &&
+    nodeKey
+  ) {
+    if ((opts?.completedExcelGptKeys || []).includes(nodeKey)) {
+      if (
+        runStatus === "failed" ||
+        runStatus === "pending" ||
+        runStatus === "queued"
+      ) {
+        return "done";
+      }
+    }
+    if (opts?.activeExcelGptKey && nodeKey === opts.activeExcelGptKey) {
+      if (
+        runStatus === "failed" ||
+        runStatus === "pending" ||
+        runStatus === "queued"
+      ) {
+        return "running";
+      }
+    }
+  }
   if (
     (runStatus === "failed" || runStatus === "pending" || runStatus === "queued") &&
     projectImpliesNodeRunning(nodeType, ps)

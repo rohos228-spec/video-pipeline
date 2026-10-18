@@ -18,6 +18,7 @@ class NodeLlmOverride:
     kind: str  # text | image
     provider: str
     label: str
+    reasoning_effort: str | None = None
 
 
 _current: ContextVar[NodeLlmOverride | None] = ContextVar(
@@ -72,15 +73,20 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
             node_key = sd_runner.resolve_sd_node_key(project, "assemble")
 
-    choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+    from app.services.node_groups import is_script_frames_qc_gpt_node
+
     ov: NodeLlmOverride | None = None
-    if choice_raw and choice_raw.get("kind") == "text":
+    if is_script_frames_qc_gpt_node(meta, node_key=node_key):
+        # Границы / каркас / площадка / кадры / QC: только 52pay gpt-5.6-sol.
+        # Без маршрута chat() падает, на vibecode группа не уходит.
+        # Высокое мышление — поле reasoning_effort. Модель с канваса не перебивает.
         ov = NodeLlmOverride(
-            model_id=str(choice_raw["id"]),
-            channel=str(choice_raw.get("channel") or "stable"),
+            model_id="gpt-5.6-sol",
+            channel="stable",
             kind="text",
-            provider=str(choice_raw.get("provider") or "vibecode"),
-            label=str(choice_raw.get("label") or choice_raw["id"]),
+            provider="52pay",
+            label="GPT 5.6 Sol (52pay · high)",
+            reasoning_effort="high",
         )
         logger.info(
             "node_llm: #{} {} → {} ({})",
@@ -89,6 +95,24 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
             ov.label,
             ov.model_id,
         )
+    else:
+        choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+        if choice_raw and choice_raw.get("kind") == "text":
+            ov = NodeLlmOverride(
+                model_id=str(choice_raw["id"]),
+                channel=str(choice_raw.get("channel") or "stable"),
+                kind="text",
+                provider=str(choice_raw.get("provider") or "vibecode"),
+                label=str(choice_raw.get("label") or choice_raw["id"]),
+                reasoning_effort=choice_raw.get("reasoning_effort") or None,
+            )
+            logger.info(
+                "node_llm: #{} {} → {} ({})",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+                ov.label,
+                ov.model_id,
+            )
     with use_override(ov) as bound:
         yield bound
 
@@ -122,6 +146,7 @@ def generation_text_override(
         kind="text",
         provider="vibecode",
         label=str(choice_raw.get("label") or choice_raw.get("id") or DEFAULT_TEXT_MODEL_ID),
+        reasoning_effort=choice_raw.get("reasoning_effort") or None,
     )
 
 

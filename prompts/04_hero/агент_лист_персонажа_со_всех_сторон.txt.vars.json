@@ -1,0 +1,14 @@
+[
+  {
+    "key": "background",
+    "label": "Фон листа",
+    "value": "pure white (#FFFFFF)",
+    "type": "text"
+  },
+  {
+    "key": "lighting",
+    "label": "Свет",
+    "value": "neutral even studio lighting",
+    "type": "text"
+  }
+]

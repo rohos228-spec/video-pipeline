@@ -1,0 +1,27 @@
+{
+  "step_code": "items",
+  "compose_step_id": "04b_items",
+  "label": "Предметы",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "visual_style": "epic_pixel_cats_default",
+        "lighting": "cinematic_chiaroscuro",
+        "background_density": "isolated_no_background",
+        "negative": "no_humans_no_text"
+      },
+      "extra_blocks": {
+        "items_source_full": "default_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default"
+  ]
+}

@@ -116,7 +116,11 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не вызывать outsee, если клип уже есть на диске или одобрен."""
+    """Не вызывать outsee, если кадр скрыт, клип уже есть или одобрен."""
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+
+    if frame_hidden_from_paid_generation(fr):
+        return True
     if getattr(fr, "status", None) == FrameStatus.video_approved:
         return True
     return bool(has_video_file)
@@ -329,15 +333,27 @@ async def _claim_shot2_video_batch(
             .execution_options(populate_existing=True)
         )
     ).scalars().all()
+    from app.services.freeze_stills import frame_is_freeze
     from app.services.vo_shot_expand import is_shot_child
+
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
 
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
             continue
         info = shot2_by.get(fr.number)
         has_plan = info is not None and info.has_shot2
+        # Freeze END still is the last_frame of shot1, not the start of a second clip.
+        if (
+            not has_plan
+            and frame_is_freeze(fr)
+            and not str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+        ):
+            continue
         if not has_plan and is_skippable_empty_prompt(
             str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or attrs.get(SHOT2_PROMPT_ATTR) or "")
         ):
@@ -388,6 +404,9 @@ async def _generate_shot1_one(
     if not fr.animation_prompt:
         raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
     start = await _shot1_start_frame(session, project, fr, scenes_dir)
+    from app.services.freeze_stills import video_end_still
+
+    end = video_end_still(scenes_dir, fr.number, 1, frame=fr)
     short_uuid = uuid.uuid4().hex[:8]
     file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
     async with clips_lock:
@@ -402,6 +421,7 @@ async def _generate_shot1_one(
         gpt_rewrite=True,
         project_id=project.id,
         start_frame=start,
+        last_frame_image=end,
         aspect_ratio=aspect,
         timeout=1200,
         model_slug=model_slug,
@@ -411,6 +431,7 @@ async def _generate_shot1_one(
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
         duplicate_check_paths=dups,
     )
+    sub_line = getattr(result, "model_substitution", None)
     session.add(
         Artifact(
             project_id=project.id,
@@ -418,9 +439,13 @@ async def _generate_shot1_one(
             kind=ArtifactKind.scene_video,
             uuid=uuid.uuid4().hex,
             path=str(result.file_path),
-            meta={"shot": 1},
+            meta={"shot": 1, **({"model_substitution": str(sub_line)} if sub_line else {})},
         )
     )
+    if sub_line:
+        from app.services.model_substitution import frame_card_with_substitution
+
+        fr.attrs = frame_card_with_substitution(fr.attrs, str(sub_line))
     fr.status = FrameStatus.video_generated
     await session.flush()
     out = Path(result.file_path)
@@ -594,6 +619,9 @@ async def _shot1_job(
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
             start = await _shot1_start_frame(session, project, fr, scenes_dir)
+            from app.services.freeze_stills import video_end_still
+
+            end = video_end_still(scenes_dir, fr.number, 1, frame=fr)
             prompt = fr.animation_prompt
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
@@ -613,6 +641,7 @@ async def _shot1_job(
                 gpt_rewrite=True,
                 project_id=project_id,
                 start_frame=start,
+                last_frame_image=end,
                 aspect_ratio=aspect,
                 timeout=1200,
                 model_slug=model_slug,

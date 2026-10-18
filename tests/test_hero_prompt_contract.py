@@ -5,6 +5,8 @@ from __future__ import annotations
 from app.services.hero_prompt_contract import (
     hero_master_looks_like_registry_agent,
     hero_master_looks_like_sheet,
+    hero_style_looks_like_character_lock,
+    hero_style_looks_like_img_pr_template,
     validate_hero_master_or_error,
 )
 
@@ -35,3 +37,22 @@ def test_detect_registry_agent_in_hero_slot() -> None:
 def test_accept_sheet_master() -> None:
     assert hero_master_looks_like_sheet(_SHEET)
     assert validate_hero_master_or_error(_SHEET) is None
+
+
+def test_hero_style_img_pr_template_vs_character_lock() -> None:
+    img_pr = (
+        "Поле `промт_картинки` и `промт_картинки_2`.\n"
+        "Не переписывай поле `закадр`.\n"
+        "apply-ops JSON.\n"
+    )
+    lock = (
+        "Archival Noir Watercolor character style lock for a turnaround sheet.\n"
+        "STYLE_LABEL: Trash Polka.\n"
+        "STYLE_CORE: watercolor wash.\n"
+        "This block is STYLE ONLY.\n"
+    )
+    assert hero_style_looks_like_img_pr_template(img_pr)
+    assert not hero_style_looks_like_character_lock(img_pr)
+    assert hero_style_looks_like_character_lock(lock)
+    assert not hero_style_looks_like_img_pr_template(lock)
+

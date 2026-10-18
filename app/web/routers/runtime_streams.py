@@ -31,9 +31,19 @@ async def get_runtime_streams() -> dict[str, Any]:
             busy = await gen_queue_busy_count(session)
     except Exception:  # noqa: BLE001
         busy = 0
+    outsee_busy = 0
+    try:
+        from app.services import create_jobs as _cj
+
+        _sem = _cj._SEMS.get("outsee")
+        if _sem is not None:
+            outsee_busy = max(0, int(_cj._SEM_SIZES.get("outsee", 0)) - int(_sem._value))
+    except Exception:  # noqa: BLE001
+        outsee_busy = 0
     return {
         **cfg,
         "worker_busy": busy,
+        "outsee_busy": outsee_busy,
         "create_max_parallel_outsee": int(
             getattr(settings, "create_max_parallel_outsee", 4) or 4
         ),

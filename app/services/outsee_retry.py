@@ -100,6 +100,19 @@ from app.services.video_prompt_sanitize import (
     sanitize_video_prompt_after_errors,
 )
 
+# Developer API: gpt-image-2 (OpenAI) часто бьёт CONTENT_POLICY даже на
+# безопасном тексте; nano-banana-2 — вторая живая image-модель каталога.
+_IMAGE_POLICY_FALLBACK_SLUG = "nano-banana-2"
+
+
+def _image_moderation_fallback_slug(model_slug: str | None) -> str | None:
+    from app.bots.outsee_http import studio_id_to_outsee_image_slug
+
+    slug = studio_id_to_outsee_image_slug(str(model_slug) if model_slug else None)
+    if slug == "gpt-image-2":
+        return _IMAGE_POLICY_FALLBACK_SLUG
+    return None
+
 
 def _apply_local_prompt_sanitize(
     prompt: str,
@@ -172,20 +185,72 @@ def _join_scene_style(scene: str, style: str) -> str:
     return scene or style
 
 
+# Словарь стиля из агента часто 3k+ симв. Тогда GPT-сжатие убивает персонажа.
+_MIN_SCENE_CHARS = 1200
+_MAX_STYLE_SHARE = 0.42
+
+
+def _cap_style_block(style: str, body_limit: int) -> str:
+    raw = (style or "").strip()
+    if not raw:
+        return raw
+    max_style = min(
+        int(body_limit * _MAX_STYLE_SHARE),
+        max(400, body_limit - _MIN_SCENE_CHARS - 2),
+    )
+    if len(raw) <= max_style:
+        return raw
+    return _cut_at_space(raw, max_style)
+
+
+def _split_identity_lock(scene: str) -> tuple[str, str]:
+    from app.services.image_ref_lock import split_identity_lock
+
+    return split_identity_lock(scene)
+
+
+def _join_lock_scene(lock: str, scene: str) -> str:
+    lock = (lock or "").rstrip()
+    scene = (scene or "").strip()
+    if lock and scene:
+        return f"{lock}\n\n{scene}"
+    return lock or scene
+
+
 def _hard_truncate_prompt(text: str, body_limit: int) -> str:
-    """Обрезка тела: режем сцену, STYLE/Negative оставляем."""
+    """Обрезка тела: lock персонажа и STYLE бережём, режем воду сцены."""
     if len(text) <= body_limit:
         return text
     scene, style = _split_style_lock(text)
+    style = _cap_style_block(style, body_limit)
     if not style:
-        return _cut_at_space(text, body_limit)
-    sep_len = 2 if scene else 0
+        lock, body = _split_identity_lock(scene)
+        if not lock:
+            return _cut_at_space(text, body_limit)
+        sep = 2 if body else 0
+        body_limit_i = body_limit - len(lock) - sep
+        if body_limit_i < 40:
+            return _cut_at_space(lock, body_limit)
+        return _join_lock_scene(lock, _cut_at_space(body, body_limit_i))
+    lock, body = _split_identity_lock(scene)
+    scene_keep = _join_lock_scene(lock, body)
+    sep_len = 2 if scene_keep else 0
     scene_limit = body_limit - len(style) - sep_len
     if scene_limit < 40:
         if len(style) <= body_limit:
             return style
         return _cut_at_space(style, body_limit)
-    return _join_scene_style(_cut_at_space(scene, scene_limit), style)
+    if len(scene_keep) <= scene_limit:
+        return _join_scene_style(scene_keep, style)
+    if lock:
+        body_limit_i = scene_limit - len(lock) - (2 if body else 0)
+        if body_limit_i < 40:
+            return _join_scene_style(_cut_at_space(lock, scene_limit), style)
+        return _join_scene_style(
+            _join_lock_scene(lock, _cut_at_space(body, body_limit_i)),
+            style,
+        )
+    return _join_scene_style(_cut_at_space(scene_keep, scene_limit), style)
 
 # Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
@@ -355,7 +420,13 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра."""
+    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite.
+
+    Неопределённый submit уже мог быть оплачен. Шаг, который ретраит по
+    этому предикату, не должен слать второй POST.
+    """
+    if _outsee_submit_uncertain(err):
+        return False
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
@@ -365,6 +436,8 @@ def _is_transient_network_error(err: BaseException) -> bool:
             return True
     except Exception:  # noqa: BLE001
         pass
+    if isinstance(err, OutseeImageError) and (err.context or {}).get("network"):
+        return True
     msg = str(getattr(err, "reason", None) or err).lower()
     ctx = ""
     if isinstance(err, OutseeImageError):
@@ -385,6 +458,9 @@ def _is_transient_network_error(err: BaseException) -> bool:
             "name or service not known",
             "getaddrinfo failed",
             "server disconnected",
+            "connecterror",
+            "remoteprotocolerror",
+            "readerror",
         )
     )
 
@@ -516,7 +592,10 @@ async def _compress_prompt_for_outsee(
         return last
     scene, style = _split_style_lock(last)
     if style:
-        scene_limit = max_body - len(style) - (2 if scene else 0)
+        style = _cap_style_block(style, max_body)
+        id_lock, scene_body = _split_identity_lock(scene)
+        scene_keep = _join_lock_scene(id_lock, scene_body)
+        scene_limit = max_body - len(style) - (2 if scene_keep else 0)
         if scene_limit < 40:
             joined = _hard_truncate_prompt(last, max_body)
             logger.info(
@@ -525,8 +604,8 @@ async def _compress_prompt_for_outsee(
                 max_body,
             )
             return joined
-        if len(scene) <= scene_limit:
-            joined = _join_scene_style(scene, style)
+        if len(scene_keep) <= scene_limit:
+            joined = _join_scene_style(scene_keep, style)
             if len(joined) <= max_body:
                 logger.info(
                     "outsee_retry: сцена уже влезает, STYLE не сжимал: {} → {}",
@@ -534,14 +613,21 @@ async def _compress_prompt_for_outsee(
                     len(joined),
                 )
                 return joined
+        shrink_target = scene_limit - len(id_lock) - (2 if id_lock and scene_body else 0)
+        shrink_target = max(80, shrink_target)
         meta = (
-            f"Сожми ТОЛЬКО сцену кадра до ≤{scene_limit} символов. "
-            "Убери повторы и воду, оставь визуальные детали. "
+            f"Сожми ТОЛЬКО сцену кадра до ≤{shrink_target} символов. "
+            "Убери повторы и воду, оставь кто в кадре (cNN), где стоит и что делает. "
             "Не пиши STYLE / Final style lock / Negative — их добавлю сам. "
+            "Не пиши HARD CAST LOCK и строки Image N is the — их добавлю сам. "
             "Верни ТОЛЬКО сжатую сцену без пояснений."
         )
         shrunk = await _gpt_shrink_text(
-            gpt, scene, scene_limit, project_id=project_id, meta=meta
+            gpt,
+            scene_body or scene_keep,
+            shrink_target,
+            project_id=project_id,
+            meta=meta,
         )
         if not shrunk:
             return None
@@ -552,7 +638,10 @@ async def _compress_prompt_for_outsee(
                 "оставил исходный lock {} симв",
                 len(style),
             )
-        joined = _join_scene_style(scene_only or shrunk, style)
+        body_only = scene_only or shrunk
+        # GPT мог вернуть lock обратно — не дублируем.
+        _again_lock, body_only = _split_identity_lock(body_only)
+        joined = _join_scene_style(_join_lock_scene(id_lock, body_only), style)
         if len(joined) > max_body:
             joined = _hard_truncate_prompt(joined, max_body)
         logger.info(
@@ -862,6 +951,12 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
     return f"{stripped} r{round_idx + 1}a{attempt}"
 
 
+def _outsee_submit_uncertain(err: BaseException) -> bool:
+    """POST генерации мог быть оплачен, повторять его нельзя."""
+    ctx = getattr(err, "context", None)
+    return isinstance(ctx, dict) and bool(ctx.get("submit_uncertain"))
+
+
 async def generate_image_with_retries(
     outsee: OutseeBot | None,
     gpt: Any | None,
@@ -888,6 +983,7 @@ async def generate_image_with_retries(
     from app.services.media_route import image_provider_for
     from app.settings import settings as _settings
 
+    fallback_done = bool(kwargs.pop("_image_model_fallback_done", False))
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
     )
@@ -904,7 +1000,7 @@ async def generate_image_with_retries(
     rounds: list[tuple[str, str]] = [("original", current_prompt)]
     if gpt_rewrite and gpt is not None:
         rounds.append(("rewritten", ""))  # placeholder, заполним если дойдём
-    _DOWNLOAD_ONLY_RETRIES = 2
+    _DOWNLOAD_ONLY_RETRIES = 8
 
     for round_idx, (round_label, _) in enumerate(rounds):
         pid = kwargs.get("project_id")
@@ -1071,12 +1167,23 @@ async def generate_image_with_retries(
                     if isinstance(raw_url, str) and raw_url
                     else raw_url
                 )
-                if isinstance(img_url, str) and img_url and gen_id:
+                if isinstance(img_url, str) and img_url:
                     for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
                         abort_if_cancelled(
                             pid if isinstance(pid, int) else None
                         )
                         try:
+                            if use_outsee_api:
+                                from app.bots.outsee_http import _download
+
+                                await _download(img_url, out_path)
+                                return GenerationResult(
+                                    file_path=out_path,
+                                    raw_url=img_url,
+                                    gen_id=gen_id or None,
+                                )
+                            if outsee is None:
+                                raise last_err or e
                             return await outsee.retry_image_download(
                                 img_url=img_url,
                                 out_path=out_path,
@@ -1087,7 +1194,7 @@ async def generate_image_with_retries(
                                 project_id=pid if isinstance(pid, int) else None,
                                 model_slug=attempt_kwargs.get("model_slug"),
                             )
-                        except OutseeDownloadError as dl_err:
+                        except OutseeImageError as dl_err:
                             last_err = dl_err
                             logger.warning(
                                 "outsee.retry_image_download [{}] {}/{}: {}",
@@ -1111,6 +1218,14 @@ async def generate_image_with_retries(
                 raise last_err or e
             except OutseeImageError as e:
                 last_err = e
+                if _outsee_submit_uncertain(e):
+                    logger.warning(
+                        "outsee.generate_image [{}]: исход отправки неизвестен, "
+                        "повторный POST не делаю: {}",
+                        round_label,
+                        e.reason,
+                    )
+                    raise
                 if _is_concurrency_limit_error(e):
                     concurrency_waits += 1
                     if concurrency_waits > _CONCURRENCY_MAX_WAITS:
@@ -1212,6 +1327,13 @@ async def generate_image_with_retries(
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:
             break
+        if last_err is not None and _is_transient_network_error(last_err):
+            logger.warning(
+                "outsee.generate_image: сеть после раунда «{}» — "
+                "промт не переписываю, кадр без картинки",
+                round_label,
+            )
+            break
         if gpt is None:
             logger.warning(
                 "outsee.generate_image [{}]: GPT недоступен — rewrite пропущен",
@@ -1239,6 +1361,36 @@ async def generate_image_with_retries(
     if last_err is None:
         # сюда мы попасть не должны (raise/return должны были отработать)
         raise RuntimeError("generate_image_with_retries: unreachable")
+    fb = None if fallback_done else _image_moderation_fallback_slug(
+        str(raw_slug) if raw_slug else None
+    )
+    if fb and outsee_error_is_moderation(last_err):
+        from app.services.model_substitution import note_model_substitution
+
+        pid = kwargs.get("project_id")
+        line = note_model_substitution(
+            original_model=str(raw_slug or "gpt-image-2"),
+            substituted_model=str(fb),
+            reason="CONTENT_POLICY: модерация gpt-image-2, картинка уходит на nano-banana-2",
+            node="image",
+            run=pid if isinstance(pid, int) else None,
+            project_id=pid if isinstance(pid, int) else None,
+        )
+        fb_kwargs = dict(kwargs)
+        fb_kwargs["model_slug"] = fb
+        fb_kwargs.pop("quality", None)
+        fb_kwargs["_image_model_fallback_done"] = True
+        result = await generate_image_with_retries(
+            outsee,
+            gpt,
+            prompt=current_prompt,
+            out_path=out_path,
+            max_attempts_per_prompt=max(1, min(2, int(max_attempts_per_prompt))),
+            gpt_rewrite=False,
+            **fb_kwargs,
+        )
+        result.model_substitution = line
+        return result
     raise last_err
 
 
@@ -1294,6 +1446,7 @@ async def generate_video_with_retries(
     concurrency_waits = 0
     transient_streak = 0
     fallback_started = False
+    substitution_line: str | None = None
     phase = "primary"
     logger.info(
         "outsee_retry: video primary model={} via {} (ladder fallback={})",
@@ -1420,6 +1573,7 @@ async def generate_video_with_retries(
                 duration=int(dur) if dur else None,
                 generate_audio=False,
                 reference_image=attempt_kwargs.get("start_frame"),
+                last_frame_image=attempt_kwargs.get("last_frame_image"),
                 prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
                 timeout=float(attempt_kwargs.get("timeout") or 900),
                 gen_id=attempt_kwargs.get("gen_id"),
@@ -1462,8 +1616,13 @@ async def generate_video_with_retries(
             except Exception:
                 pass
             return result
+        cdp_kwargs = {
+            k: v
+            for k, v in attempt_kwargs.items()
+            if k not in {"last_frame_image", "end_frame", "generate_audio"}
+        }
         return await outsee.generate_video(
-            send_prompt, out_path, project_id=project_id, **attempt_kwargs
+            send_prompt, out_path, project_id=project_id, **cdp_kwargs
         )
 
     async def _rewrite_prompt_after_fail(err: BaseException) -> None:
@@ -1506,6 +1665,16 @@ async def generate_video_with_retries(
                         model_primary=primary_slug,
                         model_fallback=KIE_KLING_FALLBACK_SLUG,
                     ),
+                )
+                from app.services.model_substitution import note_model_substitution
+
+                substitution_line = note_model_substitution(
+                    original_model=str(primary_slug or ""),
+                    substituted_model=str(KIE_KLING_FALLBACK_SLUG),
+                    reason="видео-лестница: primary исчерпан, клип уходит на Kling",
+                    node="video",
+                    run=project_id,
+                    project_id=project_id,
                 )
                 fallback_started = True
                 if not local_sanitized:
@@ -1557,7 +1726,10 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            if use_kling and substitution_line:
+                result.model_substitution = substitution_line
+            return result
         except StepCancelledError:
             raise
         except OutseeDownloadError as e:
@@ -1585,6 +1757,12 @@ async def generate_video_with_retries(
             classified = classify_video_error(e)
         except OutseeImageError as e:
             last_err = e
+            if _outsee_submit_uncertain(e):
+                logger.warning(
+                    "outsee video: исход отправки неизвестен, повторный POST не делаю: {}",
+                    e.reason,
+                )
+                raise
             classified = classify_video_error(e)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, VideoLadderExhaustedError):
@@ -1729,6 +1907,7 @@ async def generate_video_with_retries(
             "primary_model": primary_slug,
             "fallback_model": KIE_KLING_FALLBACK_SLUG,
             "last_error": detail[:300],
+            "model_substitution": substitution_line,
         },
     )
 

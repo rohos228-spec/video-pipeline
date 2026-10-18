@@ -189,7 +189,9 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
-    if "xlsx-sync" in low or "xlsx" in low:
+    # «enrich_xlsx» — имя шага DB SoT, не файл Excel. Не путать с .xlsx.
+    xlsx_probe = low.replace("enrich_xlsx", "")
+    if "xlsx-sync" in low or ".xlsx" in xlsx_probe or "некорректный xlsx" in xlsx_probe:
         if "corrupt" in low or "не открыв" in low:
             return "xlsx_corrupt"
         return "xlsx_invalid"

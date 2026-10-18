@@ -60,7 +60,7 @@ const FIX_BUGS_PREFIX =
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
-  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
+  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", false);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");

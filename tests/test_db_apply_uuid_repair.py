@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services import db_apply
-from app.services.db_apply import coerce_duration_seconds
+from app.services.db_apply import coerce_duration_seconds, normalize_fields
 
 
 def test_coerce_duration_seconds_numeric_and_human() -> None:
@@ -82,6 +82,58 @@ def test_salvage_ops_from_partial_json_truncated() -> None:
     assert [o["frame_uuid"] for o in ops] == ["aaa", "bbb"]
 
 
+def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
+    """#34 fw_script: один op, биты оборваны — стрим [DONE] без хвоста.
+
+    salvage_ops пустой (op не закрыт). Без close → RuntimeError
+    «модель не вернула apply-ops».
+    """
+    text = (
+        '{"ops":[{"frame_uuid":"98ce4c2b0697437bad9f71d8","fields":{"биты":['
+        '{"порядок":1,"глагол":"подает","якорь":"раз"},'
+        '{"порядок":2,"глагол":"оставляет","якорь":"два"}]'
+        "```"
+    )
+    assert db_apply.salvage_ops_from_partial_json(text) == []
+    # Обрезанный op с frame_uuid не закрываем: ячейка не должна считаться целой.
+    assert db_apply.extract_apply_ops_json(text) is None
+
+
+def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
+    """fw_script kie: {""порядок":27 плюс обрыв хвоста — без починки extract=None."""
+    text = (
+        '{"ops":[{"frame_uuid":"561ead3634c945bdb825314a","fields":{"биты":['
+        '{"порядок":1,"изменение":"а","якорь":"раз"},'
+        '{""порядок":27,"изменение":"б","якорь":"два"}'
+    )
+    # Хвост оборван и в op есть frame_uuid — extract не отдаёт дописанный кадр.
+    assert db_apply.extract_apply_ops_json(text) is None
+
+
+def test_extract_apply_ops_json_strips_trailing_commas() -> None:
+    """Площадка: модель закрывает зону как ``},],``. Без починки extract=None,
+    в логе при этом уже есть успешный ответ, а в карточки пачка не пишется.
+    """
+    text = (
+        '{"ops":[{"frame_uuid":"d8c0b5055d2340e6aa288aec","fields":'
+        '{"площадка":{"зоны":[{"id":"архив","что":"комната","предметы":'
+        '[{"имя":"календарь","где":"запад","состояние":"лист"}]}'
+        ',],"проходы":[],"люди":[]},"меняет":[]}},'
+        '{"frame_uuid":"65758452ae2b45ffa1337e81","fields":'
+        '{"площадка":{"зоны":[{"id":"зал","что":"суд",}]},"меняет":[],}}]}'
+    )
+    data = db_apply.extract_apply_ops_json(text)
+    assert data is not None
+    assert [op["frame_uuid"][:8] for op in data["ops"]] == ["d8c0b505", "65758452"]
+    zone = data["ops"][0]["fields"]["площадка"]["зоны"][0]
+    assert zone["id"] == "архив"
+    kept = db_apply.extract_apply_ops_json(
+        '{"ops":[{"frame_uuid":"u1","fields":{"место":"текст,] скобка"}}]}'
+    )
+    assert kept is not None
+    assert kept["ops"][0]["fields"]["место"] == "текст,] скобка"
+
+
 def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     text = (
         'Вот JSON:\n{"ops":['
@@ -93,3 +145,24 @@ def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     assert data.get("_salvaged_partial") is True
     assert len(data["ops"]) == 1
     assert data["ops"][0]["frame_uuid"] == "f1"
+
+
+def test_normalize_fields_accepts_bits_and_shots() -> None:
+    from app.services.db_apply import FIELD_ALIASES
+
+    out = normalize_fields(
+        {"биты": [{"порядок": 1}], "bits": [{"порядок": 2}], "shots": []},
+        FIELD_ALIASES,
+        scope="кадр x",
+    )
+    assert out["биты"] == [{"порядок": 2}]
+    assert out["кадры"] == []
+
+
+def test_coerce_structured_attr_parses_json_list() -> None:
+    from app.services.db_apply import _coerce_structured_attr
+
+    assert _coerce_structured_attr([{"порядок": 1}]) == [{"порядок": 1}]
+    assert _coerce_structured_attr('[{"порядок":1}]') == [{"порядок": 1}]
+    assert _coerce_structured_attr("") == []
+    assert _coerce_structured_attr(None) == []

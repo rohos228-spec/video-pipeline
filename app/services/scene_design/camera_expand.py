@@ -8,9 +8,9 @@
 - Сцена = ячейка: смысловой кусок с таймингом озвучки; в ней может
   быть много кадров. Многокадровая сцена ок, если её время = озвучке отрезка.
 
-При дроблении: ``voiceover_text`` родителя режется на фрагменты по словам
-(``split_text_into_parts``) и раздаётся всей группе; дети получают долю
-duration и пустые ts (их выставит Whisper-выравнивание по фрагменту).
+При дроблении: ``voiceover_text`` родителя режется на фразы/клаузы
+(``split_text_into_parts``) и раздаётся группе; лишние шоты без новой
+клаузы остаются без закадра. Не режем по словам.
 """
 
 from __future__ import annotations
@@ -155,6 +155,11 @@ def expand_shot_plan_rows(
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[,;—–:])\s+")
+_DANGLING_TAIL_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:и|или|а|но|да|не|ни|с|со|во|за|из|от|до|для|"
+    r"на|по|к|ко|у|о|об|обо|при|над|под|без|между|через|"
+    r"вместе\s+с|не\s+с)[,:;]?\s*$"
+)
 
 
 def _sentence_units(text: str) -> list[str]:
@@ -176,12 +181,17 @@ def _clause_units(units: list[str]) -> list[str]:
 
 def _balance_units(units: list[str], n: int) -> list[str]:
     """Раздать целые фразы по n кадрам, балансируя длину (не рвать фразу)."""
+    if n <= 1:
+        return [" ".join(units)]
     total = sum(len(u) for u in units)
     parts: list[str] = []
     i = 0
     for k in range(n):
         remaining_groups = n - k
         remaining_units = units[i:]
+        if remaining_groups <= 1:
+            parts.append(" ".join(remaining_units))
+            return parts
         if len(remaining_units) <= remaining_groups:
             # по юниту на группу, хвост — в последнюю
             parts.extend(remaining_units[: remaining_groups - 1])
@@ -198,7 +208,13 @@ def _balance_units(units: list[str], n: int) -> list[str]:
             acc.append(u)
             acc_len += len(u)
             i += 1
+        if not acc and i < len(units):
+            acc.append(units[i])
+            i += 1
         parts.append(" ".join(acc))
+    if i < len(units):
+        tail = " ".join(units[i:])
+        parts[-1] = f"{parts[-1]} {tail}".strip() if parts[-1] else tail
     return parts
 
 
@@ -259,13 +275,21 @@ def _vo_parts_by_shot_quotes(
     return parts
 
 
+def vo_chunk_is_dangling(chunk: str) -> bool:
+    """Обрубок: кадр заканчивается на предлог/союз («продавали вместе с»)."""
+    compact = re.sub(r"\s+", " ", chunk or "").strip()
+    if not compact:
+        return False
+    return bool(_DANGLING_TAIL_RE.search(compact))
+
+
 def split_text_into_parts(text: str, n: int) -> list[str]:
     """Разрезать закадр на n кусков ПО СМЫСЛУ: фразы целиком, баланс по длине.
 
     Не «пополам по словам»: предложение не рвётся между кадрами; длинная
-    фраза может распасться по клаузам (, ; —). Инвариант: сумма фрагментов
-    = исходный текст (слова не теряются и не дублируются). Слов меньше,
-    чем кадров, — по слову на кадр, хвост пустой.
+    фраза может распасться по клаузам (, ; —). Инвариант: сумма непустых
+    фрагментов = исходный текст. Кадров больше, чем клауз, — хвост пустой
+    (покрытие без нового закадра), не нарезка «вместе с» / «землёй».
     """
     words = (text or "").strip().split()
     n = max(1, int(n))
@@ -274,23 +298,15 @@ def split_text_into_parts(text: str, n: int) -> list[str]:
     if not words:
         return [""] * n
     if len(words) < n:
-        # Слов меньше кадров — по слову на кадр, хвост пустой: сумма = текст.
-        parts = list(words) + [""] * (n - len(words))
-        return parts[:n]
+        # Слов меньше кадров — весь текст на первом, хвост пустой.
+        # Не по слову на кадр («люди,» / «судов»).
+        return [" ".join(words)] + [""] * (n - 1)
 
     units = _sentence_units(" ".join(words))
     if len(units) < n:
         units = _clause_units(units)
     if len(units) < n:
-        # даже после клауз юнитов мало — ровный word-level как раньше
-        base, rem = divmod(len(words), n)
-        parts = []
-        i = 0
-        for k in range(n):
-            take = base + (1 if k < rem else 0)
-            parts.append(" ".join(words[i : i + take]))
-            i += take
-        return parts
+        return list(units) + [""] * (n - len(units))
     return _balance_units(units, n)
 
 
@@ -565,6 +581,14 @@ async def renumber_frames_by_sort_key(
     for i, fr in enumerate(frames, 1):
         fr.number = i
     await session.flush()
+    try:
+        from app.services.vo_shot_expand import sync_live_coverage_ids
+
+        sync_live_coverage_ids(frames)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] renumber: sync_live_coverage_ids failed", project.id
+        )
     return frames
 
 

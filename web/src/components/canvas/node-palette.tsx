@@ -31,7 +31,6 @@ import {
   NODE_CATEGORY_ORDER,
   type NodeCategory,
 } from "@/lib/node-catalog";
-import { getNodeIcon } from "@/lib/node-icons";
 import { groupHue } from "@/lib/group-color";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
@@ -46,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { GroupPreview } from "./group-preview";
+import { LibraryBrowser, LibrarySwitch, RUBIK, type LibrarySource } from "./library-nodes-tab";
 
 // sd_agent/sd_assemble — legacy-типы старых канвасов; scene-агенты теперь
 // создаются группой «Сцены: веер агентов» как ноды «Работа с GPT».
@@ -64,9 +64,8 @@ export function NodePalette({
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<"nodes" | "groups">("nodes");
+  const [tab, setTab] = useState<LibrarySource>("builtin");
   const [search, setSearch] = useState("");
-  const [selectedNodeType, setSelectedNodeType] = useState<string | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const nodeGroups = useQuery({
@@ -78,7 +77,7 @@ export function NodePalette({
   const addable = useMemo(
     () =>
       Object.keys(NODE_CATALOG).filter(
-        (t) => !t.startsWith("hitl_") && !HIDDEN_NODE_TYPES.has(t),
+        (t) => (!t.startsWith("hitl_") || t === "hitl_style") && !HIDDEN_NODE_TYPES.has(t),
       ),
     [],
   );
@@ -137,75 +136,47 @@ export function NodePalette({
         setOpen(v);
         if (!v) {
           setSearch("");
-          setSelectedNodeType(null);
         }
       }}
     >
       <DialogTrigger asChild>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 border-white/15 bg-zinc-800/80 px-2.5 text-xs text-foreground hover:bg-zinc-700 hover:text-white"
-          title="Библиотека: добавить ноду или готовую группу нод на канвас"
+        <button
+          type="button"
+          className="inline-flex h-8 w-[34px] items-center justify-center rounded-lg border border-transparent bg-transparent text-muted-foreground transition-all duration-150 hover:border-white/8 hover:bg-white/5 hover:text-foreground [&_svg]:size-4"
+          title="Добавить"
+          aria-label="Добавить"
         >
-          <Plus className="h-3.5 w-3.5 text-emerald-400" />
-          <span>Добавить</span>
-        </Button>
+          <Plus className="h-4 w-4" />
+        </button>
       </DialogTrigger>
-      <DialogContent className="flex h-[640px] max-h-[88vh] w-[960px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0">
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-4 py-3">
-          <DialogTitle className="flex items-center gap-2 text-sm">
-            <Boxes className="h-4 w-4 text-primary" />
-            Библиотека
-          </DialogTitle>
-          <div className="ml-2 flex items-center gap-1">
-            <button
-              type="button"
-              className={cn(
-                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                tab === "nodes"
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setTab("nodes")}
-            >
-              Ноды
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                tab === "groups"
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setTab("groups")}
-            >
-              Группы
-              {(nodeGroups.data ?? []).length > 0 && (
-                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px]">
-                  {(nodeGroups.data ?? []).length}
-                </span>
-              )}
-            </button>
-          </div>
-          <div className="relative ml-auto w-[220px]">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+      <DialogContent className="flex h-[640px] max-h-[88vh] w-[960px] max-w-[94vw] flex-col gap-0 overflow-hidden rounded-[14px] border-white/[0.08] bg-[rgba(24,24,28,0.96)] p-0 text-white" style={{ fontFamily: RUBIK }}>
+        <div className="flex shrink-0 items-center gap-4 border-b border-white/10 px-4 py-3 pr-12">
+          <DialogTitle className="text-[15px] font-medium">Библиотека</DialogTitle>
+          <LibrarySwitch value={tab} onChange={setTab} />
+          <div className="relative ml-auto w-[240px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/45" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Поиск по названию и описанию…"
-              className="h-7 pl-7 text-xs"
+              className="h-9 rounded-none border-white/10 bg-black/30 pl-8 text-[13px]"
             />
           </div>
         </div>
 
-        {tab === "nodes" ? (
-          <NodesTab
+        {tab !== "groups" ? (
+          <LibraryBrowser
+            key={tab}
+            source={tab}
+            query={query}
             addable={addable}
             matchNode={matchNode}
-            selectedNodeType={selectedNodeType}
-            onSelectNodeType={setSelectedNodeType}
+            myGroups={(nodeGroups.data ?? []).filter((g) => !g.builtin)}
+            matchGroup={matchGroup}
+            onOpenGroup={(id) => {
+              setSelectedGroupId(id);
+              setTab("groups");
+            }}
             onAddNode={addNode}
           />
         ) : (
@@ -225,195 +196,6 @@ export function NodePalette({
         )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-/* ── Ноды ─────────────────────────────────────────────────────────────── */
-
-function NodesTab({
-  addable,
-  matchNode,
-  selectedNodeType,
-  onSelectNodeType,
-  onAddNode,
-}: {
-  addable: string[];
-  matchNode: (t: string) => boolean;
-  selectedNodeType: string | null;
-  onSelectNodeType: (t: string | null) => void;
-  onAddNode: (t: string) => void;
-}) {
-  const [category, setCategory] = useState<NodeCategory | "all">("all");
-  const byCategory = useMemo(() => {
-    const map = new Map<NodeCategory, string[]>();
-    for (const t of addable) {
-      const cat = getNodeSpec(t).category;
-      map.set(cat, [...(map.get(cat) ?? []), t]);
-    }
-    return map;
-  }, [addable]);
-
-  const visible = addable.filter(
-    (t) => (category === "all" || getNodeSpec(t).category === category) && matchNode(t),
-  );
-  const selectedSpec = selectedNodeType ? getNodeSpec(selectedNodeType) : null;
-
-  return (
-    <div className="flex min-h-0 flex-1">
-      <div className="w-[168px] shrink-0 border-r border-white/10 p-2">
-        <CategoryRailButton
-          active={category === "all"}
-          label="Все"
-          count={addable.filter(matchNode).length}
-          onClick={() => setCategory("all")}
-        />
-        {NODE_CATEGORY_ORDER.filter((c) => c !== "hitl" && byCategory.has(c)).map(
-          (c) => (
-            <CategoryRailButton
-              key={c}
-              active={category === c}
-              label={NODE_CATEGORY_LABELS[c]}
-              count={(byCategory.get(c) ?? []).filter(matchNode).length}
-              onClick={() => setCategory(c)}
-            />
-          ),
-        )}
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="grid grid-cols-2 gap-1.5 p-3">
-          {visible.map((t) => {
-            const spec = getNodeSpec(t);
-            const Icon = getNodeIcon(spec.iconKey);
-            const active = selectedNodeType === t;
-            return (
-              <button
-                key={t}
-                type="button"
-                title="Клик — просмотр; двойной клик — сразу на канвас"
-                className={cn(
-                  "flex items-start gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-colors",
-                  active
-                    ? "border-primary/50 bg-primary/10"
-                    : "border-white/10 bg-white/[0.02] hover:border-primary/30 hover:bg-primary/5",
-                )}
-                onClick={() => onSelectNodeType(t)}
-                onDoubleClick={() => onAddNode(t)}
-              >
-                <span
-                  className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
-                  style={{
-                    background: `linear-gradient(145deg, hsl(${spec.accent} / 0.3), hsl(${spec.accent} / 0.08))`,
-                    color: `hsl(${spec.accent})`,
-                  }}
-                >
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-xs font-medium">
-                    {spec.label}
-                  </span>
-                  <span className="mt-0.5 line-clamp-2 block text-[10px] leading-snug text-muted-foreground">
-                    {spec.description}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-          {visible.length === 0 && (
-            <div className="col-span-2 py-10 text-center text-xs text-muted-foreground">
-              Ничего не найдено.
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-
-      <div className="flex w-[260px] shrink-0 flex-col border-l border-white/10 p-3">
-        {selectedSpec ? (
-          <>
-            <div className="flex items-center gap-2.5">
-              <span
-                className="flex h-10 w-10 items-center justify-center rounded-full"
-                style={{
-                  background: `linear-gradient(145deg, hsl(${selectedSpec.accent} / 0.3), hsl(${selectedSpec.accent} / 0.08))`,
-                  color: `hsl(${selectedSpec.accent})`,
-                }}
-              >
-                {(() => {
-                  const Icon = getNodeIcon(selectedSpec.iconKey);
-                  return <Icon className="h-5 w-5" />;
-                })()}
-              </span>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">
-                  {selectedSpec.label}
-                </div>
-                <div className="text-[10px] text-muted-foreground">
-                  {selectedSpec.type}
-                </div>
-              </div>
-            </div>
-            <div className="mt-2">
-              <span className="rounded-full border border-white/10 bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                {NODE_CATEGORY_LABELS[selectedSpec.category]}
-              </span>
-            </div>
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              {selectedSpec.description || "Без описания."}
-            </p>
-            <div className="mt-auto pt-3">
-              <Button
-                size="sm"
-                className="h-8 w-full gap-1.5 text-xs"
-                onClick={() => onAddNode(selectedSpec.type)}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Добавить на канвас
-              </Button>
-              <div className="mt-1.5 text-center text-[9px] text-muted-foreground">
-                двойной клик по карточке — добавить сразу
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-center text-[11px] text-muted-foreground">
-            Кликни по ноде,
-            <br />
-            чтобы посмотреть детали
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CategoryRailButton({
-  active,
-  label,
-  count,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  count: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
-        active
-          ? "bg-primary/15 font-medium text-primary"
-          : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
-      )}
-      onClick={onClick}
-    >
-      <span className="truncate">{label}</span>
-      <span className="ml-1 rounded-full bg-black/30 px-1.5 py-0.5 text-[9px]">
-        {count}
-      </span>
-    </button>
   );
 }
 
@@ -457,7 +239,7 @@ function GroupsTab({
           ) : (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary/5 px-2.5 py-2 text-left text-xs text-primary transition-colors hover:bg-primary/10"
+              className="flex items-center gap-2 rounded-xl border border-dashed border-teal-400/40 bg-teal-400/5 px-2.5 py-2 text-left text-xs text-teal-300 transition-colors hover:bg-teal-400/10"
               onClick={() => setCreating(true)}
             >
               <PackagePlus className="h-4 w-4 shrink-0" />
@@ -493,7 +275,7 @@ function GroupsTab({
                 className={cn(
                   "rounded-xl border px-2.5 py-2 text-left transition-colors",
                   active
-                    ? "border-primary/50 bg-primary/10"
+                    ? "border-teal-400/50 bg-teal-400/10"
                     : "border-white/10 bg-white/[0.02] hover:border-white/25",
                 )}
                 style={{ borderLeftWidth: 3, borderLeftColor: `hsl(${hue} 70% 55% / 0.8)` }}
@@ -506,7 +288,7 @@ function GroupsTab({
                       "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
                       g.builtin
                         ? "border-sky-400/30 bg-sky-500/10 text-sky-300"
-                        : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+                        : "border-teal-400/30 bg-teal-500/10 text-teal-300",
                     )}
                   >
                     {g.builtin ? "встроенная" : "своя"}
@@ -612,7 +394,7 @@ function GroupDetailPane({
                   "rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
                   g.builtin
                     ? "border-sky-400/30 bg-sky-500/10 text-sky-300"
-                    : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+                    : "border-teal-400/30 bg-teal-500/10 text-teal-300",
                 )}
               >
                 {g.builtin ? "встроенная" : "своя"}
@@ -674,10 +456,10 @@ function GroupDetailPane({
               </div>
               <GroupPreview detail={g} />
               <div className="mt-1 text-[9px] text-muted-foreground">
-                <span className="text-emerald-400">вход</span> — ноды, принимающие
+                <span className="text-teal-400">вход</span> — ноды, принимающие
                 связь от канваса · <span className="text-sky-400">выход</span> —
                 нода, от которой уходит дальше ·{" "}
-                <span className="text-emerald-400">Ок</span>/
+                <span className="text-teal-400">Ок</span>/
                 <span className="text-red-400">Не ок</span> — ветки проверок
               </div>
             </div>
@@ -802,8 +584,8 @@ function EditGroupForm({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+    <div className="flex flex-col gap-2 rounded-xl border border-teal-400/30 bg-teal-400/5 p-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-300">
         Редактирование группы
       </div>
       <Input
@@ -894,8 +676,8 @@ function CreateGroupForm({
   };
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-xl border border-primary/30 bg-primary/5 p-2.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+    <div className="flex flex-col gap-1.5 rounded-xl border border-teal-400/30 bg-teal-400/5 p-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-300">
         Новая группа из выделения
       </div>
       <Input
@@ -974,7 +756,7 @@ function CategoryPicker({
               className={cn(
                 "rounded px-1.5 py-1 text-left text-[10px] transition-colors",
                 c === value
-                  ? "bg-primary/15 text-primary"
+                  ? "bg-teal-400/15 text-teal-300"
                   : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
               )}
               onClick={() => {

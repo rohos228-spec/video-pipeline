@@ -125,8 +125,6 @@ DEFAULT_PRICING: dict[str, dict[str, Any]] = {
         "cache_read_usd_per_m": 0.009841,
         "provider": "xAI / Vibecode",
     },
-
-    # --- xAI / Vibecode ---
     "grok-4-6": {
         "type": "text",
         "input_usd_per_m": 0.06561,

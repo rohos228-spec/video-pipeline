@@ -116,7 +116,7 @@ async def test_img_pr_load_context_reads_from_project_db(tmp_path: Path, monkeyp
     _PROJECT_DIR_CACHE[pid] = proj_dir
 
     p_mock = Project(id=pid, slug="test-img-pr", topic="Topic")
-    selected_frames, cards, gp = await _load_img_pr_context(p_mock)
+    selected_frames, cards, gp, _all_frames = await _load_img_pr_context(p_mock)
 
     assert len(selected_frames) == 1
     assert selected_frames[0].uuid == "u-001"

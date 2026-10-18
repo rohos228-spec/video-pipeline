@@ -273,7 +273,7 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     slug: "gpt-image-1.5",
     studioId: "gpt_image_1_5",
     displayName: "GPT Image 1.5",
-    description: "Outsee · флагман OpenAI.",
+    description: "Флагман OpenAI.",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
     price: "3",
     chips: ["aspect", "resolution", "image-input"],
@@ -353,7 +353,7 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     studioId: "veo_3_1_lite",
     displayName: "Veo 3.1 Lite",
     description:
-      "Outsee Veo 720p: звук/4–6с дожимаем локально; кадры — http URL (история → Старт).",
+      "Veo 720p: звук/4–6с дожимаем локально; кадры — http URL (история → Старт).",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
     price: "от 10",
     chips: ["aspect", "resolution", "duration", "audio", "image-input"],

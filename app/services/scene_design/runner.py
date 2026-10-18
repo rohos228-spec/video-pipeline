@@ -188,14 +188,16 @@ def load_checkpoint(project: Project, name: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
-    list_key = ag.LIST_KEY[name]
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get(list_key), list)
-        or not data[list_key]
-    ):
-        return None
-    return data
+    list_key = ag.LIST_KEY.get(name)
+    if list_key:
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get(list_key), list)
+            or not data[list_key]
+        ):
+            return None
+        return data
+    return data if isinstance(data, dict) else None
 
 
 def save_checkpoint(project: Project, name: str, data: dict[str, Any]) -> None:
@@ -990,7 +992,7 @@ async def run_assembler_chunked(
                 ) from e
             raise
 
-    for i, batch in enumerate(batches, start=1):
+    async def _asm_one(i: int, batch: Any) -> Any:
         label = f"p{i}"
         cached = load_chunk_checkpoint(project, ag.ASSEMBLER, label)
         if cached is not None:
@@ -1001,8 +1003,7 @@ async def run_assembler_chunked(
                 total,
                 [f.number for f in batch],
             )
-            parts.append(cached)
-            continue
+            return cached
         logger.info(
             "[#{}] scene_design assemble chunk {}/{} frames={}",
             project.id,
@@ -1025,7 +1026,8 @@ async def run_assembler_chunked(
             len(part.get("scenes") or []),
             len(part.get("ops") or []),
         )
-        parts.append(part)
+        return part
+    parts.extend(await asyncio.gather(*[_asm_one(i, b) for i, b in enumerate(batches, start=1)]))
 
     merged = chunks.merge_assembler_payloads(parts)
     logger.info(

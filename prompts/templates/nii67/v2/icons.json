@@ -1,0 +1,522 @@
+{
+ "version": "2",
+ "note": "Классы реальности уровня примеров пользователя; примеры пользователя исключены.",
+ "outcome_weights": {
+  "death": 0.4,
+  "escape": 0.35,
+  "transformation": 0.25
+ },
+ "candidates_per_door": 5,
+ "icons": {
+  "digital": [
+   {
+    "name": "внутри игры «Тетрис», где падают гигантские блоки",
+    "outcomes": [
+     "death",
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри игры «Майнкрафт», где всё кубическое",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри «Пакмана» в лабиринте",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри компьютера, где файл удаляют в корзину",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "body_inside": [
+   {
+    "name": "в желудке с кислотой",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "в лёгком на вдохе",
+    "outcomes": [
+     "escape"
+    ]
+   },
+   {
+    "name": "в кровеносной артерии с сердцебиением",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "во рту, где жуют зубы",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри глаза у зрачка",
+    "outcomes": [
+     "escape"
+    ]
+   },
+   {
+    "name": "в кишечнике",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "внутри чихающего носа",
+    "outcomes": [
+     "escape"
+    ]
+   }
+  ],
+  "earth_core": [
+   {
+    "name": "у раскалённого ядра Земли",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в мантии из текущей магмы",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "в гигантской каменной пустоте в глубине Земли",
+    "outcomes": [
+     "escape"
+    ]
+   },
+   {
+    "name": "в глубинной пещере, где плавится камень",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "на дне самой глубокой шахты мира",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "ocean_trench": [
+   {
+    "name": "на дне Марианской впадины",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в чёрной глубине без света, где давит вода",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "у подводного вулкана в бездне",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "в ледяной воде под шельфом Антарктиды",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   }
+  ],
+  "dream": [
+   {
+    "name": "в бесконечном падении во сне",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "во сне, где ноги вязнут в полу",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в сне, где коридор растягивается",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в кошмаре, где выпадают зубы",
+    "outcomes": [
+     "transformation"
+    ]
+   },
+   {
+    "name": "в сне, где можно летать",
+    "outcomes": [
+     "escape"
+    ]
+   },
+   {
+    "name": "в сне, где лестница не кончается",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   }
+  ],
+  "artwork": [
+   {
+    "name": "внутри «Звёздной ночи» Ван Гога",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри «Крика» Мунка",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри мозаики из плитки",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри карандашного наброска",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри детского рисунка мелками",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри комикса с облачками-рамками",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри «Постоянства памяти» Дали с текущими часами",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   }
+  ],
+  "absolute_zero": [
+   {
+    "name": "в мире абсолютного холода",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в ледяном городе, где всё покрыто инеем",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в морозильной камере размером с мир",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "на замёрзшем океане, где лёд звенит под ногами",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "mirror_world": [
+   {
+    "name": "в зазеркалье Алисы, где всё наоборот",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в волшебном зеркале Злой королевы",
+    "outcomes": [
+     "transformation",
+     "death"
+    ]
+   },
+   {
+    "name": "в комнате смеха с кривыми зеркалами",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в мире, где правое и левое поменялись",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   }
+  ],
+  "flat_2d": [
+   {
+    "name": "в двумерном мире на листе бумаги",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в мире теней на стене",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри плоской карты",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   }
+  ],
+  "future": [
+   {
+    "name": "на Земле через миллион лет, где Солнце стало красным гигантом",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в мире будущего, где люди превращены в статуи-экспонаты",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в будущем, где всё население заморожено в капсулах",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "на последнем дне Земли перед падением Луны",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "moon": [
+   {
+    "name": "на Луне у кратера",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "на тёмной стороне Луны",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "на Луне во время удара метеорита",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "fast_time": [
+   {
+    "name": "в мире, где время мчится вперёд на тысячи лет за минуту",
+    "outcomes": [
+     "transformation",
+     "death"
+    ]
+   },
+   {
+    "name": "в мире, где каждый шаг старит на десять лет",
+    "outcomes": [
+     "transformation",
+     "death"
+    ]
+   },
+   {
+    "name": "в саду, где деревья вырастают и умирают за мгновение",
+    "outcomes": [
+     "transformation",
+     "escape"
+    ]
+   }
+  ],
+  "big_bang": [
+   {
+    "name": "в первой вспышке рождения вселенной",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в первичном огненном тумане до звёзд",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   }
+  ],
+  "snow_globe": [
+   {
+    "name": "внутри снежного шара на полке",
+    "outcomes": [
+     "transformation",
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "внутри снежного шара, который трясут",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "в замёрзшей воде снежного шара",
+    "outcomes": [
+     "transformation",
+     "death"
+    ]
+   }
+  ],
+  "water_world": [
+   {
+    "name": "в городе, где вместо воздуха вода",
+    "outcomes": [
+     "death",
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в бесконечной толще воды без дна и поверхности",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   },
+   {
+    "name": "в мире, где дождь идёт вверх и всё затапливает",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   }
+  ],
+  "heavy_gravity": [
+   {
+    "name": "в мире, где всё весит в сто раз больше",
+    "outcomes": [
+     "death",
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "на равнине, где дождь падает как пули",
+    "outcomes": [
+     "death",
+     "escape"
+    ]
+   },
+   {
+    "name": "в мире, где воздух давит и сплющивает горы",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   }
+  ],
+  "lightning": [
+   {
+    "name": "внутри удара молнии",
+    "outcomes": [
+     "death",
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в грозовом облаке, где копится разряд",
+    "outcomes": [
+     "death",
+     "transformation",
+     "escape"
+    ]
+   },
+   {
+    "name": "в мире, где всё проводит ток",
+    "outcomes": [
+     "death",
+     "transformation"
+    ]
+   }
+  ]
+ }
+}

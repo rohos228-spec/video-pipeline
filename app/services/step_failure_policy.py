@@ -1,9 +1,12 @@
 """Политика отказов шага.
 
 Схема (на один running-шаг):
-  - каждый fail → soft retry (файлы на диске не трогаем);
+  - fail → soft retry без wipe (файлы на диске не трогаем);
+  - enrich / excel_gpt: 1-й и 2-й fail в цикле останавливают ноду без soft retry;
+  - каждый 3-й fail (3, 6) всё равно вызывает soft retry без wipe и только потом сон.
+    Soft retry здесь не перезапуск с чистого листа: он сохраняет файлы.
+    Сон этот вызов не отменяет — так зафиксировано, wipe по-прежнему нет;
   - глобальный счётчик total_fails: 1…9;
-  - каждые 3 fail (3, 6) → сон 30 мин, затем новый цикл;
   - на 9-м fail (3 цикла × 3 попытки) → paused + следующий в gen_queue.
 
 Явный сброс шага — только через UI (reset_step), не при ошибках.
@@ -213,6 +216,84 @@ async def _soft_retry_without_wipe(
         )
 
 
+async def _fail_active_on_both(
+    session: AsyncSession,
+    project: Project,
+    error: Exception,
+    err_code: str | None,
+) -> None:
+    from app.services.run_sync import mark_running_node_failed
+
+    await mark_running_node_failed(
+        session,
+        project,
+        error,
+        initiator="worker",
+        error_code=err_code,
+    )
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _fail(replica_session: AsyncSession, replica: Project) -> None:
+            await mark_running_node_failed(
+                replica_session,
+                replica,
+                error,
+                initiator="worker",
+                error_code=err_code,
+            )
+
+        await run_on_replica_project(session, project, _fail)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] fail active NodeRun on replica failed",
+            project.id,
+            exc_info=True,
+        )
+
+
+async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
+    """paused/failed + leftover NodeRun → вторая БД (сайдбар и канвас одно)."""
+    try:
+        from app.services.run_sync import park_leftover_running_nodes
+
+        await park_leftover_running_nodes(session, project, as_failed=True)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] park leftover NodeRuns on worker session failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] parked runtime sync master↔project.db failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
+        from app.project_db import run_on_replica_project
+        from app.services.run_sync import park_leftover_running_nodes
+
+        async def _park(replica_session: AsyncSession, replica: Project) -> None:
+            if replica.status not in (ProjectStatus.paused, ProjectStatus.failed):
+                replica.status = project.status
+            await park_leftover_running_nodes(
+                replica_session, replica, as_failed=True
+            )
+
+        await run_on_replica_project(session, project, _park)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] park leftover NodeRuns on replica failed",
+            project.id,
+            exc_info=True,
+        )
+
+
 async def record_step_failure(
     session: AsyncSession,
     project: Project,
@@ -301,8 +382,6 @@ async def record_step_failure(
 
     # ⏹ уже нажат — не поднимать planning снова soft-retry'ем (иначе крутилка вечная)
     if is_user_stopped(project) or is_stop_requested(project.id):
-        from app.services.run_sync import mark_running_node_failed
-
         running = project.status
         step = step_by_running_status(running)
         err_code, err_msg = describe_error(error)
@@ -313,13 +392,7 @@ async def record_step_failure(
             fs["last_running"] = step.running_status.value
         fs.pop("sleep_until", None)
         _save_failure_state(project, fs)
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        await _fail_active_on_both(session, project, error, err_code)
         if is_running_status(project.status):
             rollback = (
                 step.requires
@@ -328,6 +401,7 @@ async def record_step_failure(
             )
             project.status = rollback
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.warning(
             "[#{}] step failure ignored soft-retry (user_stop) → {}",
             project.id,
@@ -353,23 +427,42 @@ async def record_step_failure(
     cycle = (total - 1) // FAILS_PER_CYCLE + 1
     fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1
 
+    # Площадка / excel: упавшая пачка не должна заново запускать всю ноду.
+    # Раньше soft retry ставил статус обратно в enriching_* и prepare
+    # сбрасывал карточку на первую пачку.
+    # Каждые FAILS_PER_CYCLE (3, 6) — сон, как у остальных шагов.
+    if (
+        str(step_code).startswith("enrich") or step_code == "excel_gpt"
+    ) and total % FAILS_PER_CYCLE != 0:
+        fs["last_error"] = err_msg
+        fs["last_error_code"] = err_code
+        fs["last_running"] = key
+        _save_failure_state(project, fs)
+        await _fail_active_on_both(session, project, error, err_code)
+        # Не шаг.requires: при auto_mode воркер снова вошёл бы в ту же ноду.
+        project.status = ProjectStatus.paused
+        await session.flush()
+        await _push_parked_runtime(session, project)
+        logger.warning(
+            "[#{}] {} упал — ноду с начала не перезапускаем → {}",
+            project.id,
+            step_code,
+            project.status.value,
+        )
+        return "stopped"
+
+    # 3-й fail enrich/excel тоже проходит soft retry (без wipe), затем сон ниже.
+    # Это не обход паузы: файлы остаются, нода не стартует заново с нуля.
     await _soft_retry_without_wipe(session, project, step_code)
 
     if total >= MAX_TOTAL_FAILS:
         fs["abandoned_at"] = datetime.now(timezone.utc).isoformat()
         fs["recovery_cycles"] = MAX_CYCLES
-        project.status = ProjectStatus.paused
         _save_failure_state(project, fs)
-        from app.services.run_sync import mark_running_node_failed
-
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        await _fail_active_on_both(session, project, error, err_code)
+        project.status = ProjectStatus.paused
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.error(
             "[#{}] abandoned after {} fails ({} cycles) on {}",
             project.id,
@@ -385,22 +478,15 @@ async def record_step_failure(
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // FAILS_PER_CYCLE
         _save_failure_state(project, fs)
-        from app.services.run_sync import mark_running_node_failed
-
-        # Сначала failed по NodeRun (пока status ещё running-шаг), потом уходим
-        # из planning/… — иначе UI крутит «выполняется» все 30 мин сна.
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        # Сначала failed по NodeRun в обеих БД (пока status ещё running-шаг).
+        # state.db часто без fw_* — канвас читает project.db.
+        await _fail_active_on_both(session, project, error, err_code)
         # Не откатывать в step.requires (часто enrich_N_ready): при auto_mode
         # auto_advance сразу уводит проект «назад» (например img_pr → enrich_3_ready → scripting).
         # Во время 30-мин сна держим paused; ручной run_step снимает sleep.
         project.status = ProjectStatus.paused
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.warning(
             "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}) → status={}",
             project.id,
@@ -419,14 +505,48 @@ async def record_step_failure(
     if step is not None:
         project.status = step.running_status
     short_err = err_msg.replace("\n", " ")[:120]
-    from app.services.run_sync import update_active_node_progress_text
-
-    await update_active_node_progress_text(
-        session,
-        project,
-        f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}",
+    retry_text = f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}"
+    from app.services.run_sync import (
+        prepare_node_for_step_start,
+        update_active_node_progress_text,
     )
+
+    await update_active_node_progress_text(session, project, retry_text)
     await session.flush()
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _retry_ui(replica_session: AsyncSession, replica: Project) -> None:
+            if step is not None:
+                replica.status = step.running_status
+            r_meta = dict(replica.meta) if isinstance(replica.meta, dict) else {}
+            r_meta["step_failure"] = dict(fs)
+            replica.meta = r_meta
+            try:
+                await prepare_node_for_step_start(
+                    replica_session,
+                    replica,
+                    step_code,
+                    node_key=r_meta.get("active_excel_gpt_node_key"),
+                    explicit_ui_start=False,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] soft retry: prepare replica NodeRun failed",
+                    project.id,
+                    exc_info=True,
+                )
+            await update_active_node_progress_text(
+                replica_session, replica, retry_text
+            )
+
+        await run_on_replica_project(session, project, _retry_ui)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] soft retry: replica NodeRun/progress sync failed",
+            project.id,
+            exc_info=True,
+        )
     logger.warning(
         "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), soft retry без wipe: {}",
         project.id,

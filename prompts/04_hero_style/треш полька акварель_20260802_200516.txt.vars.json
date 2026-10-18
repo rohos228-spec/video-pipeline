@@ -1,0 +1,20 @@
+[
+  {
+    "key": "style_label",
+    "label": "Название стиля",
+    "value": "Archival Noir Watercolor Grunge Dossier Poster Illustration",
+    "type": "text"
+  },
+  {
+    "key": "style_core",
+    "label": "Ядро стиля",
+    "value": "archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media",
+    "type": "textarea"
+  },
+  {
+    "key": "palette",
+    "label": "Палитра",
+    "value": "washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray",
+    "type": "textarea"
+  }
+]

@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download,
   FileText,
@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { MetaPromptDialog } from "@/components/studio/meta-prompt-dialog";
+import { NodeCatalogPanel, type CatalogPanelItem } from "@/components/prompts/prompt-card-catalog";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -74,6 +75,7 @@ export function PromptFilesPanel({
   onActivateVariant,
   activating = false,
   onPromptRenamed,
+  catalogPanel,
 }: {
   stepCode: string;
   folderHint?: string;
@@ -85,6 +87,8 @@ export function PromptFilesPanel({
   onActivateVariant?: (variant: string) => void;
   activating?: boolean;
   onPromptRenamed?: (oldName: string, newName: string) => void;
+  /** Боковая панель-каталог у ноды на канвасе. */
+  catalogPanel?: { nodeKey: string; onOpenSettings: () => void; onClose: () => void; embedded?: boolean } | null;
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -319,20 +323,71 @@ export function PromptFilesPanel({
 
   const fileList = files.data ?? [];
 
+  const fileContents = useQueries({
+    queries: (catalogPanel ? fileList : []).map((f) => ({
+      queryKey: ["prompt-file", cacheKey, f.name],
+      queryFn: () => api.getPromptFile(stepCode, f.name),
+      staleTime: 30_000,
+    })),
+  });
+  const catalogItems: CatalogPanelItem[] = (catalogPanel ? fileList : []).map((f, i) => {
+    const body = fileContents[i]?.data?.content ?? "";
+    return {
+      id: f.name,
+      label: f.title || f.name,
+      kind: "text" as const,
+      category: f.is_default ? "По умолчанию" : activeVariant === f.name ? "Активный" : "Варианты",
+      description: f.description || ((body.split(/\n/).map((l) => l.replace(/^[#>*\-\s]+/, "").replace(/[*`_]/g, "").trim()).find((l) => l.length >= 20) ?? "").split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 220),
+      content: body || "Загрузка…",
+      previewUrl: null,
+      sizeLabel: formatBytes(f.size),
+    };
+  });
+
   const folderLabel = useMemo(
     () => (folderHint ? `prompts/${folderHint}` : `prompts/${stepCode}`),
     [folderHint, stepCode],
   );
 
+  const catalogEl = catalogPanel ? (
+        <NodeCatalogPanel
+          nodeKey={catalogPanel.nodeKey}
+          items={catalogItems}
+          activeId={activeVariant ?? selectedName}
+          onActivate={(id) => {
+            selectFile(id);
+            if (onActivateVariant && id !== activeVariant) onActivateVariant(id);
+          }}
+          onOpenSettings={catalogPanel.onOpenSettings}
+          onClose={catalogPanel.onClose}
+          embedded={!!catalogPanel.embedded}
+          downloadUrl={(id) => api.downloadPromptFileUrl(stepCode, id)}
+          onUpload={async (id, file) => {
+            try {
+              const text = await file.text();
+              await api.savePromptFile(stepCode, id, text);
+              toast.success(`Промт «${id}» обновлён из ${file.name}`);
+              qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, id] });
+              qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+              qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
+            } catch (e) {
+              toastError(e);
+            }
+          }}
+        />
+  ) : null;
+  if (catalogPanel?.embedded) return catalogEl;
+
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+      {catalogEl}
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <h3 className="flex items-center gap-1.5 text-[13px] font-medium uppercase tracking-wider text-muted-foreground">
             <FileText className="h-3.5 w-3.5" />
             Файлы промтов
           </h3>
-          <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/70">
+          <p className="mt-0.5 truncate font-mono text-[13px] text-muted-foreground/70">
             {folderLabel} • {fileList.length} файл(ов)
             {activeVariant ? (
               <span className="ml-1 text-emerald-400/80">
@@ -362,7 +417,7 @@ export function PromptFilesPanel({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[10px]"
+            className="h-7 px-2 text-[13px]"
             onClick={() => fileInputRef.current?.click()}
             disabled={upload.isPending}
             title="Загрузить .md файл в эту папку"
@@ -400,12 +455,12 @@ export function PromptFilesPanel({
       <div className="grid gap-3 md:grid-cols-[180px,1fr]">
         <ul className="flex max-h-[260px] flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/5 bg-black/20 p-1">
           {files.isError && (
-            <li className="px-2 py-2 text-[10px] text-destructive">
+            <li className="px-2 py-2 text-[13px] text-destructive">
               Ошибка загрузки списка промтов.
             </li>
           )}
           {!files.isError && fileList.length === 0 && (
-            <li className="px-2 py-2 text-[10px] text-muted-foreground">
+            <li className="px-2 py-2 text-[13px] text-muted-foreground">
               Папка пуста.
             </li>
           )}
@@ -415,7 +470,7 @@ export function PromptFilesPanel({
                 type="button"
                 onClick={() => selectFile(f.name)}
                 className={cn(
-                  "flex min-w-0 flex-1 items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[10px] transition-colors",
+                  "flex min-w-0 flex-1 items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[13px] transition-colors",
                   selectedName === f.name
                     ? "bg-primary/20 text-foreground"
                     : activeVariant === f.name
@@ -483,7 +538,7 @@ export function PromptFilesPanel({
             <Button
               size="sm"
               variant="outline"
-              className="h-7 gap-1 px-2 text-[10px]"
+              className="h-7 gap-1 px-2 text-[13px]"
               disabled={!selectedName || selectedIsDefault || renamePrompt.isPending}
               title={
                 selectedIsDefault
@@ -516,7 +571,7 @@ export function PromptFilesPanel({
             <Button
               size="sm"
               variant={dirty ? "default" : "outline"}
-              className="h-7 gap-1 px-2 text-[10px]"
+              className="h-7 gap-1 px-2 text-[13px]"
               onClick={() => save.mutate()}
               disabled={!selectedName || !dirty || save.isPending}
               title={dirty ? "Сохранить изменения" : "Нет несохранённых изменений"}
@@ -532,7 +587,7 @@ export function PromptFilesPanel({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 gap-1 border-emerald-400/30 px-2 text-[10px] text-emerald-100"
+                className="h-7 gap-1 border-emerald-400/30 px-2 text-[13px] text-emerald-100"
                 onClick={() => onActivateVariant(selectedName)}
                 disabled={activating || activeVariant === selectedName}
                 title={
@@ -550,7 +605,7 @@ export function PromptFilesPanel({
             <Button
               size="sm"
               variant="ghost"
-              className="h-7 gap-1 px-2 text-[10px] text-destructive hover:text-destructive"
+              className="h-7 gap-1 px-2 text-[13px] text-destructive hover:text-destructive"
               onClick={() => {
                 if (!selectedName) return;
                 if (selectedIsDefault) {
@@ -571,7 +626,7 @@ export function PromptFilesPanel({
           </div>
 
           {previewVersion ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[13px] text-amber-100">
               <span>
                 Просмотр версии: <strong>{previewVersion.label}</strong>
               </span>
@@ -579,7 +634,7 @@ export function PromptFilesPanel({
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-6 px-2 text-[10px]"
+                  className="h-6 px-2 text-[13px]"
                   onClick={() => {
                     setPreviewVersion(null);
                     if (content.data) setDraft(content.data.content);
@@ -590,7 +645,7 @@ export function PromptFilesPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-6 gap-1 px-2 text-[10px]"
+                  className="h-6 gap-1 px-2 text-[13px]"
                   disabled={restoreVersion.isPending || !selectedName}
                   onClick={() =>
                     restoreVersion.mutate({
@@ -615,7 +670,7 @@ export function PromptFilesPanel({
                 setPreviewVersion(null);
               }}
               rows={12}
-              className="font-mono text-[10px] leading-relaxed"
+              className="font-mono text-[13px] leading-relaxed"
               placeholder={
                 !selectedName
                   ? "Выберите файл слева или загрузите новый."
@@ -634,7 +689,7 @@ export function PromptFilesPanel({
               </div>
             ) : null}
             {content.isError ? (
-              <p className="mt-1 text-[10px] text-destructive">
+              <p className="mt-1 text-[13px] text-destructive">
                 Не удалось загрузить тело промта
                 {content.error instanceof Error && content.error.message
                   ? `: ${content.error.message}`
@@ -692,7 +747,7 @@ function PromptFileRowHistory({
         <button
           type="button"
           className={cn(
-            "flex shrink-0 items-center gap-0.5 rounded-md border border-white/10 px-1.5 py-1 text-[9px] text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+            "flex shrink-0 items-center gap-0.5 rounded-md border border-white/10 px-1.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
             open && "bg-white/10 text-foreground",
           )}
           title={`История сохранений: ${fileName}.md`}
@@ -711,12 +766,12 @@ function PromptFileRowHistory({
         side="right"
         className="max-h-72 w-72 overflow-y-auto"
       >
-        <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+        <DropdownMenuLabel className="text-[13px] font-normal text-muted-foreground">
           {fileName}.md — старые версии
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         {versionCount === 0 ? (
-          <DropdownMenuItem disabled className="text-[10px]">
+          <DropdownMenuItem disabled className="text-[13px]">
             {history.isLoading
               ? "Загрузка…"
               : "Пока пусто — сохраните промт один раз"}
@@ -725,7 +780,7 @@ function PromptFileRowHistory({
           versions.map((v) => (
             <DropdownMenuItem
               key={v.id}
-              className="flex flex-col items-start gap-1 py-2 text-[10px]"
+              className="flex flex-col items-start gap-1 py-2 text-[13px]"
               onSelect={(e) => {
                 e.preventDefault();
                 onPreview(v);
@@ -781,7 +836,7 @@ function PromptActionButton({
   download?: string;
 }) {
   const className =
-    "inline-flex h-7 items-center gap-1 rounded-md border border-input bg-background px-2 text-[10px] font-medium transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50";
+    "inline-flex h-7 items-center gap-1 rounded-md border border-input bg-background px-2 text-[13px] font-medium transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50";
   if (asLink && !disabled) {
     return (
       <a href={asLink} download={download} className={className}>
