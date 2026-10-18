@@ -12,7 +12,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, FrameStatus, FrameText, Project
+from app.models import Artifact, Frame, FrameStatus, FrameText, Project
 from app.services.db_v2 import insert_frame_after
 from app.services.frame_tombstones import remember_deleted
 from app.services.montage_coverage_ops import (
