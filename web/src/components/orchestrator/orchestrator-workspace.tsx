@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
+  approvalButtons,
+  approvalChangeId,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -216,17 +218,22 @@ export function OrchestratorWorkspace() {
           className="shrink-0 border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs text-white"
         >
           <div>Kill switch: {killBannerText(chat.state.killNotice)}</div>
-          {chat.state.killNotice.phase === "error" ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="mt-2 h-7 text-[11px]"
-              data-testid="orch-kill-retry"
-              onClick={() => void chat.kill()}
-            >
-              Повторить
-            </Button>
+          {chat.state.killNotice.phase === "error" || chat.state.killNotice.lateStopWarning ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {chat.state.killNotice.lateStopWarning ? (
+                <div data-testid="orch-kill-late-warning">{chat.state.killNotice.lateStopWarning}</div>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                data-testid="orch-kill-retry"
+                onClick={() => void chat.kill()}
+              >
+                Повторить
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -274,6 +281,8 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onRetry={() => void chat.decide(approval.id, approval.taskId, "retry_step")}
+                  onBindProject={(projectId) => void chat.bindProject(approval.id, projectId)}
                   onClose={() => chat.dismissBlock(approval.id)}
                 />
               ))}
@@ -610,6 +619,8 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onRetry,
+  onBindProject,
   onClose,
 }: {
   approval: ApprovalView;
@@ -617,12 +628,17 @@ function ApprovalCard({
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
+  onBindProject: (projectId: number) => void;
   onClose: () => void;
 }) {
+  const [projectDraft, setProjectDraft] = useState("");
   const copy = BLOCK_COPY[approval.reason];
   const terminal = isTerminalBlock(approval.reason);
+  const buttons = approvalButtons(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
+  const projectId = Number(projectDraft);
   return (
     <div
       data-testid="orch-approval"
@@ -640,23 +656,52 @@ function ApprovalCard({
         {approval.risk ? ` · ${approval.risk}` : ""}
         {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {terminal ? (
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.serverId ? (
+        ) : approval.reason === MISSING_PROJECT ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (Number.isInteger(projectId) && projectId >= 1) onBindProject(projectId);
+            }}
+          >
+            <Input
+              value={projectDraft}
+              inputMode="numeric"
+              data-testid="orch-project-id"
+              className="h-8 w-24"
+              placeholder="project"
+              onChange={(event) => setProjectDraft(event.target.value)}
+            />
+            <Button type="submit" size="sm" data-testid="orch-bind-project" disabled={pending}>
+              Привязать проект
+            </Button>
+          </form>
+        ) : approvalChangeId(approval.changeId) && buttons.length > 0 ? (
           <>
-            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-              Approve
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-              Reject
-            </Button>
+            {buttons.includes("approve") ? (
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+                Approve
+              </Button>
+            ) : null}
+            {buttons.includes("retry_step") ? (
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+                Перезапустить шаг
+              </Button>
+            ) : null}
+            {buttons.includes("deny") ? (
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+                Reject
+              </Button>
+            ) : null}
           </>
         ) : (
           <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
+            Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
           </p>
         )}
       </div>
