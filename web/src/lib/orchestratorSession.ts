@@ -173,7 +173,7 @@ export interface ApprovalView {
   risk: string;
   action: string;
   costEstimate: number | null;
-  resolved: "approved" | "rejected" | "closed" | null;
+  resolved: "approved" | "rejected" | "retried" | "closed" | null;
 }
 
 export interface TaskView {
@@ -247,7 +247,7 @@ export type OrchScreenAction =
       taskId?: string | null;
       sessionId?: string | null;
     }
-  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
+  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "retried" | "closed" }
   | { type: "own-session"; session: string }
   | { type: "reset" };
 
@@ -318,6 +318,16 @@ export function blockOutcome(reason: string): TaskStatus | null {
 export function isTerminalBlock(reason: string): boolean {
   const outcome = blockOutcome(reason);
   return outcome != null && TERMINAL_TASK.has(outcome);
+}
+
+export type ApprovalButton = "approve" | "deny" | "retry_step";
+
+/** Кнопки карточки. `missing_project_id` снимается через POST .../project, не через /approve. */
+export function approvalButtons(reason: string): ApprovalButton[] {
+  if (reason === "missing_project_id") return [];
+  if (reason === "paid_outcome_unknown" || reason === "paid_unknown_outcome") return ["retry_step", "deny"];
+  if (isTerminalBlock(reason)) return [];
+  return ["approve", "deny"];
 }
 
 function taskKey(value: unknown): string | null {
