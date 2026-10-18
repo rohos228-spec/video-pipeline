@@ -1034,11 +1034,13 @@ async function runPaidOutcome(session, taskId, restartOffered) {
     });
     return;
   }
-  if (decision === "retry_step") {
-    await new Promise((resolve) => {
-      session.grantWait = { id: approvalId, resolve };
-    });
-    session.grantWait = null;
+  if (decision === "retry_step" || decision === "retry_step_grant") {
+    if (decision !== "retry_step_grant") {
+      await new Promise((resolve) => {
+        session.grantWait = { id: approvalId, resolve };
+      });
+      session.grantWait = null;
+    }
     if (session.killed) return;
     emit(session, "step_started", taskId, { ...PAID_STEP, note: "повтор после grant" });
     emit(session, "agent_status", taskId, {
@@ -1232,6 +1234,45 @@ async function handleChatApprove(req, res, url, sessionId) {
   }
   if (ownership === "decided" && retryGrant) {
     finishPaidGrant(res, session, changeId);
+    return;
+  }
+
+  if (retryGrant && decision === "retry_step" && session.approvalWait?.id === changeId) {
+    if (scenario === "paidspent") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_spent",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    if (scenario === "paidrequired" && !session.requiredArmed) {
+      session.requiredArmed = true;
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_required",
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    session.approvalWait.resolve("retry_step_grant");
+    session.approvalWait = null;
+    noteDecided(session, changeId);
+    session.grantedId = changeId;
+    sendJson(res, 200, paidWire({
+      executed: true,
+      reason: null,
+      forecast: PAID_FORECAST_USD,
+      retryArmed: false,
+      changeId,
+      decision: "retry_step",
+    }));
     return;
   }
 
