@@ -127,6 +127,8 @@ export function normalizedOrchEnvApi(value: string): string | null {
 function discardedOrchApiLabel(raw: string): string {
   try {
     const url = new URL(raw.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "некорректный адрес";
+    if (!url.origin || url.origin === "null") return "некорректный адрес";
     url.username = "";
     url.password = "";
     url.search = "";

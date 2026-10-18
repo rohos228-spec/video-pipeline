@@ -21,6 +21,26 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("javascript: в NEXT_PUBLIC_ORCH_API пишется как некорректный адрес", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    process.env.NEXT_PUBLIC_ORCH_API = "javascript:alert(1)";
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("некорректный адрес");
+    expect(warnings[0]).not.toMatch(/отброшен: null$/);
+  } finally {
+    console.warn = original;
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
+});
+
 test("чужая сессия с тем же executing не прячет своё закрытие карточки", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
