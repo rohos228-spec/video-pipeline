@@ -1,8 +1,7 @@
-"""A1: ядро само выдаёт change_id. Заглушки — контракт WS2 r2.2 (a17ff283).
+"""A1: ядро само выдаёт change_id. Пин схемы WS2 — ``WS2_RESULT_SCHEMA``.
 
-HEAD #378 на момент сверки — ``a17ff283`` (ws2-r2.2), не ``ed355997``.
-Схема ``docs/fable/action_results_contract.schema.json``, sha256
-``26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013``.
+Версия и sha256 лежат в одной константе ядра. Тест читает её и не
+дублирует hex: следующий sha меняется одним коммитом в константе.
 Пакет WS2 не импортируется: конверты — dict.
 ``ApprovalRequired`` без своего ``change_id`` (чужое поле в заглушке ядро
 игнорирует). ``EditResult``: ``version`` > ``base_version``, якорь
@@ -25,14 +24,10 @@ from sse_starlette.sse import AppStatus
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
 from app.orchestrator.auth import OrchestratorAuthMiddleware
-from app.orchestrator.contracts import PlanStep, Risk, TaskStatus, metadata_call_gate
+from app.orchestrator.contracts import WS2_RESULT_SCHEMA, PlanStep, Risk, TaskStatus, metadata_call_gate
 from app.web.routers.orchestrator_chat import router
 from tests.agents.conftest import TEST_TOKEN
 from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
-
-_SCHEMA = "ws2-r2.2"
-_SCHEMA_SHA256 = "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013"
-_SCHEMA_HEAD = "a17ff283153cc1dd51fec23a99ed38e178f4ebb6"
 
 
 def _app() -> FastAPI:
@@ -173,9 +168,10 @@ def test_metadata_gate_uses_r21_flags() -> None:
     assert metadata_call_gate("montage.suggest_scene_variants", registry) == "paid"
     assert metadata_call_gate("read_pipeline_code", registry) is None
     assert metadata_call_gate("look", MockActions()) is None
-    assert _SCHEMA == "ws2-r2.2"
-    assert _SCHEMA_SHA256.startswith("26373fb9")
-    assert _SCHEMA_HEAD.startswith("a17ff283")
+    assert WS2_RESULT_SCHEMA["version"].startswith("ws2-r2.")
+    assert len(WS2_RESULT_SCHEMA["sha256"]) == 64
+    assert int(WS2_RESULT_SCHEMA["sha256"], 16)
+    assert WS2_RESULT_SCHEMA["head"]
 
 
 def test_stubs_follow_r22_n1_n2_n3() -> None:

@@ -23,6 +23,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 CONTRACT_VERSION = "ws3-r3.4"
 
+# Пин схемы результатов WS2. Версия и sha256 живут здесь: тесты читают
+# константу, следующий sha (запрет «@» в action) меняется одним коммитом.
+WS2_RESULT_SCHEMA: dict[str, str] = {
+    "version": "ws2-r2.3",
+    "sha256": "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c",
+    "head": "627580674c8b80a4507be113ebb54b3e839ac6e4",
+}
+
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
     ("ws3-r1", "Ядро агентов, SSE, миграции, FSM, таблицы node_defs и orch_*."),
