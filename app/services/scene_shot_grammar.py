@@ -16,6 +16,62 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def fold_inactive_shot_voiceover(shots: list[Any]) -> list[str]:
+    """Закадр неактивного шота переезжает на живого соседа. Шот остаётся в списке."""
+    from app.services.frame_tombstones import shot_is_active
+
+    notes: list[str] = []
+    if not isinstance(shots, list):
+        return notes
+    rows = [shot for shot in shots if isinstance(shot, dict)]
+
+    def _host(index: int) -> dict[str, Any] | None:
+        for j in range(index - 1, -1, -1):
+            if shot_is_active(rows[j]):
+                return rows[j]
+        for j in range(index + 1, len(rows)):
+            if shot_is_active(rows[j]):
+                return rows[j]
+        return None
+
+    for index, shot in enumerate(rows):
+        if shot_is_active(shot):
+            continue
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if not piece:
+            continue
+        host = _host(index)
+        if host is None:
+            continue
+        host_text = " ".join(str(host.get("закадр") or "").split())
+        if piece not in host_text:
+            host["закадр"] = f"{host_text} {piece}".strip()
+        shot["закадр"] = ""
+        notes.append(
+            f"{shot.get('id') or '?'} закадр перенесён на {host.get('id') or '?'}"
+        )
+        logger.warning(
+            "WARN fold_inactive_shot_voiceover: закадр шота {} перенесён на живой {}, шот сохранён",
+            shot.get("id") or "?",
+            host.get("id") or "?",
+        )
+    return notes
+
+
+def cover_voiceover_with_shots(full: str, shots: list[Any]) -> str:
+    """Текст ячейки плюс куски, которые есть только на шотах."""
+    covered = " ".join(str(full or "").split())
+    folded = " ".join(covered.split())
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece and piece not in folded:
+            covered = f"{covered} {piece}".strip()
+            folded = " ".join(covered.split())
+    return covered
+
+
 def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
     """Сверх лимита кадры остаются в списке с активен False."""
     if limit <= 0 or len(out) <= limit:
@@ -36,6 +92,7 @@ def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
                 f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
                 where="merge_gpt_shots_with_action",
             )
+    fold_inactive_shot_voiceover(out)
 
 
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
@@ -1864,6 +1921,7 @@ def spread_vo_sentences(shots):
         return []
     from app.services.frame_tombstones import shot_is_active
 
+    fold_inactive_shot_voiceover(rows)
     live = [i for i, s in enumerate(rows) if shot_is_active(s)]
     if len(live) < 2:
         return []

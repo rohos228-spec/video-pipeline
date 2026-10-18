@@ -149,6 +149,96 @@ def test_vo_cap_marks_extra_shots_without_dropping_them(warn_log) -> None:
     assert any("WARN merge_gpt_shots_with_action" in line and "сверх лимита" in line for line in warn_log)
 
 
+def test_over_cap_voiceover_moves_to_live_neighbour(warn_log) -> None:
+    """Сверх лимита шот остаётся, его закадр не пропадает из живых шотов."""
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.scene_shot_grammar import merge_gpt_shots_with_action
+
+    action = "1. кабинет — следователь открывает папку"
+    shots = [
+        {"id": "s1", "действие": "следователь открывает папку", "закадр": "Открыл папку."},
+        {"id": "s2", "действие": "кладёт папку на стол", "закадр": "Положил папку на стол."},
+        {"id": "s3", "действие": "смотрит в окно", "закадр": "Смотрит в окно кабинета."},
+    ]
+    out, err = merge_gpt_shots_with_action(shots, action, cell_number=1, vo="")
+    assert err is None or "WARN" in (err or "")
+    assert out is not None
+    assert _ids(out) == ["s1", "s2", "s3"]
+    live = [s for s in out if shot_is_active(s)]
+    marked = [s for s in out if not shot_is_active(s)]
+    assert {s["id"] for s in marked} >= {"s2", "s3"}
+    assert all(s.get("активен") is False for s in marked)
+    joined = " ".join(str(s.get("закадр") or "") for s in live)
+    assert "Положил папку на стол." in joined
+    assert "Смотрит в окно кабинета." in joined
+    assert all(not str(s.get("закадр") or "").strip() for s in marked)
+
+
+@pytest.mark.asyncio
+async def test_expand_keeps_voiceover_from_inactive_shot(monkeypatch) -> None:
+    """Закадр, который был только на неактивном шоте, остаётся у живого кадра."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.vo_shot_expand import _cs, _expand_vo_cells_into_shots_default
+
+    parent = SimpleNamespace(
+        id=1,
+        uuid="parent",
+        voiceover_text="Открыл папку.",
+        attrs={
+            "кадры": [
+                {"id": "s1", "закадр": "Открыл папку."},
+                {
+                    "id": "s2",
+                    "закадр": "Положил папку на стол.",
+                    "активен": False,
+                    "карантин": True,
+                },
+            ]
+        },
+        sort_key=1.0,
+        number=1,
+        start_ts=0.0,
+        end_ts=2.0,
+        duration_seconds=2.0,
+    )
+
+    class _Session:
+        async def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.already_subdivided", lambda frames: False
+    )
+    async def _renumber(*_a, **_k):
+        return [parent]
+
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.renumber_frames_by_sort_key",
+        _renumber,
+    )
+    monkeypatch.setattr(
+        "app.services.vo_shot_expand.apply_vo_shot_cuts", lambda frames: 0
+    )
+
+    async def _no_insert(*_a, **_k):
+        raise AssertionError("неактивный шот не должен породить кадр")
+
+    monkeypatch.setattr("app.services.vo_shot_expand.insert_frame_after", _no_insert)
+    _ordered, _report = await _expand_vo_cells_into_shots_default(
+        _Session(), SimpleNamespace(id=3), [parent]
+    )
+    shots = parent.attrs["кадры"]
+    assert _ids(shots) == ["s1", "s2"]
+    live = next(s for s in shots if shot_is_active(s))
+    marked = next(s for s in shots if not shot_is_active(s))
+    assert "Положил папку на стол." in str(live.get("закадр") or "")
+    assert not str(marked.get("закадр") or "").strip()
+    assert marked.get("активен") is False
+    assert "Положил папку на стол." in str(_cs(parent).get("vo_shot") or "")
+
+
 def test_merge_keeps_unmatched_shot_and_replica_fields() -> None:
     """Сопоставленный шот не теряет реплику, несопоставленный остаётся в хвосте."""
     from app.services.scene_shot_grammar import merge_gpt_shots_with_action

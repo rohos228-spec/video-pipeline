@@ -3031,13 +3031,19 @@ async def _expand_vo_cells_into_shots_default(
         original_vo = parent.voiceover_text or ""
         planned_all = planned_shots_from_attrs(parent)
         from app.services.frame_tombstones import shot_is_active
+        from app.services.scene_shot_grammar import (
+            cover_voiceover_with_shots,
+            fold_inactive_shot_voiceover,
+        )
 
+        fold_inactive_shot_voiceover(planned_all)
         planned = [s for s in planned_all if shot_is_active(s)]
         if len(planned) < len(planned_all):
             logger.warning(
-                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром и не получают закадр",
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром, закадр у живого соседа",
                 len(planned_all) - len(planned),
             )
+        original_vo = cover_voiceover_with_shots(original_vo, planned)
         need, vo_parts = resolve_shot_plan(
             original_vo, planned, action=main_action_text(parent)
         )
@@ -3153,10 +3159,16 @@ async def _expand_vo_cells_into_shots_group(
         )
         from app.services.frame_tombstones import frame_is_active, shot_is_active
 
+        from app.services.scene_shot_grammar import (
+            cover_voiceover_with_shots,
+            fold_inactive_shot_voiceover,
+        )
+
+        fold_inactive_shot_voiceover(planned_all)
         planned = [s for s in planned_all if shot_is_active(s)]
         if len(planned) < len(planned_all):
             logger.warning(
-                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром и не получают закадр",
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром, закадр у живого соседа",
                 len(planned_all) - len(planned),
             )
         original_vo = _cell_full_text(parent, members)
@@ -3169,6 +3181,7 @@ async def _expand_vo_cells_into_shots_group(
             joined = " ".join(joined.split())
             if joined:
                 original_vo = joined
+        original_vo = cover_voiceover_with_shots(original_vo, planned)
         # Полный закадр ячейки — в vo_cell_full ДО раздачи кусков детям:
         # иначе _cell_full_text дальше склеит «полный текст родителя + куски
         # детей» и закадр задвоится (promote_shots_to_vo_cells).
