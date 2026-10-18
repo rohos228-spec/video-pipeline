@@ -637,6 +637,101 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
   });
 
+  test("409: решение уже принято, без повтора, кнопка выключена", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "change_id already decided" }),
+      });
+    });
+    await openWithToken(page, "budget", "already-409");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("решение уже принято");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeDisabled();
+    await expect(page.getByTestId("orch-reject")).toBeDisabled();
+    await page.getByTestId("orch-approve").click({ force: true });
+    await page.waitForTimeout(400);
+    expect(posts).toBe(1);
+  });
+
+  test("двойной клик отправляет ровно один POST", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, executed: false, decision: "approve", change_id: "orch-appr-4-1" }),
+      });
+    });
+    await openWithToken(page, "budget", "dbl-approve");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    const button = page.getByTestId("orch-approve");
+    await expect(button).toBeVisible();
+    await button.evaluate((el: HTMLButtonElement) => {
+      return new Promise<void>((resolve) => {
+        el.click();
+        window.setTimeout(() => {
+          el.click();
+          resolve();
+        }, 80);
+      });
+    });
+    await expect.poll(() => posts).toBe(1);
+    await page.waitForTimeout(200);
+    expect(posts).toBe(1);
+  });
+
+  test("404 и 403 показывают отказ и не повторяют запрос", async ({ page }) => {
+    const cases = [
+      [404, "неизвестный change_id"],
+      [403, "not_in_whitelist"],
+    ] as const;
+    for (const [status, text] of cases) {
+      let posts = 0;
+      await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        posts += 1;
+        await route.fulfill({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "raw" }),
+        });
+      });
+      await openWithToken(page, "budget", `refuse-${status}`);
+      await page.getByTestId("orch-composer").fill("ещё кадры");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approve")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByTestId("orch-approval-error")).toContainText(text);
+      await expect(page.getByTestId("orch-approval")).toBeVisible();
+      await expect(page.getByTestId("orch-approve")).toBeDisabled();
+      await page.getByTestId("orch-approve").click({ force: true });
+      await page.waitForTimeout(400);
+      expect(posts).toBe(1);
+      await page.unroute("**/api/orchestrator/chat/*/approve");
+    }
+  });
+
   test("approve 404 и 409 оставляют карточку", async ({ page }) => {
     const cases = [
       ["approve404", "неизвестный change_id"],
@@ -650,7 +745,7 @@ test.describe("orchestrator chat", () => {
       await page.getByTestId("orch-approve").click();
       await expect(page.getByTestId("orch-approval-error")).toContainText(detail);
       await expect(page.getByTestId("orch-approval")).toBeVisible();
-      await expect(page.getByTestId("orch-approve")).toBeEnabled();
+      await expect(page.getByTestId("orch-approve")).toBeDisabled();
       await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
     }
   });
