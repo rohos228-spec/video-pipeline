@@ -223,6 +223,8 @@ async def test_kill_then_resume_is_not_rejected(token: str) -> None:
         await runtime.supervisor.resume(task_id)
         await runtime.supervisor.wait(task_id, timeout=5)
         assert [call["name"] for call in actions.calls] == ["write"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.supervisor._block_reason.get(task_id) == "partial_write"
     finally:
         actions.release.set()
         set_runtime(None)
@@ -294,7 +296,8 @@ async def test_rerun_after_cancelled_mutating_step_is_idempotent(token: str) -> 
         assert actions.calls == []
         rows = runtime.tasks.list_steps(task_id)
         assert [row["change_id"] for row in rows] == ["chg-once"]
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.supervisor._block_reason.get(task_id) == "partial_write"
     finally:
         set_runtime(None)
 

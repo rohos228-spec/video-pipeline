@@ -507,6 +507,7 @@ class Supervisor:
     def _arm_resume(self, session_id: str, task_id: int, data: CheckpointData) -> None:
         self._cancel.discard(session_id)
         self._pause.discard(session_id)
+        self._kill.discard(session_id)
         self._steer.pop(session_id, None)
         self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
@@ -1524,6 +1525,21 @@ class Supervisor:
                 await self._escalate(task_id, session_id, reason, extra=extra)
                 return
 
+            partial_row = self._open_partial_row(task_id, step, plan, index) if len(batch) == 1 else None
+            if partial_row is not None:
+                await self._checkpoint(task_id, session_id, plan, index)
+                self._block_reason[task_id] = "partial_write"
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "partial_write",
+                    extra={
+                        "action": step.action,
+                        "change_id": partial_row.get("change_id") if partial_row else None,
+                    },
+                )
+                return
+
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None
             if skip:
                 await self.bus.publish(
@@ -2322,17 +2338,25 @@ class Supervisor:
     ) -> bool:
         """Повтор шага, у которого в ``orch_steps.change_id`` уже есть сдача.
 
-        Параметр ``_change_id`` плана не источник. Считаются done, cancelled
-        и partial строки с непустым change_id и теми же публичными params.
+        Параметр ``_change_id`` плана не источник. Считаются done и cancelled
+        с непустым change_id и теми же публичными params. ``partial`` сюда
+        не входит: его решает человек через ``partial_write``.
         """
         ident = _public_params(step.params)
         prior = sum(
             1 for item in plan[:index] if item.action == step.action and _public_params(item.params) == ident
         )
         done = 0
-        for row in self.tasks.list_steps(task_id):
-            if str(row.get("status")) not in {"done", "cancelled", "partial"} or not row.get("change_id"):
+        for row in self._rows_for_step(task_id, step):
+            if str(row.get("status")) not in {"done", "cancelled"} or not row.get("change_id"):
                 continue
+            done += 1
+        return done > prior
+
+    def _rows_for_step(self, task_id: int, step: PlanStep) -> list[dict[str, Any]]:
+        ident = _public_params(step.params)
+        found: list[dict[str, Any]] = []
+        for row in self.tasks.list_steps(task_id):
             if str(row.get("action_name") or "") != step.action:
                 continue
             try:
@@ -2340,8 +2364,25 @@ class Supervisor:
             except json.JSONDecodeError:
                 stored = {}
             if isinstance(stored, dict) and _public_params(stored) == ident:
-                done += 1
-        return done > prior
+                found.append(row)
+        return found
+
+    def _open_partial_row(
+        self,
+        task_id: int,
+        step: PlanStep,
+        plan: list[PlanStep],
+        index: int,
+    ) -> dict[str, Any] | None:
+        """Строка ``partial`` этого шага. Повторный execute по ней не идёт."""
+        ident = _public_params(step.params)
+        prior = sum(
+            1 for item in plan[:index] if item.action == step.action and _public_params(item.params) == ident
+        )
+        rows = [row for row in self._rows_for_step(task_id, step) if str(row.get("status")) == "partial"]
+        if len(rows) > prior:
+            return rows[prior]
+        return None
 
     def _next_step_position(self, task_id: int) -> int:
         rows = self.tasks.list_steps(task_id)
