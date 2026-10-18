@@ -22,12 +22,20 @@ from pathlib import Path
 
 from app.orchestrator.node_store.errors import VersionConflict
 
-_INTERNAL = object()
 
+def _private(fn):
+    """Хелпер доступен только коду этого модуля. Токен снаружи не импортируется."""
 
-def _require_internal(token: object) -> None:
-    if token is not _INTERNAL:
-        raise PermissionError("приватный хелпер atomic_write")
+    def wrapper(*args, **kwargs):
+        caller = sys._getframe(1).f_globals.get("__name__")
+        if caller != __name__:
+            raise PermissionError("приватный хелпер atomic_write")
+        return fn(*args, **kwargs)
+
+    wrapper.__name__ = fn.__name__
+    wrapper.__qualname__ = fn.__qualname__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
 
 
 def _versioned_payload(payload: object) -> dict | None:
@@ -156,8 +164,8 @@ def read_override(dest: Path) -> str:
     return str(wrapped["text"])
 
 
-def _open_dir(path: str, dir_fd: int | None = None, *, _from: object) -> int:
-    _require_internal(_from)
+@_private
+def _open_dir(path: str, dir_fd: int | None = None) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -179,15 +187,16 @@ def _lexists(name: str, dir_fd: int) -> bool:
     return True
 
 
+@_private
 def _descend(root: Path, dirs: list[str]) -> tuple[int, list[int]]:
     opened: list[int] = []
     try:
-        current = _open_dir(str(root), _from=_INTERNAL)
+        current = _open_dir(str(root))
         opened.append(current)
         for part in dirs:
             if not _lexists(part, current):
                 os.mkdir(part, dir_fd=current)
-            nxt = _open_dir(part, current, _from=_INTERNAL)
+            nxt = _open_dir(part, current)
             opened.append(nxt)
             current = nxt
         return current, opened
@@ -197,6 +206,7 @@ def _descend(root: Path, dirs: list[str]) -> tuple[int, list[int]]:
         raise
 
 
+@_private
 def _open_lock(parent_fd: int, name: str) -> int:
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
@@ -214,6 +224,7 @@ def _posix_dir_fd() -> bool:
     return os.name == "posix" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
 
 
+@_private
 def _acquire_lock(fd: int, timeout: float = 30.0) -> None:
     """Эксклюзивная блокировка с таймаутом. Windows — msvcrt, POSIX — fcntl."""
     deadline = time.monotonic() + timeout
@@ -240,6 +251,7 @@ def _acquire_lock(fd: int, timeout: float = 30.0) -> None:
             time.sleep(0.01)
 
 
+@_private
 def _release_lock(fd: int) -> None:
     if sys.platform == "win32":
         import msvcrt
@@ -264,10 +276,11 @@ def _recheck(root: Path, parts: list[str], parent_fd: int) -> None:
         raise ValueError("путь вне allowlist reports/node_overrides")
 
 
+@_private
 def _open_old(parent_fd: int) -> int:
     if not _lexists("old", parent_fd):
         os.mkdir("old", dir_fd=parent_fd)
-    return _open_dir("old", parent_fd, _from=_INTERNAL)
+    return _open_dir("old", parent_fd)
 
 
 def _backup_name(old_fd: int, name: str, current: int) -> str:
@@ -280,10 +293,8 @@ def _backup_name(old_fd: int, name: str, current: int) -> str:
     return f"{name}.v{current}.{suffix}"
 
 
-def _copy_nofollow(
-    src_dir: int, src_name: str, dst_dir: int, dst_name: str, *, _from: object
-) -> None:
-    _require_internal(_from)
+@_private
+def _copy_nofollow(src_dir: int, src_name: str, dst_dir: int, dst_name: str) -> None:
     src = os.open(src_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=src_dir)
     try:
         mode = os.fstat(src).st_mode & 0o777 or 0o644
@@ -309,10 +320,8 @@ def _copy_nofollow(
         os.close(src)
 
 
-def _write_tmp(
-    parent_fd: int, name: str, payload: bytes, mode: int, *, _from: object
-) -> str:
-    _require_internal(_from)
+@_private
+def _write_tmp(parent_fd: int, name: str, payload: bytes, mode: int) -> str:
     tmp_name = f".{name}.{secrets.token_hex(8)}.tmp"
     flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
@@ -334,17 +343,15 @@ def _write_tmp(
     return tmp_name
 
 
+@_private
 def _write_at(
     root: Path,
     parts: list[str],
     text: str,
     expected_version: int,
     lock_timeout: float,
-    *,
-    _from: object,
 ) -> None:
     """Публикация через dir_fd. Вызывается только на POSIX."""
-    _require_internal(_from)
     if not _posix_dir_fd():
         raise OSError("dir_fd доступен только на POSIX")
     root.mkdir(parents=True, exist_ok=True)
@@ -366,18 +373,18 @@ def _write_at(
         if _lexists(name, parent_fd):
             old_fd = _open_old(parent_fd)
             backup = _backup_name(old_fd, name, current)
-            _copy_nofollow(parent_fd, name, old_fd, backup, _from=_INTERNAL)
+            _copy_nofollow(parent_fd, name, old_fd, backup)
             mode = os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode & 0o777
         else:
             if _lexists("old", parent_fd):
-                probe = _open_dir("old", parent_fd, _from=_INTERNAL)
+                probe = _open_dir("old", parent_fd)
                 os.close(probe)
             mode = 0o644
         payload = json.dumps(
             {"version": current + 1, "text": text},
             ensure_ascii=False,
         ).encode("utf-8")
-        tmp_name = _write_tmp(parent_fd, name, payload, mode or 0o644, _from=_INTERNAL)
+        tmp_name = _write_tmp(parent_fd, name, payload, mode or 0o644)
         os.replace(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         tmp_name = None
         if os.name == "posix":
@@ -441,6 +448,7 @@ def _reject_reparse(target: Path) -> None:
         raise ValueError("junction old/: отказ allowlist")
 
 
+@_private
 def _write_exclusive(path: Path, payload: bytes) -> None:
     """Создать файл, записать и fsync на том же writable fd. До replace.
 
@@ -465,11 +473,11 @@ def _write_exclusive(path: Path, payload: bytes) -> None:
         os.close(fd)
 
 
+@_private
 def _write_without_dir_fd(
-    target: Path, text: str, expected_version: int, lock_timeout: float, *, _from: object
+    target: Path, text: str, expected_version: int, lock_timeout: float
 ) -> None:
     """Windows: блокировка msvcrt, без O_NOFOLLOW, dir_fd и fsync каталога."""
-    _require_internal(_from)
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target.with_name(target.name + ".lock")
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -524,6 +532,6 @@ def atomic_write_text(
     root, parts = _classify(Path(dest))
     target = root.joinpath(*parts)
     if _posix_dir_fd():
-        _write_at(root, parts, text, expected_version, lock_timeout, _from=_INTERNAL)
+        _write_at(root, parts, text, expected_version, lock_timeout)
         return
-    _write_without_dir_fd(target, text, expected_version, lock_timeout, _from=_INTERNAL)
+    _write_without_dir_fd(target, text, expected_version, lock_timeout)

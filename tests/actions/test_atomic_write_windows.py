@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import importlib
-import os
 import sys
-import tempfile
 
 import pytest
+
+from app.settings import settings
 
 
 def test_windows_import_and_msvcrt_lock(monkeypatch, tmp_path) -> None:
@@ -30,21 +30,24 @@ def test_windows_import_and_msvcrt_lock(monkeypatch, tmp_path) -> None:
 
         fake = Msvcrt()
         monkeypatch.setitem(sys.modules, "msvcrt", fake)
-        fd, path = tempfile.mkstemp(dir=tmp_path)
-        os.close(fd)
-        fd = os.open(path, os.O_RDWR)
-        try:
-            mod._acquire_lock(fd, timeout=1.0)
-            assert calls
-            assert calls[0][1] == fake.LK_NBLCK
+        monkeypatch.setattr(mod, "_posix_dir_fd", lambda: False)
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        dest = tmp_path / "node_overrides" / "lock.json"
+        dest.parent.mkdir(parents=True)
+        mod.atomic_write_text(dest, "x", expected_version=0)
+        assert calls
+        assert calls[0][1] == fake.LK_NBLCK
 
-            def busy(fd: int, mode: int, length: int) -> None:
-                raise OSError("busy")
+        def busy(fd: int, mode: int, length: int) -> None:
+            raise OSError("busy")
 
-            fake.locking = busy
-            with pytest.raises(TimeoutError):
-                mod._acquire_lock(fd, timeout=0.05)
-        finally:
-            os.close(fd)
+        fake.locking = busy
+        with pytest.raises(TimeoutError):
+            mod.atomic_write_text(
+                tmp_path / "node_overrides" / "busy.json",
+                "y",
+                expected_version=0,
+                lock_timeout=0.05,
+            )
     finally:
         sys.modules[name] = original

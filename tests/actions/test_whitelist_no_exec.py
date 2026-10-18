@@ -1515,15 +1515,87 @@ def _http_method_expr(call: ast.Call) -> ast.AST | None:
 
 
 _HTTP_DELETE_RECEIVERS = frozenset({"client", "requests", "httpx", "ctx"})
+_ATOMIC_MODULE = "app.orchestrator.node_store.atomic_write"
 _PRIVATE_ATOMIC = frozenset(
     {
         "_copy_nofollow",
         "_write_tmp",
         "_write_at",
         "_write_without_dir_fd",
+        "_write_exclusive",
         "_open_dir",
+        "_descend",
+        "_open_old",
+        "_open_lock",
+        "_acquire_lock",
+        "_release_lock",
+        "_INTERNAL",
     }
 )
+
+
+def _is_atomic_module(module: str | None) -> bool:
+    if not module:
+        return False
+    return module == _ATOMIC_MODULE or module.endswith(".atomic_write")
+
+
+def _atomic_surface(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """Имена модуля atomic_write и алиасы импортированных из него _-имён."""
+    modules: set[str] = set()
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _ATOMIC_MODULE or alias.name.endswith(".atomic_write"):
+                    modules.add(alias.asname or alias.name.rsplit(".", 1)[-1])
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if _is_atomic_module(module):
+                for alias in node.names:
+                    if alias.name.startswith("_"):
+                        aliases[alias.asname or alias.name] = alias.name
+            elif module.split(".")[-1:] == ["node_store"]:
+                for alias in node.names:
+                    if alias.name == "atomic_write":
+                        modules.add(alias.asname or alias.name)
+    return modules, aliases
+
+
+def _private_import_hits(node: ast.ImportFrom, function: str) -> list[WriteHit]:
+    if not _is_atomic_module(node.module):
+        return []
+    hits: list[WriteHit] = []
+    for alias in node.names:
+        if not alias.name.startswith("_"):
+            continue
+        hits.append(
+            WriteHit(
+                "atomic_private",
+                None,
+                function,
+                source=None,
+                allowed=False,
+                snapshot_delete=True,
+            )
+        )
+    return hits
+
+
+def _getattr_is_atomic_private(call: ast.Call, atomic_modules: set[str]) -> bool:
+    if _call_name(call.func) != "getattr" or not call.args:
+        return False
+    recv = call.args[0]
+    attr = call.args[1] if len(call.args) > 1 else None
+    literal = attr.value if isinstance(attr, ast.Constant) and isinstance(attr.value, str) else None
+    if literal in _PRIVATE_ATOMIC:
+        return True
+    on_module = isinstance(recv, ast.Name) and recv.id in atomic_modules
+    if not on_module:
+        return False
+    if literal is None:
+        return True
+    return literal.startswith("_")
 
 
 def _http_kind(call: ast.Call, env: dict[str, str]) -> str | None:
@@ -1593,6 +1665,8 @@ def _write_hit(
     os_open_names: set[str] | None = None,
     mkstemp_names: dict[str, str] | None = None,
     fn_node: ast.AST | None = None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
@@ -1600,11 +1674,26 @@ def _write_hit(
     os_flags = os_flags or {}
     os_open_names = os_open_names or set()
     mkstemp_names = mkstemp_names or {}
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
-    if _call_name(func) == "getattr":
+    if _getattr_is_atomic_private(call, atomic_modules):
+        kind = "atomic_private"
+    elif _call_name(func) == "getattr":
         kind = "getattr"
+    elif isinstance(func, ast.Name) and func.id in atomic_aliases:
+        kind = "atomic_private"
+    elif (
+        isinstance(func, ast.Attribute)
+        and func.attr.startswith("_")
+        and (
+            func.attr in _PRIVATE_ATOMIC
+            or (isinstance(func.value, ast.Name) and func.value.id in atomic_modules)
+        )
+    ):
+        kind = "atomic_private"
     elif _call_name(func) in _PRIVATE_ATOMIC:
         kind = "atomic_private"
     elif _call_name(func) == "__import__":
@@ -1798,9 +1887,26 @@ def _dangerous_value_kind(
     shutil_funcs: dict[str, str],
     path_names: set[str],
     os_open_names: set[str] | None = None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> str | None:
     """Ссылка на опасную функцию не в позиции вызова равна вызову."""
     os_open_names = os_open_names or set()
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
+    if isinstance(node, ast.Attribute) and (
+        node.attr in _PRIVATE_ATOMIC
+        or (
+            node.attr.startswith("_")
+            and isinstance(node.value, ast.Name)
+            and node.value.id in atomic_modules
+        )
+    ):
+        return "atomic_private"
+    if isinstance(node, ast.Name) and (
+        node.id in atomic_aliases or node.id in _PRIVATE_ATOMIC
+    ):
+        return "atomic_private"
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
         recv = node.value.id
         if recv in os_modules and node.attr in _DANGEROUS_OS:
@@ -1849,10 +1955,14 @@ def _scan_writes(
     *,
     file_kind: str | None,
     file_kinds: frozenset[str] | None,
+    atomic_modules: set[str] | None = None,
+    atomic_aliases: dict[str, str] | None = None,
 ) -> tuple[list[WriteHit], list[ast.Call]]:
     """Живые вызовы и ссылки на опасные функции в том же порядке, что исходник."""
     hits: list[WriteHit] = []
     calls: list[ast.Call] = []
+    atomic_modules = atomic_modules or set()
+    atomic_aliases = atomic_aliases or {}
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
     mkstemp_names = _mkstemp_names(fn_node, env)
 
@@ -1891,6 +2001,8 @@ def _scan_writes(
                 os_open_names,
                 mkstemp_names,
                 fn_node,
+                atomic_modules,
+                atomic_aliases,
             )
             if hit is not None:
                 hits.append(hit)
@@ -1901,6 +2013,8 @@ def _scan_writes(
                 if kw.value is not None:
                     walk(kw.value, root=False, call_func=False)
             return
+        if isinstance(node, ast.ImportFrom):
+            hits.extend(_private_import_hits(node, function))
         if not call_func:
             kind = _dangerous_value_kind(
                 node,
@@ -1910,6 +2024,8 @@ def _scan_writes(
                 shutil_funcs,
                 path_names,
                 os_open_names,
+                atomic_modules,
+                atomic_aliases,
             )
             if kind is not None:
                 hits.append(_ref_hit(kind, function))
@@ -1929,7 +2045,11 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
     fs_modules, path_names, imported = _fs_surface(tree)
     os_flags = _os_flag_bindings(tree)
     os_open_names = _os_open_names(tree)
+    atomic_modules, atomic_aliases = _atomic_surface(tree)
     hits: list[WriteHit] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            hits.extend(_private_import_hits(node, "<module>"))
     for fn_node in tree.body:
         if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1949,6 +2069,8 @@ def analyze_module_source(source: str, action_id: str) -> list[WriteHit]:
             os_open_names,
             file_kind=None,
             file_kinds=frozenset(),
+            atomic_modules=atomic_modules,
+            atomic_aliases=atomic_aliases,
         )
         hits.extend(found)
     return hits
@@ -2087,6 +2209,7 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
         fs_modules, path_names, imported = _fs_surface(module)
         os_flags = _os_flag_bindings(module)
         os_open_names = _os_open_names(module)
+        atomic_modules, atomic_aliases = _atomic_surface(module)
         tainted = _local_aliases(fn_node, fs_modules | os_modules, path_names, imported)
         found, calls = _scan_writes(
             fn_node,
@@ -2102,6 +2225,8 @@ def reachable_write_hits(fn: Callable, action_id: str) -> list[WriteHit]:
             os_open_names,
             file_kind=file_kind,
             file_kinds=file_kinds,
+            atomic_modules=atomic_modules,
+            atomic_aliases=atomic_aliases,
         )
         hits.extend(found)
         for call in calls:
