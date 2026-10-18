@@ -128,10 +128,12 @@ async def test_budget_park_goes_through_state_machine(mem, monkeypatch) -> None:
     async with mem() as session:
         project = await session.get(Project, project_id2)
         was = project.status
+        project.meta = {"paused_from_status": "planning"}
         action2 = await _park_budget_exhausted(session, project, RuntimeError("cap"))
         node = await session.get(NodeRun, ids2[0])
-        assert action2 != "waiting_approval"
+        assert action2 == "running"
         assert project.status is was
+        assert project.meta.get("paused_from_status") == "planning"
         assert node.status is NodeRunStatus.running
         assert (node.meta or {}).get("status") != "waiting_approval"
     assert refused == ["spend_guard"]

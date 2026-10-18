@@ -399,6 +399,7 @@ async def _park_budget_exhausted(
             break
         cur = cur.__cause__
     meta = dict(project.meta or {})
+    previous_paused = meta.get("paused_from_status")
     meta["approval_status"] = "waiting_approval"
     meta["approval_reason"] = reason
     meta["paused_from_status"] = project.status.value
@@ -435,7 +436,10 @@ async def _park_budget_exhausted(
     if running and not parked_any:
         meta.pop("approval_status", None)
         meta.pop("approval_reason", None)
-        meta.pop("paused_from_status", None)
+        if previous_paused is None:
+            meta.pop("paused_from_status", None)
+        else:
+            meta["paused_from_status"] = previous_paused
         project.meta = meta
         flag_modified(project, "meta")
         await session.flush()
