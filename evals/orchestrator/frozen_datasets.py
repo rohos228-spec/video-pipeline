@@ -56,6 +56,10 @@ FROZEN_SHA256: dict[str, dict[str, str]] = {
         "commit": "e344be2e",
         "config_commit": "1627ff1e",
     },
+    "precision_live_holdout5.json": {
+        "sha256": "061ccf3fe9a2a57c89fa88d89c07d0842582bfefc9aeed8c522aecf7f6567849",
+        "commit": "pending",
+    },
 }
 
 
