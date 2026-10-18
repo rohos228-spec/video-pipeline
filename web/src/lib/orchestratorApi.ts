@@ -167,7 +167,7 @@ export const PROJECT_BIND_FOREIGN = "Это не активная задача";
 export const NOT_ACTIVE_TASK_DETAIL = "not the active task";
 
 export function isForeignTaskBindError(message: string): boolean {
-  return message === NOT_ACTIVE_TASK_DETAIL || message.includes("not_the_active_task");
+  return message === NOT_ACTIVE_TASK_DETAIL || message === "not_the_active_task";
 }
 
 function readProjectBind(value: unknown): OrchProjectBindResult {

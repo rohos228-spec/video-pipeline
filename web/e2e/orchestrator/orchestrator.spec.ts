@@ -72,8 +72,14 @@ test("поздний stop_key_set=false откатывает Остановле�
 
 test("чужая задача узнаётся и по detail, и по коду", () => {
   expect(isForeignTaskBindError("not the active task")).toBe(true);
-  expect(isForeignTaskBindError('conflict not_the_active_task')).toBe(true);
+  expect(isForeignTaskBindError("not_the_active_task")).toBe(true);
   expect(isForeignTaskBindError("задача уже не ждёт проект")).toBe(false);
+});
+
+test("not_the_active_task узнаётся по коду, а не по подстроке", () => {
+  expect(isForeignTaskBindError("not_the_active_task")).toBe(true);
+  expect(isForeignTaskBindError("conflict not_the_active_task")).toBe(false);
+  expect(isForeignTaskBindError("see not_the_active_task in the log")).toBe(false);
 });
 
 test("task_id вне безопасного целого не уходит в bind", () => {
