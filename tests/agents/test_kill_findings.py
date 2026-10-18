@@ -731,6 +731,45 @@ async def test_real_router_partial_cost_is_spent(token: str) -> None:
         set_runtime(None)
 
 
+class _PricedPartial:
+    """Счётчик partial_cost_usd маленький, настоящая цена — cost_usd."""
+
+    def __init__(self) -> None:
+        self.partial_cost_usd = 0.0
+        self.cost_usd = 0.0
+        self.started = asyncio.Event()
+
+    async def call(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        self.partial_cost_usd = 0.01
+        self.cost_usd = 0.58
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_keeps_cost_usd_when_partial_meter_is_smaller(token: str) -> None:
+    """Отмена не оставляет дешёвый partial, если cost_usd уже больше."""
+    del token
+    router = _PricedPartial()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    try:
+        task_id = await runtime.supervisor.start_task("partial-real", "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.58)
+    finally:
+        set_runtime(None)
+
+
 _HOLD_PLAN = (
     '{"steps":[{"action":"hold","params":{"_wait":true},"expected":"ok",'
     '"paid":false,"mutating":false,"risk":"none"}]}'

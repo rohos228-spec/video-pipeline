@@ -129,6 +129,7 @@ def _router_visible_cost(owner: Any) -> float:
     """
     pending: list[Any] = [owner]
     seen: set[int] = set()
+    best = 0.0
     while pending:
         item = pending.pop(0)
         if item is None or id(item) in seen:
@@ -140,15 +141,15 @@ def _router_visible_cost(owner: Any) -> float:
                 value = float(raw or 0)
             except (TypeError, ValueError):
                 value = 0.0
-            if value > 0:
-                return value
+            if value > best:
+                best = value
         response = getattr(item, "last_response", None)
         if response is not None and response is not item:
             pending.append(response)
         inner = getattr(item, "inner", None)
         if inner is not None and inner is not item:
             pending.append(inner)
-    return 0.0
+    return best
 
 
 _APPROVED_MARK = "\n\x1eorchfp:"
@@ -1297,10 +1298,11 @@ class Supervisor:
                 result = await original(*args, **kwargs)
             except asyncio.CancelledError:
                 self._take_partial_cost(owner)
-                if task_key is not None and task_key not in self._partial_llm_cost:
-                    extra = _router_visible_cost(owner)
-                    if extra > 0:
-                        self._partial_llm_cost[task_key] = extra
+                if task_key is not None:
+                    visible = _router_visible_cost(owner)
+                    current = self._partial_llm_cost.get(task_key, 0.0)
+                    if visible > current:
+                        self._partial_llm_cost[task_key] = visible
                 raise
             else:
                 if task_key is not None and slot["credit"]:
