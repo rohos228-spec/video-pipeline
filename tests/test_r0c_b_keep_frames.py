@@ -1763,6 +1763,172 @@ async def test_marked_frame_mux_audio_matches_live_clip_duration(tmp_path: Path,
     assert any("дорожка без помеченных" in line for line in warn_log)
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _band_mean_db(path: Path, audio_filter: str) -> float:
+    import re
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-i", str(path),
+            "-af", f"{audio_filter},volumedetect",
+            "-f", "null", "-",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB", proc.stderr)
+    assert match, proc.stderr[-400:]
+    return float(match.group(1))
+
+
+@pytest.mark.asyncio
+async def test_r15_marked_middle_frame_speech_absent_from_final_audio(
+    tmp_path: Path, monkeypatch, warn_log
+) -> None:
+    """R15: речь помеченного кадра в середине не попадает в итоговый звук.
+
+    Метки соседей сдвигаются на длину выреза. voice_full и frame_*.mp3 не меняются.
+    """
+    import subprocess
+
+    from app.models import Project
+    from app.services.media_probe import probe_duration
+    from app.services.montage.r15 import R15Marker
+    from app.services.montage.variant2 import run_variant2
+
+    def tone(path: Path, seconds: float, freq: int) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"sine=frequency={freq}:duration={seconds}:sample_rate=44100",
+                "-c:a", "pcm_s16le",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    def clip(path: Path, color: str) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"color=c={color}:s=320x240:d=2:r=30",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.setattr("app.models.settings.data_dir", tmp_path)
+    project = Project(topic="t", slug="r15mid")
+    project.id = 15
+    root = project.data_dir
+    audio = root / "audio"
+    videos = root / "videos"
+    audio.mkdir(parents=True)
+    videos.mkdir(parents=True)
+    (root / "project.xlsx").write_bytes(b"xlsx-stub")
+
+    parts = [audio / "part1.wav", audio / "part2.wav", audio / "part3.wav"]
+    tone(parts[0], 1.0, 440)
+    tone(parts[1], 1.0, 2000)
+    tone(parts[2], 1.0, 880)
+    voice = audio / "voice_full.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(parts[0]), "-i", str(parts[1]), "-i", str(parts[2]),
+            "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le",
+            str(voice),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    for number, freq in ((1, 440), (2, 2000), (3, 880)):
+        frame_mp3 = audio / f"frame_{number:03d}.mp3"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"sine=frequency={freq}:duration=0.4",
+                "-c:a", "libmp3lame", "-q:a", "7",
+                str(frame_mp3),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    clip(videos / "clip_001_a.mp4", "red")
+    clip(videos / "clip_003_a.mp4", "blue")
+
+    sources = [voice, *[audio / f"frame_{n:03d}.mp3" for n in (1, 2, 3)]]
+    before = {path.name: (_sha256(path), path.stat().st_mtime_ns) for path in sources}
+    full_dur = await probe_duration(voice)
+    assert abs(full_dur - 3.0) < 0.05
+    mid_band = "bandpass=f=2000:width_type=h:w=200"
+    kept_band = "highpass=f=300,lowpass=f=600"
+    mid_before = _band_mean_db(voice, mid_band)
+
+    markers = [
+        R15Marker(1, "0:00.00-0:01.00", 0.0, 1.0),
+        R15Marker(2, "0:01.00-0:02.00", 1.0, 2.0),
+        R15Marker(3, "0:02.00-0:03.00", 2.0, 3.0),
+    ]
+    out = root / "final" / "out.mp4"
+    await run_variant2(
+        project,
+        [1, 2, 3],
+        voice,
+        out,
+        markers=markers,
+        ts_row=15,
+        omit_numbers={2},
+    )
+
+    for path in sources:
+        digest, mtime_ns = before[path.name]
+        assert _sha256(path) == digest
+        assert path.stat().st_mtime_ns == mtime_ns
+    assert out.is_file()
+    out_dur = await probe_duration(out)
+    assert abs(out_dur - 2.0) < 0.25
+    assert out_dur < full_dur - 0.7
+    mid_after = _band_mean_db(out, mid_band)
+    kept_after = _band_mean_db(out, kept_band)
+    assert mid_after < mid_before - 12.0
+    assert kept_after > mid_after + 12.0
+
+    proof = (root / "final" / "r15_read.txt").read_text(encoding="utf-8")
+    rows: dict[int, tuple[float, float]] = {}
+    voice_line = ""
+    for line in proof.splitlines():
+        if line.startswith("voice_duration="):
+            voice_line = line
+        parts_line = line.split("\t")
+        if parts_line and parts_line[0].isdigit():
+            rows[int(parts_line[0])] = (float(parts_line[2]), float(parts_line[3]))
+    assert 2 not in rows
+    assert rows[1][0] == pytest.approx(0.0, abs=0.05)
+    assert rows[1][1] == pytest.approx(1.0, abs=0.05)
+    assert rows[3][0] == pytest.approx(1.0, abs=0.05)
+    assert rows[3][1] == pytest.approx(2.0, abs=0.05)
+    assert voice_line
+    voiced = float(voice_line.split("=", 1)[1])
+    assert voiced == pytest.approx(out_dur, abs=0.15)
+    assert abs((rows[3][1] - rows[1][0]) - voiced) < 0.35
+    live = list(audio.glob("voice_full.live-*.mp3"))
+    assert len(live) == 1
+    assert live[0].resolve() != voice.resolve()
+    assert any("речь помеченных кадров" in line for line in warn_log)
+
+
 @pytest.mark.asyncio
 async def test_drop_frame_rows_marks_and_keeps_related_rows(
     session: AsyncSession, project: Project, warn_log
