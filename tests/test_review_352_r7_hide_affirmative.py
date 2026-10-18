@@ -49,15 +49,15 @@ def test_hide_mark_affirmative_is_inactive(kind: str, mark: str, value: object) 
 
 @pytest.mark.parametrize("kind", ("shot", "frame"))
 def test_active_mark_zero_string_matches_number(kind: str) -> None:
-    """Blob 56a6e8cf: активен=\"0.0\" живой, активен=0.0 неактивен."""
+    """активен=\"0.0\" неактивен так же, как активен=0.0."""
 
     text = {ACTIVE_MARK: "0.0"}
     number = {ACTIVE_MARK: 0.0}
     if kind == "shot":
-        assert shot_is_active(text) is True
+        assert shot_is_active(text) is False
         assert shot_is_active(number) is False
     else:
-        assert frame_is_active(text) is True
+        assert frame_is_active(text) is False
         assert frame_is_active(number) is False
 
 

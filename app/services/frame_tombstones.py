@@ -35,7 +35,7 @@ REASON_MARK = "пометка"
 
 # Один предикат. Если модуль WS1 импортируется — это его функции.
 # Локальная матрица только при ImportError и совпадает с blob
-# 56a6e8cf104c0a0f6bc1ba1467d54e5844d38819: ``shot_is_active(shot)``,
+# 2703892718c4aac79fb6d9be9699a8c9379919d8: ``shot_is_active(shot)``,
 # ``frame_is_active(attrs)``. Вызывающие передают словарь attrs, не кадр.
 
 

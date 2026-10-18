@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,8 @@ _FALSE_TOKENS = frozenset({"0", "false", "нет", "no", "off", "ложь"})
 _DELETED_FALSE_TOKENS = _FALSE_TOKENS | {"0.0"}
 _HIDE_TRUE_TOKENS = frozenset({"1", "true", "да", "yes", "on", "истина"})
 _WARNED_VALUES: set[str] = set()
+# «0», «0.0», « 0,0 » — то же число. «nan» и «1e2» сюда не входят.
+_NUMERIC_TEXT = re.compile(r"^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$")
 
 
 def _is_nan(value: object) -> bool:
@@ -27,6 +31,18 @@ def _is_nan(value: object) -> bool:
         return bool(value != value)
     except Exception:
         return False
+
+
+def _numeric_string(value: str) -> float | None:
+    """Строка-число: ``0``, ``0.0``, `` 0,0 ``. Нечисло и NaN/inf — нет."""
+
+    text = value.strip()
+    if not text or _NUMERIC_TEXT.match(text) is None:
+        return None
+    number = float(text.replace(",", "."))
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _warn_once(mark: str, value: str) -> None:
@@ -44,9 +60,9 @@ def _warn_once(mark: str, value: str) -> None:
 
 
 def flag_is_false(value: object) -> bool:
-    """False, 0, ``0.0`` и строки ``0`` / ``false`` / ``нет`` / ``no`` / ``off`` / ``ложь``.
+    """False, 0, ``0.0`` и строки ``0`` / ``0.0`` / ``false`` / ``нет`` / ``no`` / ``off`` / ``ложь``.
 
-    Регистр и крайние пробелы у строк не важны. NaN и None — не ложь, флага нет.
+    Числовая строка (``0,0`` тоже) равна числу. NaN и None — не ложь, флага нет.
     """
 
     if value is None or _is_nan(value):
@@ -54,6 +70,9 @@ def flag_is_false(value: object) -> bool:
     if value is False or value == 0:
         return True
     if isinstance(value, str):
+        number = _numeric_string(value)
+        if number is not None:
+            return number == 0
         return value.strip().casefold() in _FALSE_TOKENS
     return False
 
@@ -61,9 +80,10 @@ def flag_is_false(value: object) -> bool:
 def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
     """«удалён» и «карантин».
 
-    None, NaN и пустая строка — флага нет. К ложным строкам добавлены ``0.0``
-    и ``ложь``. ``да`` / ``true`` / ``1`` / ``yes`` / ``on`` / ``истина``
-    скрывают шот. Неизвестная строка не удаляет: шот живой, в лог один WARN.
+    None, NaN и пустая строка — флага нет. Числовая строка — это число:
+    ``0.0`` не удаляет, ``1.0`` скрывает. ``да`` / ``true`` / ``1`` / ``yes`` /
+    ``on`` / ``истина`` скрывают шот. Неизвестная нечисловая строка не удаляет:
+    шот живой, в лог один WARN.
     """
 
     if value is None or _is_nan(value):
@@ -71,6 +91,9 @@ def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
     if isinstance(value, str) and not value.strip():
         return False
     if isinstance(value, str):
+        number = _numeric_string(value)
+        if number is not None:
+            return number != 0
         token = value.strip().casefold()
         if token in _DELETED_FALSE_TOKENS:
             return False
@@ -94,10 +117,16 @@ def _record_is_active(record: object) -> bool:
     value = record[ACTIVE_MARK]
     if value is None or _is_nan(value) or (isinstance(value, str) and not value.strip()):
         return True
+    if isinstance(value, str):
+        number = _numeric_string(value)
+        if number is not None:
+            return number != 0
     if flag_is_false(value):
         return False
     if isinstance(value, str):
-        _warn_once(ACTIVE_MARK, value)
+        token = value.strip().casefold()
+        if token not in _HIDE_TRUE_TOKENS:
+            _warn_once(ACTIVE_MARK, value)
     return True
 
 

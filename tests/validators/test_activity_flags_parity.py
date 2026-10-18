@@ -28,6 +28,7 @@ _POSITIVE = (
     "Да",
     1,
     "1",
+    "1.0",
     "yes",
     "on",
     "истина",
@@ -41,13 +42,13 @@ _REST = (
     False,
     "ложь",
     "0.0",
+    " 0,0 ",
     _NAN,
     None,
     "-",
 )
-# «активен»: ложь. «0.0» для этого ключа — неизвестная строка, не ложь.
-# NaN и None — флага нет. Модуль activity_flags из-за этого не меняется.
-_ACTIVE_OFF = ("нет", 0, "0", "false", False, "ложь")
+# «активен»: ложь, включая числовую строку «0.0». NaN и None — флага нет.
+_ACTIVE_OFF = ("нет", 0, "0", "false", False, "ложь", "0.0", " 0,0 ")
 
 _TOMBSTONE_MOD = "app.services.frame_tombstones"
 _FLAGS_MOD = "app.orchestrator.validators.activity_flags"
@@ -72,7 +73,7 @@ def _rows() -> list[tuple[str | None, object, bool]]:
             rows.append((mark, value, True))
     for value in _ACTIVE_OFF:
         rows.append((ACTIVE_MARK, value, False))
-    for value in (*_POSITIVE, "0.0", _NAN, None, "-"):
+    for value in (*_POSITIVE, "1.0", _NAN, None, "-"):
         rows.append((ACTIVE_MARK, value, True))
     rows.append((None, None, True))
     return rows
