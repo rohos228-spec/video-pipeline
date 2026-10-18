@@ -22,7 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
-from app.orchestrator.validators.activity_flags import flag_is_false, flag_is_true
+from app.orchestrator.validators.activity_flags import (
+    flag_is_false,
+    flag_is_true,
+    frame_is_active,
+)
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -31,8 +35,11 @@ from app.services.xlsx_v8_import import (
     ROW_TIMECODE_V8,
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
+    ROW_FRAME_ACTIVITY_V8,
     ROW_VOICEOVER_V8,
     SHEET_GENERAL_V8,
+    INACTIVE_COLUMN_MARK,
+    is_inactive_column_mark,
     _normalize_sheet_name,
     _resolve_plan_sheet,
 )
@@ -1397,10 +1404,16 @@ def export_project_xlsx(
             snap = backup_to_old(path)
         except Exception:  # noqa: BLE001
             snap = None
+        from loguru import logger
+
         cells = 0
         for fr in frames:
             col = fr.number + 2
-            attrs = fr.attrs or {}
+            raw_attrs = getattr(fr, "attrs", None)
+            inactive = not frame_is_active(
+                raw_attrs if isinstance(raw_attrs, dict) else {}
+            )
+            attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
             writes = {
                 ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
                 ROW_IMAGE_PROMPT_2_V8: str(attrs.get(SHOT2_PROMPT_ATTR) or ""),
@@ -1435,6 +1448,26 @@ def export_project_xlsx(
                     continue
                 ws.cell(row=row, column=col, value=str(val))
                 cells += 1
+            if inactive:
+                logger.warning(
+                    "WARN export_project_xlsx: кадр #{} неактивен — колонка {} помечена «{}», данные на месте",
+                    fr.number,
+                    col,
+                    INACTIVE_COLUMN_MARK,
+                )
+                label = ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1).value
+                if not str(label or "").strip():
+                    ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1, value="активен")
+                ws.cell(
+                    row=ROW_FRAME_ACTIVITY_V8,
+                    column=col,
+                    value=INACTIVE_COLUMN_MARK,
+                )
+                cells += 1
+            elif is_inactive_column_mark(
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value
+            ):
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value = None
         # Стереть хвост колонок после последнего кадра — иначе sync_project_xlsx
         # снова поднимет удалённые VO/таймкоды (было 182 после truncate до 20).
         max_col = int(ws.max_column or 2)
@@ -1449,6 +1482,7 @@ def export_project_xlsx(
                 ROW_DURATION_V8,
                 ROW_TIMECODE_V8,
                 ROW_PERSONS_PRIMARY,
+                ROW_FRAME_ACTIVITY_V8,
                 *(_ATTR_EXCEL_ROWS.values()),
             }
             for col in range(clear_from, max_col + 1):
