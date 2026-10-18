@@ -21,6 +21,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
 from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.camera_expand import (
     already_subdivided,
@@ -40,21 +41,6 @@ _MAX_SHOTS = 3
 def is_shot_child(frame: Any) -> bool:
     """Визуальный дочерний кадр покрытия, не VO-родитель."""
     return str(_cs(frame).get("role") or "") == "shot"
-
-
-def shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
-
-    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
-    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
-    """
-    if not isinstance(shot, dict):
-        return False
-    if shot.get("удалён") or shot.get("карантин"):
-        return False
-    if shot.get("активен") is False:
-        return False
-    return True
 
 
 def parent_still_suppressed(frame: Any) -> bool:
@@ -216,19 +202,15 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
 
 
 def active_planned_shots(frame: Any) -> list[dict[str, Any]]:
-    """Живые шоты лестницы: активен False в раскладку закадра не входят."""
-    return [
-        shot
-        for shot in planned_shots_from_attrs(frame)
-        if shot.get("активен") is not False
-    ]
+    """Живые шоты лестницы: скрытые в раскладку закадра не входят."""
+    return [shot for shot in planned_shots_from_attrs(frame) if shot_is_active(shot)]
 
 
 def _frame_row_hidden(frame: Any) -> bool:
     attrs = getattr(frame, "attrs", None) or {}
     if not isinstance(attrs, dict):
         return False
-    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+    return not frame_is_active(attrs)
 
 
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
@@ -305,7 +287,7 @@ def strip_non_scene_kadry(frame: Any) -> bool:
     Архив идемпотентный: повторный вызов не плодит дубли по id.
     """
     planned = planned_shots_from_attrs(frame)
-    live = [shot for shot in planned if shot.get("активен") is not False]
+    live = [shot for shot in planned if shot_is_active(shot)]
     if not live or kadry_are_scene_shots(live):
         return False
     attrs = dict(getattr(frame, "attrs", None) or {})
@@ -2151,7 +2133,12 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         if not full:
             continue
         stored = planned_shots_from_attrs(parent)
-        planned = active_planned_shots(parent)
+        hidden_zakadr = [
+            (item, str(item.get("закадр") or ""))
+            for item in stored
+            if not shot_is_active(item)
+        ]
+        planned = [item for item in stored if shot_is_active(item)]
         live_members = [fr for fr in members if not _frame_row_hidden(fr)] or list(members)
         ladder_parts: list[str] | None = None
         if planned:
@@ -2172,6 +2159,11 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
             head = [piece for piece in usable[:n_live] if piece]
             if head and not any(vo_chunk_is_dangling(piece) for piece in head):
                 parts = usable[:n_live]
+        assigned = [str(piece or "").strip() for piece in parts[: len(live_members)]]
+        if live_members and _norm_words(" ".join(p for p in assigned if p)) != _norm_words(full):
+            parts = _vo_parts_without_empty(full, len(live_members))
+            while len(parts) < len(live_members):
+                parts.append("")
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
         if planned and ladder_parts:
@@ -2183,6 +2175,8 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
                     item["закадр"] = piece
                     updated += 1
             attrs["кадры"] = list(stored)
+        for item, text in hidden_zakadr:
+            item["закадр"] = text
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(live_members):
