@@ -578,11 +578,16 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
         if isinstance(old_kadry, list)
         else []
     )
+    merged = merge_kadry_keep_missing(old_kadry, kadry)
+    frame_uuid = str(getattr(parent, "uuid", None) or "") or "cell"
+    from app.services.montage_coverage_ops import _restore_ops_for_revived
+
     attrs["кадры"] = keep_soft_kadry(
         before_rows,
-        merge_kadry_keep_missing(old_kadry, kadry),
-        scene_id=getattr(parent, "uuid", None) or "cell",
+        merged,
+        scene_id=frame_uuid,
         number=getattr(parent, "number", None) or 0,
+        ops=_restore_ops_for_revived(before_rows, merged, frame_uuid=frame_uuid),
     )
     chain_text = format_scene_chain(chain)
     if chain_text:

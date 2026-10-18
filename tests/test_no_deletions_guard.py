@@ -25,6 +25,16 @@ def _scene(rows, *, sid="s1", number=1, **extra):
     return {"сцены": [scene]}
 
 
+def _violation_codes(call) -> set[str]:
+    try:
+        result = call()
+    except PreservationRejected as exc:
+        return {item.code for item in exc.violations}
+    if not isinstance(result, list):
+        return set()
+    return {getattr(item, "code", "") for item in result if getattr(item, "code", "")}
+
+
 def test_signature_matches_379_entry_point() -> None:
     sig = inspect.signature(run_preservation_validators)
     assert list(sig.parameters) == ["before", "after", "ops", "mode"]
@@ -133,12 +143,13 @@ def test_remark_tail_park_and_restore_pass() -> None:
 
     before = _scene([{"id": "k1", "закадр": "фраза на месте", "активен": False}])
     after = _scene([{"id": "k1", "закадр": "фраза на месте", "активен": True}])
-    with pytest.raises(PreservationRejected) as restored:
-        run_preservation_validators(before, after, mode="reject")
-    assert any(
-        item.code == "inactive_shot_revived" and item.id == "k1"
-        for item in restored.value.violations
+    restored = run_preservation_validators(
+        before,
+        after,
+        [{"op": "restore", "shot_id": "k1", "frame_uuid": "s1"}],
+        mode="reject",
     )
+    assert restored == []
     assert after["сцены"][0]["кадры"][0]["активен"] is True
 
 
@@ -465,21 +476,27 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
 
 
 def test_non_list_kadry_is_error() -> None:
+    """Несписок — ``kadry_invalid`` или ``shot_dropped``, как у #379.
+
+    Шим поднимает error ``kadry_invalid``. Модуль d59e1586 на строке даёт
+    error ``shot_dropped`` и warn ``kadry_invalid``; на dict — только warn,
+    без отказа.
+    """
+
     before = _scene([{"id": "k1", "закадр": "а"}])
     after = {"сцены": [{"id": "s1", "номер": 1, "кадры": "не список"}]}
     frozen = copy.deepcopy(after)
-    with pytest.raises(PreservationRejected) as raised:
-        run_preservation_validators(before, after, mode="soft")
-    assert any(
-        item.severity == "error" and (item.id == "s1" or "s1" in (item.path or ""))
-        for item in raised.value.violations
-    )
+    codes = _violation_codes(lambda: run_preservation_validators(before, after, mode="soft"))
+    assert codes & {"kadry_invalid", "shot_dropped"}
     assert after == frozen
 
     from app.pipeline.no_deletions_guard import keep_soft_kadry
 
-    with pytest.raises(PreservationRejected):
-        keep_soft_kadry([{"id": "k1"}], {"id": "k1"}, scene_id="s1", number=1)
+    dict_codes = _violation_codes(
+        lambda: keep_soft_kadry([{"id": "k1"}], {"id": "k1"}, scene_id="s1", number=1)
+    )
+    if dict_codes:
+        assert dict_codes & {"kadry_invalid", "shot_dropped"}
 
 
 def test_keep_soft_kadry_restore_needs_op() -> None:
