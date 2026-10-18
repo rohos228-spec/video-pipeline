@@ -1224,8 +1224,13 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
-    seq = [s.get("якорь_n") for s in shots]
+    """Живые кадры идут по якорям подряд 1..k, у каждого якоря есть кадр.
+
+    Помеченные (карантин) в проверку не входят: они лежат в хвосте и не
+    ломают раскладку.
+    """
+    live = [s for s in shots if not s.get("карантин")]
+    seq = [s.get("якорь_n") for s in (live or shots)]
     if any(not isinstance(v, int) for v in seq):
         return False
     return seq == sorted(seq) and set(seq) == set(range(1, k + 1))
@@ -1551,7 +1556,10 @@ def _shot_live(shot: dict[str, Any]) -> bool:
 
 
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем."""
+    """Сверх бюджета помечаем мосты и перебивки. Кадры не выкидываем.
+
+    Бюджет считается по живым кадрам: уже помеченные в лимит не входят.
+    """
     out = list(shots)
     if cap < 1:
         return out
@@ -1654,6 +1662,7 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
             )
         fixed.append(f"якорь {shot.get('якорь_n')} не совпал — кадр сохранён")
         rebuilt.append(shot)
+    # Порядок якорей (units), не исходный порядок GPT. Несовпавшие — в хвост.
     shots[:] = rebuilt
     live_shots = [shot for shot in shots if _shot_live(shot)]
     fixed.extend(smooth_plan_sequence(live_shots))
