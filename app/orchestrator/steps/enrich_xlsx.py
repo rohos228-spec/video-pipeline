@@ -565,6 +565,12 @@ async def _run_four_node_markup_pass(
 
     _db_lock = asyncio.Lock()
 
+    async def _locked_progress(msg: str) -> None:
+        if on_progress is None:
+            return
+        async with _db_lock:
+            await on_progress(msg)
+
     async def _apply_batch(payload: dict) -> None:
         async with _db_lock:
             raw_ops = list(payload.get("ops") or [])
@@ -612,7 +618,7 @@ async def _run_four_node_markup_pass(
         stagger_sec=VO_STAGGER_SEC,
         chunk_by_vo_unit=False,
         footer_kind=footer_kind,
-        on_progress=on_progress,
+        on_progress=_locked_progress,
         allow_empty_ops=False,
     )
 
@@ -1649,7 +1655,7 @@ async def _run_fw_skeleton_node(
         {"закадр": s["закадр"], "смысл": str(s.get("сцена") or "")[:500]}
         for s in scenes
     ]
-    await db_v2.replace_all_frames(session, project, specs)
+    created_frames = await db_v2.replace_all_frames(session, project, specs)
     await session.flush()
     chars_raw = draft.get("база_персонажей") or []
     characters = []
@@ -1674,16 +1680,13 @@ async def _run_fw_skeleton_node(
         n_chars = await db_apply.upsert_characters(
             session, project, characters, replace=True
         )
-    frames = list(
-        (
-            await session.execute(
-                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
-            )
+    frames = [fr for fr in created_frames if not db_v2.frame_is_archived(fr)]
+    if len(frames) != len(scenes):
+        raise RuntimeError(
+            f"#{project.id} {node_key}: каркас записал {len(frames)} кадров "
+            f"на {len(scenes)} сцен"
         )
-        .scalars()
-        .all()
-    )
-    for fr, sc in zip(frames, scenes):
+    for fr, sc in zip(frames, scenes, strict=True):
         attrs = dict(fr.attrs or {})
         attrs.update(skb.scene_attrs(sc))
         fr.attrs = attrs

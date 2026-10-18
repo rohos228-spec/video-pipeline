@@ -520,6 +520,9 @@ async def improve_cell_scene(
         if parsed.get("кадры") or parsed.get("сцена") or parsed.get("промт_картинки"):
             gpt_status = "ok"
     except Exception as exc:  # noqa: BLE001
+        from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+        reraise_if_spend_blocked(exc)
         logger.warning(
             "montage direct-improve GPT skip #{} frame={}: {}",
             project.id,

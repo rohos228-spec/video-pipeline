@@ -514,6 +514,26 @@ def build_shots_report_model(
     }
 
 
+_SCRIPT_BLOCK_RE = re.compile(
+    r"<\s*script\b[^>]*>.*?<\s*/\s*script\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_SCRIPT_OPEN_RE = re.compile(r"<\s*script\b[^>]*/?\s*>", re.IGNORECASE)
+_ON_ATTR_RE = re.compile(
+    r"""\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+    re.IGNORECASE,
+)
+
+
+def _safe_svg(raw: Any) -> str:
+    """Убрать script и обработчики из svg, не ломая разметку схемы."""
+    text = str(raw or "")
+    text = _SCRIPT_BLOCK_RE.sub("", text)
+    text = _SCRIPT_OPEN_RE.sub("", text)
+    text = _ON_ATTR_RE.sub("", text)
+    return text.replace("javascript:", "")
+
+
 def _plan_block(pl: dict[str, Any]) -> str:
     items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
     items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
@@ -525,7 +545,7 @@ def _plan_block(pl: dict[str, Any]) -> str:
     )
     return (
         f"<details class=plan><summary>Площадка · Ячейка {_esc(pl.get('cell'))}</summary>"
-        f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></details>"
+        f"{_safe_svg(pl.get('svg'))}<ul>{items}{extra}</ul></details>"
     )
 
 

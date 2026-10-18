@@ -168,11 +168,10 @@ def mail_configured() -> bool:
 
 
 def send_mail(to: str, subject: str, text: str) -> bool:
-    """Send via SMTP_* env if configured; otherwise log to server log (dev mode). Returns True if really sent."""
+    """Send via SMTP_* env if configured. Never log or print the message body."""
     host = os.environ.get("SMTP_HOST")
     if not host:
-        log.warning("[VIA auth dev-mail] to=%s | %s | %s", to, subject, text)
-        print(f"[VIA auth dev-mail] to={to} | {subject} | {text}", flush=True)
+        log.warning("SMTP_HOST is unset; mail to=%s was not sent", to)
         return False
     try:
         msg = EmailMessage()
@@ -186,6 +185,5 @@ def send_mail(to: str, subject: str, text: str) -> bool:
             s.send_message(msg)
         return True
     except Exception as e:  # noqa: BLE001
-        log.error("SMTP failed: %s; link: %s", e, text)
-        print(f"[VIA auth dev-mail] SMTP failed ({e}) to={to} | {text}", flush=True)
+        log.error("SMTP failed: %s; mail to=%s was not sent", e, to)
         return False

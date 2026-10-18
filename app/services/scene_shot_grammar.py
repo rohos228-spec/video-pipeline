@@ -1970,28 +1970,29 @@ def ensure_wide_before_dialogue(shots):
             if "точка" in w:
                 w["точка"] = "фронт"
             _set_cam_text(w, "ОБЩИЙ", "Ракурс фронт — камера спереди, видны оба собеседника.")
+            for key in (
+                "image_prompt",
+                "animation_prompt",
+                "промт_картинки",
+                "промт_видео",
+                "промт",
+                "media",
+                "png",
+                "video",
+                "child_prompts",
+            ):
+                w.pop(key, None)
+            used = {str(row.get("id") or "") for row in shots if isinstance(row, dict)}
+            base = str(s.get("id") or "wide")
+            cand = f"{base}-wide"
+            n_id = 2
+            while cand in used:
+                cand = f"{base}-wide{n_id}"
+                n_id += 1
+            w["id"] = cand
             shots.insert(i, w)
             notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
             i = j + 1
             continue
         i = j
-    if notes:
-        idmap = {}
-        k = 0
-        for s in shots:
-            if not isinstance(s, dict):
-                continue
-            k += 1
-            old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
-                if old and old not in idmap:
-                    idmap[old] = new
-                s["id"] = new
-            if "порядок" in s:
-                s["порядок"] = k
-        for s in shots:
-            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
-                s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes

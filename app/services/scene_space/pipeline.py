@@ -160,10 +160,12 @@ def _map_angle_v(text: str) -> str:
 
 
 def _character_codes(session_entities: list[Entity], frames: list[Frame]) -> list[str]:
+    from app.services.db_v2 import entity_is_archived
+
     codes = [
         str(e.code).strip()
         for e in session_entities
-        if e.code and str(e.type or "") == "character"
+        if e.code and str(e.type or "") == "character" and not entity_is_archived(e)
     ]
     codes = [c for c in codes if c]
     if codes:

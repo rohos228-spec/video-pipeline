@@ -23,8 +23,12 @@ def _pw_ok(pw: str) -> bool:
     return len(pw) >= 8 and re.search(r"[A-Za-zА-Яа-я]", pw) and re.search(r"\d", pw)
 
 
-def _origin(req: Request) -> str:
-    return (req.headers.get("origin") or str(req.base_url)).rstrip("/")
+def reset_link_base() -> str:
+    """База ссылки сброса только из настроек, не из заголовка Origin."""
+    public = (settings.fleet_public_url or "").strip().rstrip("/")
+    if public:
+        return public
+    return settings.fleet_local_web_url
 
 
 class LoginBody(BaseModel):
@@ -144,7 +148,7 @@ async def forgot(body: EmailBody, request: Request) -> dict:
     u = ua.get_by_login(body.email.strip())
     out = {"ok": True, "mail_sent": False, "dev_note": None}
     if u:  # same answer whether or not the user exists
-        link = f"{_origin(request)}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
+        link = f"{reset_link_base()}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
         sent = ua.send_mail(u["email"], "VIA — восстановление пароля", f"Ссылка для смены пароля (1 ч): {link}")
         out.update(mail_sent=sent)
         if not sent:

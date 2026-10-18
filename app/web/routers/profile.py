@@ -291,10 +291,34 @@ class KeyUpdate(BaseModel):
     value: str
 
 
+def _origin_host(request: Request) -> str:
+    origin = (request.headers.get("origin") or "").strip()
+    if not origin or origin.lower() == "null":
+        return ""
+    rest = origin.split("://", 1)[-1]
+    return rest.split("/", 1)[0].split(":", 1)[0].lower()
+
+
+def _origin_allowed_for_keys(request: Request) -> bool:
+    """Чужой Origin не даёт права писать ключи. Пустой Origin — не браузер."""
+    host = _origin_host(request)
+    if not host:
+        return True
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    allowed: set[str] = set()
+    for raw in (settings.fleet_public_url, settings.fleet_local_web_url):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        allowed.add(text.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower())
+    return host in allowed
+
+
 @router.put("/keys/{key_id}")
 async def put_key(key_id: str, body: KeyUpdate, request: Request) -> dict[str, Any]:
     token = await require_web_user(request)
-    if settings.web_auth_enabled and not _caller_is_studio_admin(token):
+    if not _caller_is_studio_admin(token) or not _origin_allowed_for_keys(request):
         raise HTTPException(403, "Только администратор студии")
     match = next((k for k in _KEYS if k[0] == key_id), None)
     if match is None:

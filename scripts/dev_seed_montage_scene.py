@@ -75,7 +75,10 @@ def _seed_assets(data_dir) -> None:
     for folder, code, _kind, _name, color in ASSETS:
         directory = data_dir / folder
         directory.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (256, 256), color).save(directory / f"{code}.png")
+        dest = directory / f"{code}.png"
+        if dest.is_file():
+            continue
+        Image.new("RGB", (256, 256), color).save(dest)
 
 
 def require_project_id(argv: list[str] | None = None) -> int:

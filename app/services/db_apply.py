@@ -1106,7 +1106,8 @@ async def upsert_characters(
 ) -> int:
     """Записать/обновить сущности type=character по code (c01…).
 
-    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
+    replace=True: коды, которых нет в новом списке, помечаются archived
+    (карточка и hero_reference остаются)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1148,17 +1149,30 @@ async def upsert_characters(
             by_code[code] = en
         else:
             en.name = card["name"]
-            en.attrs = card["attrs"]
             en.type = "character"
+            old = dict(en.attrs) if isinstance(en.attrs, dict) else {}
+            merged = {**old, **card["attrs"]}
+            # Код снова в ответе Каркаса — карточка живая, реф не стираем.
+            merged.pop("archived", None)
+            merged.pop("inactive", None)
+            en.attrs = merged
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(en, "attrs")
         n += 1
     if replace and seen:
         from loguru import logger
+        from sqlalchemy.orm.attributes import flag_modified
 
         for code, en in list(by_code.items()):
             if code not in seen:
-                await session.delete(en)
+                attrs = dict(en.attrs or {})
+                attrs["archived"] = True
+                attrs["inactive"] = True
+                en.attrs = attrs
+                flag_modified(en, "attrs")
                 logger.info(
-                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    "[#{}] upsert_characters replace: помечен archived {} ({})",
                     project.id,
                     code,
                     en.name,
@@ -1179,10 +1193,14 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         SHEET_PERSONS,
     )
 
+    from app.services.db_v2 import entity_is_archived
+
     chars = [
         e
         for e in entities
-        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+        if getattr(e, "type", None) == "character"
+        and getattr(e, "code", None)
+        and not entity_is_archived(e)
     ]
     chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
     if SHEET_PERSONS in wb.sheetnames:
@@ -1584,10 +1602,19 @@ async def apply_ops(
             attrs["промты_детей"] = children
         if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
             attrs = _merge_camera_subdivide(attrs, fields)
+        from loguru import logger
+
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            raw_attr = fields[attr_key]
+            if raw_attr is None or (isinstance(raw_attr, str) and not raw_attr.strip()):
+                logger.warning(
+                    "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
+                    attr_key,
+                )
+                continue
+            attrs[attr_key] = _coerce_structured_attr(raw_attr)
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")

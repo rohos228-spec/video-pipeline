@@ -82,6 +82,33 @@ def resolve_full_voiceover_text(project: Project) -> str:
     return ""
 
 
+def frame_is_archived(frame: Any) -> bool:
+    """Архив replace_all_frames: пометка и парковочный номер ≥ 1_000_000."""
+    attrs = getattr(frame, "attrs", None) or {}
+    if isinstance(attrs, dict) and attrs.get("archived"):
+        return True
+    try:
+        return int(getattr(frame, "number", 0) or 0) >= 1_000_000
+    except (TypeError, ValueError):
+        return False
+
+
+def entity_is_archived(entity: Any) -> bool:
+    """Персонаж, которого Каркас вывел из работы.
+
+    replace помечает карточку ``archived`` и ``inactive``. Оба флага
+    исключают её из меню, промтов и экспорта. ``hero_reference`` при этом
+    остаётся на карточке.
+    """
+    if isinstance(entity, dict):
+        if entity.get("archived") or entity.get("inactive"):
+            return True
+        attrs = entity.get("attrs")
+    else:
+        attrs = getattr(entity, "attrs", None)
+    return isinstance(attrs, dict) and bool(attrs.get("archived") or attrs.get("inactive"))
+
+
 async def ensure_single_seed_vo_cell(
     session: AsyncSession,
     project: Project,
@@ -97,8 +124,9 @@ async def ensure_single_seed_vo_cell(
     if not vo:
         raise ValueError("ensure_single_seed_vo_cell: пустой закадр")
 
-    existing = list(
-        (
+    existing = [
+        fr
+        for fr in (
             await session.execute(
                 select(Frame)
                 .where(Frame.project_id == project.id)
@@ -107,7 +135,8 @@ async def ensure_single_seed_vo_cell(
         )
         .scalars()
         .all()
-    )
+        if not frame_is_archived(fr)
+    ]
 
     def _norm(text: str | None) -> str:
         return " ".join((text or "").split())
@@ -122,6 +151,17 @@ async def ensure_single_seed_vo_cell(
 
     if len(existing) == 1:
         fr = existing[0]
+        prev = str(fr.voiceover_text or "")
+        if prev.strip() and _norm(prev) != vo:
+            attrs = dict(fr.attrs or {})
+            history = [
+                str(item)
+                for item in (attrs.get("voiceover_history") or [])
+                if str(item).strip()
+            ]
+            history.append(prev)
+            attrs["voiceover_history"] = history[-20:]
+            fr.attrs = attrs
         fr.voiceover_text = vo
         if not fr.uuid:
             fr.uuid = new_frame_uuid()

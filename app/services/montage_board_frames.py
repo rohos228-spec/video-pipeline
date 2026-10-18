@@ -242,9 +242,12 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     head = ordered[0]
     src = dict(getattr(parent, "attrs", None) or {})
     dst = dict(getattr(head, "attrs", None) or {})
-    for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
+    import copy
+
+    for key in ("vo_cell_full", "главное_действие", "main_action", "биты", "кадры", "shots"):
         if src.get(key) and not dst.get(key):
-            dst[key] = src[key]
+            val = src[key]
+            dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(
@@ -392,6 +395,18 @@ async def merge_montage_scenes(
                 coverage_parent_id="",
                 coverage_parent_number=None,
             )
+            chain_attrs = dict(getattr(member, "attrs", None) or {})
+            chain = str(
+                chain_attrs.get("главное_действие") or chain_attrs.get("main_action") or ""
+            ).strip()
+            if chain:
+                chain_attrs["главное_действие_архив"] = chain
+                member.attrs = chain_attrs
+                _flag_attrs(member)
+                logger.warning(
+                    "WARN merge_montage_scenes: цепь правой сцены #{} сохранена в архиве",
+                    member.number,
+                )
             _clear_child_scene_chain(member)
             attrs = dict(getattr(member, "attrs", None) or {})
             if "vo_cell_full" in attrs:

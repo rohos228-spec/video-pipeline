@@ -323,6 +323,34 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
     _flag_attrs(frame)
 
 
+def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
+    """Совместимость вызовов: шот не вырезается, только помечается неактивным."""
+    _mark_kadry_id_inactive(frame, shot_id, where="_remove_kadry_id")
+
+
+def _mark_kadry_id_inactive(frame: Frame, shot_id: str, *, where: str) -> None:
+    sid = (shot_id or "").strip()
+    if not sid:
+        return
+    planned = [dict(item) for item in planned_shots_from_attrs(frame)]
+    hit = False
+    for item in planned:
+        if str(item.get("id") or "").strip() != sid:
+            continue
+        item["активен"] = False
+        item["карантин"] = True
+        item["пометка"] = "шот помечен, не вырезан"
+        hit = True
+    if not hit:
+        return
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["кадры"] = planned
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    logger.warning("WARN {}: шот {} помечен, лестница не сокращена", where, sid)
+
+
+
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")
@@ -1185,6 +1213,26 @@ def _clear_child_scene_chain(frame: Frame) -> None:
 MAX_IMPROVE_SHOTS = 12
 
 
+def fold_excess_shot_voiceover(kadry: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Хвост закадра, который не влезает в keep кадров, склеивается в последний.
+
+    Кадры и шоты не удаляются: режется только список, который пишем на ячейку,
+    а текст закадра остаётся целиком.
+    """
+    if keep <= 0 or len(kadry) <= keep:
+        return kadry
+    kept = [dict(shot) for shot in kadry[:keep]]
+    extra: list[str] = []
+    for shot in kadry[keep:]:
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece:
+            extra.append(piece)
+    if extra:
+        base = " ".join(str(kept[-1].get("закадр") or "").split())
+        kept[-1]["закадр"] = " ".join(part for part in (base, *extra) if part)
+    return kept
+
+
 def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]) -> None:
     """Покрытие кадра с улучшения сцены → те же ключи, что пишут чипы доски."""
     for key, fn in (
@@ -1270,8 +1318,6 @@ async def apply_coverage_scene_action(
         kadry = explode_scene_action_to_kadry(
             raw, place=place, vo=scene_vo, cell_number=int(parent.number)
         )
-    if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
-        kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
     from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
@@ -1346,8 +1392,13 @@ async def apply_coverage_scene_action(
     group = _visible_cell_members(parent, members)
     inserted: list[Frame] = []
     remap: dict[int, int] = {}
-    if grow and len(layout) > len(group):
-        need = len(layout) - len(group)
+    # Кэп только на рост без готового покрытия. Уже лежащие кадры и
+    # attrs["кадры"] не режем: фикс D хранит полный список, включая хвост.
+    grow_target = len(layout)
+    if not with_coverage:
+        grow_target = min(grow_target, MAX_IMPROVE_SHOTS)
+    if grow and grow_target > len(group):
+        need = grow_target - len(group)
         group, inserted, remap = await _grow_cell_shots(
             session,
             project,
@@ -1369,9 +1420,16 @@ async def apply_coverage_scene_action(
         )
 
     used = min(len(layout), len(group))
+    # Хвост закадра живых шотов клеится на последний кадр. Помеченный
+    # в layout не входит — его закадр не садится на живой кадр.
+    voiced = (
+        fold_excess_shot_voiceover(layout, used)
+        if used and len(layout) > used
+        else layout
+    )
     parent_sid = str(layout[0].get("id") or f"{int(parent.number)}-K1")
     for i, member in enumerate(group[:used]):
-        shot = layout[i]
+        shot = voiced[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 

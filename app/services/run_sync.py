@@ -711,7 +711,16 @@ async def prepare_node_for_step_start(
         )
         return False
     if nr.status == NodeRunStatus.failed:
-        reset_node_to_pending(nr, project_id=project.id, initiator="auto_unstick")
+        if not explicit_ui_start:
+            msg = (
+                f"нода «{nr.node_type}» в статусе failed — "
+                "повтор только с явного ▶"
+            )
+            if strict:
+                raise ValueError(msg)
+            logger.info("[#{}] {}", project.id, msg)
+            return False
+        reset_node_to_pending(nr, project_id=project.id, initiator="ui_restart")
         logger.info(
             "[#{}] prepare_node_for_step_start: failed → pending {}/{}",
             project.id,

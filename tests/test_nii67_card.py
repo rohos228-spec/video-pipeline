@@ -106,12 +106,15 @@ def test_normalize_repairs_shape_and_limits() -> None:
     assert [door["id"] for door in card["doors"]] == ["door1", "door2"]
     assert card["doors"][0]["theme"] == "Лес"
     assert card["doors"][0]["blocks"][0]["kind"] == "custom"
-    assert len(card["doors"][0]["blocks"][0]["text"]) == TEXT_LIMIT
+    assert card["doors"][0]["blocks"][0]["text"] == "x" * (TEXT_LIMIT + 50)
+    assert any(
+        item.get("text") == "x" * (TEXT_LIMIT + 50) for item in card.get("text_archive") or []
+    )
     assert card["doors"][0]["blocks"][0]["id"] != card["doors"][0]["blocks"][1]["id"]
     assert card["doors"][0]["blocks"][1]["collapsed"] is True
     assert card["doors"][0]["blocks"][1]["exit_action"] == "закрылась"
     assert len(card["doors"][1]["blocks"]) == len(CANONICAL_KINDS)
-    assert len(card["finale"]["standard"]) == FINALE_LIMIT
+    assert card["finale"]["standard"] == "y" * (FINALE_LIMIT + 80)
     assert card["finale"]["notes"] == ""
     assert card["gg"]["name"] == "Лея"
     assert card["intro"]["text"] == "вход"

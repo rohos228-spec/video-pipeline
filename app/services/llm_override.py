@@ -77,17 +77,15 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
     ov: NodeLlmOverride | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
-        # Границы / каркас / площадка / кадры / QC: vibecode напрямую с ПК,
-        # без VPS-relay (13.10: relay режет поток на 159-й секунде; kie Codex на
-        # тяжёлой задаче с high отдаёт Cloudflare 524 через 300 с, не начав
-        # стрим; vibecode.moe напрямую — 3/3 полных ответа по 34k за 3.5 мин).
+        # Границы / каркас / площадка / кадры / QC: только 52pay gpt-5.6-sol.
+        # Без маршрута chat() падает, на vibecode группа не уходит.
         # Высокое мышление — поле reasoning_effort. Модель с канваса не перебивает.
         ov = NodeLlmOverride(
             model_id="gpt-5.6-sol",
             channel="stable",
             kind="text",
-            provider="vibecode",
-            label="GPT 5.6 Sol (vibecode · high)",
+            provider="52pay",
+            label="GPT 5.6 Sol (52pay · high)",
             reasoning_effort="high",
         )
         logger.info(

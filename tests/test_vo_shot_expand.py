@@ -196,7 +196,9 @@ def test_strip_non_scene_kadry_keeps_tx() -> None:
         attrs={"кадры": [{"id": "B01-K1", "действие": "ищут"}]}
     )
     assert strip_non_scene_kadry(stub) is True
-    assert "кадры" not in stub.attrs
+    assert stub.attrs["кадры"][0]["id"] == "B01-K1"
+    assert stub.attrs["кадры"][0]["активен"] is False
+    assert stub.attrs["кадры_archived"][0]["id"] == "B01-K1"
     tx = SimpleNamespace(
         attrs={
             "кадры": [

@@ -586,17 +586,50 @@ def accusative(name: str) -> str:
 
 
 def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
-    """После вставки: K-номера сцены ``prefix`` по порядку, parent_id = K1."""
-    k = 0
-    first = f"{prefix}-K1"
+    """Уникальные id не переписываем. Дубль вставки получает новый K, без промтов."""
+    seen: set[str] = set()
+    max_k = 0
+    owned: list[dict[str, Any]] = []
     for shot in shots:
+        if not isinstance(shot, dict):
+            continue
         m = _ID_RE.match(str(shot.get("id") or ""))
         if not m or m.group(1) != prefix:
             continue
-        k += 1
-        shot["id"] = f"{prefix}-K{k}"
-        if k > 1:
-            shot["parent_id"] = first
+        owned.append(shot)
+        try:
+            max_k = max(max_k, int(m.group(2)))
+        except ValueError:
+            pass
+    prev_id = ""
+    for shot in owned:
+        sid = str(shot.get("id") or "")
+        if sid and sid not in seen:
+            seen.add(sid)
+            prev_id = sid
+            continue
+        while True:
+            max_k += 1
+            new_id = f"{prefix}-K{max_k}"
+            if new_id not in seen:
+                break
+        shot["id"] = new_id
+        seen.add(new_id)
+        if prev_id:
+            shot["parent_id"] = prev_id
+        prev_id = new_id
+        for key in (
+            "image_prompt",
+            "animation_prompt",
+            "промт_картинки",
+            "промт_видео",
+            "промт",
+        ):
+            shot.pop(key, None)
+        logger.warning(
+            "WARN _renumber_scene: вставке дан новый id {}, старые id не сдвинуты",
+            new_id,
+        )
 
 
 def _replace_open_adj(text: str) -> str:

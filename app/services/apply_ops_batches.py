@@ -152,9 +152,11 @@ class _PackSendGate:
     """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
 
     def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
-        cap = PACK_IN_FLIGHT_MAX
+        from app.services.llm_pack_limit import llm_pack_limit
+
+        cap = llm_pack_limit()
         if in_flight is not None and int(in_flight) > 0:
-            cap = max(1, min(PACK_IN_FLIGHT_MAX, int(in_flight)))
+            cap = max(1, min(cap, int(in_flight)))
         self.sem = asyncio.Semaphore(cap)
         self.lock = asyncio.Lock()
         self.next_at = 0.0
@@ -1906,7 +1908,14 @@ _GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_C
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
-    _GATE_CHARACTERS.set(list(cards or []))
+    from app.services.db_v2 import entity_is_archived
+
+    live = [
+        card
+        for card in (cards or [])
+        if isinstance(card, dict) and not entity_is_archived(card)
+    ]
+    _GATE_CHARACTERS.set(live)
 
 
 _REPLY_SPLIT = re.compile(r"\s+—\s+(?=[^:.—«»]{1,40}:)")

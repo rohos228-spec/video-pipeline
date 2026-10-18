@@ -53,6 +53,19 @@ class OutseeApiError(OutseeImageError):
     """Ошибка Outsee Developer API (совместима с outsee_retry)."""
 
 
+class OutseeSubmitUncertain(OutseeApiError):
+    """POST на генерацию мог уже уйти, исход неизвестен.
+
+    Повтор создаст второй платный запрос. ``generate_image_with_retries``
+    этот тип не повторяет.
+    """
+
+    def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
+        ctx = dict(context or {})
+        ctx["submit_uncertain"] = True
+        super().__init__(reason, context=ctx)
+
+
 class NanoBananaProOutseeBannedError(OutseeApiError):
     """Жёсткий запрет: Nano Banana Pro через Outsee нельзя никогда."""
 
@@ -327,6 +340,9 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
     import shutil
     import tempfile
 
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider="outsee", model="generate")
     curl = shutil.which("curl")
     if not curl:
         return None
@@ -357,19 +373,33 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
+            code = int(proc.returncode)
             logger.warning(
                 "outsee_api.generate curl failed code={} err={}",
-                proc.returncode,
+                code,
                 (stderr or b"")[:200],
             )
+            # 6/7 — хост не резолвится / нет соединения: POST ещё не ушёл.
+            # 28 и прочие — тело уже могло уйти, повтор создаст второй платёж.
+            if code not in (6, 7):
+                raise OutseeSubmitUncertain(
+                    f"Outsee generate curl: code {code}",
+                    context={"path": path, "curl_code": code},
+                )
             return None
         try:
             data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             logger.warning("outsee_api.generate curl: ответ не JSON")
-            return None
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: ответ не JSON",
+                context={"path": path, "json": False},
+            ) from None
         if not isinstance(data, dict):
-            return None
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: ответ не объект",
+                context={"path": path, "json": False},
+            )
         err = data.get("error")
         if isinstance(err, dict):
             raise OutseeApiError(
@@ -377,7 +407,10 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
                 context={"path": path, "code": str(err.get("code") or "")},
             )
         if data.get("id") is None:
-            return None
+            raise OutseeSubmitUncertain(
+                "Outsee generate curl: нет id",
+                context={"path": path},
+            )
         logger.info(
             "outsee_api.submitted via curl path={} id={} status={}",
             path,
@@ -408,9 +441,15 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 )
                 if r.status_code >= 400:
                     _raise_api(r, where=path)
-                data = r.json()
+                try:
+                    data = r.json()
+                except ValueError as json_err:
+                    raise OutseeSubmitUncertain(
+                        "Outsee generate: ответ не JSON",
+                        context={"path": path, "json": False},
+                    ) from json_err
                 if not isinstance(data, dict) or data.get("id") is None:
-                    raise OutseeApiError(
+                    raise OutseeSubmitUncertain(
                         "Outsee generate: нет id",
                         context={"path": path, "body": data},
                     )
@@ -473,6 +512,16 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     )
                     await asyncio.sleep(delay)
                     continue
+            # Таймаут после отправки: исход платежа неизвестен, повтор не делаем.
+            if type(e).__name__ in {"ReadTimeout", "WriteTimeout", "RemoteProtocolError"}:
+                raise OutseeSubmitUncertain(
+                    f"Outsee API network {path}: {detail}",
+                    context={
+                        "path": path,
+                        "network": True,
+                        "exc_type": type(e).__name__,
+                    },
+                ) from e
             raise OutseeApiError(
                 f"Outsee API network {path}: {detail}",
                 context={
