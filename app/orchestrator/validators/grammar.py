@@ -194,11 +194,11 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
 
     if not isinstance(shots, list) or len(shots) < 2:
         return []
-    inactive_ids = {
-        str(shot.get("id"))
+    inactive_rows = [
+        shot
         for shot in shots
-        if isinstance(shot, dict) and shot.get("id") and not shot_counts_as_active(shot)
-    }
+        if isinstance(shot, dict) and not shot_counts_as_active(shot)
+    ]
     live = [shot for shot in shots if isinstance(shot, dict) and shot_counts_as_active(shot)]
     if len(live) < 2:
         return []
@@ -207,10 +207,12 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
         return []
     from app.services.frame_tombstones import merge_kadry_keep_missing
 
-    shots[:] = merge_kadry_keep_missing(list(shots), live)
-    for row in shots:
-        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
-            row["активен"] = False
+    # Неактивные строки идут мимо merge и возвращаются в хвост как есть:
+    # совпадение их id с живым после перенумерации не гасит живой шот.
+    old_live = [
+        shot for shot in shots if not isinstance(shot, dict) or shot_counts_as_active(shot)
+    ]
+    shots[:] = [*merge_kadry_keep_missing(old_live, live), *inactive_rows]
     return notes
 
 

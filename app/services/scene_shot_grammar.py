@@ -1778,11 +1778,11 @@ def merge_trivial_shots(shots):
         return []
     from app.orchestrator.validators.activity_flags import shot_is_active
 
-    inactive_ids = {
-        str(shot.get("id"))
+    inactive_rows = [
+        shot
         for shot in shots
-        if isinstance(shot, dict) and shot.get("id") and not shot_is_active(shot)
-    }
+        if isinstance(shot, dict) and not shot_is_active(shot)
+    ]
     live = [shot for shot in shots if isinstance(shot, dict) and shot_is_active(shot)]
     if len(live) < 2:
         return []
@@ -1825,10 +1825,12 @@ def merge_trivial_shots(shots):
                 s["parent_id"] = merged_into[pid]
     from app.services.frame_tombstones import merge_kadry_keep_missing
 
-    shots[:] = merge_kadry_keep_missing(list(shots), out)
-    for row in shots:
-        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
-            row["активен"] = False
+    # Неактивные строки идут мимо merge и возвращаются в хвост как есть:
+    # совпадение их id с живым после перенумерации не гасит живой шот.
+    old_live = [
+        shot for shot in shots if not isinstance(shot, dict) or shot_is_active(shot)
+    ]
+    shots[:] = [*merge_kadry_keep_missing(old_live, out), *inactive_rows]
     return notes
 
 

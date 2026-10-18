@@ -1120,7 +1120,43 @@ def _merge_live_keep_dead(old_rows: list[Any], live_rows: list[Any]) -> list[Any
     merged = merge_kadry_keep_missing(old_live, live_rows)
     if not isinstance(merged, list):
         merged = list(live_rows)
-    return [*merged, *old_dead]
+    return _archive_colliding_ids([*merged, *old_dead])
+
+
+def _archive_colliding_ids(rows: list[Any]) -> list[Any]:
+    """Неактивная строка не делит id с живой: старый id уходит в ``id_прежний``.
+
+    Идемпотентно: уже выданный ``~arch``-id без коллизии не трогается.
+    """
+    live_ids: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict) and shot_is_active(row):
+            sid = str(row.get("id") or "").strip()
+            if sid:
+                live_ids.add(sid)
+    taken = set(live_ids)
+    for row in rows:
+        if isinstance(row, dict) and not shot_is_active(row):
+            sid = str(row.get("id") or "").strip()
+            if sid and sid not in live_ids:
+                taken.add(sid)
+    for row in rows:
+        if not isinstance(row, dict) or shot_is_active(row):
+            continue
+        sid = str(row.get("id") or "").strip()
+        if not sid or sid not in live_ids:
+            continue
+        base = str(row.get("id_прежний") or "").strip() or sid
+        if "id_прежний" not in row:
+            row["id_прежний"] = sid
+        candidate = f"{base}~arch"
+        suffix = 2
+        while candidate in taken:
+            candidate = f"{base}~arch{suffix}"
+            suffix += 1
+        row["id"] = candidate
+        taken.add(candidate)
+    return rows
 
 
 def sync_live_coverage_ids(frames: list[Any]) -> int:
