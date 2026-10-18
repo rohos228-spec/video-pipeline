@@ -838,6 +838,10 @@ async def import_v8_xlsx(
             if fr is not None:
                 raw_attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
                 if not frame_is_active(raw_attrs) or fields.get("hidden_marker"):
+                    skip = seal_import_skip(project, fr, number)
+                    if skip:
+                        logger.warning("WARN import_v8_xlsx: {}", skip)
+                        summary.setdefault("frames_kept_marked", []).append(number)
                     t = end_ts
                     continue
             elif fields.get("hidden_marker"):
