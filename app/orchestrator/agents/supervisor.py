@@ -1023,7 +1023,8 @@ class Supervisor:
             change_id = str(raw) if raw else None
             self.tasks.finish_step(int(row["id"]), "done", change_id, float(row.get("cost") or 0))
         self._block_reason.pop(task_id, None)
-        await self._continue_from_checkpoint(task_id, session_id, data)
+        advanced = data.model_copy(update={"position": int(data.position) + 1})
+        await self._continue_from_checkpoint(task_id, session_id, advanced)
 
     async def _deny_partial_write(self, task_id: int, session_id: str) -> None:
         """Отказ partial: задача failed, строка и change_id остаются."""
