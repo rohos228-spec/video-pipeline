@@ -113,6 +113,33 @@ def test_run_keeps_inactive_shot_and_no_deletions_stays_quiet() -> None:
     assert removed.details["frames"]["missing_ids"] == ["dead"]
 
 
+def test_merge_skips_order_held_by_middle_inactive() -> None:
+    """Склейка живых соседей не ставит им порядок, который уже занят неактивным."""
+
+    first = _shot(id="a", кто="c03", место="чердак", действие="стоит")
+    first["порядок"] = 1
+    dead = _shot(id="dead", действие="смотрит в окно", кто="c09", объект="окно", место="улица")
+    dead["активен"] = False
+    dead["порядок"] = 2
+    dead["закадр"] = "хвост"
+    frozen = copy.deepcopy(dead)
+    left = _shot(id="c")
+    left["порядок"] = 3
+    right = _shot(id="d", действие="сидит дальше")
+    right["порядок"] = 4
+    shots = [first, dead, left, right]
+
+    notes = local_merge_trivial_shots(shots)
+    assert any("d склеен в c" in note for note in notes)
+    assert dead == frozen
+    assert dead in shots
+    orders = [shot["порядок"] for shot in shots if isinstance(shot, dict)]
+    ids = [shot["id"] for shot in shots if isinstance(shot, dict)]
+    assert len(orders) == len(set(orders)), orders
+    assert len(ids) == len(set(ids)), ids
+    assert {shot["id"] for shot in shots} == {"a", "dead", "c"}
+
+
 def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
     """Неактивный шот в середине держит свои id и порядок: живые их не повторяют."""
 

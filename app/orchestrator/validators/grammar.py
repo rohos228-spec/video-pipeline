@@ -135,7 +135,10 @@ def _set_cam_text(s: dict[str, Any], plan: str, ang_sentence: str) -> None:
         s[k] = t
 
 
-def _merge_active_neighbors(shots: list[Any]) -> list[str]:
+def _merge_active_neighbors(
+    shots: list[Any],
+    reserved_numbers: set[int] | None = None,
+) -> list[str]:
     """Склейка списка, в котором неактивных уже нет."""
 
     if not isinstance(shots, list) or len(shots) < 2:
@@ -164,13 +167,18 @@ def _merge_active_neighbors(shots: list[Any]) -> list[str]:
         chain = 1
     if not notes:
         return []
-    for k, s in enumerate(out, start=1):
-        if isinstance(s, dict):
-            if "порядок" in s:
-                s["порядок"] = k
-            pid = str(s.get("parent_id") or "")
-            if pid in merged_into:
-                s["parent_id"] = merged_into[pid]
+    reserved = set(reserved_numbers or ())
+    k = 0
+    for s in out:
+        if not isinstance(s, dict):
+            continue
+        k = _next_free_k(k + 1, reserved, set(), None)
+        if "порядок" in s:
+            s["порядок"] = k
+        pid = str(s.get("parent_id") or "")
+        if pid in merged_into:
+            s["parent_id"] = merged_into[pid]
+        reserved.add(k)
     shots[:] = out
     return notes
 
@@ -188,7 +196,8 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
         return _merge_active_neighbors(shots)
     original = list(shots)
     live = [shot for shot in original if shot_counts_as_active(shot)]
-    notes = _merge_active_neighbors(live)
+    reserved_numbers, _reserved_ids = _reserved_by_inactive(original)
+    notes = _merge_active_neighbors(live, reserved_numbers)
     survived = {id(shot) for shot in live}
     shots[:] = [
         shot
