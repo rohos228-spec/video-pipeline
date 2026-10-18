@@ -13,6 +13,8 @@ import copy
 import re
 from typing import Any
 
+from app.orchestrator.validators.activity_flags import shot_is_active
+
 _re = re
 
 _SHOT_IS_ACTIVE: Any = _re  # sentinel: ещё не искали frame_tombstones
@@ -32,25 +34,17 @@ def _external_shot_is_active() -> Any:
     return _SHOT_IS_ACTIVE
 
 
-def _xlsx_flag_is_inactive(value: Any) -> bool:
-    """``активен`` из xlsx: False, 0, ``false`` / ``0`` / ``нет``."""
-
-    if value is False or value == 0:
-        return True
-    if isinstance(value, str):
-        return value.strip().casefold() in {"false", "0", "нет"}
-    return False
-
-
 def shot_counts_as_active(shot: Any) -> bool:
-    """Живой шот: импорт ``shot_is_active``, иначе флаг ``активен`` не выключен."""
+    """Живой шот. И путь с frame_tombstones, и фолбэк зовут activity_flags.
+
+    Булев ответ внешнего чекера не используется: матрица одна. Сам вызов
+    остаётся, чтобы RuntimeError из импорта не глотался (ловится только ImportError).
+    """
 
     checker = _external_shot_is_active()
     if checker is not None:
-        return bool(checker(shot))
-    if not isinstance(shot, dict):
-        return True
-    return not _xlsx_flag_is_inactive(shot.get("активен"))
+        return shot_is_active(shot)
+    return shot_is_active(shot)
 
 
 def active_shots(shots: list[Any] | None) -> list[Any] | None:
