@@ -1882,13 +1882,40 @@ def ensure_wide_before_dialogue(shots):
             ):
                 w.pop(key, None)
             used = {str(row.get("id") or "") for row in shots if isinstance(row, dict)}
-            base = str(s.get("id") or "wide")
-            cand = f"{base}-wide"
-            n_id = 2
-            while cand in used:
-                cand = f"{base}-wide{n_id}"
-                n_id += 1
+            m_id = _KID_RE.match(str(s.get("id") or ""))
+            if m_id:
+                stem = m_id.group(1)
+                max_k = 0
+                for row in shots:
+                    if not isinstance(row, dict):
+                        continue
+                    rm = _KID_RE.match(str(row.get("id") or ""))
+                    if not rm or rm.group(1) != stem:
+                        continue
+                    try:
+                        max_k = max(max_k, int(rm.group(2)))
+                    except ValueError:
+                        pass
+                cand = f"{stem}{max_k + 1}"
+                while cand in used:
+                    max_k += 1
+                    cand = f"{stem}{max_k + 1}"
+            else:
+                base = str(s.get("id") or "wide")
+                n_id = 1
+                cand = f"{base}-K{n_id}"
+                while cand in used:
+                    n_id += 1
+                    cand = f"{base}-K{n_id}"
             w["id"] = cand
+            if "порядок" in w:
+                for row in shots[i:]:
+                    if not isinstance(row, dict) or "порядок" not in row:
+                        continue
+                    try:
+                        row["порядок"] = int(row["порядок"]) + 1
+                    except (TypeError, ValueError):
+                        pass
             shots.insert(i, w)
             notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
             i = j + 1

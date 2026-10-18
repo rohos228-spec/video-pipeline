@@ -82,6 +82,28 @@ def test_ensure_wide_keeps_ids_and_clears_insert_prompts() -> None:
     assert inserted[0]["id"] not in {"1-S1-K1", "1-S1-K2"}
 
 
+def test_ensure_wide_insert_id_is_next_k_and_shifts_order() -> None:
+    shots = [
+        {
+            "id": "1-S1-K1",
+            "говорит": "Аня",
+            "реплика": "да",
+            "план": "КРУПНЫЙ",
+            "порядок": 4,
+        },
+        {
+            "id": "1-S1-K2",
+            "говорит": "Боря",
+            "реплика": "нет",
+            "план": "КРУПНЫЙ",
+            "порядок": 5,
+        },
+    ]
+    ensure_wide_before_dialogue(shots)
+    assert [shot["id"] for shot in shots] == ["1-S1-K3", "1-S1-K1", "1-S1-K2"]
+    assert [shot["порядок"] for shot in shots] == [4, 5, 6]
+
+
 def test_renumber_scene_keeps_real_shot_when_insert_is_first() -> None:
     shots = [
         {
