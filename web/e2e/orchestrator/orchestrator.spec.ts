@@ -83,6 +83,52 @@ test("task_id вне безопасного целого не уходит в bi
   expect(parseOrchTaskId("9007199254740993")).toBeNull();
 });
 
+test("message без id после message_end(41) не затирает 41", () => {
+  const started = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "message_start",
+      task_id: 1,
+      seq: 1,
+      session_id: "s",
+      payload: { message_id: 41, role: "assistant" },
+    },
+  });
+  const streamed = reduceOrchScreen(started, {
+    type: "event",
+    event: {
+      type: "token",
+      task_id: 1,
+      seq: 2,
+      session_id: "s",
+      payload: { message_id: 41, text: "реплика 41" },
+    },
+  });
+  const closed = reduceOrchScreen(streamed, {
+    type: "event",
+    event: {
+      type: "message_end",
+      task_id: 1,
+      seq: 3,
+      session_id: "s",
+      payload: { message_id: 41 },
+    },
+  });
+  const extra = reduceOrchScreen(closed, {
+    type: "event",
+    event: {
+      type: "message",
+      task_id: 1,
+      seq: 4,
+      session_id: "s",
+      payload: { role: "assistant", text: "другая реплика" },
+    },
+  });
+  const bubble = extra.messages.find((message) => message.messageId === 41);
+  expect(bubble?.text).toBe("реплика 41");
+  expect(extra.messages.some((message) => message.text === "другая реплика" && message.messageId == null)).toBe(true);
+});
+
 test("message_start пользователя не получает id ассистента", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",

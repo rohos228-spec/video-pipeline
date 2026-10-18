@@ -628,26 +628,16 @@ function appendTokenForMessage(
   bubble.text += text;
 }
 
-/**
- * Закрытый буфер той же задачи. Открытый стрим и чужой taskId сюда не попадают:
- * `message` без id тогда идёт по старому пути и не затирает реплику.
- */
-function pendingBoundedMessage(state: OrchScreenState, taskId: string | null): ChatMessage | undefined {
-  return state.messages.find(
-    (message) =>
-      message.role === "assistant" &&
-      message.messageId != null &&
-      message.closed === true &&
-      message.finalized !== true &&
-      message.taskId === taskId,
-  );
-}
-
 function applyFinalMessage(state: OrchScreenState, taskId: string | null, payload: Record<string, unknown>): void {
   const text = str(payload.text);
   if (!text || str(payload.role) === "user") return;
   const explicit = readMessageId(payload);
-  const pending = explicit != null ? bubbleByMessageId(state, explicit) : pendingBoundedMessage(state, taskId);
+  // Без message_id это другая реплика. Закрытый пузырь 41 она не затирает.
+  if (explicit == null) {
+    appendToken(state, taskId, text);
+    return;
+  }
+  const pending = bubbleByMessageId(state, explicit);
   if (pending && pending.finalized !== true) {
     pending.text = text;
     pending.closed = true;
