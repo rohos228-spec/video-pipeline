@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -36,6 +37,18 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("PaidOutcomeDecisionResult импортируется из orchestratorApi один раз", () => {
+  const src = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/components/orchestrator/use-orchestrator-chat.ts"),
+    "utf8",
+  );
+  const imports = src.match(/^import[\s\S]*?from\s+["'][^"']+["'];/gm) ?? [];
+  const hits = imports.filter((block) => block.includes("PaidOutcomeDecisionResult"));
+  expect(hits).toHaveLength(1);
+  expect(hits[0]).toContain("@/lib/orchestratorApi");
+  expect(hits[0]).not.toContain("import type");
+});
 
 test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупреждения", () => {
   expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);

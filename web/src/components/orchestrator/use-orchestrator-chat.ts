@@ -21,6 +21,7 @@ import {
   writeOrchToken,
   type ApprovalHttpResult,
   type OrchClientConfig,
+  type PaidOutcomeDecisionResult,
 } from "@/lib/orchestratorApi";
 import {
   PAID_OUTCOME_DECISION,
@@ -34,8 +35,6 @@ import {
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
-import type { PaidOutcomeDecisionResult } from "@/lib/orchestratorApi";
-
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
 /** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
