@@ -41,12 +41,18 @@ def _restore(previous: dict | None) -> None:
 
 
 def test_preservation_pin_cites_ws1_head() -> None:
-    from app.orchestrator.agents.wiring import _preservation_symbols
+    """Пин WS1 #379 — HEAD 76198ecd, mode keyword-only и по умолчанию reject."""
+    import inspect
+
+    from app.orchestrator.agents.wiring import FunctionValidators, _preservation_symbols
 
     text = _preservation_symbols.__doc__ or ""
-    assert "9820d123" in text
+    assert "76198ecd" in text
+    assert "9820d123" not in text
     assert "run_preservation_validators(before, after, ops=None, *, mode)" in text
+    assert 'mode="reject"' in text
     assert "PreservationRejected" in text
+    assert 'mode="reject"' in inspect.getsource(FunctionValidators.run)
 
 
 def test_preservation_rejected_is_blocking_and_does_not_touch_data() -> None:
@@ -82,6 +88,27 @@ def test_preservation_rejected_is_blocking_and_does_not_touch_data() -> None:
         assert before == before_snapshot
         assert after == after_snapshot
         module = sys.modules["app.orchestrator.validators.preservation"]
-        assert module.seen == ["warn"]
+        assert module.seen == ["reject"]
+    finally:
+        _restore(previous)
+
+
+def test_payload_mode_does_not_weaken_preservation() -> None:
+    """mode из payload не ослабляет серверный reject."""
+    previous = _install()
+    before = {"scenes": [{"id": "s1", "кадры": [{"id": "f1"}]}]}
+    after = {"scenes": [{"id": "s1", "кадры": [{"id": "f1"}]}]}
+    try:
+        def _ok(name: str, project_id: int, context: dict) -> dict:
+            del name, project_id, context
+            return {"pass": True}
+
+        FunctionValidators(_ok).run(
+            "preservation",
+            13,
+            {"before": before, "after": after, "ops": [], "mode": "warn"},
+        )
+        module = sys.modules["app.orchestrator.validators.preservation"]
+        assert module.seen == ["reject"]
     finally:
         _restore(previous)

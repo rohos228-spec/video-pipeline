@@ -14,7 +14,7 @@ from app.orchestrator.contracts import CONTRACT_VERSION, export_contract_schemas
 _EXPORT_SHA256 = {
     "ws3-r3.3.1": "a8880f1425ab20a266111455a8703d863f54142af242129e60bec8d5674e9bfa",
     "ws3-r3.4": "564097a4ef10e06c2cbfaac2d4a4d9ca6041937bc8f88102354df377c65f4145",
-    "ws3-r3.5": "e6b0e82244d5e9d2e0f24a92bae50cb021c64f638a644e738bea80121e6b4870",
+    "ws3-r3.5": "bb988c634185c8761d0792622be80c656e04bad7b26e6f9c791d9b7da4956b2a",
 }
 
 
@@ -54,3 +54,13 @@ def test_contract_version_covers_partial_write_stop_key_and_partial_changes() ->
     assert rules["block_outcomes"]["partial_write"] == "waiting_approval"
     assert rules["block_outcomes"]["deletion_forbidden"] == "failed"
     assert "partial_write" in schema["enums"]["EventType"]
+
+
+def test_partial_write_contract_lists_approve_and_deny() -> None:
+    """r3.5 описывает approve/deny для partial_write. retry_step сюда не входит."""
+    schema = export_contract_schemas()
+    note = next(item["note"] for item in schema["changelog"] if item["version"] == "ws3-r3.5")
+    assert "partial_write" in note
+    assert "approve" in note
+    assert "deny" in note
+    assert schema["rules"]["partial_write_decisions"] == ["approve", "deny"]

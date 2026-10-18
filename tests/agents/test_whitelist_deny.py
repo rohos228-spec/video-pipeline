@@ -45,16 +45,23 @@ class _ClosedRegistry:
         self.calls: list[str] = []
         self.safe = safe or set()
 
-    def metadata_of(self, name: str) -> dict[str, object]:
-        if name not in self.safe:
-            raise KeyError(name)
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
         return {
-            "name": name,
-            "risk": "none",
-            "read_only": True,
-            "destructive": False,
-            "paid": False,
+            name: {
+                "name": name,
+                "risk": "none",
+                "read_only": True,
+                "destructive": False,
+                "paid": False,
+            }
+            for name in self.safe
         }
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        listed = self.metadata_registry()
+        if name not in listed:
+            raise KeyError(name)
+        return listed[name]
 
     async def execute(self, name: str, params: dict, task_ctx: dict) -> dict:
         del params, task_ctx
@@ -332,9 +339,38 @@ def test_bridge_with_ws2_metadata_of_refuses_unknown() -> None:
     for name in ("frobnicate", "exec", "edit_file"):
         assert not_in_whitelist(name, registry) is True
     assert not_in_whitelist("look", registry) is False
-    assert not_in_whitelist("look", _Nameless()) is False
+    assert not_in_whitelist("look", _Nameless()) is True
     assert not_in_whitelist("look", _EmptyMeta()) is True
     assert not_in_whitelist("look", _Mismatch()) is True
+
+
+class _DangerousUnlisted:
+    """Нет metadata_registry и whitelist: карточка metadata_of не открывает имя."""
+
+    def metadata_of(self, name: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "risk": "high",
+            "read_only": False,
+            "destructive": True,
+            "paid": True,
+        }
+
+
+class _FlaggedUnlisted(_DangerousUnlisted):
+    allow_unlisted = True
+
+
+def test_no_registry_and_no_whitelist_refuses_unknown_and_dangerous() -> None:
+    registry = _DangerousUnlisted()
+    assert not hasattr(registry, "metadata_registry")
+    assert not hasattr(registry, "whitelist")
+    for name in ("frobnicate", "exec"):
+        assert not_in_whitelist(name, registry) is True
+    flagged = _FlaggedUnlisted()
+    assert not_in_whitelist("frobnicate", flagged) is False
+    assert not_in_whitelist("bash", flagged) is True
+    assert not_in_whitelist("create_node@new_group", flagged) is True
 
 
 class _Nameless:

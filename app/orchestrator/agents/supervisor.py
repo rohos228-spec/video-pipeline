@@ -121,6 +121,36 @@ _APPR_MARK = "\n\x1eorappr:"
 _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
+def _router_visible_cost(owner: Any) -> float:
+    """Цена, которую реальный router уже положил на себя или на ответ.
+
+    ``partial_cost_usd`` у WS5 нет. Берём ``cost_usd`` (поле ``LLMResponse``)
+    с обёртки, с ``inner`` и с ``last_response``.
+    """
+    pending: list[Any] = [owner]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop(0)
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        raw = getattr(item, "cost_usd", None)
+        if not callable(raw):
+            try:
+                value = float(raw or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                return value
+        response = getattr(item, "last_response", None)
+        if response is not None and response is not item:
+            pending.append(response)
+        inner = getattr(item, "inner", None)
+        if inner is not None and inner is not item:
+            pending.append(inner)
+    return 0.0
+
+
 _APPROVED_MARK = "\n\x1eorchfp:"
 _PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
 
@@ -575,8 +605,9 @@ class Supervisor:
         """Записать, что kill этой задачи поставил stop, либо что stop чужой."""
         from app.services.step_cancel import is_stop_requested, request_stop
 
-        if project_id in self._stop_external:
+        if project_id in self._stop_external and is_stop_requested(project_id):
             return
+        self._stop_external.discard(project_id)
         holders = self._stop_holders.setdefault(project_id, set())
         if not holders and is_stop_requested(project_id):
             self._stop_external.add(project_id)
@@ -1022,7 +1053,8 @@ class Supervisor:
             change_id = str(raw) if raw else None
             self.tasks.finish_step(int(row["id"]), "done", change_id, float(row.get("cost") or 0))
         self._block_reason.pop(task_id, None)
-        await self._continue_from_checkpoint(task_id, session_id, data)
+        advanced = data.model_copy(update={"position": int(data.position) + 1})
+        await self._continue_from_checkpoint(task_id, session_id, advanced)
 
     async def _deny_partial_write(self, task_id: int, session_id: str) -> None:
         """Отказ partial: задача failed, строка и change_id остаются."""
@@ -1242,6 +1274,10 @@ class Supervisor:
                 result = await original(*args, **kwargs)
             except asyncio.CancelledError:
                 self._take_partial_cost(owner)
+                if task_key is not None and task_key not in self._partial_llm_cost:
+                    extra = _router_visible_cost(owner)
+                    if extra > 0:
+                        self._partial_llm_cost[task_key] = extra
                 raise
             else:
                 if task_key is not None and slot["credit"]:
@@ -1310,10 +1346,10 @@ class Supervisor:
         }
         project_id = self._task_project_id(task_id) if task_id is not None else None
         if project_id is not None:
-            from app.services.step_cancel import stop_flag_path
+            from app.services.step_cancel import is_stop_requested, stop_flag_path
 
             self._note_kill_stop(project_id, task_id)
-            payload["stop_key_set"] = True
+            payload["stop_key_set"] = is_stop_requested(project_id)
             payload["stop_key"] = stop_flag_path(project_id).name
         await self.bus.publish(session_id, "kill_switch", payload, task_id=task_id)
 
@@ -2303,7 +2339,7 @@ class Supervisor:
         if problem is None and ok:
             problem = r21_result_problem(result)
         if problem:
-            kept = envelope_change_id(result) if problem == "skipped_without_partial" else None
+            kept = envelope_change_id(result)
             self.tasks.finish_step(step_id, problem, kept, cost)
             if kept:
                 bucket = self._change_ids.setdefault(task_id, [])
