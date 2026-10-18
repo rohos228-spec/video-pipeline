@@ -150,8 +150,8 @@ def test_xlsx_false_and_zero_are_inactive() -> None:
     assert grammar.shot_counts_as_active({"id": "a"}) is True
 
 
-def test_merge_skips_order_held_by_middle_inactive() -> None:
-    """Склейка живых соседей не ставит им порядок, который уже занят неактивным."""
+def test_merge_renumbers_live_and_keeps_inactive_order() -> None:
+    """R0a: склейка нумерует живые подряд; неактивный остаётся на месте со своим порядком."""
 
     first = _shot(id="a", кто="c03", место="чердак", действие="стоит")
     first["порядок"] = 1
@@ -169,12 +169,10 @@ def test_merge_skips_order_held_by_middle_inactive() -> None:
     notes = local_merge_trivial_shots(shots)
     assert any("d склеен в c" in note for note in notes)
     assert dead == frozen
-    assert dead in shots
-    orders = [shot["порядок"] for shot in shots if isinstance(shot, dict)]
-    ids = [shot["id"] for shot in shots if isinstance(shot, dict)]
-    assert len(orders) == len(set(orders)), orders
-    assert len(ids) == len(set(ids)), ids
-    assert {shot["id"] for shot in shots} == {"a", "dead", "c"}
+    assert dead["активен"] is False
+    assert [shot["id"] for shot in shots] == ["a", "dead", "c"]
+    assert [shot["порядок"] for shot in shots if shot is not dead] == [1, 2]
+    assert dead["порядок"] == 2
 
 
 def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
@@ -205,8 +203,8 @@ def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
 
 
 @pytest.mark.parametrize("order", [2, 2.0, "2", "  2 ", np.int64(2), "2,0"])
-def test_reserved_order_accepts_xlsx_numbers(order: object) -> None:
-    """Порядок из xlsx резервируется и склейкой, и вставкой общего плана."""
+def test_inactive_xlsx_order_accepted_and_kept(order: object) -> None:
+    """Порядок из xlsx у неактивного не ломает склейку и вставку; шот остаётся как был (R0a)."""
 
     first = _shot(id="a", кто="c03", место="чердак", действие="стоит")
     first["порядок"] = 1
@@ -224,12 +222,9 @@ def test_reserved_order_accepts_xlsx_numbers(order: object) -> None:
     notes = local_merge_trivial_shots(merged)
     assert any("d склеен в c" in note for note in notes)
     assert dead == frozen
-    live_orders = [
-        shot["порядок"]
-        for shot in merged
-        if isinstance(shot, dict) and shot.get("id") != "dead"
-    ]
-    assert 2 not in live_orders, live_orders
+    assert dead["активен"] is False
+    assert [shot["id"] for shot in merged] == ["a", "dead", "c"]
+    assert [shot["порядок"] for shot in merged if shot is not dead] == [1, 2]
 
     wide_dead = _shot(id="mid", план="КРУПНЫЙ", действие="молчит")
     wide_dead["активен"] = False
@@ -247,10 +242,7 @@ def test_reserved_order_accepts_xlsx_numbers(order: object) -> None:
     wide_notes = local_ensure_wide_before_dialogue(wide)
     assert wide_notes
     assert wide_dead == wide_frozen
-    wide_orders = [
-        shot["порядок"]
-        for shot in wide
-        if isinstance(shot, dict) and shot.get("id") != "mid" and "порядок" in shot
-    ]
-    assert 2 not in wide_orders, wide_orders
+    assert wide_dead["активен"] is False
+    assert [shot["id"] for shot in wide] == ["p1", "mid", "p3-K1", "p3", "p4"]
+    assert [shot["порядок"] for shot in wide if shot is not wide_dead] == [1, 3, 4, 5]
 
