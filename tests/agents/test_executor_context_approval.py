@@ -18,6 +18,9 @@ class _Registry:
             "note": {"risk": "medium", "read_only": True, "destructive": False, "paid": False},
         }
 
+    def metadata_registry(self) -> dict[str, dict[str, object]]:
+        return {name: self.metadata_of(name) for name in self.table}
+
     def metadata_of(self, name: str) -> dict[str, object]:
         if name not in self.table:
             raise KeyError(name)
