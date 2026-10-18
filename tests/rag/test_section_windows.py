@@ -42,8 +42,19 @@ def test_real_assemble_and_skeleton_prompts_grow_windows_without_losing_parents(
     for key in watched:
         parents = [doc for doc in prompts if doc.source_id == key and "~" not in doc.part_key]
         assert [doc.part_key for doc in parents] == [f"s{index}" for index in range(len(parents))]
-    assert any(doc.source_id == "n_excel_gpt_sd_asm" and "~" in doc.part_key for doc in prompts)
-    assert any(doc.source_id == "n_excel_gpt_sd_cd_skeleton" and "~" in doc.part_key for doc in prompts)
+    asm_windows = {
+        doc.part_key.split("~", 1)[0]
+        for doc in prompts
+        if doc.source_id == "n_excel_gpt_sd_asm" and "~" in doc.part_key
+    }
+    skeleton_windows = {
+        doc.part_key.split("~", 1)[0]
+        for doc in prompts
+        if doc.source_id == "n_excel_gpt_sd_cd_skeleton" and "~" in doc.part_key
+    }
+    assert asm_windows == {"s5"}
+    assert skeleton_windows == {"s6"}
+    assert not any(doc.source_id == "n_excel_gpt_sd_cd_asm" and "~" in doc.part_key for doc in prompts)
     assert not any(doc.source_id == "n_excel_gpt_sd_camera" and "~" in doc.part_key for doc in prompts)
 
 
@@ -51,8 +62,14 @@ def test_short_section_has_no_windows() -> None:
     assert section_windows("короткий абзац") == []
 
 
+def test_medium_section_has_no_windows() -> None:
+    body = "абзац текста\n\n" * 80
+    assert 900 < len(body) < 2000
+    assert section_windows(body) == []
+
+
 def test_assemble_and_skeleton_keep_parent_keys_and_add_windows() -> None:
-    body = "\n\n".join(f"Абзац {index} " + ("слово " * 40) for index in range(8))
+    body = "\n\n".join(f"Абзац {index} " + ("слово " * 40) for index in range(12))
     template = f"## Закон\n{body}"
     assemble = _prompt_docs(_node("n_excel_gpt_sd_asm", template))
     camera = _prompt_docs(_node("n_excel_gpt_sd_camera", template))
