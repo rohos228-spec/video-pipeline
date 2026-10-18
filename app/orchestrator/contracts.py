@@ -1112,15 +1112,32 @@ def action_guard(action: str, registry: Any | None = None) -> str | None:
     return None
 
 
+def _metadata_destructive(meta: Any) -> bool:
+    """``destructive=True`` и у объекта, и у словаря метаданных."""
+    if isinstance(meta, dict):
+        return meta.get("destructive") is True
+    return getattr(meta, "destructive", False) is True
+
+
 def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
-    """Шаг удаляет: маркер в имени или параметрах, либо он не явно безопасен."""
+    """Удаление: маркер имени или параметров, ``destructive=True`` или неизвестное имя.
+
+    Известная мутация (``read_only`` ложь, ``destructive`` ложь) удалением не
+    считается: её останавливает риск, а не ``deletion_blocked``.
+    """
     if (
         is_deletion_action(step.action)
         or _protects_media(step.action)
         or params_request_deletion(step.params, action=step.action)
     ):
         return True
-    return not explicitly_safe(step.action, registry)
+    if action_unknown(step.action, registry):
+        return True
+    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
+    if metadata_of is None:
+        return False
+    meta = metadata_of(step.action)
+    return meta is not None and _metadata_destructive(meta)
 
 
 def registry_is_readonly(action: str, registry: Any | None) -> bool:
