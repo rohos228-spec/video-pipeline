@@ -214,7 +214,7 @@ def test_profile_flag_skips_reranker(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         assert engine.retrieve_defaults["rrf_k"] == 20
         assert engine.retrieve_defaults["rrf_weights"] == (0.5, 1.5)
         assert engine.retrieve_defaults["rerank_fusion"] == "rrf"
-        assert engine.retrieve_defaults["rerank_fusion_weights"] == (0.5, 1.5)
+        assert engine.retrieve_defaults["rerank_fusion_weights"] == (0.25, 1.5)
         assert engine.retrieve_defaults["bm25_protect"] == 0.0
         assert engine.retrieve_defaults["family_boost"] == 1.0
     finally:
