@@ -391,7 +391,7 @@ def _verb(op: dict[str, Any]) -> str:
 
 
 def _op_id(op: dict[str, Any]) -> str:
-    for key in ("shot_id", "frame_id", "id", "target"):
+    for key in ("shot_id", "frame_id", "id"):
         if op.get(key) not in (None, ""):
             return str(op[key])
     return ""

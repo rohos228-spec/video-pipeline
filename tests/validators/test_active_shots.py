@@ -8,7 +8,7 @@ import pytest
 
 from app.orchestrator.validators.grammar import shots_of
 from app.orchestrator.validators.preservation import run_preservation_validators
-from app.orchestrator.validators.shot_activity import check_active_shots
+from app.orchestrator.validators.shot_activity import _op_id, check_active_shots
 
 
 def _project(shots: list[dict], vo: str) -> dict:
@@ -279,6 +279,21 @@ def test_participation_follows_shots_of(monkeypatch: pytest.MonkeyPatch) -> None
     violations = check_active_shots(project, copy.deepcopy(project))
     assert ("vo_on_inactive", "error", "s1") not in _codes(violations)
     assert ("vo_on_inactive", "error", "b") not in _codes(violations)
+
+
+def test_op_id_ignores_target() -> None:
+    """Ключ target=frame — это не id шота."""
+
+    assert _op_id({"target": "frame", "op": "deactivate"}) == ""
+    assert _op_id({"target": "frame", "shot_id": "k1"}) == "k1"
+    before = _project([{"id": "frame", "закадр": "A."}], "A.")
+    after = _project([{"id": "frame", "активен": False, "закадр": "A."}], "A.")
+    violations = check_active_shots(
+        before,
+        after,
+        ops=[{"target": "frame", "op": "deactivate"}],
+    )
+    assert all(item.code != "last_active_deactivated" for item in violations)
 
 
 def test_scene_vo_without_active_shots_flagged() -> None:
