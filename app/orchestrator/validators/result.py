@@ -15,6 +15,7 @@ WS3: ``blocking=True`` и ``details.reason``. ``budget_exhausted`` уводит 
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,7 +54,7 @@ def resolve_contract() -> tuple[type, str, bool]:
     dry = _SHIM_DRY_RUN
     using = False
     try:
-        from app.orchestrator import contracts as contracts
+        contracts = importlib.import_module("app.orchestrator.contracts")
     except Exception:  # noqa: BLE001 — contracts ещё нет или модуль не собран
         contracts = None
     if contracts is not None and hasattr(contracts, "ValidatorResult"):

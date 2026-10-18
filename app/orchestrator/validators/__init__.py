@@ -15,7 +15,15 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
-from . import no_deletions, plan_sanity, preservation, shot_merge, spend_guard, wide_before_dialogue
+from . import (
+    no_deletions,
+    plan_sanity,
+    preservation,
+    shot_activity,
+    shot_merge,
+    spend_guard,
+    wide_before_dialogue,
+)
 from .preservation import PreservationRejected, run_preservation_validators
 from .result import (
     VALIDATOR_CONTEXT_DRY_RUN,

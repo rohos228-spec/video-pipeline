@@ -113,8 +113,10 @@ def test_validators_follow_ws1_signature_or_stay_stub(monkeypatch: pytest.Monkey
     set_runtime(None)
     try:
         runtime = get_runtime()
-        assert "validators" in runtime.runtime_degraded
-        assert isinstance(runtime.supervisor.validators, UnlinkedValidators)
+        # WS1 (#379): пакет валидаторов реальный, переимпорт успешен;
+        # «validators» деградирует только при настоящем сбое импорта.
+        assert "validators" not in runtime.runtime_degraded
+        assert not isinstance(runtime.supervisor.validators, UnlinkedValidators)
         assert "actions" in runtime.runtime_degraded
     finally:
         set_runtime(None)
