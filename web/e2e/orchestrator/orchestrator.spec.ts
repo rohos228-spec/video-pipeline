@@ -22,6 +22,7 @@ import {
   paidOutcomeGrantBody,
   paidOutcomeRetryReady,
   paidOutcomeWireBody,
+  parsePaidOutcomeJson,
   type PaidOutcomeApproveBody,
 } from "../../src/lib/orchestratorPaidOutcome";
 import { initialOrchScreen, reduceOrchScreen } from "../../src/lib/orchestratorSession";
@@ -275,6 +276,17 @@ test("grant с executed false и неизвестным reason не закрыв
   });
   expect(armed.ok).toBe(true);
   expect(armed.retryReady).toBe(true);
+});
+
+test("NaN внутри строки не ломает JSON paid outcome", () => {
+  const parsed = parsePaidOutcomeJson(
+    '{"detail":"x: NaN","forecast_usd":NaN,"span":-Infinity,"note":"Infinity","ok":Infinity}',
+  ) as { detail: string; forecast_usd: number; span: number; note: string; ok: number };
+  expect(parsed.detail).toBe("x: NaN");
+  expect(parsed.note).toBe("Infinity");
+  expect(Number.isNaN(parsed.forecast_usd)).toBe(true);
+  expect(parsed.span).toBe(Number.NEGATIVE_INFINITY);
+  expect(parsed.ok).toBe(Number.POSITIVE_INFINITY);
 });
 
 test("подтверждение перезапуска требует retry_armed и конечный forecast_usd", () => {

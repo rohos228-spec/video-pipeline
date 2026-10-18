@@ -93,12 +93,52 @@ export function readPaidOutcomeForecast(body: unknown): number | null {
   return value;
 }
 
+function jsonTokenBoundary(slice: string, length: number): boolean {
+  const next = slice[length];
+  return next == null || /[\s,\]}]/.test(next);
+}
+
+/** NaN и Infinity вне строк. Внутри кавычек текст не трогаем. */
+function maskJsonNonFinite(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i] ?? "";
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    const prev = i === 0 ? "" : (text[i - 1] ?? "");
+    if (prev === "" || /[\s:,\[]/.test(prev)) {
+      const slice = text.slice(i);
+      let token = "";
+      if (slice.startsWith("-Infinity") && jsonTokenBoundary(slice, "-Infinity".length)) token = "-Infinity";
+      else if (slice.startsWith("Infinity") && jsonTokenBoundary(slice, "Infinity".length)) token = "Infinity";
+      else if (slice.startsWith("NaN") && jsonTokenBoundary(slice, "NaN".length)) token = "NaN";
+      if (token) {
+        const marker = token === "NaN" ? "__NaN__" : token === "-Infinity" ? "__-Infinity__" : "__Infinity__";
+        out += `"${marker}"`;
+        i += token.length - 1;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 /** Python `json.dumps` пишет NaN и Infinity как есть. Это не 0. */
 export function parsePaidOutcomeJson(text: string): unknown {
-  const marked = text
-    .replace(/:\s*NaN\b/g, ': "__NaN__"')
-    .replace(/:\s*-Infinity\b/g, ': "__-Infinity__"')
-    .replace(/:\s*Infinity\b/g, ': "__Infinity__"');
+  const marked = maskJsonNonFinite(text);
   return JSON.parse(marked, (_key, value) => {
     if (value === "__NaN__") return Number.NaN;
     if (value === "__-Infinity__") return Number.NEGATIVE_INFINITY;
