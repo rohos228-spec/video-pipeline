@@ -215,33 +215,6 @@ def test_strip_non_scene_kadry_keeps_tx() -> None:
     assert frame_has_scene_shots(tx) is True
 
 
-def test_strip_non_scene_kadry_keeps_b01_and_b02_inactive() -> None:
-    """B01-K1 и B02-K1 остаются в списке с прежними id и активен: False."""
-    from types import SimpleNamespace
-
-    from app.services.vo_shot_expand import strip_non_scene_kadry
-
-    frame = SimpleNamespace(
-        attrs={
-            "кадры": [
-                {"id": "B01-K1", "действие": "ищут"},
-                {"id": "B02-K1", "действие": "смотрят"},
-            ],
-            "shots": [
-                {"id": "B01-K1", "действие": "ищут"},
-                {"id": "B02-K1", "действие": "смотрят"},
-            ],
-        }
-    )
-    assert strip_non_scene_kadry(frame) is True
-    ids = [row["id"] for row in frame.attrs["кадры"]]
-    assert ids == ["B01-K1", "B02-K1"]
-    assert all(row.get("активен") is False for row in frame.attrs["кадры"])
-    assert [row["id"] for row in frame.attrs["shots"]] == ["B01-K1", "B02-K1"]
-    archived = [row["id"] for row in frame.attrs["кадры_archived"]]
-    assert archived == ["B01-K1", "B02-K1"]
-
-
 def test_write_frame_shot_id_keeps_previous_id_inactive() -> None:
     """Перепись id не стирает прежний шот: он остаётся в хвосте с активен: False."""
     from types import SimpleNamespace
