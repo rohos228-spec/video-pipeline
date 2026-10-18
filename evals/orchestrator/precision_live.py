@@ -1905,6 +1905,145 @@ def measure_holdout_prod_p95(artifact: Path | None = None) -> dict[str, Any]:
     return payload
 
 
+HOLDOUT3_MEASURE_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_holdout3_measure.json"
+HOLDOUT3_CONFIG_COMMIT = "1627ff1edd9fa4ca87f807dd757d7bc37e2372aa"
+HOLDOUT3_VERDICT = "предварительный, на фрагментных запросах"
+
+
+def _assert_holdout3_sha_before_load() -> str:
+    """Сначала байты и пин. JSON открывается только после совпадения."""
+    from evals.orchestrator.frozen_datasets import FROZEN_SHA256, FrozenDatasetError, file_sha256
+    from evals.orchestrator.holdout3 import HOLDOUT3_PATH
+
+    pin = FROZEN_SHA256["precision_live_holdout3.json"]["sha256"]
+    digest = file_sha256(HOLDOUT3_PATH)
+    if digest != pin:
+        raise FrozenDatasetError(f"holdout-3 sha256 {digest} != {pin}")
+    return digest
+
+
+def measure_holdout3_once(out: Path | None = None) -> dict[str, Any]:
+    """Один fp32-проход holdout-3 и три холодных p95. Повторный запуск запрещён."""
+    import platform
+
+    from app.orchestrator.rag import get_engine, reset_engine
+    from evals.orchestrator.holdout3 import load_holdout3_queries
+
+    destination = out or HOLDOUT3_MEASURE_PATH
+    if destination.exists():
+        raise RuntimeError(f"{destination.name} уже записан, повторный замер запрещён")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if head != HOLDOUT3_CONFIG_COMMIT:
+        raise RuntimeError(f"конфиг заморожен на {HOLDOUT3_CONFIG_COMMIT}, HEAD {head}")
+    config = _remeasure_config()
+    if (
+        config["aggregate"] != "expand_tail"
+        or int(config["rrf_k"]) != 20
+        or float(config["fusion_bm25"]) != 0.25
+        or float(config["fusion_rerank"]) != 1.5
+    ):
+        raise RuntimeError(f"профиль не совпал с замороженным дефолтом: {config}")
+    query_sha = _assert_holdout3_sha_before_load()
+    queries = load_holdout3_queries()
+    if len(queries) != 24 or any(not str(query["id"]).startswith("h3-") for query in queries):
+        raise RuntimeError("holdout-3: ожидались 24 id h3-*")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-holdout3-"))
+    db_path = temp_dir / "orch_rag.db"
+    embedder = build_embedder("e5-large", eval_mode=True)
+    reranker = build_reranker("bge-m3", max_length=int(config["max_length"]), eval_mode=True)
+    engine = _engine(db_path, embedder, reranker)
+    try:
+        print("holdout3 reindex", os.getpid(), flush=True)
+        engine.reindex(["rules", "nodes", "prompts"], timeout=900)
+        print("holdout3 chunks", len(_index_catalog(engine)), flush=True)
+        rows = measure_chunk_rows(
+            engine,
+            queries,
+            rerank=True,
+            rrf_k=int(config["rrf_k"]),
+            rrf_weights=(float(config["lexical"]), float(config["vector"])),
+            bm25_scope=str(config["bm25_scope"]),
+            rerank_pool=int(config["rerank_pool"]),
+            aggregate=str(config["aggregate"]),
+            rerank_fusion=str(config["rerank_fusion"]),
+            rerank_fusion_weights=(float(config["fusion_bm25"]), float(config["fusion_rerank"])),
+            bm25_protect=float(config["bm25_protect"]),
+            family_boost=float(config["family_boost"]),
+        )
+        slices = family_slices(rows)
+    finally:
+        engine.close()
+    print("holdout3 slices", json.dumps(slices, ensure_ascii=False), flush=True)
+
+    import app.orchestrator.rag as rag_mod
+
+    prod_dir = Path(tempfile.mkdtemp(prefix="orch-rag-holdout3-prod-"))
+    rag_mod.default_db_path = lambda: prod_dir / "orch_rag.db"
+    reset_engine()
+    prod = get_engine(profile="contour-b")
+    defaults = {key: value for key, value in prod.retrieve_defaults.items() if value is not None}
+    if (
+        defaults.get("aggregate") != "expand_tail"
+        or tuple(defaults.get("rerank_fusion_weights") or ()) != (0.25, 1.5)
+        or int(defaults.get("rrf_k") or 0) != 20
+    ):
+        reset_engine()
+        raise RuntimeError(f"прод-путь не замороженный дефолт: {defaults}")
+    prod_corpora = ["rules", "history", "nodes", "prompts"]
+    samples: list[float] = []
+    try:
+        print("holdout3 prod reindex", flush=True)
+        prod.reindex(prod_corpora, timeout=900)
+        for index in range(PASS_COUNT):
+            prod._clear_retrieval_cache()
+            prod_rows = measure_chunk_rows(
+                prod,
+                queries,
+                rerank=defaults.get("rerank", True) is not False,
+                rrf_k=int(defaults["rrf_k"]),
+                rrf_weights=tuple(defaults["rrf_weights"]),
+                bm25_scope=str(defaults["bm25_scope"]),
+                rerank_pool=int(defaults["rerank_pool"]),
+                aggregate=str(defaults["aggregate"]),
+                rerank_fusion=str(defaults["rerank_fusion"]),
+                rerank_fusion_weights=tuple(defaults["rerank_fusion_weights"]),
+                bm25_protect=float(defaults["bm25_protect"]),
+                family_boost=float(defaults["family_boost"]),
+                corpora=prod_corpora,
+            )
+            samples.append(float(summarize_rows(prod_rows)["p95_s"]))
+            print("HOLDOUT3_PROD_PASS", index, samples[-1], flush=True)
+    finally:
+        reset_engine()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(prod_dir, ignore_errors=True)
+
+    gate = prod_p95_each_gate(samples)
+    overall = slices["all"]
+    payload = {
+        "set": "holdout-3",
+        "passes": 1,
+        "verdict_label": HOLDOUT3_VERDICT,
+        "config_commit": HOLDOUT3_CONFIG_COMMIT,
+        "query_sha256": query_sha,
+        "config": config,
+        "slices": slices,
+        "hit_at_5": overall["hit_at_5"],
+        "ndcg_at_8": overall["ndcg_at_8"],
+        "thresholds": {"ndcg_at_8": NDCG_AT_8_MIN, "hit_at_5": HIT_AT_5_MIN, "p95_s": P95_MAX_S},
+        "hit_at_5_met": overall["hit_at_5"] >= HIT_AT_5_MIN,
+        "ndcg_at_8_met": overall["ndcg_at_8"] >= NDCG_AT_8_MIN,
+        "prod_p95_s": samples,
+        "prod_p95_gate": gate,
+        "prod_p95_met": gate["each_within_limit"],
+        "hardware": {"cpu_count": os.cpu_count(), "platform": platform.platform()},
+    }
+    write_pass_artifact(destination, payload)
+    print(json.dumps({"hit_at_5": payload["hit_at_5"], "ndcg_at_8": payload["ndcg_at_8"], "prod_p95_s": samples}, ensure_ascii=False), flush=True)
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
@@ -1927,6 +2066,7 @@ def main() -> None:
     parser.add_argument("--holdout-pass", action="store_true", help="один проход holdout в отдельном процессе")
     parser.add_argument("--holdout-measure", action="store_true", help="три процесса fp32 на замороженном holdout")
     parser.add_argument("--holdout-prod-p95", action="store_true", help="три холодных p95 прод-пути на holdout")
+    parser.add_argument("--holdout3-measure", action="store_true", help="один проход holdout-3 на замороженном конфиге")
     parser.add_argument("--pass-dir", type=Path)
     parser.add_argument("--pass-out", type=Path)
     args = parser.parse_args()
@@ -1942,6 +2082,9 @@ def main() -> None:
         return
     if args.holdout_prod_p95:
         measure_holdout_prod_p95(args.artifact)
+        return
+    if args.holdout3_measure:
+        measure_holdout3_once()
         return
     if args.remeasure_pass:
         if args.pass_dir is None or args.pass_out is None:
