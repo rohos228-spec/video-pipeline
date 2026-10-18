@@ -60,6 +60,34 @@ test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупрежд�
   }
 });
 
+test("approval_decided без decision закрывает карточку как closed", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "grant-null",
+      payload: {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        action: "run_node",
+      },
+    },
+  });
+  const granted = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 3,
+      session_id: "grant-null",
+      payload: { change_id: "orch-appr-1-1", decision: null, task_id: 1 },
+    },
+  });
+  expect(granted.approvals[0]?.resolved).toBe("closed");
+});
+
 test("approval_decided закрывает карточку по своему change_id", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",

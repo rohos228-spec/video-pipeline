@@ -387,7 +387,9 @@ function approvalDecidedResolution(
 ): "approved" | "rejected" | "closed" | null {
   if (!Object.prototype.hasOwnProperty.call(body, "decision")) return null;
   const value = body.decision;
-  if (value == null || value === "approve" || value === "approved") return "approved";
+  // #358: пустой decision — прежний grant, не кнопка «одобрить».
+  if (value == null) return "closed";
+  if (value === "approve" || value === "approved") return "approved";
   if (value === "deny" || value === "rejected" || value === "reject") return "rejected";
   if (value === "retry_step") return "closed";
   return null;
