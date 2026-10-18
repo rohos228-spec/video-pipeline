@@ -133,6 +133,7 @@ _DELETE_KINDS = frozenset(
         "sql.unknown",
         "http.delete",
         "http.unknown",
+        "orm.delete",
         "os.symlink",
         "os.link",
         "Path.symlink_to",
@@ -1698,6 +1699,9 @@ def _write_hit(
             dest = _call_arg(call, 1, "dst")
         elif attr in _PATH_LINK:
             kind = f"Path.{attr}"
+            dest = func.value
+        elif attr == "delete":
+            kind = "orm.delete"
             dest = func.value
         elif attr in _PATH_DELETE or attr == "truncate":
             kind = f"Path.{attr}" if attr != "truncate" else "Path.truncate"
@@ -3295,6 +3299,19 @@ def test_sql_delete_drop_truncate_are_denied() -> None:
     assert all(hit.allowed is False for hit in hits)
 
 
+def test_session_and_db_delete_are_orm_delete() -> None:
+    """session.delete и db.delete — удаление, даже если получатель не HTTP-клиент."""
+    source = (
+        "def save(session, db, other):\n"
+        "    session.delete(row)\n"
+        "    db.delete(item)\n"
+        "    other.delete()\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == ["orm.delete", "orm.delete", "orm.delete"]
+    assert all(hit.allowed is False for hit in hits)
+
+
 def test_client_delete_method_is_http_delete() -> None:
     source = (
         "def save(client, requests, httpx, ctx, session):\n"
@@ -3306,7 +3323,13 @@ def test_client_delete_method_is_http_delete() -> None:
         "    client.get('/ok')\n"
     )
     hits = analyze_module_source(source, "group.delete")
-    assert [hit.kind for hit in hits] == ["http.delete", "http.delete", "http.delete", "http.delete"]
+    assert [hit.kind for hit in hits] == [
+        "http.delete",
+        "http.delete",
+        "http.delete",
+        "http.delete",
+        "orm.delete",
+    ]
     assert all(hit.allowed is False for hit in hits)
 
 
