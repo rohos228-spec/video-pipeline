@@ -123,6 +123,7 @@ async def test_kill_records_real_change_id_after_mutating_release(token: str) ->
     )
     set_runtime(runtime)
     session = "kill-late-id"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
         await actions.started.wait()
@@ -138,10 +139,23 @@ async def test_kill_records_real_change_id_after_mutating_release(token: str) ->
         assert [call["name"] for call in actions.calls] == ["write"]
         assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-write-1"]
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
     finally:
         actions.release.set()
         set_runtime(None)
+
+
+def _delay_partial_publish(runtime) -> None:
+    """publish partial_write уступает циклу: пустой WARN не должен обогнать id."""
+    original = runtime.bus.publish
+
+    async def publish(session_id, event_type, payload, **kwargs):
+        if event_type == "partial_write":
+            await asyncio.sleep(0.05)
+        return await original(session_id, event_type, payload, **kwargs)
+
+    runtime.bus.publish = publish
 
 
 async def _partial_row(runtime, task_id: int) -> dict:
@@ -248,6 +262,7 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
     )
     set_runtime(runtime)
     session = "kill-1b"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
         await actions.started.wait()
@@ -264,6 +279,7 @@ async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None
         checkpoint = runtime.checkpoints.load_latest(task_id)
         assert checkpoint is not None
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["level"] == "WARN"
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
@@ -454,6 +470,7 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
     )
     set_runtime(runtime)
     session = "kill-2"
+    _delay_partial_publish(runtime)
     try:
         task_id = await runtime.supervisor.start_task(session, "частично", project_id=13)
         await actions.started.wait()
@@ -481,6 +498,7 @@ async def test_partial_write_marker_lists_change_ids(token: str) -> None:
         assert listed.json()["change_ids"] == ["chg-write-1"]
         assert TEST_TOKEN not in listed.text
         warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert len(warned) == 1
         assert warned[-1].payload["change_ids"] == ["chg-write-1"]
     finally:
         actions.release.set()

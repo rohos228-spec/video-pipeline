@@ -211,6 +211,7 @@ class Supervisor:
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
+        self._partial_announced: set[tuple[int, int]] = set()
         self._bind_partial_llm_cost()
 
     async def start_task(
@@ -1980,8 +1981,12 @@ class Supervisor:
         step_id: int,
         index: int,
     ) -> None:
-        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``."""
-        if done.cancelled() or task_id not in self._shield_orphaned:
+        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``.
+
+        Событие публикуется один раз, уже после записи id: опрос строки не
+        обгоняет WARN. Уже сохранённый id событие не отменяет.
+        """
+        if done.cancelled():
             return
         try:
             exc = done.exception()
@@ -1989,40 +1994,16 @@ class Supervisor:
             return
         if exc is not None:
             return
+        if task_id not in self._shield_orphaned:
+            return
         change_id = envelope_change_id(done.result())
-        if not change_id or self._stored_change_id(task_id, step_id):
+        # Уже записанный id не отменяет событие: WARN всё равно один, с этим id.
+        resolved = change_id or self._stored_change_id(task_id, step_id)
+        if not resolved:
             return
-        row = next(
-            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
-            None,
+        self._spawn(
+            self._announce_partial_once(task_id, session_id, step_id, index, resolved)
         )
-        status = str(row.get("status")) if row is not None else "running"
-        if status == "done":
-            return
-        if status == "running":
-            self.tasks.note_running_outcome(step_id, change_id, 0.0)
-        else:
-            self.tasks.finish_step(step_id, "partial", change_id, 0.0)
-        bucket = self._change_ids.setdefault(task_id, [])
-        if change_id not in bucket:
-            bucket.append(change_id)
-        loop = asyncio.get_running_loop()
-        job = loop.create_task(
-            self.bus.publish(
-                session_id,
-                "partial_write",
-                {
-                    "level": "WARN",
-                    "change_ids": [change_id],
-                    "position": index,
-                    "task_id": task_id,
-                },
-                task_id=task_id,
-            ),
-            name=f"orch-partial-{task_id}",
-        )
-        self._shield_jobs.add(job)
-        job.add_done_callback(self._shield_jobs.discard)
 
     async def _pause_after_shield(
         self,
@@ -2072,26 +2053,68 @@ class Supervisor:
         index: int,
         started: list[tuple[PlanStep, int]],
     ) -> None:
-        """Отмена mutating-шага: чекпоинт, WARN ``partial_write``, change_id на месте."""
-        kept: list[str] = []
+        """Отмена mutating-шага: чекпоинт и waiting_approval.
+
+        WARN уходит из ``_announce_partial_once``, когда id уже известен.
+        Пустой ``change_ids`` отсюда не публикуется: он обгонял поздний id.
+        """
+        known: list[str] = []
         for done_step, step_id in started:
+            if not done_step.mutating:
+                self.tasks.finish_step(step_id, "cancelled", None, 0.0)
+                continue
             existing = self._stored_change_id(task_id, step_id)
-            status = "partial" if done_step.mutating else "cancelled"
-            self.tasks.finish_step(step_id, status, existing, 0.0)
-            if done_step.mutating and existing:
-                kept.append(existing)
+            if existing:
+                known.append(existing)
+                await self._announce_partial_once(task_id, session_id, step_id, index, existing)
+            else:
+                # partial без id: resume не повторяет запись. id и WARN — когда inner кончится.
+                self.tasks.finish_step(step_id, "partial", None, 0.0)
         await self._checkpoint(task_id, session_id, plan, index)
-        logger.warning("orch partial_write task {} change_ids {}", task_id, kept)
-        await self.bus.publish(
-            session_id,
-            "partial_write",
-            {"level": "WARN", "change_ids": kept, "position": index, "task_id": task_id},
-            task_id=task_id,
-        )
+        logger.warning("orch partial_write task {} change_ids {}", task_id, known)
         current = self._status(task_id)
         if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
             await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
             self._block_reason[task_id] = "partial_write"
+
+    async def _announce_partial_once(
+        self,
+        task_id: int,
+        session_id: str,
+        step_id: int,
+        index: int,
+        change_id: str | None,
+    ) -> None:
+        """Одно ``partial_write`` с id. Строка получает id только после события."""
+        key = (int(task_id), int(step_id))
+        if key in self._partial_announced:
+            return
+        resolved = change_id or self._stored_change_id(task_id, step_id)
+        if not resolved:
+            return
+        self._partial_announced.add(key)
+        await self.bus.publish(
+            session_id,
+            "partial_write",
+            {
+                "level": "WARN",
+                "change_ids": [resolved],
+                "position": index,
+                "task_id": task_id,
+            },
+            task_id=task_id,
+        )
+        row = next(
+            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
+            None,
+        )
+        status = str(row.get("status")) if row is not None else "running"
+        if status != "done":
+            cost = float((row or {}).get("cost") or 0)
+            self.tasks.finish_step(int(step_id), "partial", resolved, cost)
+        bucket = self._change_ids.setdefault(task_id, [])
+        if resolved not in bucket:
+            bucket.append(resolved)
 
     async def _hold_executor_approval(
         self,
