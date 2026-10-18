@@ -233,7 +233,7 @@ class FunctionValidators:
                 payload.get("before"),
                 payload.get("after"),
                 payload.get("ops"),
-                mode=payload.get("mode", "reject"),
+                mode="reject",
             )
         except Exception as exc:
             if rejected is not None and isinstance(exc, rejected):

@@ -82,6 +82,27 @@ def test_preservation_rejected_is_blocking_and_does_not_touch_data() -> None:
         assert before == before_snapshot
         assert after == after_snapshot
         module = sys.modules["app.orchestrator.validators.preservation"]
-        assert module.seen == ["warn"]
+        assert module.seen == ["reject"]
+    finally:
+        _restore(previous)
+
+
+def test_payload_mode_does_not_weaken_preservation() -> None:
+    """mode из payload не ослабляет серверный reject."""
+    previous = _install()
+    before = {"scenes": [{"id": "s1", "кадры": [{"id": "f1"}]}]}
+    after = {"scenes": [{"id": "s1", "кадры": [{"id": "f1"}]}]}
+    try:
+        def _ok(name: str, project_id: int, context: dict) -> dict:
+            del name, project_id, context
+            return {"pass": True}
+
+        FunctionValidators(_ok).run(
+            "preservation",
+            13,
+            {"before": before, "after": after, "ops": [], "mode": "warn"},
+        )
+        module = sys.modules["app.orchestrator.validators.preservation"]
+        assert module.seen == ["reject"]
     finally:
         _restore(previous)
