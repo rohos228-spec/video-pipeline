@@ -103,6 +103,7 @@ _APPR_ID = re.compile(r"^orch-appr-(\d+)-(\d+)$")
 
 
 _APPROVED_MARK = "\n\x1eorchfp:"
+_UNKNOWN_MARK = "\n\x1eorchun:"
 _PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
 
 
@@ -174,6 +175,7 @@ class Supervisor:
         self._pending_kill_publish: list[tuple[str, int | None]] = []
         self._pending_queue_cancel: list[tuple[str, int]] = []
         self._approved: dict[int, str] = {}
+        self._unknown_step: dict[int, dict[str, Any]] = {}
         self._appr_seq: dict[int, int] = {}
         self._appr_open: dict[int, str | None] = {}
         self._appr_owner: dict[str, tuple[int, str]] = {}
@@ -697,9 +699,44 @@ class Supervisor:
         data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
         if data is None:
             raise LookupError(f"нет чекпоинта для задачи {task_id}")
+        located = self._locate_paid_unknown(task_id, data)
+        if located is not None:
+            index, step = located
+            if int(data.position) != index:
+                data = data.model_copy(update={"position": index})
+            return data, step
         if data.position < 0 or data.position >= len(data.plan):
             raise LookupError(f"нет шага чекпоинта для задачи {task_id}")
         return data, data.plan[int(data.position)]
+
+    def _locate_paid_unknown(self, task_id: int, data: CheckpointData) -> tuple[int, PlanStep] | None:
+        """Позиция и identity unknown-шага, а не начало батча."""
+        stored = _unpack_unknown(data.context or "")
+        if stored is None:
+            stored = self._unknown_step.get(task_id)
+        if isinstance(stored, dict) and "position" in stored:
+            try:
+                index = int(stored["position"])
+            except (TypeError, ValueError):
+                index = -1
+            action = str(stored.get("action") or "")
+            if 0 <= index < len(data.plan) and data.plan[index].action == action:
+                return index, data.plan[index]
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "running" or not row.get("paid"):
+                continue
+            action = str(row.get("action_name") or "")
+            for index, step in enumerate(data.plan):
+                if step.paid and step.action == action:
+                    return index, step
+        return None
+
+    def _remember_unknown_step(self, task_id: int, index: int, step: PlanStep) -> None:
+        self._unknown_step[task_id] = {
+            "position": index,
+            "action": step.action,
+            "params": _public_params(step.params),
+        }
 
     async def _continue_from_checkpoint(self, task_id: int, session_id: str, data: CheckpointData) -> None:
         self._arm_resume(session_id, task_id, data)
@@ -1252,17 +1289,19 @@ class Supervisor:
             )
             if unknown is not None:
                 # Строка running уже есть: шаг стартовал до рестарта, исход не записан.
-                # Чекпоинт пишется на этот индекс, иначе approve возьмёт предыдущий
-                # шаг (например verify_code_state перед run_node).
+                # Позиция — сам unknown, не начало батча: иначе approve берёт
+                # предыдущий шаг (например verify_code_state перед run_node).
+                unknown_at = index + batch.index(unknown)
+                self._remember_unknown_step(task_id, unknown_at, unknown)
                 self._block_reason[task_id] = "paid_outcome_unknown"
-                await self._checkpoint(task_id, session_id, plan, index)
+                await self._checkpoint(task_id, session_id, plan, unknown_at)
                 await self._escalate(
                     task_id,
                     session_id,
                     "paid_outcome_unknown",
                     extra={
                         "action": unknown.action,
-                        "position": index,
+                        "position": unknown_at,
                         "forecast_usd": forecast_cost([unknown]),
                         "decisions": approval_decision_choices(),
                     },
@@ -2185,7 +2224,11 @@ class Supervisor:
     def _checkpoint_context(self, task_id: int) -> str:
         visible, _packed = _split_appr_context(self._context.get(task_id, ""))
         visible, _mark = _unpack_approved(visible)
-        return self._context_with_appr(task_id, _pack_approved(visible, self._approved.get(task_id)))
+        packed = _pack_unknown(
+            _pack_approved(_strip_unknown(visible), self._approved.get(task_id)),
+            self._unknown_step.get(task_id),
+        )
+        return self._context_with_appr(task_id, packed)
 
     def _context_with_appr(self, task_id: int, visible: str) -> str:
         visible, _packed = _split_appr_context(visible)
@@ -2348,18 +2391,46 @@ def _plan_fingerprint(plan: list[PlanStep]) -> str:
 
 def _pack_approved(visible: str, fingerprint: str | None) -> str:
     """Отпечаток approve лежит в JSON чекпоинта, в поле ``context``."""
-    base = (visible or "").split(_APPROVED_MARK, 1)[0]
+    base = _strip_unknown((visible or "").split(_APPROVED_MARK, 1)[0])
     if not fingerprint:
         return base
     return f"{base}{_APPROVED_MARK}{fingerprint}"
 
 
 def _unpack_approved(raw: str) -> tuple[str, str | None]:
-    if _APPROVED_MARK not in (raw or ""):
-        return raw or "", None
-    visible, mark = raw.split(_APPROVED_MARK, 1)
-    mark = mark.strip()
-    return visible, mark or None
+    text = raw or ""
+    if _APPROVED_MARK not in text:
+        return _strip_unknown(text), None
+    visible, mark = text.split(_APPROVED_MARK, 1)
+    mark = mark.split(_UNKNOWN_MARK, 1)[0].strip()
+    return _strip_unknown(visible), mark or None
+
+
+def _strip_unknown(text: str) -> str:
+    return (text or "").split(_UNKNOWN_MARK, 1)[0]
+
+
+def _pack_unknown(visible: str, info: dict[str, Any] | None) -> str:
+    base = _strip_unknown(visible)
+    if not info:
+        return base
+    payload = json.dumps(info, ensure_ascii=False, sort_keys=True)
+    return f"{base}{_UNKNOWN_MARK}{payload}"
+
+
+def _unpack_unknown(raw: str) -> dict[str, Any] | None:
+    if _UNKNOWN_MARK not in (raw or ""):
+        return None
+    chunk = raw.split(_UNKNOWN_MARK, 1)[1]
+    for mark in (_APPR_MARK, _APPROVED_MARK):
+        chunk = chunk.split(mark, 1)[0]
+    try:
+        data = json.loads(chunk)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "position" not in data:
+        return None
+    return data
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:
