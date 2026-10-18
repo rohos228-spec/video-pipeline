@@ -11,7 +11,9 @@ DELETED_MARK = "удалён"
 QUARANTINE_MARK = "карантин"
 
 _FALSE_TOKENS = frozenset({"0", "false", "нет", "no", "off", "ложь"})
-_DELETED_FALSE_TOKENS = _FALSE_TOKENS | {"0.0"}
+# «удалён» / «карантин» сняты только этими строками. «ложь» и «0.0» сюда не входят:
+# их пишет не как «флага нет», а как значение, и кадр должен остаться неактивным.
+_NOT_DELETED_STRINGS = frozenset({"0", "false", "нет", "no", "off"})
 _WARNED_VALUES: set[str] = set()
 
 
@@ -56,23 +58,22 @@ def flag_is_false(value: object) -> bool:
 
 
 def flag_is_true(value: object, *, mark: str = DELETED_MARK) -> bool:
-    """«удалён» и «карантин».
+    """«удалён» и «карантин» стоят.
 
-    None, NaN и пустая строка — флага нет. К ложным строкам добавлены ``0.0``
-    и ``ложь``. Неизвестная строка не удаляет: шот живой, в лог один WARN.
+    Нет пометки: None, NaN, пустая строка, отсутствующий ключ (вызывающий
+    передаёт None). Явно снята: False, 0 и строки ``0`` / ``false`` / ``нет`` /
+    ``no`` / ``off``. Любое другое значение — пометка стоит: True, 1, ``1``,
+    ``true``, ``да``, ``yes`` и то, что пишет UI.
     """
 
     if value is None or _is_nan(value):
         return False
-    if isinstance(value, str) and not value.strip():
-        return False
     if isinstance(value, str):
         token = value.strip().casefold()
-        if token in _DELETED_FALSE_TOKENS:
+        if not token or token in _NOT_DELETED_STRINGS:
             return False
-        _warn_once(mark, value)
-        return False
-    if flag_is_false(value):
+        return True
+    if value is False or value == 0:
         return False
     return bool(value)
 

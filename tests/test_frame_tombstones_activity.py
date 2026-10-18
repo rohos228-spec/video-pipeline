@@ -1,8 +1,9 @@
 """Один предикат активности.
 
 Если ``activity_flags`` импортируется, ``frame_tombstones`` отдаёт те же
-объекты. Иначе локальная матрица, как blob ``e8a3284a``. Сравнение с blob
-не фиксирует ожидаемые края само: оба ответа должны совпасть.
+объекты. Иначе локальная матрица. Она расходится с blob ``e8a3284a``
+только на правдивых строках «удалён» и «карантин»: список в
+``test_fallback_diverges_from_activity_flags_blob``.
 """
 
 from __future__ import annotations
@@ -199,12 +200,19 @@ def _block_activity_flags_import():
     import builtins
     import importlib
 
+    import app.orchestrator.validators as validators_pkg
     import app.services.frame_tombstones as tomb
 
     original = builtins.__import__
+    had_attr = hasattr(validators_pkg, "activity_flags")
+    saved_attr = getattr(validators_pkg, "activity_flags", None)
+    if had_attr:
+        delattr(validators_pkg, "activity_flags")
 
     def _blocked(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "app.orchestrator.validators.activity_flags":
+        if name == "app.orchestrator.validators.activity_flags" or (
+            name == "app.orchestrator.validators" and "activity_flags" in (fromlist or ())
+        ):
             raise ImportError(name)
         return original(name, globals, locals, fromlist, level)
 
@@ -214,6 +222,8 @@ def _block_activity_flags_import():
 
     def _restore() -> None:
         builtins.__import__ = original
+        if had_attr:
+            setattr(validators_pkg, "activity_flags", saved_attr)
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
 
@@ -323,8 +333,26 @@ def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
         restore()
 
 
-def test_fallback_matches_final_activity_flags_blob(tmp_path) -> None:
-    """Локальная матрица и blob e8a3284a дают один ответ на широком наборе."""
+# Blob e8a3284a считает эти строки «флага нет» (кадр живой) и пишет WARN.
+# Fallback считает пометку поставленной: кадр неактивен. Просьба к WS1.
+_WS1_MARK_STRINGS_TREATED_AS_ABSENT = (
+    "ложь",
+    "ЛОЖЬ",
+    "0.0",
+    "да",
+    "да?",
+    "1",
+    "true",
+    "TRUE",
+    " true ",
+    "yes",
+    "YES",
+    " да ",
+)
+
+
+def test_fallback_diverges_from_activity_flags_blob(tmp_path) -> None:
+    """Расхождения с blob e8a3284a — явный список, не общее равенство."""
 
     import app.services.activity_flags_fallback as fallback
 
@@ -349,13 +377,21 @@ def test_fallback_matches_final_activity_flags_blob(tmp_path) -> None:
         "no",
         " OFF ",
         "off",
-        "ложь",
-        "ЛОЖЬ",
-        "0.0",
-        "да",
-        "да?",
+        *_WS1_MARK_STRINGS_TREATED_AS_ABSENT,
         nan,
     ]
+    flag_diverged = [
+        value
+        for value in scalars
+        if fallback.flag_is_true(value) is not remote.flag_is_true(value)
+    ]
+    assert flag_diverged == list(_WS1_MARK_STRINGS_TREATED_AS_ABSENT)
+    for value in _WS1_MARK_STRINGS_TREATED_AS_ABSENT:
+        assert fallback.flag_is_true(value) is True
+        assert remote.flag_is_true(value) is False
+    for value in scalars:
+        assert fallback.flag_is_false(value) is remote.flag_is_false(value)
+
     payloads: list[object] = [None, "не словарь", 1, [], {}]
     for value in scalars:
         payloads.append({ACTIVE_MARK: value})
@@ -372,9 +408,58 @@ def test_fallback_matches_final_activity_flags_blob(tmp_path) -> None:
             {ACTIVE_MARK: "да?", DELETED_MARK: ""},
         ]
     )
-    for value in scalars:
-        assert fallback.flag_is_false(value) is remote.flag_is_false(value)
-        assert fallback.flag_is_true(value) is remote.flag_is_true(value)
-    for payload in payloads:
-        assert fallback.shot_is_active(payload) is remote.shot_is_active(payload)
-        assert fallback.frame_is_active(payload) is remote.frame_is_active(payload)
+    expected_inactive = [
+        {mark: value}
+        for value in _WS1_MARK_STRINGS_TREATED_AS_ABSENT
+        for mark in (DELETED_MARK, QUARANTINE_MARK)
+    ]
+    expected_inactive.append({DELETED_MARK: "ложь", QUARANTINE_MARK: "да?"})
+    record_diverged = [
+        payload
+        for payload in payloads
+        if fallback.shot_is_active(payload) is not remote.shot_is_active(payload)
+        or fallback.frame_is_active(payload) is not remote.frame_is_active(payload)
+    ]
+    assert record_diverged == expected_inactive
+    for payload in expected_inactive:
+        assert fallback.shot_is_active(payload) is False
+        assert fallback.frame_is_active(payload) is False
+        assert remote.shot_is_active(payload) is True
+        assert remote.frame_is_active(payload) is True
+
+
+def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
+    """Пометка пользователя не доходит до платных шагов и импорта через fallback."""
+
+    from app.orchestrator.steps.generate_images import log_paid_frame_skip as image_skip
+    from app.orchestrator.steps.generate_videos import log_paid_frame_skip as video_skip
+    from app.services.xlsx_v8_import import seal_import_skip
+
+    tomb, restore = _block_activity_flags_import()
+    try:
+        project = SimpleNamespace(id=1, meta={})
+        truthy = (True, 1, "1", "true", "да", "yes", "YES", " да ")
+        for value in truthy:
+            frame = SimpleNamespace(number=4, id=9, attrs={DELETED_MARK: value})
+            assert image_skip(frame, where="generate_images")
+            assert video_skip(frame, where="generate_videos")
+            assert seal_import_skip(project, frame, 4)
+            assert tomb.frame_is_active(frame.attrs) is False
+            assert tomb.frame_marked_deleted(frame) is True
+        quarantined = SimpleNamespace(number=5, id=10, attrs={QUARANTINE_MARK: "да"})
+        assert tomb.frame_is_active(quarantined.attrs) is False
+        assert image_skip(quarantined, where="generate_images")
+        assert video_skip(quarantined, where="generate_videos")
+        for value in (False, 0, "0", "false", "нет", "no", "off", None):
+            attrs = {} if value is None else {DELETED_MARK: value}
+            frame = SimpleNamespace(number=6, id=11, attrs=attrs)
+            assert image_skip(frame, where="generate_images") is None
+            assert video_skip(frame, where="generate_videos") is None
+            assert seal_import_skip(project, frame, 6) is None
+            assert tomb.frame_marked_deleted(frame) is False
+        assert tomb.entity_is_marked(SimpleNamespace(attrs={DELETED_MARK: "нет"})) is False
+        assert tomb.entity_is_marked(SimpleNamespace(attrs={DELETED_MARK: "да"})) is True
+        assert tomb.entity_is_marked(SimpleNamespace(attrs={"archived": "нет"})) is False
+        assert tomb.entity_is_marked(SimpleNamespace(attrs={"archived": "yes"})) is True
+    finally:
+        restore()

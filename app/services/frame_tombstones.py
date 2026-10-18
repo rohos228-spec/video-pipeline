@@ -65,7 +65,9 @@ def entity_is_marked(entity) -> bool:
     attrs = getattr(entity, "attrs", None)
     if not isinstance(attrs, dict):
         return False
-    return bool(attrs.get(DELETED_MARK) or attrs.get("archived"))
+    return flag_is_true(attrs.get(DELETED_MARK), mark=DELETED_MARK) or flag_is_true(
+        attrs.get("archived"), mark="archived"
+    )
 
 
 def deleted_numbers(project) -> set[int]:
