@@ -604,6 +604,77 @@ async def test_delete_frame_then_frame_restore_roundtrip(env) -> None:
         assert {row.id for row in rows} == set(ids.values())
 
 
+async def test_frame_restore_keeps_edits_made_after_delete(env) -> None:
+    """Restore снимает только пометку. Правка после удаления остаётся."""
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import Frame, Project
+    from app.orchestrator.actions.executor import execute
+    from app.services.frame_tombstones import deleted_numbers
+
+    pid = await env.add_project(frames=1)
+    ids = await env.frame_ids(pid)
+    shots = [
+        {"id": "s1", "номер": 1, "активен": True, "текст": "первый"},
+        {"id": "s2", "номер": 2, "активен": True, "текст": "второй"},
+    ]
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        frame.attrs = {"кадры": [dict(shot) for shot in shots]}
+        await session.commit()
+
+    def grant(action: str, change_id: str) -> dict:
+        return {
+            "app": env.app,
+            "operator": "adapter-test",
+            "approval": {
+                "change_id": change_id,
+                "action": action,
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": "cc-edit",
+            },
+        }
+
+    deleted = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        grant("montage.delete_frame", "orch-appr-11-1"),
+    )
+    assert deleted.status == "ok"
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        edited = []
+        for shot in frame.attrs["кадры"]:
+            item = dict(shot)
+            if item["id"] == "s2":
+                item["текст"] = "правка соседа"
+            if item["номер"] == 1:
+                item["заметка"] = "поле после удаления"
+            edited.append(item)
+        frame.attrs = {"кадры": edited}
+        flag_modified(frame, "attrs")
+        await session.commit()
+
+    restored = await execute(
+        "frame.restore",
+        {"project_id": pid, "snapshot_id": deleted.result.snapshot_id},
+        grant("frame.restore", "orch-appr-11-2"),
+    )
+    assert restored.status == "ok"
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        by_id = {shot["id"]: shot for shot in frame.attrs["кадры"]}
+        project = await session.get(Project, pid)
+    assert by_id["s2"]["текст"] == "правка соседа"
+    assert by_id["s1"]["заметка"] == "поле после удаления"
+    assert by_id["s1"]["текст"] == "первый"
+    assert by_id["s1"]["активен"] is True
+    assert 1 not in deleted_numbers(project)
+
+
 def _action_names(node, key=None):
     found = []
     if isinstance(node, dict):

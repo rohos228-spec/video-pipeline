@@ -315,6 +315,26 @@ def merge_kadry_keep_missing(existing: list | None, incoming: list | None) -> li
     return merged
 
 
+def _unmark_deleted_shots(shots: list, number: int) -> list:
+    """Снять только пометку кадра. Остальные поля и соседние шоты не трогать."""
+
+    unmarked: list = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            unmarked.append(shot)
+            continue
+        copy = dict(shot)
+        token = copy.get("номер", copy.get("number"))
+        try:
+            hit = int(token) == int(number)
+        except (TypeError, ValueError):
+            hit = False
+        if hit:
+            copy["активен"] = True
+        unmarked.append(copy)
+    return unmarked
+
+
 def _marked_shot(shots: list, number: int) -> list:
     marked: list = []
     for shot in shots:
@@ -479,7 +499,6 @@ async def _frame_restore(params: dict, ctx: Any) -> ActionResult:
         return _failed(found)
     number = int(found["target"]["number"])
     frame_id = int(found["target"]["frame_id"])
-    before = found["before"].get("кадры") or []
     factory = store.sessions()
     async with factory() as session:
         project = await session.get(Project, project_id)
@@ -487,7 +506,8 @@ async def _frame_restore(params: dict, ctx: Any) -> ActionResult:
         if project is None or frame is None or frame.project_id != project_id:
             return _failed("кадр не найден")
         attrs = dict(frame.attrs or {})
-        attrs["кадры"] = [dict(shot) if isinstance(shot, dict) else shot for shot in before]
+        current = attrs.get("кадры") or []
+        attrs["кадры"] = _unmark_deleted_shots(current, number)
         frame.attrs = attrs
         flag_modified(frame, "attrs")
         forget_deleted(project, number)
