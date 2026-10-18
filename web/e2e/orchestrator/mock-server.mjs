@@ -291,6 +291,7 @@ async function runStreamHold(session, taskId) {
   session.releaseStream = null;
   if (session.killed || session.interrupted) return;
   emit(session, "token", taskId, { text: "КОНЕЦ-ПОТОКА" });
+  emit(session, "task_done", taskId, { summary: "поток закончен" });
 }
 
 function runStreamHoldFollowup(session, taskId, text) {

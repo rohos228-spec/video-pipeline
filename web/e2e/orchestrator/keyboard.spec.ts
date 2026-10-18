@@ -95,6 +95,8 @@ test("клавиатура: Enter во время стрима шлёт одно
   await expect(assistant).toContainText("КОНЕЦ-ПОТОКА");
   expect((await assistant.innerText()).length).toBeGreaterThan(mid);
   expect(posts).toHaveLength(2);
+  await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+  await expect(page.getByTestId("orch-task-summary")).toContainText("поток закончен");
 });
 
 test("клавиатура: Shift+Enter переносит строку, Enter отправляет", async ({ page }) => {
