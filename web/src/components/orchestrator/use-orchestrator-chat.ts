@@ -24,6 +24,8 @@ import {
 import { conflictRetryBody, reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
 import {
   initialOrchScreen,
+  NOT_IN_WHITELIST,
+  NOT_IN_WHITELIST_TEXT,
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
@@ -304,9 +306,12 @@ export function useOrchestratorChat() {
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
+          const raw = error instanceof Error ? error.message : "не записалось решение";
+          const denied =
+            error instanceof OrchApiError && error.status === 403 && raw === NOT_IN_WHITELIST;
           setDecisionError({
             id: approvalId,
-            message: error instanceof Error ? error.message : "не записалось решение",
+            message: denied ? NOT_IN_WHITELIST_TEXT : raw,
           });
         }
       } finally {

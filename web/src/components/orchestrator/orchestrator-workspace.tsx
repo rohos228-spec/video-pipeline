@@ -22,6 +22,8 @@ import {
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
+  NOT_IN_WHITELIST,
+  NOT_IN_WHITELIST_TEXT,
   TASK_STATUS_LABEL,
   type ApprovalView,
   type KillNoticeView,
@@ -91,6 +93,11 @@ const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string 
     title: "Исход платного шага неизвестен",
     body: "Задача в waiting_approval. Отката нет.",
     testId: "orch-paid-reason",
+  },
+  [NOT_IN_WHITELIST]: {
+    title: "Действия нет в белом списке",
+    body: NOT_IN_WHITELIST_TEXT,
+    testId: "orch-whitelist",
   },
 };
 

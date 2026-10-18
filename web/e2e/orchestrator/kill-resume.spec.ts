@@ -167,3 +167,35 @@ test("карточка paid_outcome_unknown показывает change_id ша�
   await expect(page.getByTestId("orch-paid-step-missing")).toHaveCount(0);
   await expect(page.getByTestId("orch-approve")).toHaveCount(1);
 });
+
+test("not_in_whitelist: экран отказывает до карточки, grant 403 пишет понятный текст", async ({ page }) => {
+  const session = "wl-deny";
+  await openWithToken(page, session);
+
+  await emit(page, session, "task_failed", { error: "not_in_whitelist" });
+  const screen = page.getByTestId("orch-approval");
+  await expect(page.getByTestId("orch-whitelist")).toHaveText("Действия нет в белом списке");
+  await expect(screen).toContainText("Одобрить и выполнить его нельзя");
+  await expect(screen).toHaveAttribute("data-terminal", "true");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+
+  await emit(page, session, "approval_required", {
+    reason: "risk",
+    change_id: "orch-appr-1-1",
+    action: "exec",
+    task_id: 1,
+  });
+  await page.route("**/api/orchestrator/approvals/orch-appr-1-1/approve", async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "not_in_whitelist" }),
+    });
+  });
+  const grant = page.getByTestId("orch-approval").filter({ hasText: "exec" });
+  await grant.getByTestId("orch-approve").click();
+  await expect(grant.getByTestId("orch-approval-error")).toContainText("белом списке");
+  await expect(grant.getByTestId("orch-approve")).toBeVisible();
+});

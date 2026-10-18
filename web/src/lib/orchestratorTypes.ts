@@ -491,6 +491,9 @@ export const BLOCK_OUTCOMES = {
   "missing_run_id": "failed",
   "empty_plan": "failed",
   "paid_outcome_unknown": "waiting_approval",
+  // В таблице BLOCK_OUTCOMES ключа нет: block_status отдаёт failed по умолчанию.
+  // Экран шлёт task_failed error=not_in_whitelist и не открывает approval_required.
+  "not_in_whitelist": "failed",
 } as const;
 
 export type BlockReason = keyof typeof BLOCK_OUTCOMES;
