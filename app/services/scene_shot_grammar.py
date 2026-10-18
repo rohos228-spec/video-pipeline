@@ -1880,7 +1880,9 @@ def merge_trivial_shots(shots):
             pid = str(s.get("parent_id") or "")
             if pid in merged_into:
                 s["parent_id"] = merged_into[pid]
-    shots[:] = out
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    shots[:] = merge_kadry_keep_missing(list(shots), out)
     return notes
 
 

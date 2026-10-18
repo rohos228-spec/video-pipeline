@@ -126,10 +126,13 @@ def test_merge_trivial_shots_keeps_vo_and_action() -> None:
     ]
     notes = merge_trivial_shots(merged)
     assert notes
-    assert len(merged) == 1
-    assert "Он сидит молча." in merged[0]["закадр"]
-    assert "сидит за столом" in merged[0]["действие"]
-    assert "чашку" in merged[0]["действие"]
+    by_id = {shot["id"]: shot for shot in merged}
+    assert set(by_id) == {"s1", "s2"}
+    assert by_id["s1"].get("активен") is not False
+    assert by_id["s2"]["активен"] is False
+    assert "Он сидит молча." in by_id["s1"]["закадр"]
+    assert "сидит за столом" in by_id["s1"]["действие"]
+    assert "чашку" in by_id["s1"]["действие"]
 
     kept = [
         _shot("a", "c01 сидит за столом", "Первое предложение целиком."),
