@@ -852,3 +852,102 @@ def test_park_does_not_reuse_a_held_number(caplog: pytest.LogCaptureFixture) -> 
     finally:
         logger.remove(sink)
 
+
+@pytest.mark.asyncio
+async def test_edge_archive_keeps_full_type(session: AsyncSession) -> None:
+    """Длинный type не обрезается до 24: пометка либо целиком, либо отказ."""
+    project = await _project(session, "edge-type")
+    left = _frame(project, 1, "edge-l", "слева", sort_key=1.0)
+    right = _frame(project, 2, "edge-r", "справа", sort_key=2.0)
+    session.add_all([left, right])
+    await session.flush()
+    short = FrameEdge(
+        project_id=project.id,
+        from_frame_id=left.id,
+        to_frame_id=right.id,
+        type="references",
+    )
+    long = FrameEdge(
+        project_id=project.id,
+        from_frame_id=right.id,
+        to_frame_id=left.id,
+        type="x" * 20,
+    )
+    session.add_all([short, long])
+    await session.commit()
+
+    await delete_edge(short.id, confirm=True, session=session)
+    stored = await session.get(FrameEdge, short.id)
+    assert stored is not None and stored.type == "archived:references"
+    revived = await restore_edge(short.id, session=session)
+    assert revived["type"] == "references"
+
+    with pytest.raises(HTTPException) as denied:
+        await delete_edge(long.id, confirm=True, session=session)
+    assert denied.value.status_code == 400
+    untouched = await session.get(FrameEdge, long.id)
+    assert untouched is not None and untouched.type == "x" * 20
+
+
+@pytest.mark.asyncio
+async def test_entity_restore_keeps_prior_note(session: AsyncSession) -> None:
+    """пометка_до переживает удаление и возврат."""
+    project = await _project(session, "note-keep")
+    entity = Entity(
+        project_id=project.id,
+        type="character",
+        code="c09",
+        name="Борис",
+        attrs={"пометка": "заметка оператора", "роль": "герой"},
+    )
+    session.add(entity)
+    await session.commit()
+
+    await delete_entity(entity.id, confirm=True, session=session)
+    marked = await session.get(Entity, entity.id)
+    assert marked is not None
+    assert marked.attrs["пометка_до"] == "заметка оператора"
+    assert marked.attrs["пометка"] == "delete_entity: строка сохранена"
+
+    await restore_entity(entity.id, session=session)
+    back = await session.get(Entity, entity.id)
+    assert back is not None
+    assert back.attrs["пометка"] == "заметка оператора"
+    assert back.attrs["пометка_до"] == "заметка оператора"
+    assert "удалён" not in back.attrs
+
+
+@pytest.mark.asyncio
+async def test_truncate_vo_skips_already_inactive_frames(
+    session: AsyncSession,
+) -> None:
+    """Уже неактивный хвост не попадает в delete_ids и не пишет свой номер."""
+    from app.services.frame_tombstones import deleted_numbers
+
+    project = await _project(session, "truncate-inactive")
+    frames = [
+        _frame(project, i, f"t{i}", word, sort_key=float(i))
+        for i, word in enumerate(("раз", "два", "три"), start=1)
+    ]
+    frames.append(
+        _frame(
+            project,
+            4,
+            "t4",
+            "четыре",
+            sort_key=4.0,
+            attrs={"удалён": True, "активен": False, "пометка": "уже"},
+        )
+    )
+    session.add_all(frames)
+    await session.commit()
+
+    report = await truncate_vo_to_ratio(session, project, keep_ratio=0.5)
+    rows = list(
+        (await session.execute(select(Frame).where(Frame.project_id == project.id))).scalars()
+    )
+    parked = next(fr for fr in rows if fr.uuid == "t4")
+    assert parked.attrs["пометка"] == "уже"
+    assert report["marked_frames"] == 1
+    assert 4 not in deleted_numbers(project)
+

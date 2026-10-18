@@ -75,7 +75,9 @@ async def truncate_vo_to_ratio(
         for f in by_parent.get(pu) or []:
             kept_ids.add(f.id)
 
-    delete_ids = [f.id for f in frames if f.id not in kept_ids]
+    delete_ids = [
+        f.id for f in frames if f.id not in kept_ids and frame_is_active(f)
+    ]
     drop_set = set(delete_ids)
     marked = 0
     for i, fr in enumerate(frames):

@@ -3229,6 +3229,8 @@ async def delete_entity(
         raise HTTPException(400, "нужно подтверждение: confirm=true")
     if not _entity_marked(en):
         attrs = dict(en.attrs or {})
+        if "пометка_до" not in attrs:
+            attrs["пометка_до"] = attrs.get("пометка")
         attrs["удалён"] = True
         attrs["активен"] = False
         attrs["archived"] = True
@@ -3252,10 +3254,13 @@ async def restore_entity(
     if en is None:
         raise HTTPException(404, "сущность не найдена")
     attrs = dict(en.attrs or {})
+    prior = attrs.get("пометка_до")
     attrs.pop("удалён", None)
     attrs.pop("активен", None)
     attrs.pop("archived", None)
     attrs.pop("пометка", None)
+    if prior:
+        attrs["пометка"] = prior
     en.attrs = attrs
     await commit_with_retry(session)
     register_entity_project(en.id, en.project_id)
@@ -3314,7 +3319,9 @@ async def delete_edge(
         raise HTTPException(400, "нужно подтверждение: confirm=true")
     if not _edge_is_archived(e):
         previous = (e.type or "next").strip() or "next"
-        marked = (_EDGE_ARCHIVED + previous)[:24]
+        marked = _EDGE_ARCHIVED + previous
+        if len(marked) > 24:
+            raise HTTPException(400, "type слишком длинный для пометки")
         e.type = marked
         logger.warning(
             "WARN db_browser: FrameEdge id={} помечена {}, строка сохранена",
@@ -3336,7 +3343,7 @@ async def restore_edge(
         raise HTTPException(404, "связь не найдена")
     if _edge_is_archived(e):
         restored = (e.type or "")[len(_EDGE_ARCHIVED):] or "next"
-        e.type = restored[:24]
+        e.type = restored
     await commit_with_retry(session)
     register_edge_project(e.id, e.project_id)
     logger.warning(
