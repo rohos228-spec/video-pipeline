@@ -206,9 +206,7 @@ def read_override(dest: Path) -> str:
 
 @_private
 def _open_dir(path: str, dir_fd: int | None = None) -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_RDONLY | _os_flag("O_DIRECTORY") | _os_flag("O_NOFOLLOW")
     try:
         if dir_fd is None:
             return os.open(path, flags)
@@ -248,9 +246,7 @@ def _descend(root: Path, dirs: list[str]) -> tuple[int, list[int]]:
 
 @_private
 def _open_lock(parent_fd: int, name: str) -> int:
-    flags = os.O_CREAT | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_CREAT | os.O_RDWR | _os_flag("O_NOFOLLOW")
     try:
         return os.open(name + ".lock", flags, 0o644, dir_fd=parent_fd)
     except OSError as exc:
@@ -259,9 +255,26 @@ def _open_lock(parent_fd: int, name: str) -> int:
         raise
 
 
+def _os_flag(name: str, default: int = 0) -> int:
+    """Флаг os.* или default. На Windows нет O_DIRECTORY, O_NOFOLLOW, O_CLOEXEC."""
+    return getattr(os, name, default)
+
+
+def _accmode() -> int:
+    """Маска доступа. os.O_ACCMODE есть только на POSIX."""
+    return getattr(os, "O_ACCMODE", os.O_RDONLY | os.O_WRONLY | os.O_RDWR)
+
+
 def _posix_dir_fd() -> bool:
     """dir_fd, O_NOFOLLOW и fsync каталога есть только на POSIX."""
-    return os.name == "posix" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
+    if os.name != "posix":
+        return False
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        return False
+    supports = getattr(os, "supports_dir_fd", None)
+    if supports is not None and os.open not in supports:
+        return False
+    return True
 
 
 @_private
@@ -363,9 +376,7 @@ def _copy_nofollow(src_dir: int, src_name: str, dst_dir: int, dst_name: str) -> 
 @_private
 def _write_tmp(parent_fd: int, name: str, payload: bytes, mode: int) -> str:
     tmp_name = f".{name}.{secrets.token_hex(8)}.tmp"
-    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | _os_flag("O_NOFOLLOW")
     fd = os.open(tmp_name, flags, 0o644, dir_fd=parent_fd)
     try:
         view = memoryview(payload)
@@ -373,7 +384,9 @@ def _write_tmp(parent_fd: int, name: str, payload: bytes, mode: int) -> str:
             written = os.write(fd, view)
             view = view[written:]
         os.fsync(fd)
-        os.fchmod(fd, mode)
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(fd, mode)
     except Exception:
         os.close(fd)
         os.unlink(tmp_name, dir_fd=parent_fd)
@@ -540,7 +553,10 @@ def _write_without_dir_fd(
     """Windows: блокировка msvcrt, без O_NOFOLLOW, dir_fd и fsync каталога."""
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target.with_name(target.name + ".lock")
-    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    flags = os.O_CREAT | os.O_RDWR
+    if (flags & _accmode()) == os.O_RDONLY:
+        raise OSError(errno.EINVAL, "lock должен быть доступен на запись")
+    lock_fd = os.open(str(lock_path), flags, 0o644)
     locked = False
     tmp_path: Path | None = None
     try:

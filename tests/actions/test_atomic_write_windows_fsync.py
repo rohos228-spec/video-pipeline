@@ -62,7 +62,8 @@ def test_windows_fsync_requires_writable_fd(tmp_path: Path, monkeypatch) -> None
 
     def tracked_open(path, flags, *args, **kwargs):
         fd = real_open(path, flags, *args, **kwargs)
-        if (flags & os.O_ACCMODE) == os.O_RDONLY:
+        acc = getattr(os, "O_ACCMODE", os.O_RDONLY | os.O_WRONLY | os.O_RDWR)
+        if (flags & acc) == os.O_RDONLY:
             readonly.add(fd)
         return fd
 
@@ -87,6 +88,36 @@ def test_windows_fsync_requires_writable_fd(tmp_path: Path, monkeypatch) -> None
     assert "fsync" in order and "replace" in order
     assert order.index("fsync") < order.index("replace")
     assert "next" in dest.read_text(encoding="utf-8")
+
+
+def test_write_without_posix_open_flags(tmp_path: Path, monkeypatch) -> None:
+    """Нет O_ACCMODE/O_NOFOLLOW/O_DIRECTORY — запись всё равно проходит."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    for name in ("O_ACCMODE", "O_NOFOLLOW", "O_DIRECTORY"):
+        monkeypatch.delattr(os, name, raising=False)
+
+    def publish(filename: str) -> None:
+        dest = tmp_path / "node_overrides" / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        mod.atomic_write_text(dest, "next", expected_version=0)
+        assert "next" in dest.read_text(encoding="utf-8")
+
+    if os.name == "posix":
+        monkeypatch.setattr(mod, "_posix_dir_fd", lambda: True)
+        publish("posix.json")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_posix_dir_fd", lambda: False)
+
+    class Msvcrt:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        def locking(self, fd: int, mode: int, length: int) -> None:
+            return None
+
+    monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt())
+    publish("win.json")
 
 
 def test_windows_fsync_module_collects_without_fcntl(monkeypatch) -> None:
