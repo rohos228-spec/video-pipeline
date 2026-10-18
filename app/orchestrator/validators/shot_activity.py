@@ -62,9 +62,9 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
     violations: list[Violation] = []
     seen: set[tuple[str, str, str]] = set()
     before_scenes = _scene_nodes(before)
-    before_inactive = _inactive_ids(before_scenes)
+    before_inactive = _inactive_pairs(before_scenes)
     before_by_id, before_by_number = _index_scenes(before_scenes)
-    activated = {fid for op in operations if (fid := _targeted(op, True))}
+    activated = _activated_pairs(operations, before_inactive)
     deactivated = [fid for op in operations if (fid := _targeted(op, False))]
 
     for scene in _scene_nodes(after):
@@ -85,7 +85,7 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
             if not isinstance(shot, dict) or id(shot) not in active_mark:
                 continue
             fid = frame_id(shot) or ""
-            if fid and fid in before_inactive and fid not in activated:
+            if fid and (entity, fid) in before_inactive and (entity, fid) not in activated:
                 _add(
                     violations,
                     seen,
@@ -142,19 +142,52 @@ def _scene_nodes(side: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _inactive_ids(scenes: list[dict[str, Any]]) -> set[str]:
-    found: set[str] = set()
+def _inactive_pairs(scenes: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Неактивные шоты как (кадр, shot_id). Один id в разных кадрах — разные ключи."""
+
+    found: set[tuple[str, str]] = set()
     for scene in scenes:
         raw = scene.get("кадры")
         if not isinstance(raw, list):
             continue
+        entity = scene_id(scene) or scene_number(scene) or ""
         for shot in raw:
             if not isinstance(shot, dict) or shot_counts_as_active(shot):
                 continue
             fid = frame_id(shot)
             if fid:
-                found.add(fid)
+                found.add((entity, fid))
     return found
+
+
+def _activated_pairs(
+    ops: list[dict[str, Any]], before_inactive: set[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    """Restore разрешён парой (frame_uuid, shot_id).
+
+    Без кадра — только если такой shot_id в before ровно один. Иначе копия
+    в другом кадре тоже стала бы живой.
+    """
+
+    counts: dict[str, int] = {}
+    for _owner, fid in before_inactive:
+        counts[fid] = counts.get(fid, 0) + 1
+    allowed: set[tuple[str, str]] = set()
+    for op in ops:
+        if _flag(op) is not True:
+            continue
+        fid = _op_id(op)
+        if not fid:
+            continue
+        frame_ref = str(op.get("frame_uuid") or op.get("frame_id") or "")
+        if frame_ref:
+            allowed.add((frame_ref, fid))
+            continue
+        if counts.get(fid, 0) == 1:
+            for owner, shot in before_inactive:
+                if shot == fid:
+                    allowed.add((owner, shot))
+    return allowed
 
 
 def _scene_text(scene: dict[str, Any]) -> str:

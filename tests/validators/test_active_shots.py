@@ -309,6 +309,43 @@ def test_scene_vo_without_active_shots_flagged() -> None:
     assert ("vo_on_inactive", "error", "s1") not in _codes(parked)
 
 
+def test_restore_scoped_to_frame_does_not_revive_copy() -> None:
+    """Один shot_id в двух кадрах: restore по frame_uuid оживляет только свой."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "frame-a",
+                "кадры": [{"id": "k", "активен": False, "закадр": "a"}],
+            },
+            {
+                "id": "frame-b",
+                "кадры": [{"id": "k", "активен": False, "закадр": "b"}],
+            },
+        ]
+    }
+    after = {
+        "сцены": [
+            {
+                "id": "frame-a",
+                "кадры": [{"id": "k", "активен": True, "закадр": "a"}],
+            },
+            {
+                "id": "frame-b",
+                "кадры": [{"id": "k", "активен": True, "закадр": "b"}],
+            },
+        ]
+    }
+    violations = check_active_shots(
+        before,
+        after,
+        ops=[{"op": "restore", "shot_id": "k", "frame_uuid": "frame-a"}],
+    )
+    revived = {item.path for item in violations if item.code == "inactive_shot_revived"}
+    assert "scenes/frame-a/кадры/k" not in revived
+    assert "scenes/frame-b/кадры/k" in revived
+
+
 def test_reorder_with_scene_vo_passes() -> None:
     """Перестановка живых шотов не рвёт покрытие закадра сцены."""
 

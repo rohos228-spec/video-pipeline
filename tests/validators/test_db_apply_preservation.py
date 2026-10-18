@@ -685,6 +685,37 @@ async def test_accepted_script_text_writes_voiceover_file(
     assert (project.data_dir / "voiceover.txt").read_text(encoding="utf-8") == "принятый закадр"
 
 
+def test_restore_shot_id_and_index_must_agree() -> None:
+    """shot_id и индекс в кадры[] вместе разрешают restore только если указывают на один шот."""
+
+    mismatch = {
+        "op": "restore",
+        "shot_id": "k2",
+        "shot_index": 0,
+        "fields": {
+            "кадры": [
+                {"id": "k1", "активен": True},
+                {"id": "k2", "активен": True},
+            ]
+        },
+    }
+    prepared = db_apply._ops_with_shot_address([mismatch])
+    assert prepared[0].get("shot_id") in (None, "")
+
+    agreed = {
+        "op": "restore",
+        "shot_id": "k2",
+        "shot_index": 1,
+        "fields": {
+            "кадры": [
+                {"id": "k1"},
+                {"id": "k2", "активен": True},
+            ]
+        },
+    }
+    assert db_apply._ops_with_shot_address([agreed])[0]["shot_id"] == "k2"
+
+
 def test_already_counts_state_without_ops() -> None:
     """Нарушение из самого op не считается «уже было» на before."""
 

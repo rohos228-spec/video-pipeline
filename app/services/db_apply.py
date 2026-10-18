@@ -1374,11 +1374,9 @@ def export_project_xlsx(
 _RESTORE_VERBS = {"activate", "set_active", "restore", "восстановить"}
 
 
-def _shot_address_id(op: dict[str, Any]) -> str:
-    """id шота: явный shot_id, иначе индекс в fields.кадры[]."""
+def _indexed_shot_id(op: dict[str, Any]) -> str:
+    """id шота по shot_index/index/индекс в fields.кадры[]."""
 
-    if op.get("shot_id") not in (None, ""):
-        return str(op["shot_id"])
     fields = op.get("fields")
     кадры = fields.get("кадры") if isinstance(fields, dict) else None
     if not isinstance(кадры, list):
@@ -1397,7 +1395,11 @@ def _shot_address_id(op: dict[str, Any]) -> str:
 
 
 def _ops_with_shot_address(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Явный restore/activate по индексу кадры[] получает shot_id для preservation."""
+    """Явный restore/activate по индексу кадры[] получает shot_id для preservation.
+
+    Если заданы и shot_id, и индекс, они должны указывать на один шот.
+    Расхождение снимает shot_id, и оживление не разрешается.
+    """
 
     prepared: list[dict[str, Any]] = []
     for op in ops:
@@ -1405,15 +1407,24 @@ def _ops_with_shot_address(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
             prepared.append(op)
             continue
         verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
-        if verb not in _RESTORE_VERBS or op.get("shot_id") not in (None, ""):
+        if verb not in _RESTORE_VERBS:
             prepared.append(op)
             continue
-        sid = _shot_address_id(op)
-        if not sid:
+        explicit = "" if op.get("shot_id") in (None, "") else str(op["shot_id"])
+        indexed = _indexed_shot_id(op)
+        if explicit and indexed and explicit != indexed:
+            patched = dict(op)
+            patched.pop("shot_id", None)
+            prepared.append(patched)
+            continue
+        if explicit:
+            prepared.append(op)
+            continue
+        if not indexed:
             prepared.append(op)
             continue
         patched = dict(op)
-        patched["shot_id"] = sid
+        patched["shot_id"] = indexed
         prepared.append(patched)
     return prepared
 
