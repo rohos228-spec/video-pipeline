@@ -685,13 +685,14 @@ class ActionMetadata(BaseModel):
     ``destructive=True`` само по себе не открывает approval. Одобряемый
     destructive — только ``APPROVABLE_DESTRUCTIVE`` (не трогает медиа).
     Остальной destructive и имя с маркером удаления — ``deletion_blocked``.
-    Поле ``paid`` в эту модель не добавляется: его читает ``registry_marks_paid``
-    из dict будущего реестра.
+    ``paid=True`` на модели или в dict реестра помечает шаг платным.
+    План может только добавить платность, не снять её.
     """
 
     risk: str = "high"
     read_only: bool | None = None
     destructive: bool = False
+    paid: bool = False
 
 
 class ActionExecutor(Protocol):
@@ -1350,8 +1351,8 @@ def _meta_field(meta: Any, key: str, default: Any = None) -> Any:
 def registry_marks_paid(action: str, registry: Any | None) -> bool:
     """Имени нет в реестре или ``metadata_of`` недоступна через ``KeyError``.
 
-    Поле ``paid`` читается из dict будущего реестра. В ``ActionMetadata`` его нет,
-    и сюда оно не добавляется: известная запись без ``paid`` не становится платной.
+    Поле ``paid`` читается из dict реестра или ``ActionMetadata``.
+    Известная запись без ``paid`` не становится платной.
     """
     kind, meta = lookup_action_metadata(action, registry)
     if kind == "miss":
@@ -1725,14 +1726,18 @@ def step_is_deletion(step: PlanStep, registry: Any | None = None) -> bool:
         or params_request_deletion(step.params, action=step.action)
     ):
         return True
-    kind, _meta = lookup_action_metadata(step.action, registry)
+    kind, meta = lookup_action_metadata(step.action, registry)
     if kind == "miss":
         return False
+    if kind == "absent":
+        return action_unknown(step.action, registry)
+    if meta is None:
+        return True
     if _destructive_blocked(step.action, registry):
         return True
     if metadata_call_gate(step.action, registry) in {"paid", "destructive"}:
         return False
-    return not explicitly_safe(step.action, registry)
+    return False
 
 
 def _destructive_blocked(action: str, registry: Any | None) -> bool:

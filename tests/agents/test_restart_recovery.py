@@ -438,3 +438,43 @@ async def test_restart_planning_does_not_execute_until_critic_approves(token: st
         assert runtime.tasks.get(rejected)["status"] == TaskStatus.waiting_approval.value
     finally:
         set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_restart_restores_retry_spent_with_retry_armed(token: str) -> None:
+    """После рестарта сожжённый retry не вооружается заново."""
+    del token
+    session = "retry-spent-restart"
+    paid = PlanStep(
+        action="charge",
+        params={"_cost": 2},
+        expected="paid",
+        paid=True,
+        mutating=True,
+        estimated_cost=3,
+    )
+    task_id = _paid_unknown(session, [paid])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.retry_step)
+        started = await runtime.supervisor.grant_approval(session, retry_grant=True)
+        assert started is not None and started["executed"] is True
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["charge"]
+        runtime.tasks.set_status(task_id, TaskStatus.waiting_approval.value)
+        fresh = _runtime(actions)
+        set_runtime(fresh)
+        await fresh.supervisor.recover_after_restart()
+        assert any(stored == task_id for stored, _key in fresh.supervisor._retry_spent)
+        assert fresh.supervisor._retry_armed.get(task_id) is None
+        again = await fresh.supervisor.grant_approval(session, retry_grant=True)
+        assert again is not None
+        assert again["executed"] is False
+        assert again["reason"] == "retry_grant_spent"
+        assert [call["name"] for call in actions.calls] == ["charge"]
+    finally:
+        set_runtime(None)
