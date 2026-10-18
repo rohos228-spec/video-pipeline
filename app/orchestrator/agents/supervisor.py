@@ -2339,8 +2339,34 @@ class Supervisor:
         уже открытый id того же ожидания (повтор прогноза, не новое одобрение).
         """
         body = await self._assign_change_id(session_id, task_id, payload, reuse=reuse)
+        body = self._decorate_approval(body, task_id)
         await self.bus.publish(session_id, "approval_required", body, task_id=task_id)
         await self._persist_appr_mark(task_id, session_id)
+
+    def _decorate_approval(self, body: dict[str, Any], task_id: int | None) -> dict[str, Any]:
+        """Явные кнопки. Для paid_outcome_unknown ещё change_id шага из чекпоинта.
+
+        ``change_id`` карточки (``orch-appr-*``) не затирается: по нему grant.
+        """
+        reason = str(body.get("reason") or "")
+        if reason in _PAID_OUTCOME_REASONS:
+            body["actions"] = ["approve", "retry_step", "deny"]
+            if task_id is not None:
+                step_change_id = self._paid_step_change_id(int(task_id))
+                if step_change_id:
+                    body["step_change_id"] = step_change_id
+            return body
+        body["actions"] = ["approve"]
+        return body
+
+    def _paid_step_change_id(self, task_id: int) -> str | None:
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) == "running" and row.get("paid") and row.get("change_id"):
+                return str(row["change_id"])
+        data = self.checkpoints.load_latest(task_id)
+        if data is None or not data.change_ids:
+            return None
+        return str(data.change_ids[-1])
 
     async def _assign_change_id(
         self,
@@ -2556,6 +2582,7 @@ class Supervisor:
             await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
             return
         body = await self._assign_change_id(session_id, task_id, payload, reuse=False)
+        body = self._decorate_approval(body, task_id)
         await self.bus.publish(session_id, "approval_required", body, task_id=task_id)
         # Статус пишется синхронно в начале _set_status, до следующего await:
         # подписчик события уже видит waiting_approval, а replay после статуса — событие.
