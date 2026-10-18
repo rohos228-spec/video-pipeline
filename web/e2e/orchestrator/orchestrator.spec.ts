@@ -1,8 +1,10 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { orchAuthHeaders, orchTestModeEnabled } from "../../src/lib/orchestratorApi";
+import { installStudioMocks, seedStudio } from "../visual/studio-mock";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -184,8 +186,8 @@ test.describe("orchestrator chat", () => {
 
   test("approve 404 и 409 оставляют карточку", async ({ page }) => {
     const cases = [
-      ["approve404", "approval not found"],
-      ["approve409", "approval conflict"],
+      ["approve404", "неизвестный change_id"],
+      ["approve409", "change_id не текущий"],
     ] as const;
     for (const [scenario, detail] of cases) {
       await openWithToken(page, scenario, scenario);
@@ -220,14 +222,237 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-budget")).toContainText("Бюджет исчерпан");
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     const posted = page.waitForRequest(
-      (req) => req.method() === "POST" && req.url().includes("/approvals/chg-budget-d4/approve"),
+      (req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/orchestrator/chat/budget-grant/approve",
     );
     await page.getByTestId("orch-approve").click();
-    const body = (await posted).postDataJSON() as { approval_id?: string };
-    expect(body.approval_id).toBe("chg-budget-d4");
+    const body = (await posted).postDataJSON() as { change_id?: string; decision?: string };
+    expect(body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
     await expect(page.getByTestId("orch-approval")).toHaveCount(0);
     await expect(page.getByTestId("orch-transcript")).toContainText("Суб-бюджет добавлен");
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
+  });
+
+  test("решения approval зависят от причины", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      const pathname = new URL(req.url()).pathname;
+      if (!pathname.endsWith("/approve") && !pathname.endsWith("/project")) return;
+      posts.push({ url: req.url(), body: (req.postDataJSON() ?? {}) as Record<string, unknown> });
+    });
+
+    await openWithToken(page, "risk", "reason-risk");
+    await page.getByTestId("orch-composer").fill("риск");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-5-1", decision: "approve" });
+
+    posts.length = 0;
+    await openWithToken(page, "destructive", "reason-destructive");
+    await page.getByTestId("orch-composer").fill("разрушение");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-2-1", decision: "deny" });
+
+    posts.length = 0;
+    await openWithToken(page, "partialwrite", "reason-partial");
+    await page.getByTestId("orch-composer").fill("частичная запись");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-8-1", decision: "approve" });
+
+    posts.length = 0;
+    await openWithToken(page, "paidunknown", "reason-paid");
+    await page.getByTestId("orch-composer").fill("платный исход");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-retry")).toBeVisible();
+    await page.getByTestId("orch-retry").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({
+      change_id: "orch-appr-3-1",
+      decision: "retry_step",
+      retry_grant: true,
+    });
+    expect(JSON.stringify(posts[0]?.body)).not.toContain("cc-step-88");
+
+    posts.length = 0;
+    await openWithToken(page, "paidunknown", "reason-paid-deny");
+    await page.getByTestId("orch-composer").fill("платный исход");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.body).toEqual({ change_id: "orch-appr-3-1", decision: "deny" });
+
+    posts.length = 0;
+    await openWithToken(page, "missingproject", "reason-missing");
+    await page.getByTestId("orch-composer").fill("нет проекта");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-missing-project")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+    await expect(page.getByTestId("orch-retry")).toHaveCount(0);
+    await page.getByTestId("orch-project-id").fill("13");
+    await page.getByTestId("orch-bind-project").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(new URL(posts[0]!.url).pathname).toBe("/api/orchestrator/chat/reason-missing/project");
+    expect(posts[0]?.body).toEqual({ project_id: 13 });
+  });
+
+  test("step_change_id не подставляется в /approve", async ({ page }) => {
+    const posts: Record<string, unknown>[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      if (!new URL(req.url()).pathname.endsWith("/approve")) return;
+      posts.push((req.postDataJSON() ?? {}) as Record<string, unknown>);
+    });
+
+    await openWithToken(page, "stepchange", "step-only");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approval-noid")).toContainText("orch-appr");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    expect(posts).toEqual([]);
+
+    posts.length = 0;
+    await openWithToken(page, "stepchangeboth", "step-both");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]?.change_id).toBe("orch-appr-9-3");
+    expect(posts[0]?.decision).toBe("deny");
+    expect(JSON.stringify(posts[0])).not.toContain("cc-step-88");
+  });
+
+  test("коды approve: отказ без автоповтора, 409 читает snapshot", async ({ page }) => {
+    const cases = [
+      [401, "нет токена или токен неверный"],
+      [400, "плохой session_id"],
+      [422, "тело не по схеме"],
+      [404, "неизвестный change_id"],
+      [403, "not_in_whitelist"],
+      [409, "change_id не текущий"],
+    ] as const;
+    for (const [status, text] of cases) {
+      let posts = 0;
+      let snapshots = 0;
+      await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        posts += 1;
+        await route.fulfill({
+          status,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "raw" }),
+        });
+      });
+      await page.route("**/api/orchestrator/chat/*/status", async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        snapshots += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            session: "snap",
+            task_id: 1,
+            status: "failed",
+            resume_allowed: false,
+          }),
+        });
+      });
+      await openWithToken(page, "budget", `code-${status}`);
+      await page.getByTestId("orch-composer").fill("ещё кадры");
+      await page.getByTestId("orch-send").click();
+      await expect(page.getByTestId("orch-approve")).toBeVisible();
+      await page.getByTestId("orch-approve").click();
+      await expect(page.getByText(text).first()).toBeVisible();
+      await expect.poll(() => posts).toBe(1);
+      if (status === 409) {
+        await expect.poll(() => snapshots).toBeGreaterThan(0);
+        await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+      } else {
+        expect(snapshots).toBe(0);
+      }
+      await page.unroute("**/api/orchestrator/chat/*/approve");
+      await page.unroute("**/api/orchestrator/chat/*/status");
+    }
+  });
+
+  test("approve 204 не успех: нужен JSON 200", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/orchestrator/chat/*/approve", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posts += 1;
+      await route.fulfill({ status: 204, body: "" });
+    });
+    await openWithToken(page, "budget", "approve-204");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toBeEnabled();
+    expect(posts).toBe(1);
+  });
+
+  test("approve и deny уходят на chat/approve телом ApproveIn", async ({ page }) => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST") return;
+      const pathname = new URL(req.url()).pathname;
+      if (!pathname.endsWith("/approve") && !pathname.endsWith("/reject")) return;
+      posts.push({ url: req.url(), body: (req.postDataJSON() ?? {}) as Record<string, unknown> });
+    });
+
+    await openWithToken(page, "budget", "wire-ok");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await page.getByTestId("orch-approve").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const approve = posts[0];
+    expect(approve).toBeTruthy();
+    expect(new URL(approve!.url).pathname).toBe("/api/orchestrator/chat/wire-ok/approve");
+    expect(approve!.body).toEqual({ change_id: "orch-appr-4-1", decision: "approve" });
+    expect(approve!.body).not.toHaveProperty("approval_id");
+    expect(approve!.body).not.toHaveProperty("task_id");
+
+    posts.length = 0;
+    await openWithToken(page, "budget", "wire-no");
+    await page.getByTestId("orch-composer").fill("ещё кадры");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await page.getByTestId("orch-reject").click();
+    await expect.poll(() => posts.length).toBe(1);
+    const deny = posts[0];
+    expect(deny).toBeTruthy();
+    expect(new URL(deny!.url).pathname).toBe("/api/orchestrator/chat/wire-no/approve");
+    expect(deny!.body).toEqual({ change_id: "orch-appr-4-1", decision: "deny" });
+    expect(Object.keys(deny!.body).sort()).toEqual(["change_id", "decision"]);
   });
 
   test("бюджет исчерпан: waiting_approval и подпись на карточке", async ({ page }) => {
@@ -594,8 +819,9 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-missing-project")).toContainText(
       "Не выбран проект: план содержит платный или изменяющий шаг",
     );
-    await expect(page.getByTestId("orch-approve")).toBeVisible();
-    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+    await expect(page.getByTestId("orch-bind-project")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 
@@ -653,5 +879,248 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approval")).toContainText("plan_sanity");
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("снимки INT фиксируют фон, границу, текст и шрифт", async ({ page }) => {
+    const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../visual/int-reference");
+    const fixture = JSON.parse(readFileSync(path.join(dir, "tokens.json"), "utf8")) as {
+      body: { backgroundColor: string; color: string; borderTopColor: string };
+      panel: { backgroundColor: string; borderTopColor: string };
+      title: { color: string };
+      muted: { color: string };
+      hairline: { borderBottomColor: string };
+    };
+
+    await installStudioMocks(page);
+    await seedStudio(page, 1);
+    await page.goto("/");
+    await expect(page.getByTestId("orch-float-title")).toHaveText("Оркестратор");
+    const panel = await page.evaluate((expected) => {
+      const channels = (color: string) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1;
+        canvas.height = 1;
+        const ctx = canvas.getContext("2d", { colorSpace: "srgb" });
+        if (!ctx) return [] as number[];
+        ctx.clearRect(0, 0, 1, 1);
+        ctx.fillStyle = "#000";
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, 1, 1);
+        return [...ctx.getImageData(0, 0, 1, 1).data];
+      };
+      const paint = (id: string) => {
+        const el = document.querySelector(`[data-testid="${id}"]`);
+        return el instanceof HTMLElement ? getComputedStyle(el) : null;
+      };
+      const shell = paint("orch-float-panel");
+      const title = paint("orch-float-title");
+      const muted = paint("orch-float-muted");
+      const hairline = paint("orch-float-hairline");
+      const body = getComputedStyle(document.body);
+      const pair = (live: string, fixtureColor: string) => ({
+        live,
+        fixture: fixtureColor,
+        livePx: channels(live),
+        fixturePx: channels(fixtureColor),
+      });
+      return {
+        bg: pair(body.backgroundColor, expected.bodyBg),
+        color: pair(body.color, expected.bodyColor),
+        panelBg: pair(shell?.backgroundColor ?? "", expected.panelBg),
+        panelBorder: pair(shell?.borderTopColor ?? "", expected.panelBorder),
+        title: pair(title?.color ?? "", expected.title),
+        muted: pair(muted?.color ?? "", expected.muted),
+        hairline: pair(hairline?.borderBottomColor ?? "", expected.hairline),
+      };
+    }, {
+      bodyBg: fixture.body.backgroundColor,
+      bodyColor: fixture.body.color,
+      panelBg: fixture.panel.backgroundColor,
+      panelBorder: fixture.panel.borderTopColor,
+      title: fixture.title.color,
+      muted: fixture.muted.color,
+      hairline: fixture.hairline.borderBottomColor,
+    });
+    for (const [name, row] of Object.entries(panel)) {
+      expect(row.livePx, `${name} ${row.live} vs ${row.fixture}`).toEqual(row.fixturePx);
+    }
+
+    await openWithToken(page, "idle", "int-tokens");
+    const live = await page.evaluate(() => {
+      const body = getComputedStyle(document.body);
+      const root = document.querySelector("[data-orch-page]");
+      const rootCs = root instanceof HTMLElement ? getComputedStyle(root) : null;
+      return {
+        bg: body.backgroundColor,
+        color: body.color,
+        font: body.fontFamily,
+        rootBg: rootCs?.backgroundColor ?? "",
+        rootFont: rootCs?.fontFamily ?? "",
+        border: rootCs?.borderTopColor ?? "",
+      };
+    });
+    expect(live.bg).toBe(fixture.body.backgroundColor);
+    expect(live.color).toBe(fixture.body.color);
+    expect(live.rootBg).toBe(fixture.body.backgroundColor);
+    expect(live.rootFont).toBe(live.font);
+    expect(live.border).toBe(fixture.body.borderTopColor);
+  });
+
+test("зона оркестратора рисуется токенами INT", async ({ page }) => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src");
+  const zone = [
+    "app/orchestrator",
+    "components/orchestrator",
+    "lib",
+  ];
+  const banned = /border-white\b|text-white\b|#0c0c0c/;
+  const hits: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) continue;
+      if (entry.name.startsWith("orchestrator") || full.includes(`${path.sep}orchestrator${path.sep}`)) {
+        let text = readFileSync(full, "utf8");
+        // Панель держит классы фикстуры INT: их цвет проверяет снимок, не запрет.
+        if (entry.name === "orchestrator-panel.tsx") {
+          text = text
+            .replaceAll("border-white/[0.1]", "")
+            .replaceAll("border-white/[0.08]", "")
+            .replaceAll("bg-[#0c0c0c]/97", "")
+            .replaceAll("text-white/85", "")
+            .replaceAll("text-white/35", "");
+        }
+        if (banned.test(text)) hits.push(path.relative(srcRoot, full));
+      }
+    }
+  };
+  for (const rel of zone) walk(path.join(srcRoot, rel));
+  expect(hits).toEqual([]);
+
+  await openWithToken(page, "idle", "int-zone");
+  const header = page.locator("[data-orch-page] > div").first();
+  await expect(header).toHaveClass(/border-input/);
+  await expect(page.locator("[data-orch-page] .font-semibold").first()).toHaveClass(/text-foreground/);
+  const swatch = await page.evaluate(() => {
+    const title = document.querySelector("[data-orch-page] .font-semibold");
+    const bar = document.querySelector("[data-orch-page] > div");
+    return {
+      title: title instanceof HTMLElement ? getComputedStyle(title).color : "",
+      border: bar instanceof HTMLElement ? getComputedStyle(bar).borderBottomColor : "",
+    };
+  });
+  expect(swatch.title).toBe("rgb(240, 240, 240)");
+  // globals.css вне зоны: `* { border-color }` вне слоя перекрывает border-input,
+  // поэтому волосок на экране совпадает с токеном --border (8%), как на снимке INT.
+  expect(swatch.border).toBe("rgba(255, 255, 255, 0.08)");
+});
+
+test("поверхности оркестратора берут токены INT", async ({ page }) => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src");
+  const banned = /bg-white\/\[0\.03\]|bg-white\/\[0\.05\]|bg-black\/30|bg-black\/40/;
+  const files = [
+    "components/orchestrator/orchestrator-workspace.tsx",
+    "components/orchestrator/orchestrator-panel.tsx",
+    "components/orchestrator/report-editor.tsx",
+  ];
+  for (const rel of files) {
+    expect(readFileSync(path.join(srcRoot, rel), "utf8"), rel).not.toMatch(banned);
+  }
+
+  await openWithToken(page, "idle", "int-surfaces");
+  const chat = await page.evaluate(() => {
+    const paint = (selector: string) => {
+      const el = document.querySelector(selector);
+      return el instanceof HTMLElement ? getComputedStyle(el).backgroundColor : "";
+    };
+    return {
+      card: paint("[data-testid=orch-agent-supervisor]"),
+      canvas: paint("[data-testid=orch-task-panel]"),
+    };
+  });
+  // INT ea6c5926: white/3 поверх фона ≈ rgb(13,13,13) = bg-card;
+  // black/30 поверх фона ≈ rgb(4,4,4) = --canvas-bg 1.5%.
+  expect(chat.card).toBe("rgb(13, 13, 13)");
+  expect(chat.canvas).toBe("rgb(4, 4, 4)");
+
+  await page.goto("/orchestrator/reports?scenario=idle&session=int-surfaces-reports&project=13");
+  await expect(page.getByTestId("orch-report-title")).toHaveText("Разбор сцен");
+  const reports = await page.evaluate(() => {
+    const paint = (selector: string) => {
+      const el = document.querySelector(selector);
+      return el instanceof HTMLElement ? getComputedStyle(el).backgroundColor : "";
+    };
+    const selected = [...document.querySelectorAll("[data-testid=orch-report-item]")].find(
+      (el) => el.className.includes("bg-muted"),
+    );
+    return {
+      selected: selected instanceof HTMLElement ? getComputedStyle(selected).backgroundColor : "",
+      side: paint("[data-testid=orch-report-side]"),
+    };
+  });
+  // white/5 поверх фона ≈ rgb(18,18,18) = bg-muted.
+  expect(reports.selected).toBe("rgb(18, 18, 18)");
+  expect(reports.side).toBe("rgb(4, 4, 4)");
+});
+
+test("рамка режима фикса берёт токен warning", async ({ page }) => {
+  const file = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../src/components/orchestrator/orchestrator-panel.tsx",
+  );
+  const source = readFileSync(file, "utf8");
+  expect(source).not.toContain("border-amber-400/50");
+  expect(source).toContain("border-warning/50");
+  expect(source).toContain('borderColor: "hsl(var(--warning) / 0.5)"');
+
+  await openWithToken(page, "idle", "int-warning");
+  const border = await page.evaluate(() => {
+    const el = document.createElement("input");
+    el.style.borderColor = "hsl(var(--warning) / 0.5)";
+    document.body.appendChild(el);
+    const color = getComputedStyle(el).borderTopColor;
+    el.remove();
+    return color;
+  });
+  // INT ea6c5926, --warning: 38 92% 58% при 50%. Глобальный * { border-color } этот inline не перекрывает.
+  expect(border).toBe("rgba(246, 174, 49, 0.5)");
+});
+
+test("чат и отчёты берут фон и шрифт со страницы", async ({ page }) => {
+    const paint = () =>
+      page.evaluate(() => {
+        const root = document.querySelector("[data-orch-page], [data-testid=orch-reports]");
+        if (!(root instanceof HTMLElement)) return null;
+        const rootCs = getComputedStyle(root);
+        const bodyCs = getComputedStyle(document.body);
+        return {
+          font: rootCs.fontFamily,
+          bodyFont: bodyCs.fontFamily,
+          bg: rootCs.backgroundColor,
+          bodyBg: bodyCs.backgroundColor,
+          className: root.className,
+        };
+      });
+
+    await openWithToken(page, "idle", "inherit-chat");
+    const chat = await paint();
+    expect(chat).not.toBeNull();
+    expect(chat!.font).toBe(chat!.bodyFont);
+    expect(chat!.bg).toBe(chat!.bodyBg);
+    expect(chat!.className).toContain("bg-background");
+    expect(chat!.className).not.toMatch(/font-/);
+
+    await page.goto("/orchestrator/reports?scenario=idle&session=inherit-reports&project=13");
+    await expect(page.getByTestId("orch-reports")).toBeVisible();
+    const reports = await paint();
+    expect(reports).not.toBeNull();
+    expect(reports!.font).toBe(reports!.bodyFont);
+    expect(reports!.bg).toBe(reports!.bodyBg);
+    expect(reports!.className).toContain("bg-background");
+    expect(reports!.className).not.toMatch(/font-/);
   });
 });

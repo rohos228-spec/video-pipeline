@@ -78,10 +78,19 @@ function escapeText(value: string): string {
   });
 }
 
-/** Документ для sandbox-iframe. HTML секций проходит DOMPurify, заголовки — как текст. */
+/** Тёмные токены INT ea6c5926: --background 2%, --foreground 94%. */
+const INT_PREVIEW_BG = "hsl(0 0% 2%)";
+const INT_PREVIEW_FG = "hsl(0 0% 94%)";
+
+/**
+ * Документ для sandbox-iframe. HTML секций проходит DOMPurify, заголовки — как текст.
+ * Свой фон и цвет из отчёта не доходят (стили вырезаются), поэтому светлый фрагмент
+ * без фона получает пару INT: светлый текст на тёмном фоне.
+ */
 export function reportPreviewDocument(sections: { heading: string; html: string }[]): string {
   const body = sections
     .map((section) => `<h2>${escapeText(section.heading)}</h2>${sanitizeReportHtml(section.html)}`)
     .join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"></head><body>${body}</body></html>`;
+  const surface = `<style>html,body{margin:0;background:${INT_PREVIEW_BG};color:${INT_PREVIEW_FG};}</style>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${surface}<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"></head><body>${body}</body></html>`;
 }

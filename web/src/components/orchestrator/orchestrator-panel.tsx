@@ -466,6 +466,7 @@ export function OrchestratorPanel({ projectId }: Props) {
 
   return (
     <div
+      data-testid="orch-float-panel"
       className={cn(
         "absolute z-40 flex flex-col border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all duration-200",
         open && expanded
@@ -475,11 +476,16 @@ export function OrchestratorPanel({ projectId }: Props) {
             : "inset-x-0 bottom-0 h-10 rounded-none border-x-0 border-b-0",
       )}
     >
-      <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[11px] text-white/60">
+      <div
+        className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2"
+        data-testid="orch-float-hairline"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[11px] text-muted-foreground">
           <Bot className="h-4 w-4 shrink-0 text-primary" />
-          <span className="shrink-0 font-semibold text-white/85">Оркестратор</span>
-          <span className="truncate text-white/35">
+          <span className="shrink-0 font-semibold text-white/85" data-testid="orch-float-title">
+            Оркестратор
+          </span>
+          <span className="truncate text-white/35" data-testid="orch-float-muted">
             {projectId == null
               ? "открой проект"
               : busy
@@ -534,7 +540,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           type="button"
           size="sm"
           variant="ghost"
-          className="h-7 w-7 shrink-0 p-0 text-white/50"
+          className="h-7 w-7 shrink-0 p-0 text-muted-foreground"
           onClick={onToggleExpanded}
           title={expanded && open ? "Меньше окно" : "Большое окно"}
         >
@@ -549,7 +555,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           type="button"
           size="sm"
           variant="ghost"
-          className="h-7 w-7 shrink-0 p-0 text-white/50"
+          className="h-7 w-7 shrink-0 p-0 text-muted-foreground"
           onClick={onToggleOpen}
           title={open ? "Свернуть панель" : "Открыть панель"}
         >
@@ -572,16 +578,16 @@ export function OrchestratorPanel({ projectId }: Props) {
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
-              <div className="text-[11px] text-white/35 leading-relaxed">
+              <div className="text-[11px] text-muted-foreground/70 leading-relaxed">
                 Задайте вопрос по проекту, попросите изменить параметры или нажмите «Фикс багов» для решения проблемы.
               </div>
             ) : null}
             {chatLog.map((m, i) => (
               <div key={i} className="mb-2 text-[12px] leading-relaxed">
-                <span className={m.role === "user" ? "text-primary" : "text-white/45"}>
+                <span className={m.role === "user" ? "text-primary" : "text-muted-foreground"}>
                   {m.role === "user" ? "ты" : "оркестратор"}:{" "}
                 </span>
-                <span className="whitespace-pre-wrap text-white/85">{m.content}</span>
+                <span className="whitespace-pre-wrap text-foreground/90">{m.content}</span>
                 {(m.confirms ?? (m.confirm ? [m.confirm] : [])).map((c, ci) => {
                   if (c.resolved) return null;
                   if (c.kind === "remove_node") {
@@ -591,7 +597,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                         className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="flex-1 text-[11px] text-foreground/80">
                           Удалить {c.count} нод
                           {c.node_type ? ` типа «${c.node_type}»` : ""}
                           {c.only === "duplicates" ? " (только дубли)" : ""}?
@@ -624,7 +630,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                         className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="flex-1 text-[11px] text-foreground/80">
                           Удалить {c.count} проект(ов)
                           {(c.files ?? []).length
                             ? `: ${(c.files ?? []).slice(0, 4).join(", ")}`
@@ -659,7 +665,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                         className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
                       >
                         <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="flex-1 text-[11px] text-foreground/80">
                           Push: {c.message || "commit"}
                           {(c.files ?? c.nodes).length
                             ? ` (${(c.files ?? c.nodes).slice(0, 3).join(", ")})`
@@ -690,7 +696,7 @@ export function OrchestratorPanel({ projectId }: Props) {
               </div>
             ))}
           </div>
-          <div className="flex shrink-0 items-center gap-2 border-t border-white/[0.06] px-3 py-2">
+          <div className="flex shrink-0 items-center gap-2 border-t border-input px-3 py-2">
             <input
               ref={inputRef}
               value={chatInput}
@@ -707,9 +713,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                       : "сообщение оркестратору…"
               }
               className={cn(
-                "h-9 flex-1 rounded-md border bg-black/40 px-3 text-xs disabled:opacity-40",
-                fixBugsMode ? "border-amber-400/50" : "border-white/10",
+                "h-9 flex-1 rounded-md border bg-background px-3 text-xs disabled:opacity-40",
+                fixBugsMode ? "border-warning/50" : "border-border",
               )}
+              style={fixBugsMode ? { borderColor: "hsl(var(--warning) / 0.5)" } : undefined}
             />
             <Button
               type="button"

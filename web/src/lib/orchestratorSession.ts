@@ -163,13 +163,15 @@ export interface ApprovalView {
   id: string;
   /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
   serverId: boolean;
+  /** Серверный `change_id` карточки, формат `orch-appr-<задача>-<n>`. `step_change_id` сюда не попадает. */
+  changeId: string | null;
   taskId: string | null;
   title: string;
   reason: string;
   risk: string;
   action: string;
   costEstimate: number | null;
-  resolved: "approved" | "rejected" | "closed" | null;
+  resolved: "approved" | "rejected" | "retried" | "closed" | null;
 }
 
 export interface TaskView {
@@ -232,7 +234,8 @@ export type OrchScreenAction =
       taskId?: string | null;
       sessionId?: string | null;
     }
-  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
+  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "retried" | "closed" }
+  | { type: "snapshot"; taskId: string | null; status: string }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -303,6 +306,16 @@ export function isTerminalBlock(reason: string): boolean {
   return outcome != null && TERMINAL_TASK.has(outcome);
 }
 
+export type ApprovalButton = "approve" | "deny" | "retry_step";
+
+/** Кнопки карточки. `missing_project_id` снимается через POST .../project, не через /approve. */
+export function approvalButtons(reason: string): ApprovalButton[] {
+  if (reason === "missing_project_id") return [];
+  if (reason === "paid_outcome_unknown" || reason === "paid_unknown_outcome") return ["retry_step", "deny"];
+  if (isTerminalBlock(reason)) return [];
+  return ["approve", "deny"];
+}
+
 function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
@@ -314,18 +327,37 @@ export function serverApprovalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Серверный id карточки approval. `step_change_id` — id шага, не карточки. */
+const APPROVAL_CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
+
+export function approvalChangeId(value: unknown): string | null {
+  const id = serverApprovalId(value);
+  return id && APPROVAL_CHANGE_ID.test(id) ? id : null;
+}
+
 /**
- * Id решения из шины ws3-r3.3: `ApprovalEvent.change_id`.
- * Явный `approval_id` оставлен для моков, у которых это поле уже есть.
- * Вложенный `payload` — тот же объект, если событие завернуло ApprovalEvent.
+ * Id карточки из шины: `approval_id`, иначе серверный `change_id`.
+ * `step_change_id` карточку не открывает и в /approve не уходит.
  */
 export function approvalServerKey(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.approval_id) ?? serverApprovalId(body.change_id);
+  const direct = serverApprovalId(body.approval_id) ?? approvalChangeId(body.change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
   const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.approval_id) ?? serverApprovalId(inner.change_id);
+  return serverApprovalId(inner.approval_id) ?? approvalChangeId(inner.change_id);
+}
+
+/**
+ * `change_id` для `ApproveIn`: только `^orch-appr-[0-9]+-[0-9]+$` с карточки.
+ * `step_change_id` не подставляется, даже если другого id нет.
+ */
+export function approvalWireChangeId(body: Record<string, unknown>): string | null {
+  const direct = approvalChangeId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return approvalChangeId((nested as Record<string, unknown>).change_id);
 }
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
@@ -421,6 +453,7 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
     state.approvals.push({
       id,
       serverId: fromServer != null,
+      changeId: approvalWireChangeId(body),
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
       reason,
@@ -503,6 +536,19 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       },
     };
   }
+  if (action.type === "snapshot") {
+    const status = asTaskStatus(action.status);
+    if (!status) return state;
+    const wanted = action.taskId;
+    const known = wanted != null && state.tasks.some((task) => task.id === wanted);
+    const target = known ? wanted : state.tasks.at(-1)?.id;
+    if (!target) return state;
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => (task.id === target ? { ...task, status } : task)),
+    };
+  }
+
   if (action.type === "approval-resolved") {
     return {
       ...state,
@@ -669,6 +715,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id,
         serverId: fromServer != null,
+        changeId: approvalWireChangeId(body),
         taskId,
         title: str(body.title, "Нужно подтверждение"),
         reason: str(body.reason),
@@ -707,6 +754,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id: `block-${event.seq}`,
         serverId: false,
+        changeId: null,
         taskId,
         title: "",
         reason: error,

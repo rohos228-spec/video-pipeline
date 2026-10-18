@@ -6,14 +6,14 @@
  * POST `.../message` тело `{text}`, ответ `{ok, session, ack_seq}`;
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
- * Approve/kill в том роутере нет — мок держит их до WS2.
+ * Решение: POST `.../chat/{session}/approve`, тело `{change_id, decision}`.
+ * Успех — 200 и JSON. 204 пустым телом успехом не считается.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
  */
 
 import type {
-  OrchApprovalDecision,
   OrchEvent,
   OrchKillRequest,
   OrchKillResult,
@@ -221,20 +221,82 @@ export function postOrchMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
-export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
-  return postJson(
-    cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/approve`,
-    body,
-    signal,
-  );
+/** Тело `ApproveIn` (#370). Лишние поля (`approval_id`, `task_id`) не отправляются. */
+export interface OrchApproveIn {
+  change_id: string;
+  decision: "approve" | "retry_step" | "deny";
+  retry_grant?: boolean;
 }
 
-export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
+/** Успешный `POST .../approve`: 200 и JSON, не 204. */
+export interface OrchApproveResult {
+  executed?: boolean;
+  reason?: string | null;
+  forecast_usd?: number | null;
+  retry_armed?: boolean;
+  change_id?: string | null;
+  decision?: string | null;
+  ok?: boolean;
+  matched?: boolean;
+  approval_id?: string;
+}
+
+const APPROVE_NOT_JSON = "ответ approve — не JSON 200";
+
+const APPROVE_REFUSAL: Record<number, string> = {
+  401: "401 — нет токена или токен неверный",
+  400: "400 — плохой session_id",
+  422: "422 — тело не по схеме",
+  404: "404 — нет сессии, change_id из чужой сессии или неизвестный change_id",
+  409: "409 — решение уже принято, change_id не текущий или переход недопустим",
+  403: "403 — not_in_whitelist",
+};
+
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. 204 — отказ. */
+export async function postOrchDecision(
+  cfg: OrchClientConfig,
+  body: OrchApproveIn,
+  signal?: AbortSignal,
+): Promise<OrchApproveResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const payload: { change_id: string; decision: OrchApproveIn["decision"]; retry_grant?: boolean } = {
+    change_id: body.change_id,
+    decision: body.decision,
+  };
+  if (body.retry_grant === true) payload.retry_grant = true;
+  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (res.status === 204) throw new OrchApiError(204, APPROVE_NOT_JSON);
+  const refusal = APPROVE_REFUSAL[res.status];
+  if (refusal) throw new OrchApiError(res.status, refusal);
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  if (res.status !== 200) throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  }
+  if (!json || typeof json !== "object") throw new OrchApiError(200, APPROVE_NOT_JSON);
+  return json as OrchApproveResult;
+}
+
+/** Снять `missing_project_id`. Это не /approve. */
+export function postOrchProject(
+  cfg: OrchClientConfig,
+  projectId: number,
+  signal?: AbortSignal,
+): Promise<{ ok?: boolean; project_id?: number }> {
   return postJson(
     cfg,
-    `/api/orchestrator/approvals/${encodeURIComponent(body.approval_id)}/reject`,
-    body,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+    { project_id: projectId },
     signal,
   );
 }
@@ -282,6 +344,17 @@ export interface ReportMutation {
   report_id: number;
   version: number;
   change_id: string;
+}
+
+export interface OrchSessionSnapshot {
+  session: string;
+  task_id: number | null;
+  status: string;
+  resume_allowed: boolean;
+}
+
+export function getOrchSessionStatus(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchSessionSnapshot> {
+  return getJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/status`, signal);
 }
 
 async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSignal): Promise<T> {
