@@ -51,7 +51,7 @@ export function useOrchestratorChat() {
   const [decisionPendingId, setDecisionPendingId] = useState<string | null>(null);
   const [decisionError, setDecisionError] = useState<{ id: string; message: string } | null>(null);
   const [ackMs, setAckMs] = useState<number | null>(null);
-  const [state, dispatch] = useReducer(reduceOrchScreen, undefined, initialOrchScreen);
+  const [state, dispatch] = useReducer(reduceOrchScreen, boot.session, initialOrchScreen);
   const lastSeq = useRef(0);
   const seen = useRef(new Set<number>());
   const sendStartedAt = useRef<number | null>(null);

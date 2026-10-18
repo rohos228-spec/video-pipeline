@@ -195,6 +195,92 @@ test("javascript: в NEXT_PUBLIC_ORCH_API пишется как некоррек
   }
 });
 
+test("чужое executing не закрепляет задачу: своё done закрывает карточку", () => {
+  const foreign = reduceOrchScreen(initialOrchScreen("own"), {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 1,
+      session_id: "other-session",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(foreign.tasks).toHaveLength(0);
+
+  const opened = reduceOrchScreen(foreign, {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "own",
+      payload: { approval_id: "appr-own", reason: "budget_exhausted", title: "Бюджет" },
+    },
+  });
+  const executing = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 3,
+      session_id: "own",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  const done = reduceOrchScreen(executing, {
+    type: "event",
+    event: {
+      type: "task_done",
+      task_id: 1,
+      seq: 4,
+      session_id: "own",
+      payload: { summary: "готово" },
+    },
+  });
+  expect(done.tasks[0]?.status).toBe("done");
+  expect(done.approvals[0]?.resolved).toBe("closed");
+});
+
+test("событие без session_id не перезаписывает статус и не мешает закрыть карточку", () => {
+  const opened = reduceOrchScreen(initialOrchScreen("own"), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 1,
+      session_id: "own",
+      payload: { approval_id: "appr-own", reason: "budget_exhausted", title: "Бюджет" },
+    },
+  });
+  const bare = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 2,
+      session_id: "",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(bare.tasks[0]?.status).toBe("waiting_approval");
+  expect(bare.approvals[0]?.resolved).toBeNull();
+  expect(bare.tasks).toHaveLength(1);
+
+  const executing = reduceOrchScreen(bare, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 3,
+      session_id: "own",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(executing.tasks[0]?.status).toBe("executing");
+  expect(executing.approvals[0]?.resolved).toBe("closed");
+});
+
 test("чужая сессия с тем же executing не прячет своё закрытие карточки", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",

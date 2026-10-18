@@ -184,7 +184,7 @@ export interface TaskView {
   id: string;
   title: string;
   status: TaskStatus;
-  /** Сессия, которая первой записала статус. Чужая сессия статус не подменяет. */
+  /** Сессия клиента, если событие её совпало. Чужая сессия задачу не создаёт. */
   sessionId: string | null;
   steps: StepView[];
   checkpoints: CheckpointView[];
@@ -231,6 +231,8 @@ export interface OrchScreenState {
   ack: AckView | null;
   classification: ClassificationView | null;
   killNotice: KillNoticeView | null;
+  /** cfg.session. Пустая строка — старые тесты без своей сессии. */
+  ownSession: string;
 }
 
 export type OrchScreenAction =
@@ -253,7 +255,7 @@ const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
   detail: "",
 }));
 
-export function initialOrchScreen(): OrchScreenState {
+export function initialOrchScreen(ownSession = ""): OrchScreenState {
   return {
     messages: [],
     agents: IDLE_AGENTS.map((agent) => ({ ...agent })),
@@ -262,6 +264,7 @@ export function initialOrchScreen(): OrchScreenState {
     ack: null,
     classification: null,
     killNotice: null,
+    ownSession,
   };
 }
 
@@ -401,17 +404,26 @@ function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, ses
   }
 }
 
+/** Своя сессия cfg.session. Без session_id статус не трогаем. Чужую задачу не создаём. */
+function acceptsTaskSession(state: OrchScreenState, sessionId: string | null): boolean {
+  if (!sessionId) return false;
+  if (state.ownSession && sessionId !== state.ownSession) return false;
+  return true;
+}
+
 function applyTaskStatus(
   state: OrchScreenState,
   taskId: string,
   status: TaskStatus,
   sessionId: string | null,
-): TaskView {
-  const task = ensureTask(state.tasks, taskId);
-  if (sessionId) {
-    if (!task.sessionId) task.sessionId = sessionId;
-    else if (task.sessionId !== sessionId) return task;
+  title?: string,
+): TaskView | null {
+  if (!acceptsTaskSession(state, sessionId)) {
+    return state.tasks.find((item) => item.id === taskId) ?? null;
   }
+  const task = ensureTask(state.tasks, taskId, title);
+  if (task.sessionId && task.sessionId !== sessionId) return task;
+  if (!task.sessionId) task.sessionId = sessionId;
   if (task.status !== status) {
     closeApprovalsWithoutChange(state, taskId, sessionId);
     task.status = status;
@@ -516,7 +528,7 @@ function absorbLlmSignal(
   }
   if (taskId && nextStatus) {
     const task = applyTaskStatus(state, taskId, nextStatus, sessionId);
-    if (reason && isTerminalBlock(reason)) task.error = reason;
+    if (task && reason && isTerminalBlock(reason)) task.error = reason;
   }
   if (!reason || !body) return;
   const fromServer = approvalServerKey(body);
@@ -579,7 +591,7 @@ function appendToken(state: OrchScreenState, taskId: string | null, text: string
 }
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
-  if (action.type === "reset") return initialOrchScreen();
+  if (action.type === "reset") return initialOrchScreen(state.ownSession);
   if (action.type === "user-message") {
     return {
       ...state,
@@ -697,9 +709,11 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const taskStatusRaw = str(payload.task_status);
     if (isTerminalKillStatus(taskStatusRaw)) noteTaskCancelled(next, event);
     if (!taskId) return next;
-    ensureTask(next.tasks, taskId, str(payload.title) || undefined);
+    const sessionId = event.session_id || null;
     const taskStatus = asTaskStatus(taskStatusRaw);
-    if (taskStatus) applyTaskStatus(next, taskId, taskStatus, event.session_id || null);
+    const title = str(payload.title) || undefined;
+    if (taskStatus) applyTaskStatus(next, taskId, taskStatus, sessionId, title);
+    else if (acceptsTaskSession(next, sessionId)) ensureTask(next.tasks, taskId, title);
     return next;
   }
 
@@ -771,7 +785,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     if (taskId) {
       if (isTerminalBlock(reason)) {
         const task = applyTaskStatus(next, taskId, blockOutcome(reason) ?? "failed", sessionId);
-        task.error = reason;
+        if (task) task.error = reason;
       } else {
         applyTaskStatus(next, taskId, "waiting_approval", sessionId);
       }
@@ -798,12 +812,14 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
 
   if (event.type === "task_done" && taskId) {
     const task = applyTaskStatus(next, taskId, "done", event.session_id || null);
+    if (!task) return next;
     task.summary = str(payload.summary);
     return next;
   }
 
   if (event.type === "task_failed" && taskId) {
     const task = applyTaskStatus(next, taskId, "failed", event.session_id || null);
+    if (!task) return next;
     const error = str(payload.error, str(payload.summary, "задача упала"));
     task.error = error;
     if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
