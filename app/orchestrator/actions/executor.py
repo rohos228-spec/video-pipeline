@@ -21,7 +21,7 @@ from app.orchestrator.action_contracts.contracts import ActionResult
 from app.orchestrator.action_contracts.contracts import ApprovalPreview
 from app.orchestrator.action_contracts.contracts import ApprovalRequired
 from app.orchestrator.action_contracts.contracts import SoftDeleteResult
-from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
+from app.orchestrator.action_contracts.contracts import escalated_metadata as contract_escalated
 from app.services.action_layer import store
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
@@ -151,15 +151,15 @@ def _wire_metadata(meta: ActionMetadata) -> ActionMetadata:
     )
 
 
-def metadata_of(name: str) -> ActionMetadata:
-    """Флаги из audit_metadata.json, не слабее пола яруса Никиты.
+def metadata_of(name: str, *, group_is_new: bool = False) -> ActionMetadata:
+    """Флаги из audit_metadata.json и RISK_ESCALATIONS, не слабее пола яруса.
 
-    create_node@new_group и prompt.create_master остаются destructive.
-    У мягкого удаления есть soft_delete и restore_action.
+    ``action`` остаётся без «@». Новая группа поднимает create_node до high/destructive.
+    prompt.create_master остаётся destructive. У мягкого удаления есть restore_action.
     """
 
-    published = contract_metadata(str(name))
-    spec = registry.find(str(name))
+    published = contract_escalated(str(name), group_is_new=group_is_new)
+    spec = registry.find(published.name)
     base = published if spec is None else _raise_to_floor(
         published, map_nikita_risk(spec.risk, name=published.name)
     )

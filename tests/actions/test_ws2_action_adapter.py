@@ -45,6 +45,8 @@ async def test_execute_returns_r22_action_result(env) -> None:
 def test_metadata_of_covers_registry() -> None:
     """Метаданные контракта есть у каждого из 102 имён живого реестра."""
 
+    import pytest
+
     from app.orchestrator.action_contracts.contracts import ActionMetadata
     from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
     from app.orchestrator.actions.executor import metadata_of
@@ -61,10 +63,17 @@ def test_metadata_of_covers_registry() -> None:
         assert meta.model_dump(include={"name", "risk", "read_only", "destructive", "paid"}) == (
             contract_metadata(spec.id).model_dump()
         )
-    raised = metadata_of("create_node@new_group")
+    with pytest.raises(ValueError):
+        metadata_of("create_node@new_group")
+    raised = metadata_of("create_node", group_is_new=True)
+    assert raised.name == "create_node"
+    assert "@" not in raised.name
     assert raised.risk == "high"
     assert raised.destructive is True
     assert raised.needs_approval is True
+    plain = metadata_of("create_node", group_is_new=False)
+    assert plain.risk == "medium"
+    assert plain.destructive is False
 
 
 def test_metadata_marks_soft_delete_with_restore() -> None:
