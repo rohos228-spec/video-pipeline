@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import textwrap
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -3127,7 +3128,7 @@ def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
 
 def _symlinks_available() -> bool:
     """Skip только при WinError 1314: нет привилегии на symlink."""
-    probe = Path(os.environ.get("TMPDIR", "/tmp")) / f"vp-symlink-probe-{os.getpid()}"
+    probe = Path(tempfile.gettempdir()) / f"vp-symlink-probe-{os.getpid()}"
     try:
         probe.mkdir(parents=True, exist_ok=True)
         os.symlink(str(probe / "target"), str(probe / "link"))
