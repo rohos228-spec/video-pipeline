@@ -222,3 +222,54 @@ def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
     assert len(ids) == len(set(ids)), ids
     assert len(orders) == len(set(orders)), orders
 
+
+@pytest.mark.parametrize("order", [2, 2.0, "2", "  2 "])
+def test_reserved_order_accepts_xlsx_numbers(order: object) -> None:
+    """Порядок из xlsx резервируется и склейкой, и вставкой общего плана."""
+
+    first = _shot(id="a", кто="c03", место="чердак", действие="стоит")
+    first["порядок"] = 1
+    dead = _shot(id="dead", действие="смотрит в окно", кто="c09", объект="окно", место="улица")
+    dead["активен"] = False
+    dead["порядок"] = order
+    dead["закадр"] = "хвост"
+    frozen = copy.deepcopy(dead)
+    left = _shot(id="c")
+    left["порядок"] = 3
+    right = _shot(id="d", действие="сидит дальше")
+    right["порядок"] = 4
+    merged = [first, dead, left, right]
+
+    notes = local_merge_trivial_shots(merged)
+    assert any("d склеен в c" in note for note in notes)
+    assert dead == frozen
+    live_orders = [
+        shot["порядок"]
+        for shot in merged
+        if isinstance(shot, dict) and shot.get("id") != "dead"
+    ]
+    assert 2 not in live_orders, live_orders
+
+    wide_dead = _shot(id="mid", план="КРУПНЫЙ", действие="молчит")
+    wide_dead["активен"] = False
+    wide_dead["порядок"] = order
+    wide_frozen = copy.deepcopy(wide_dead)
+    wide = [
+        _shot(id="p1", план="КРУПНЫЙ", действие="молчит"),
+        wide_dead,
+        _shot(id="p3", реплика="один", говорит="Анна", кто="c01"),
+        _shot(id="p4", реплика="два", говорит="Борис", кто="c02"),
+    ]
+    wide[0]["порядок"] = 1
+    wide[2]["порядок"] = 3
+    wide[3]["порядок"] = 4
+    wide_notes = local_ensure_wide_before_dialogue(wide)
+    assert wide_notes
+    assert wide_dead == wide_frozen
+    wide_orders = [
+        shot["порядок"]
+        for shot in wide
+        if isinstance(shot, dict) and shot.get("id") != "mid" and "порядок" in shot
+    ]
+    assert 2 not in wide_orders, wide_orders
+

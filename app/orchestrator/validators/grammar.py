@@ -211,6 +211,32 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
     return notes
 
 
+def _reserved_order(value: Any) -> int | None:
+    """``порядок`` из xlsx: целое, ``2.0``, ``\"2\"`` и ``\"  2 \"`` — один номер."""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        if value.is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        if number.is_integer():
+            return int(number)
+    return None
+
+
 def _reserved_by_inactive(shots: list[Any]) -> tuple[set[int], set[str]]:
     """Номера и id, которые неактивные шоты не отдают под перенумерацию."""
 
@@ -222,8 +248,8 @@ def _reserved_by_inactive(shots: list[Any]) -> tuple[set[int], set[str]]:
         sid = str(shot.get("id") or "")
         if sid:
             ids.add(sid)
-        order = shot.get("порядок")
-        if isinstance(order, int) and not isinstance(order, bool):
+        order = _reserved_order(shot.get("порядок"))
+        if order is not None:
             numbers.add(order)
         matched = _KID_RE.match(sid)
         if matched:
