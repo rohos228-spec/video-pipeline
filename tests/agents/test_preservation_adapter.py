@@ -37,6 +37,15 @@ def _restore(previous: dict | None) -> None:
         sys.modules["app.orchestrator.validators.preservation"] = previous
 
 
+def test_preservation_pin_cites_ws1_head() -> None:
+    from app.orchestrator.agents.wiring import _preservation_symbols
+
+    text = _preservation_symbols.__doc__ or ""
+    assert "63be300a" in text
+    assert "run_preservation_validators(before, after, ops=None, *, mode)" in text
+    assert "PreservationRejected" in text
+
+
 def test_preservation_rejected_is_blocking_and_does_not_touch_data() -> None:
     previous = _install()
     before = {"scenes": [{"id": "s1", "кадры": [{"id": "f1"}]}]}

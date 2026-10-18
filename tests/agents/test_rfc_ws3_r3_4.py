@@ -11,7 +11,7 @@ _RFC = Path(__file__).resolve().parents[2] / "docs" / "fable" / "rfc_ws3_r3_4.md
 
 def test_rfc_ws3_r3_4_topics_match_the_contract() -> None:
     text = _RFC.read_text(encoding="utf-8")
-    assert CONTRACT_VERSION == "ws3-r3.4"
+    assert CONTRACT_VERSION == "ws3-r3.5"
     assert "ws3-r3.4" in text
     assert "kill_switch" in text
     assert "missing_project_id" in text

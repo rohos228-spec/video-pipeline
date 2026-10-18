@@ -56,6 +56,17 @@ async def test_cap_drops_oldest_ordinary_and_keeps_protected(runtime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_write_survives_the_event_cap(runtime) -> None:
+    session = "compact-partial"
+    for index in range(3):
+        await runtime.bus.publish(session, "message", {"n": index})
+    await runtime.bus.publish(session, "partial_write", {"change_ids": ["chg-1"]})
+    stats = compact_events(session, cap=1)
+    assert stats["deleted_cap"] == 3
+    assert persisted_types(session) == ["partial_write"]
+
+
+@pytest.mark.asyncio
 async def test_enforce_cap_never_deletes_protected_events(runtime) -> None:
     session = "compact-protected"
     for index in range(3):

@@ -88,6 +88,7 @@ from app.orchestrator.contracts import (
     escalation_for,
     forecast_cost,
     forecast_unknown,
+    frame_soft_delete_state,
     grant_forbidden,
     max_risk,
     metadata_call_gate,
@@ -190,6 +191,7 @@ class Supervisor:
         self._queued: dict[str, list[tuple[int, str]]] = {}
         self._budget_stop: set[int] = set()
         self._shield_orphaned: set[int] = set()
+        self._mutating_open: dict[int, int] = {}
         self._paid_open: set[int] = set()
         self._paid_outcome_hold: set[int] = set()
         self._paid_unknown_marking: set[int] = set()
@@ -208,6 +210,8 @@ class Supervisor:
         self._decided_change_id: dict[tuple[int, str], str] = {}
         self._card_action: dict[str, str] = {}
         self._cc_change_id: dict[tuple[int, str], str] = {}
+        self._partial_llm_cost: dict[int, float] = {}
+        self._bind_partial_llm_cost()
 
     async def start_task(
         self,
@@ -506,6 +510,7 @@ class Supervisor:
     def _arm_resume(self, session_id: str, task_id: int, data: CheckpointData) -> None:
         self._cancel.discard(session_id)
         self._pause.discard(session_id)
+        self._kill.discard(session_id)
         self._steer.pop(session_id, None)
         self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
@@ -518,6 +523,16 @@ class Supervisor:
         if mark:
             self._approved[task_id] = mark
         self._remember_paid(task_id)
+        self._clear_project_stop(task_id)
+
+    def _clear_project_stop(self, task_id: int) -> None:
+        """Снять ``project_{id}.stop``, который поставил kill этой задачи."""
+        project_id = self._task_project_id(task_id)
+        if project_id is None:
+            return
+        from app.services.step_cancel import clear_stop
+
+        clear_stop(project_id)
 
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
@@ -556,6 +571,7 @@ class Supervisor:
         """
         self._kill.add(session_id)
         self.request_cancel(session_id)
+        self._cancel_open_mutating(session_id)
         queued = list(self._queued.pop(session_id, []))
         task_id = self._session_task.get(session_id)
         try:
@@ -568,6 +584,21 @@ class Supervisor:
         for queued_id, _goal in queued:
             self._spawn(self._cancel_queued(session_id, queued_id))
         return self._spawn(self._publish_kill(session_id, task_id))
+
+    def _cancel_open_mutating(self, session_id: str) -> None:
+        """Kill гасит внешний прогон mutating-шага, но не сам inner.
+
+        Новые шаги не стартуют. Запись, которая уже идёт, дописывается,
+        и её ``change_id`` садится на строку ``partial`` в done-callback.
+        Платный шаг сюда не попадает: его держит ``_paid_open``.
+        """
+        task_id = self._session_task.get(session_id)
+        if task_id is None or task_id in self._paid_open or task_id not in self._mutating_open:
+            return
+        self._shield_orphaned.add(task_id)
+        run = self._runs.get(task_id)
+        if run is not None and not run.done():
+            run.cancel()
 
     async def _cancel_queued(self, session_id: str, task_id: int) -> None:
         """Задача, стоявшая в очереди на момент kill, не должна стартовать позже."""
@@ -1057,12 +1088,9 @@ class Supervisor:
             "retry_armed": False,
         }
 
-    def _partial_internal_cost(self) -> float:
-        """Уже потраченное на оборванном LLM-ходе.
-
-        Роутер кладёт сумму в ``partial_cost_usd``, пока ``call`` ещё не
-        вернулся, и снимает её после успешного ответа.
-        """
+    def _bind_partial_llm_cost(self) -> None:
+        """Частичная стоимость LLM живёт на задаче, не на общем роутере."""
+        seen: set[int] = set()
         owners = (
             self.planner,
             getattr(self.planner, "router", None),
@@ -1070,19 +1098,44 @@ class Supervisor:
             getattr(self.critic, "router", None),
         )
         for owner in owners:
-            if owner is None:
+            if owner is None or id(owner) in seen:
                 continue
-            raw = getattr(owner, "partial_cost_usd", None)
+            seen.add(id(owner))
+            original = getattr(owner, "call", None)
+            if not callable(original) or getattr(owner, "_orch_partial_bound", False):
+                continue
+            owner.call = self._partial_cost_call(owner, original)
+            owner._orch_partial_bound = True
+
+    def _partial_cost_call(self, owner: Any, original: Any) -> Any:
+        async def _call(*args: Any, **kwargs: Any) -> Any:
+            raw_task = kwargs.get("task_id")
             try:
-                value = float(raw or 0)
+                task_key = int(raw_task) if raw_task is not None else None
             except (TypeError, ValueError):
-                continue
-            if value > 0:
-                return value
-        return 0.0
+                task_key = None
+            try:
+                return await original(*args, **kwargs)
+            except asyncio.CancelledError:
+                cost = self._take_partial_cost(owner)
+                if task_key is not None and cost > 0:
+                    self._partial_llm_cost[task_key] = cost
+                raise
+
+        return _call
+
+    def _take_partial_cost(self, owner: Any) -> float:
+        raw = getattr(owner, "partial_cost_usd", None)
+        try:
+            value = float(raw or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if hasattr(owner, "partial_cost_usd"):
+            owner.partial_cost_usd = 0.0
+        return value if value > 0 else 0.0
 
     def _charge_cancelled_llm(self, task_id: int) -> None:
-        cost = self._partial_internal_cost()
+        cost = self._partial_llm_cost.pop(int(task_id), 0.0)
         if cost:
             self.tasks.add_spend(task_id, internal=cost)
 
@@ -1352,6 +1405,9 @@ class Supervisor:
             await self._apply_block(task_id, session_id, "unknown_cost")
             return True
         for step in plan:
+            if frame_soft_delete_state(step.action, self.actions) == "forbidden":
+                await self._apply_block(task_id, session_id, "deletion_forbidden")
+                return True
             if step_is_deletion(step, self.actions):
                 await self._apply_block(task_id, session_id, "deletion_blocked")
                 return True
@@ -1465,6 +1521,20 @@ class Supervisor:
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]
+            frame = frame_soft_delete_state(step.action, self.actions) if len(batch) == 1 else None
+            if frame == "forbidden":
+                await self._apply_block(task_id, session_id, "deletion_forbidden")
+                return
+            if frame == "grant" and self._risk_grant_key(task_id, index, step) not in self._risk_granted:
+                await self._checkpoint(task_id, session_id, plan, index)
+                self._block_reason[task_id] = "destructive"
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "destructive",
+                    extra={"action": step.action, "soft_delete": True, "gate": "soft_delete"},
+                )
+                return
             if any(not_in_whitelist(item.action, self.actions) for item in batch):
                 await self._apply_block(task_id, session_id, "not_in_whitelist")
                 return
@@ -1505,6 +1575,21 @@ class Supervisor:
                     extra["destructive"] = True
                 self._block_reason[task_id] = reason
                 await self._escalate(task_id, session_id, reason, extra=extra)
+                return
+
+            partial_row = self._open_partial_row(task_id, step, plan, index) if len(batch) == 1 else None
+            if partial_row is not None:
+                await self._checkpoint(task_id, session_id, plan, index)
+                self._block_reason[task_id] = "partial_write"
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "partial_write",
+                    extra={
+                        "action": step.action,
+                        "change_id": partial_row.get("change_id") if partial_row else None,
+                    },
+                )
                 return
 
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None
@@ -1823,11 +1908,26 @@ class Supervisor:
                         )
                     )
                 )
+            else:
+                self._mutating_open[task_id] = step_id
+                inner.add_done_callback(
+                    lambda done, _task=task_id, _session=session_id, _sid=step_id, _index=index: (
+                        self._on_mutating_done(
+                            done,
+                            task_id=_task,
+                            session_id=_session,
+                            step_id=_sid,
+                            index=_index,
+                        )
+                    )
+                )
             try:
                 return await asyncio.shield(inner)
             finally:
                 if step.paid:
                     self._paid_open.discard(task_id)
+                else:
+                    self._mutating_open.pop(task_id, None)
         return await self._cancellable(session_id, _call())
 
     def _on_shield_done(
@@ -1867,6 +1967,59 @@ class Supervisor:
         job = loop.create_task(
             self._pause_after_shield(task_id, session_id, plan, index + 1),
             name=f"orch-shield-{task_id}",
+        )
+        self._shield_jobs.add(job)
+        job.add_done_callback(self._shield_jobs.discard)
+
+    def _on_mutating_done(
+        self,
+        done: asyncio.Task[Any],
+        *,
+        task_id: int,
+        session_id: str,
+        step_id: int,
+        index: int,
+    ) -> None:
+        """Поздний ``change_id`` unpaid mutating после kill. Шаг остаётся ``partial``."""
+        if done.cancelled() or task_id not in self._shield_orphaned:
+            return
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            return
+        change_id = envelope_change_id(done.result())
+        if not change_id or self._stored_change_id(task_id, step_id):
+            return
+        row = next(
+            (item for item in self.tasks.list_steps(task_id) if int(item["id"]) == int(step_id)),
+            None,
+        )
+        status = str(row.get("status")) if row is not None else "running"
+        if status == "done":
+            return
+        if status == "running":
+            self.tasks.note_running_outcome(step_id, change_id, 0.0)
+        else:
+            self.tasks.finish_step(step_id, "partial", change_id, 0.0)
+        bucket = self._change_ids.setdefault(task_id, [])
+        if change_id not in bucket:
+            bucket.append(change_id)
+        loop = asyncio.get_running_loop()
+        job = loop.create_task(
+            self.bus.publish(
+                session_id,
+                "partial_write",
+                {
+                    "level": "WARN",
+                    "change_ids": [change_id],
+                    "position": index,
+                    "task_id": task_id,
+                },
+                task_id=task_id,
+            ),
+            name=f"orch-partial-{task_id}",
         )
         self._shield_jobs.add(job)
         job.add_done_callback(self._shield_jobs.discard)
@@ -1936,8 +2089,9 @@ class Supervisor:
             task_id=task_id,
         )
         current = self._status(task_id)
-        if current not in TERMINAL_STATUSES:
-            await self._set_status(task_id, TaskStatus.cancelled, session_id=session_id)
+        if current not in TERMINAL_STATUSES and current is not TaskStatus.waiting_approval:
+            await self._set_status(task_id, TaskStatus.waiting_approval, session_id=session_id)
+            self._block_reason[task_id] = "partial_write"
 
     async def _hold_executor_approval(
         self,
@@ -2236,17 +2390,25 @@ class Supervisor:
     ) -> bool:
         """Повтор шага, у которого в ``orch_steps.change_id`` уже есть сдача.
 
-        Параметр ``_change_id`` плана не источник. Считаются done, cancelled
-        и partial строки с непустым change_id и теми же публичными params.
+        Параметр ``_change_id`` плана не источник. Считаются done и cancelled
+        с непустым change_id и теми же публичными params. ``partial`` сюда
+        не входит: его решает человек через ``partial_write``.
         """
         ident = _public_params(step.params)
         prior = sum(
             1 for item in plan[:index] if item.action == step.action and _public_params(item.params) == ident
         )
         done = 0
-        for row in self.tasks.list_steps(task_id):
-            if str(row.get("status")) not in {"done", "cancelled", "partial"} or not row.get("change_id"):
+        for row in self._rows_for_step(task_id, step):
+            if str(row.get("status")) not in {"done", "cancelled"} or not row.get("change_id"):
                 continue
+            done += 1
+        return done > prior
+
+    def _rows_for_step(self, task_id: int, step: PlanStep) -> list[dict[str, Any]]:
+        ident = _public_params(step.params)
+        found: list[dict[str, Any]] = []
+        for row in self.tasks.list_steps(task_id):
             if str(row.get("action_name") or "") != step.action:
                 continue
             try:
@@ -2254,8 +2416,25 @@ class Supervisor:
             except json.JSONDecodeError:
                 stored = {}
             if isinstance(stored, dict) and _public_params(stored) == ident:
-                done += 1
-        return done > prior
+                found.append(row)
+        return found
+
+    def _open_partial_row(
+        self,
+        task_id: int,
+        step: PlanStep,
+        plan: list[PlanStep],
+        index: int,
+    ) -> dict[str, Any] | None:
+        """Строка ``partial`` этого шага. Повторный execute по ней не идёт."""
+        ident = _public_params(step.params)
+        prior = sum(
+            1 for item in plan[:index] if item.action == step.action and _public_params(item.params) == ident
+        )
+        rows = [row for row in self._rows_for_step(task_id, step) if str(row.get("status")) == "partial"]
+        if len(rows) > prior:
+            return rows[prior]
+        return None
 
     def _next_step_position(self, task_id: int) -> int:
         rows = self.tasks.list_steps(task_id)
