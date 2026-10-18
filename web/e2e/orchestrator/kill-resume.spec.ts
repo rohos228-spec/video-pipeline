@@ -229,6 +229,64 @@ test("карточка paid_outcome_unknown показывает change_id ша�
   await expect(page.getByTestId("orch-approve")).toHaveCount(1);
 });
 
+test("paid_outcome_unknown берёт step_change_id и кнопки approve retry_step deny", async ({ page }) => {
+  const session = "paid-actions";
+  await openWithToken(page, session);
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-actions",
+    plan: [{ action: "charge", paid: true, risk: "high", estimated_cost: 1 }],
+    position: 0,
+    change_ids: ["chg-checkpoint-only"],
+    context: "",
+  });
+  await emit(page, session, "approval_required", {
+    reason: "paid_outcome_unknown",
+    change_id: "orch-appr-9-1",
+    action: "charge",
+    retry_armed: false,
+    task_id: 1,
+    actions: ["approve", "retry_step", "deny"],
+    step_change_id: "chg-step-9",
+  });
+
+  const card = page.getByTestId("orch-paid-outcome");
+  await expect(card.getByTestId("orch-paid-step-changes")).toHaveAttribute("data-source", "step_change_id");
+  await expect(card.getByTestId("orch-paid-step-change")).toHaveText("chg-step-9");
+  await expect(card).not.toContainText("chg-checkpoint-only");
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-reject")).toHaveCount(0);
+  const decisions = page.getByTestId("orch-decision");
+  await expect(decisions).toHaveCount(3);
+  await expect(decisions.nth(0)).toHaveAttribute("data-decision", "approve");
+  await expect(decisions.nth(0)).toHaveText("Шаг выполнен, продолжить");
+  await expect(decisions.nth(1)).toHaveAttribute("data-decision", "retry_step");
+  await expect(decisions.nth(1)).toHaveText("Перезапустить шаг");
+  await expect(decisions.nth(2)).toHaveAttribute("data-decision", "deny");
+  await expect(decisions.nth(2)).toHaveText("Остановить задачу");
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+
+  let posted = "";
+  await page.route(`**/api/orchestrator/chat/${session}/approve`, async (route) => {
+    posted = route.request().postData() ?? "";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        executed: false,
+        decision: "deny",
+        retry_armed: false,
+        change_id: "orch-appr-9-1",
+      }),
+    });
+  });
+  await decisions.nth(2).click();
+  await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+  await expect(page.getByTestId("orch-paid-outcome")).toHaveCount(0);
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+  await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  expect(JSON.parse(posted)).toEqual({ change_id: "orch-appr-9-1", decision: "deny" });
+});
+
 test("not_in_whitelist: экран отказывает до карточки, grant 403 пишет понятный текст", async ({ page }) => {
   const session = "wl-deny";
   await openWithToken(page, session);

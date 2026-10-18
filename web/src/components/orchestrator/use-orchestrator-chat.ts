@@ -7,6 +7,7 @@ import {
   orchTaskModeEnabled,
   OrchApiError,
   postOrchApprove,
+  postOrchChatApprove,
   postOrchKill,
   postOrchActionMessage,
   postOrchMessage,
@@ -20,6 +21,7 @@ import {
   sleepWithSignal,
   writeOrchToken,
   type OrchClientConfig,
+  type OrchPaidDecision,
 } from "@/lib/orchestratorApi";
 import { conflictRetryBody, reportEditBody, restoreBody } from "@/lib/orchestratorActionCards";
 import {
@@ -328,6 +330,47 @@ export function useOrchestratorChat() {
     [cfg, noteAuth, state.approvals],
   );
 
+  const decidePaid = useCallback(
+    async (approvalId: string, taskId: string | null, decision: OrchPaidDecision) => {
+      if (decisionLock.current) return;
+      const card = state.approvals.find((item) => item.id === approvalId);
+      if (!card?.serverId) {
+        setDecisionError({ id: approvalId, message: "нет approval_id от сервера" });
+        return;
+      }
+      decisionLock.current = true;
+      setDecisionPendingId(approvalId);
+      setDecisionError(null);
+      try {
+        await postOrchChatApprove(cfg, { change_id: approvalId, decision });
+        if (decision === "deny") {
+          dispatch({ type: "approval-resolved", id: approvalId, decision: "rejected" });
+          const failedId = taskId || card.taskId;
+          if (failedId) {
+            dispatch({ type: "task-status", taskId: failedId, status: "failed", resumeAllowed: false });
+          }
+        } else if (decision === "approve") {
+          dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
+        }
+        setSendError("");
+      } catch (error) {
+        if (!noteAuth(error)) {
+          const raw = error instanceof Error ? error.message : "не записалось решение";
+          const denied =
+            error instanceof OrchApiError && error.status === 403 && raw === NOT_IN_WHITELIST;
+          setDecisionError({
+            id: approvalId,
+            message: denied ? NOT_IN_WHITELIST_TEXT : raw,
+          });
+        }
+      } finally {
+        decisionLock.current = false;
+        setDecisionPendingId(null);
+      }
+    },
+    [cfg, noteAuth, state.approvals],
+  );
+
   const dismissBlock = useCallback((approvalId: string) => {
     dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
   }, []);
@@ -483,6 +526,7 @@ export function useOrchestratorChat() {
     sendRestore,
     sendConflictRetry,
     decide,
+    decidePaid,
     dismissBlock,
     kill,
     resume,

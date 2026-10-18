@@ -24,6 +24,8 @@ import {
   isTerminalBlock,
   NOT_IN_WHITELIST,
   NOT_IN_WHITELIST_TEXT,
+  PAID_DECISION_LABEL,
+  paidDecisionsOf,
   TASK_STATUS_LABEL,
   type ApprovalView,
   type KillNoticeView,
@@ -368,6 +370,7 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onDecision={(decision) => void chat.decidePaid(approval.id, approval.taskId, decision)}
                   onClose={() => chat.dismissBlock(approval.id)}
                 />
               ))}
@@ -705,6 +708,8 @@ function PaidOutcomeCard({
   approval: ApprovalView;
   stepChangeIds: string[];
 }) {
+  const fromEvent = approval.stepChangeId;
+  const ids = fromEvent ? [fromEvent] : stepChangeIds;
   return (
     <div
       data-testid="orch-paid-outcome"
@@ -715,17 +720,24 @@ function PaidOutcomeCard({
     >
       <div className="text-xs font-semibold text-warning">waiting_approval · paid_outcome_unknown</div>
       <p className="mt-1 text-[11px] leading-relaxed text-warning">
-        Исход платного шага неизвестен. Отката нет. change_id шага берётся из checkpoint.change_ids, не из orch-appr.
+        Исход платного шага неизвестен. Отката нет.{" "}
+        {fromEvent
+          ? "change_id шага пришёл в approval_required.step_change_id, не из orch-appr."
+          : "change_id шага берётся из checkpoint.change_ids, не из orch-appr."}
       </p>
       {approval.action ? <p className="mt-1 text-[11px] text-warning/80">{approval.action}</p> : null}
-      <ul data-testid="orch-paid-step-changes" className="mt-2 space-y-0.5 font-mono text-[11px] text-warning">
-        {stepChangeIds.map((id) => (
+      <ul
+        data-testid="orch-paid-step-changes"
+        data-source={fromEvent ? "step_change_id" : "checkpoint"}
+        className="mt-2 space-y-0.5 font-mono text-[11px] text-warning"
+      >
+        {ids.map((id) => (
           <li key={id} data-testid="orch-paid-step-change">
             {id}
           </li>
         ))}
       </ul>
-      {stepChangeIds.length === 0 ? (
+      {ids.length === 0 ? (
         <p data-testid="orch-paid-step-missing" className="mt-1 text-[11px] text-warning">
           change_id шага в checkpoint.change_ids нет
         </p>
@@ -740,6 +752,7 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onDecision,
   onClose,
 }: {
   approval: ApprovalView;
@@ -747,10 +760,12 @@ function ApprovalCard({
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onDecision: (decision: keyof typeof PAID_DECISION_LABEL) => void;
   onClose: () => void;
 }) {
   const copy = BLOCK_COPY[approval.reason];
   const terminal = isTerminalBlock(approval.reason);
+  const decisions = paidDecisionsOf(approval);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
   return (
@@ -771,11 +786,26 @@ function ApprovalCard({
         {approval.risk ? ` · ${approval.risk}` : ""}
         {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         {terminal ? (
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
+        ) : decisions && approval.serverId ? (
+          decisions.map((decision) => (
+            <Button
+              key={decision}
+              type="button"
+              size="sm"
+              variant={decision === "approve" ? "default" : "outline"}
+              data-testid="orch-decision"
+              data-decision={decision}
+              disabled={pending}
+              onClick={() => onDecision(decision)}
+            >
+              {PAID_DECISION_LABEL[decision]}
+            </Button>
+          ))
         ) : approval.serverId ? (
           <>
             <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>

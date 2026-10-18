@@ -230,6 +230,35 @@ export function postOrchActionMessage(
   return postJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/message`, body, signal);
 }
 
+/** Решение `POST /api/orchestrator/chat/{session}/approve`. Лишние поля ручка запрещает. */
+export type OrchPaidDecision = "approve" | "retry_step" | "deny";
+
+export interface OrchChatApproveResult {
+  executed?: boolean;
+  reason?: string | null;
+  forecast_usd?: number | null;
+  retry_armed?: boolean;
+  change_id?: string | null;
+  decision?: string | null;
+}
+
+/**
+ * Явное решение по карточке. `change_id` — orch-appr, не change_id шага.
+ * `retry_grant` не шлётся: это отдельный одноразовый допуск после прогноза.
+ */
+export function postOrchChatApprove(
+  cfg: OrchClientConfig,
+  body: { change_id: string; decision: OrchPaidDecision },
+  signal?: AbortSignal,
+): Promise<OrchChatApproveResult> {
+  return postJson(
+    cfg,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`,
+    body,
+    signal,
+  );
+}
+
 export function postOrchApprove(cfg: OrchClientConfig, body: OrchApprovalDecision, signal?: AbortSignal): Promise<{ ok: boolean }> {
   return postJson(
     cfg,

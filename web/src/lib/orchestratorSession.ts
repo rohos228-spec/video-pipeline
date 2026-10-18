@@ -174,7 +174,29 @@ export interface ApprovalView {
   costEstimate: number | null;
   /** ApprovalEvent / payload `retry_armed`. Нет поля — null. Кнопки из этого флага не рисуются. */
   retryArmed: boolean | null;
+  /** `approval_required.actions`. null — поля не было, остаются Approve/Reject. */
+  actions: string[] | null;
+  /** `approval_required.step_change_id`. null — поля не было, список берётся из чекпоинта. */
+  stepChangeId: string | null;
   resolved: "approved" | "rejected" | "closed" | null;
+}
+
+/** Подписи `APPROVAL_DECISION_LABELS`. В массиве `actions` их нет. */
+export const PAID_DECISION_LABEL = {
+  approve: "Шаг выполнен, продолжить",
+  retry_step: "Перезапустить шаг",
+  deny: "Остановить задачу",
+} as const;
+
+export type PaidDecision = keyof typeof PAID_DECISION_LABEL;
+
+/** Кнопки paid_outcome_unknown только из массива `actions`. Иная причина и пустое поле — null. */
+export function paidDecisionsOf(approval: ApprovalView): PaidDecision[] | null {
+  if (approval.reason !== "paid_outcome_unknown" || approval.actions == null) return null;
+  const known = approval.actions.filter(
+    (item): item is PaidDecision => item === "approve" || item === "retry_step" || item === "deny",
+  );
+  return known.length ? known : null;
 }
 
 export interface TaskView {
@@ -353,6 +375,26 @@ export function isTerminalBlock(reason: string): boolean {
   return outcome != null && TERMINAL_TASK.has(outcome);
 }
 
+function readStringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) items.push(item);
+  }
+  return items;
+}
+
+function readStepChangeId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function approvalWire(body: Record<string, unknown>): { actions: string[] | null; stepChangeId: string | null } {
+  return {
+    actions: readStringList(body.actions),
+    stepChangeId: readStepChangeId(body.step_change_id),
+  };
+}
+
 function readChangeIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const ids: string[] = [];
@@ -487,6 +529,7 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
       action: str(body.action),
       costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
       retryArmed: typeof body.retry_armed === "boolean" ? body.retry_armed : null,
+      ...approvalWire(body),
       resolved: null,
     });
   }
@@ -792,6 +835,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         action: str(body.action),
         costEstimate: typeof body.cost_estimate === "number" ? body.cost_estimate : null,
         retryArmed: typeof body.retry_armed === "boolean" ? body.retry_armed : null,
+        ...approvalWire(body),
         resolved: null,
       });
     }
@@ -833,6 +877,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
         action: "",
         costEstimate: null,
         retryArmed: null,
+        actions: null,
+        stepChangeId: null,
         resolved: null,
       });
     }
