@@ -12,10 +12,11 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
 import os
 import secrets
+import sys
+import time
 from pathlib import Path
 
 from app.orchestrator.node_store.errors import VersionConflict
@@ -183,11 +184,45 @@ def _open_lock(parent_fd: int, name: str) -> int:
         raise
 
 
-def _acquire_lock(fd: int) -> None:
-    fcntl.flock(fd, fcntl.LOCK_EX)
+def _posix_dir_fd() -> bool:
+    """dir_fd, O_NOFOLLOW и fsync каталога есть только на POSIX."""
+    return os.name == "posix" and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
+
+
+def _acquire_lock(fd: int, timeout: float = 30.0) -> None:
+    """Эксклюзивная блокировка с таймаутом. Windows — msvcrt, POSIX — fcntl."""
+    deadline = time.monotonic() + timeout
+    if sys.platform == "win32":
+        import msvcrt
+
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("lock timeout")
+                time.sleep(0.01)
+    import fcntl
+
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("lock timeout")
+            time.sleep(0.01)
 
 
 def _release_lock(fd: int) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
     fcntl.flock(fd, fcntl.LOCK_UN)
 
 
@@ -268,9 +303,16 @@ def _write_tmp(parent_fd: int, name: str, payload: bytes, mode: int) -> str:
     return tmp_name
 
 
-def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
-    """Публикует text, если expected_version совпала с текущей версией файла."""
-    root, parts = _classify(Path(dest))
+def _write_at(
+    root: Path,
+    parts: list[str],
+    text: str,
+    expected_version: int,
+    lock_timeout: float,
+) -> None:
+    """Публикация через dir_fd. Вызывается только на POSIX."""
+    if not _posix_dir_fd():
+        raise OSError("dir_fd доступен только на POSIX")
     root.mkdir(parents=True, exist_ok=True)
     parent_fd, opened = _descend(root, parts[:-1])
     name = parts[-1]
@@ -280,7 +322,7 @@ def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
     tmp_name: str | None = None
     try:
         lock_fd = _open_lock(parent_fd, name)
-        _acquire_lock(lock_fd)
+        _acquire_lock(lock_fd, lock_timeout)
         _recheck(root, parts, parent_fd)
         current = _stored_version(target)
         if current != int(expected_version):
@@ -304,7 +346,8 @@ def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
         tmp_name = _write_tmp(parent_fd, name, payload, mode or 0o644)
         os.replace(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         tmp_name = None
-        os.fsync(parent_fd)
+        if os.name == "posix":
+            os.fsync(parent_fd)
     except Exception:
         if tmp_name is not None:
             try:
@@ -320,3 +363,56 @@ def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
             os.close(lock_fd)
         for fd in opened:
             os.close(fd)
+
+
+def _write_without_dir_fd(
+    target: Path, text: str, expected_version: int, lock_timeout: float
+) -> None:
+    """Windows: блокировка msvcrt, без O_NOFOLLOW, dir_fd и fsync каталога."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(target.name + ".lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    tmp_path: Path | None = None
+    try:
+        _acquire_lock(lock_fd, lock_timeout)
+        _classify(target)
+        current = _stored_version(target)
+        if current != int(expected_version):
+            raise VersionConflict(
+                f"версия {expected_version} не совпала с текущей {current}"
+            )
+        if target.is_file():
+            backup_dir = target.parent / "old"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup = backup_dir / f"{target.name}.v{current}"
+            if backup.exists():
+                suffix = 2
+                while (backup_dir / f"{target.name}.v{current}.{suffix}").exists():
+                    suffix += 1
+                backup = backup_dir / f"{target.name}.v{current}.{suffix}"
+            backup.write_bytes(target.read_bytes())
+        payload = json.dumps(
+            {"version": current + 1, "text": text},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
+        tmp_path.write_bytes(payload)
+        os.replace(tmp_path, target)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+        _release_lock(lock_fd)
+        os.close(lock_fd)
+
+
+def atomic_write_text(
+    dest: Path, text: str, *, expected_version: int, lock_timeout: float = 30.0
+) -> None:
+    """Публикует text, если expected_version совпала с текущей версией файла."""
+    root, parts = _classify(Path(dest))
+    target = root.joinpath(*parts)
+    if _posix_dir_fd():
+        _write_at(root, parts, text, expected_version, lock_timeout)
+        return
+    _write_without_dir_fd(target, text, expected_version, lock_timeout)
