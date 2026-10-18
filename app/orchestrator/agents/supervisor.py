@@ -747,6 +747,31 @@ class Supervisor:
                 return index, data.plan[index]
         return None
 
+    def _grouped_unknown(
+        self,
+        plan: list[PlanStep],
+        index: int,
+        task_id: int,
+    ) -> tuple[int, PlanStep] | None:
+        """Unknown в той же parallel_group, включая платный шаг после read-only.
+
+        Шаг вне группы (verify перед run_node) сюда не попадает и выполняется.
+        """
+        if index < 0 or index >= len(plan):
+            return None
+        group = plan[index].parallel_group
+        last = index
+        if group:
+            cursor = index + 1
+            while cursor < len(plan) and plan[cursor].parallel_group == group:
+                last = cursor
+                cursor += 1
+        for cursor in range(index, last + 1):
+            step = plan[cursor]
+            if step.paid and self._paid_outcome_unknown(task_id, step):
+                return cursor, step
+        return None
+
     def _running_paid_index(self, task_id: int, plan: list[PlanStep]) -> tuple[int, PlanStep] | None:
         """Индекс плана для открытой платной строки. Публичные params точнее имени."""
         for row in self.tasks.list_steps(task_id):
@@ -1295,6 +1320,25 @@ class Supervisor:
                     return
                 plan, index = steered
                 continue
+
+            parked = self._grouped_unknown(plan, index, task_id)
+            if parked is not None:
+                unknown_at, unknown = parked
+                self._remember_unknown_step(task_id, unknown_at, unknown)
+                self._block_reason[task_id] = "paid_outcome_unknown"
+                await self._checkpoint(task_id, session_id, plan, unknown_at)
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "paid_outcome_unknown",
+                    extra={
+                        "action": unknown.action,
+                        "position": unknown_at,
+                        "forecast_usd": forecast_cost([unknown]),
+                        "decisions": approval_decision_choices(),
+                    },
+                )
+                return
 
             batch = _readonly_batch(plan, index, self.actions)
             step = batch[0]

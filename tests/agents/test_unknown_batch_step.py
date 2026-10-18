@@ -31,9 +31,9 @@ async def test_two_step_batch_unknown_uses_the_paid_step(token: str) -> None:
     charge = _charge()
     tasks = TaskStore()
     task_id = tasks.insert(session, "списать", TaskStatus.executing.value, project_id=13)
-    tasks.save_plan(task_id, [charge], position=0)
-    tasks.insert_step(task_id, 0, charge)
-    CheckpointStore().save(task_id, session, CheckpointData(plan=[charge], position=0))
+    tasks.save_plan(task_id, [look, charge], position=0)
+    tasks.insert_step(task_id, 1, charge)
+    CheckpointStore().save(task_id, session, CheckpointData(plan=[look, charge], position=0))
     actions = MockActions()
     runtime = build_runtime(actions=actions, validators=MockValidators(), router=ScriptedRouter())
     set_runtime(runtime)
@@ -43,11 +43,8 @@ async def test_two_step_batch_unknown_uses_the_paid_step(token: str) -> None:
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         current = runtime.checkpoints.load_latest(task_id)
         assert current is not None
-        runtime.checkpoints.save(
-            task_id,
-            session,
-            current.model_copy(update={"plan": [look, charge], "position": 0}),
-        )
+        assert [step.action for step in current.plan] == ["look", "charge"]
+        assert int(current.position) == 1
         approvals = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]
         change_id = str(approvals[-1].payload["change_id"])
         forecast = await runtime.supervisor.grant_approval(session, "retry_step", change_id=change_id)
