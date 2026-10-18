@@ -26,6 +26,7 @@ import {
   EXAMPLE_VERSION_CONFLICT,
   EXAMPLE_REPORT,
   EXAMPLE_UNKNOWN_APPROVAL,
+  conflictRetryBody,
   metadataOf,
   needsApproval,
   readActionEnvelope,
@@ -369,7 +370,7 @@ test("конфликт версии 409 предлагает обновить и
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
     text: "Обновить и повторить",
-    action: { name: "edit_node_prompt", base_version: 4 },
+    action: { name: "edit_node_prompt" },
   });
 
   await emit(page, "act-409", "step_finished", EXAMPLE_VERSION_CONFLICT);
@@ -466,6 +467,14 @@ test("поля r2.1: предупреждения, пропуск, конфли�
     name: "prompt.restore_master",
     snapshot_id: "snap-r21-6",
   });
+});
+
+test("повтор конфликта не шлёт прежний base_version", () => {
+  expect(conflictRetryBody("edit_node_prompt", 4)).toEqual({
+    text: "Обновить и повторить",
+    action: { name: "edit_node_prompt" },
+  });
+  expect(conflictRetryBody("edit_node_prompt", 4).action).not.toHaveProperty("base_version");
 });
 
 test("лента карточек держит предел", () => {

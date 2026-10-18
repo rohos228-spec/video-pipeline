@@ -549,9 +549,9 @@ export function restoreBody(restoreAction: string, snapshotId: string | null, ar
   return { text: "Восстановить", action };
 }
 
-export function conflictRetryBody(actionName: string, baseVersion: number | null): ConflictRetryBody {
+export function conflictRetryBody(actionName: string, _baseVersion: number | null): ConflictRetryBody {
+  // Повтор не несёт base_version: это та же база, на которой уже был 409.
   const action: ConflictRetryBody["action"] = { name: actionName.trim() || "conflict" };
-  if (baseVersion != null) action.base_version = baseVersion;
   return { text: "Обновить и повторить", action };
 }
 
