@@ -1210,6 +1210,10 @@ async function handleChatApprove(req, res, url, sessionId) {
     sendJson(res, 409, { detail: "approval conflict" });
     return;
   }
+  if (scenario === "approve422" && decision === "approve") {
+    sendJson(res, 422, { detail: "approval unprocessable" });
+    return;
+  }
   if (!session.taskStarted && session.approvalWait && session.approvalWait.id === changeId) {
     session.approvalWait.resolve(decision);
     session.approvalWait = null;

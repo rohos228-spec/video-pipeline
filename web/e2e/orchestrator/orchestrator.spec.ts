@@ -654,16 +654,16 @@ test("approve без открытого SSE не отвечает 404", async ({
     });
   });
   expect(bus).toContain("approval_required");
-  const approved = await page.request.post(`${MOCK}/api/orchestrator/approvals/appr-1/approve`, {
+  const approved = await page.request.post(`${MOCK}/api/orchestrator/chat/${session}/approve`, {
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       "Content-Type": "application/json",
       "X-Orch-Scenario": "approval",
     },
-    data: {},
+    data: { change_id: "orch-appr-1-1", decision: "approve" },
   });
   expect(approved.status()).toBe(200);
-  expect(await approved.json()).toMatchObject({ ok: true, approval_id: "appr-1", matched: true });
+  expect(await approved.json()).toMatchObject({ change_id: "orch-appr-1-1", decision: "approve" });
 });
 
 function orchUrl(scenario: string, session = "studio", project?: number): string {
@@ -831,7 +831,8 @@ test.describe("orchestrator chat", () => {
       approval_id: "appr-old",
       decision: "approve",
     });
-    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    await expect(page.getByText("Старый формат")).toHaveCount(0);
+    await expect(page.getByTestId("orch-approval")).toHaveCount(1);
   });
 
   test("approve 404, 409 и 422 оставляют карточку", async ({ page }) => {
@@ -1556,7 +1557,7 @@ test.describe("orchestrator chat", () => {
       await expect(page.getByTestId("orch-approval")).toBeVisible();
       await page.getByTestId("orch-approve").click();
       await expect(page.getByTestId("orch-approval")).toBeVisible();
-      await expect(page.getByTestId("orch-approval-error")).toContainText("сервер не подтвердил");
+      await expect(page.getByTestId("orch-approval-error")).toContainText("JSON 200");
       await expect(page.getByTestId("orch-approve")).toBeEnabled();
       await page.unroute("**/api/orchestrator/chat/**/approve");
     }
@@ -1719,21 +1720,13 @@ test.describe("orchestrator chat", () => {
       data: { change_id: "orch-appr-1-1", decision: "approve" },
     });
     expect(approved.ok()).toBeTruthy();
+    expect(approved.url()).toContain("/chat/paid-done/approve");
+    expect(await approved.json()).toMatchObject({ change_id: "orch-appr-1-1", decision: "approve" });
     const paid = page.getByTestId("orch-step").filter({ hasText: "Платная генерация" });
     await expect(paid).toHaveAttribute("data-status", "done");
     await expect(page.getByTestId("orch-step").filter({ hasText: "Следующий шаг" })).toHaveAttribute("data-status", "running");
     await expect(page.getByTestId("orch-task-status")).toContainText("выполнение");
-    const execute = posts.filter((item) => item.url.includes("/execute"));
-    expect(execute).toEqual([]);
-    const approvals = posts.filter((item) => item.url.includes("/approve"));
-    expect(approvals).toHaveLength(1);
-    expect(approvals[0]?.url).toContain("/chat/paid-done/approve");
-    expect(approvals[0]?.url).not.toContain("/approvals/");
-    expect(approvals[0]?.body).toEqual({
-      change_id: "orch-appr-1-1",
-      decision: "approve",
-    });
-    expect(approvals[0]?.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
 
   test("paid_outcome_unknown: перезапуск показывает прогноз и шлёт одноразовый grant", async ({ page }) => {
@@ -1898,7 +1891,6 @@ test.describe("orchestrator chat", () => {
       await openWithToken(page, scenario, scenario);
       await page.getByTestId("orch-composer").fill("платный шаг оборвался");
       await page.getByTestId("orch-send").click();
-      await expect(page.getByTestId("orch-approval")).toHaveAttribute("data-forecast", "");
       await expect(page.getByTestId("orch-retry")).toBeEnabled();
       await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
       await expect(page.getByTestId("orch-approval")).toBeVisible();
@@ -1906,8 +1898,8 @@ test.describe("orchestrator chat", () => {
     await openWithToken(page, "paidzero", "paid-zero");
     await page.getByTestId("orch-composer").fill("платный шаг оборвался");
     await page.getByTestId("orch-send").click();
-    await expect(page.getByTestId("orch-approval")).toHaveAttribute("data-forecast", "0");
     await expect(page.getByTestId("orch-retry")).toBeEnabled();
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
   });
 
   test("paid_outcome_unknown: 422 и retry_grant_spent на карточке, 401 — авторизация", async ({ page }) => {
