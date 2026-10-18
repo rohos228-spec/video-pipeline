@@ -252,6 +252,57 @@ function screenFrom(events: { type: string; seq: number; payload: Record<string,
   );
 }
 
+test("message без id чужой задачи не затирает открытый пузырь 41", () => {
+  const events = [
+    {
+      type: "message_start" as const,
+      task_id: 7,
+      seq: 1,
+      session_id: "boundary",
+      payload: { message_id: 41, role: "assistant" },
+    },
+    {
+      type: "token" as const,
+      task_id: 7,
+      seq: 2,
+      session_id: "boundary",
+      payload: { text: "Альфа ", message_id: 41 },
+    },
+    {
+      type: "message" as const,
+      task_id: 9,
+      seq: 3,
+      session_id: "boundary",
+      payload: { role: "assistant", text: "параллельный append" },
+    },
+    {
+      type: "message_end" as const,
+      task_id: 7,
+      seq: 4,
+      session_id: "boundary",
+      payload: { message_id: 41, role: "assistant" },
+    },
+    {
+      type: "message" as const,
+      task_id: 7,
+      seq: 5,
+      session_id: "boundary",
+      payload: { message_id: 41, role: "assistant", text: "Альфа один" },
+    },
+  ];
+  const state = events.reduce(
+    (screen, event) => reduceOrchScreen(screen, { type: "event", event }),
+    initialOrchScreen(),
+  );
+  const bubble = state.messages.find((item) => item.messageId === 41);
+  expect(bubble?.text).toBe("Альфа один");
+  expect(bubble?.finalized).toBe(true);
+  expect(bubble?.taskId).toBe("7");
+  const foreign = state.messages.find((item) => item.messageId == null);
+  expect(foreign?.text).toBe("параллельный append");
+  expect(foreign?.taskId).toBe("9");
+});
+
 test("токены с message_id не склеивают две реплики, без id клеятся по-старому", () => {
   const bounded = screenFrom([
     { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },

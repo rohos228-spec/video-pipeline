@@ -628,10 +628,18 @@ function appendTokenForMessage(
   bubble.text += text;
 }
 
-/** Самый ранний незакрытый итогом буфер. Два id подряд не делят один текст. */
-function pendingBoundedMessage(state: OrchScreenState): ChatMessage | undefined {
+/**
+ * Закрытый буфер той же задачи. Открытый стрим и чужой taskId сюда не попадают:
+ * `message` без id тогда идёт по старому пути и не затирает реплику.
+ */
+function pendingBoundedMessage(state: OrchScreenState, taskId: string | null): ChatMessage | undefined {
   return state.messages.find(
-    (message) => message.role === "assistant" && message.messageId != null && message.finalized !== true,
+    (message) =>
+      message.role === "assistant" &&
+      message.messageId != null &&
+      message.closed === true &&
+      message.finalized !== true &&
+      message.taskId === taskId,
   );
 }
 
@@ -639,7 +647,7 @@ function applyFinalMessage(state: OrchScreenState, taskId: string | null, payloa
   const text = str(payload.text);
   if (!text || str(payload.role) === "user") return;
   const explicit = readMessageId(payload);
-  const pending = explicit != null ? bubbleByMessageId(state, explicit) : pendingBoundedMessage(state);
+  const pending = explicit != null ? bubbleByMessageId(state, explicit) : pendingBoundedMessage(state, taskId);
   if (pending && pending.finalized !== true) {
     pending.text = text;
     pending.closed = true;
