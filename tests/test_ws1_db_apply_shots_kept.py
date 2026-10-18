@@ -784,6 +784,42 @@ async def test_merge_keeps_deleted_da(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hidden_first", [True, False])
+async def test_id_match_prefers_active_old_copy(
+    session: AsyncSession, hidden_first: bool
+) -> None:
+    """Совпадение по id достаётся живой копии, скрытая остаётся как была."""
+    from app.orchestrator.validators.activity_flags import shot_is_active as flags_active
+
+    hidden = {"id": "a", "активен": False}
+    live = {"id": "a", "камера": "close"}
+    old = [hidden, live] if hidden_first else [live, hidden]
+    project = Project(
+        slug=f"ws1-id-live-{int(hidden_first)}",
+        topic="t",
+        status=None,  # type: ignore[arg-type]
+    )
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(session, project, f"id-live-{int(hidden_first)}", old, number=1)
+    await session.commit()
+    await apply_ops(
+        session,
+        project,
+        [{"frame_uuid": frame.uuid, "fields": {"кадры": [{"id": "a", "закадр": "новый"}]}}],
+        export_xlsx=False,
+    )
+    await session.refresh(frame)
+    shots = list(frame.attrs["кадры"])
+    assert len(shots) == 2, shots
+    got = next(shot for shot in shots if shot.get("камера") == "close")
+    assert got["закадр"] == "новый"
+    assert got["камера"] == "close"
+    assert flags_active(got) is True
+    assert hidden in shots
+
+
+@pytest.mark.asyncio
 async def test_match_keeps_fields_and_second_id_copy(session: AsyncSession) -> None:
     """Совпадение дописывает поля старого шота. Вторая копия того же id не исчезает."""
     project = Project(slug="ws1-overlay", topic="t", status=None)  # type: ignore[arg-type]

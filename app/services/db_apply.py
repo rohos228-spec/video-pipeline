@@ -454,6 +454,7 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         if isinstance(item, dict):
             payload_slots.setdefault(_shot_payload_key(item), []).append(item)
     old_id_left: dict[str, int] = {}
+    live_old_left: dict[str, int] = {}
     old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     for shot in old:
         if isinstance(shot, dict) and _shot_id(shot) is None:
@@ -464,6 +465,8 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
             sid = _shot_id(shot)
             if sid:
                 old_id_left[sid] = old_id_left.get(sid, 0) + 1
+                if shot_is_active(shot):
+                    live_old_left[sid] = live_old_left.get(sid, 0) + 1
     kept: list[Any] = []
     for shot in old:
         if not isinstance(shot, dict):
@@ -473,12 +476,21 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             bucket = incoming_by_id.get(sid) or []
+            if (
+                bucket
+                and not shot_is_active(shot)
+                and live_old_left.get(sid, 0) > 0
+            ):
+                kept.append(dict(shot))
+                continue
             if bucket:
                 target = bucket.pop(0)
                 _drop_payload_slot(payload_slots, target)
                 _overlay_old_fields(shot, target)
                 _stamp_tombstone_marks(shot, target)
                 old_id_left[sid] -= 1
+                if shot_is_active(shot):
+                    live_old_left[sid] = live_old_left.get(sid, 0) - 1
                 if old_id_left[sid] <= 0:
                     while bucket:
                         extra = bucket.pop(0)
