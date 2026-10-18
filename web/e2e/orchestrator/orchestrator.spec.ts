@@ -1447,6 +1447,45 @@ test.describe("orchestrator chat", () => {
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
 
+  test("свежая карточка: конечный прогноз включает подтверждение, плохой — нет", async ({ page }) => {
+    await openWithToken(page, "idle", "paid-fresh-good");
+    await emitBus(page, "paid-fresh-good", "approval_required", 1, {
+      change_id: "orch-appr-1-1",
+      reason: "paid_outcome_unknown",
+      retry_armed: true,
+      forecast_usd: 2.4,
+      decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+    });
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+
+    const bad = [
+      ["paid-fresh-neg", -1.5],
+      ["paid-fresh-nan", Number.NaN],
+      ["paid-fresh-inf", Number.POSITIVE_INFINITY],
+    ] as const;
+    for (const [session, forecast] of bad) {
+      await openWithToken(page, "idle", session);
+      await emitBus(page, session, "approval_required", 1, {
+        change_id: "orch-appr-1-1",
+        reason: "paid_outcome_unknown",
+        retry_armed: true,
+        forecast_usd: forecast,
+        decisions: [{ decision: "retry_step", label: "Перезапустить шаг" }],
+      });
+      await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+    }
+
+    await openWithToken(page, "paidbad-neg", "paid-bad-neg-arm");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    const retryResponse = page.waitForResponse(
+      (res) => res.url().includes("/approve") && res.request().method() === "POST",
+    );
+    await page.getByTestId("orch-paid-retry").click();
+    await retryResponse;
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+  });
+
   test("paid_outcome_unknown: retry_step → approval_decided → approval_required(retry_armed) → grant", async ({ page }) => {
     await openWithToken(page, "paidoutcome", "paid-rearm");
     await page.getByTestId("orch-composer").fill("платный шаг оборвался");
@@ -1549,7 +1588,7 @@ test.describe("orchestrator chat", () => {
       await expect(panel).toContainText("Прогноз расхода недоступен");
       await expect(panel).not.toContainText("~$0");
       await expect(panel).not.toContainText("~$2.4");
-      await expect(page.getByTestId("orch-paid-retry-confirm")).toBeDisabled();
+      await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
       await expect(page.getByTestId("orch-approval")).toBeVisible();
     }
     await openWithToken(page, "paidzero", "paid-zero");

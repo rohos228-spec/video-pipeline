@@ -603,7 +603,7 @@ function readTaskId(value: unknown): number | null {
 /** data — JSON OrchEvent: type, task_id (int|null), payload, seq, session_id. id кадра = seq. */
 export function eventFromSse(parsed: ParsedSse): OrchEvent | null {
   try {
-    const json = JSON.parse(parsed.data) as Partial<OrchEvent> & { seq?: number };
+    const json = parsePaidOutcomeJson(parsed.data) as Partial<OrchEvent> & { seq?: number };
     const seqFromId = parsed.id ? Number(parsed.id) : NaN;
     const seq = typeof json.seq === "number" ? json.seq : seqFromId;
     if (!Number.isFinite(seq)) return null;

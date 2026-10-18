@@ -33,6 +33,7 @@ import {
   PAID_OUTCOME_COPY,
   PAID_OUTCOME_DECISION,
   PAID_OUTCOME_UNKNOWN_REASON,
+  paidOutcomeRetryReady,
   type PaidOutcomeDecision,
 } from "@/lib/orchestratorPaidOutcome";
 import { cn } from "@/lib/utils";
@@ -673,13 +674,16 @@ function ApprovalCard({
       });
   };
 
-  // После approval_decided(retry_step) карточка размонтируется и локальный
-  // retryOpen пропадает. Повторный approval_required(retry_armed) снова открывает
-  // её: прогноз и «Подтвердить перезапуск» берутся из ApprovalView.
-  const serverArmed = paidOutcome && approval.retryArmed && approval.forecast != null;
-  const panelOpen = retryOpen || serverArmed;
-  const shownForecast = serverArmed ? approval.forecast : retryForecast;
-  const shownReady = serverArmed || retryReady;
+  // Одно правило для серверного флага и локального ответа: кнопка есть только при
+  // retry_armed и конечном прогнозе >= 0. Плохой прогноз панель открывает, кнопки нет.
+  // Валидный прогноз без retry_armed оставляет кнопку неактивной.
+  const serverRearm = paidOutcome && approval.retryArmed;
+  const panelOpen = serverRearm || retryOpen;
+  const shownForecast = serverRearm ? approval.forecast : retryForecast;
+  const shownReady = paidOutcomeRetryReady({
+    retry_armed: serverRearm ? true : retryReady,
+    forecast_usd: shownForecast,
+  });
 
   return (
     <div
@@ -853,14 +857,14 @@ function PaidOutcomeActions({
           <p className="text-[11px] text-white/80">
             {forecast != null ? formatPaidOutcomeForecast(forecast) : PAID_OUTCOME_COPY.forecastMissing}
           </p>
-          {!confirmHidden ? (
+          {!confirmHidden && forecast != null ? (
             <Button
               type="button"
               size="sm"
               className="mt-2"
               data-testid="orch-paid-retry-confirm"
               disabled={pending || !retryReady}
-              title={retryReady ? undefined : forecast == null ? PAID_OUTCOME_COPY.forecastMissing : PAID_OUTCOME_COPY.grantMissing}
+              title={retryReady ? undefined : PAID_OUTCOME_COPY.grantMissing}
               onClick={onConfirm}
             >
               {PAID_OUTCOME_COPY.confirmRetry}

@@ -158,6 +158,40 @@ function noteDecided(session, changeId) {
   if (typeof changeId === "string" && changeId) session.decided.add(changeId);
 }
 
+function parseLooseJson(text) {
+  const marked = text
+    .replace(/([:\[,]\s*)NaN(?=\s*[,}\]])/g, '$1"__NaN__"')
+    .replace(/([:\[,]\s*)-Infinity(?=\s*[,}\]])/g, '$1"__-Infinity__"')
+    .replace(/([:\[,]\s*)Infinity(?=\s*[,}\]])/g, '$1"__Infinity__"');
+  return JSON.parse(marked, (_key, value) => {
+    if (value === "__NaN__") return Number.NaN;
+    if (value === "__Infinity__") return Number.POSITIVE_INFINITY;
+    if (value === "__-Infinity__") return Number.NEGATIVE_INFINITY;
+    return value;
+  });
+}
+
+function emitRaw(session, type, taskId, rawPayload, sessionId = session.id) {
+  touchSession(session);
+  const payload = parseLooseJson(rawPayload);
+  if (type === "approval_required" && payload && typeof payload.change_id === "string") {
+    noteIssued(session, payload.change_id);
+  }
+  const seq = ++session.seq;
+  const event = { type, task_id: taskId, payload, seq, session_id: sessionId };
+  session.events.push(event);
+  const wire = `{"type":${JSON.stringify(type)},"task_id":${taskId == null ? "null" : String(taskId)},"payload":${rawPayload},"seq":${seq},"session_id":${JSON.stringify(sessionId)}}`;
+  const frame = `id: ${seq}\nevent: ${type}\ndata: ${wire}\n\n`;
+  for (const client of session.clients) {
+    try {
+      client.write(frame);
+    } catch {
+      session.clients.delete(client);
+    }
+  }
+  return event;
+}
+
 function emit(session, type, taskId, payload, sessionId = session.id) {
   touchSession(session);
   if (type === "approval_required" && payload && typeof payload.change_id === "string") {
@@ -764,8 +798,9 @@ async function runLlmBudget(session, taskId) {
 }
 
 function paidRearmOnRetry(scenario) {
-  if (scenario === "paidnoarmed" || scenario === "paidzero") return false;
-  return typeof scenario !== "string" || !scenario.startsWith("paidbad-");
+  // paidbad и paidzero тоже проходят повторное approval_required.
+  // Проверку прогноза делает клиент, мок её не отключает.
+  return scenario !== "paidnoarmed";
 }
 
 function startScenario(session, scenario, text, mode) {
@@ -957,16 +992,20 @@ async function runPaidOutcome(session, taskId, restartOffered) {
         decision: "retry_step",
         task_id: taskId,
       });
-      emit(session, "approval_required", taskId, {
-        change_id: approvalId,
-        title: "Исход платного шага неизвестен",
-        reason: "paid_outcome_unknown",
-        action: "run_node",
-        risk: "high",
-        decisions: restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
-        retry_armed: true,
-        forecast_usd: PAID_FORECAST_USD,
-      });
+      const decisions = JSON.stringify(
+        restartOffered ? PAID_DECISIONS : PAID_DECISIONS.filter((item) => item.decision !== "retry_step"),
+      );
+      // paidbad-miss — поля нет. Остальные paidbad несут свой литерал. Иначе 2.4.
+      // Мок не подменяет плохой прогноз валидным.
+      const literal = paidBadForecastLiteral(session.scenario);
+      const forecastField =
+        session.scenario === "paidbad-miss" ? "" : `,"forecast_usd":${literal == null ? String(PAID_FORECAST_USD) : literal}`;
+      emitRaw(
+        session,
+        "approval_required",
+        taskId,
+        `{"change_id":${JSON.stringify(approvalId)},"title":"Исход платного шага неизвестен","reason":"paid_outcome_unknown","action":"run_node","risk":"high","decisions":${decisions},"retry_armed":true${forecastField}}`,
+      );
     }
     await new Promise((resolve) => {
       session.grantWait = { id: approvalId, resolve };
