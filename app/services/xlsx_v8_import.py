@@ -20,7 +20,6 @@ v8-шаблон отличается от старого (v7):
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,6 +47,10 @@ ROW_TIMECODE_V8 = 15      # «таймкод» M:SS.ss-M:SS.ss (напр. 0:03.2
 ROW_VOICEOVER_V8 = 49     # «закадровый текст»
 ROW_VIDEO_PROMPT_2_V8 = 64  # «промт для видео 2» (shot_02)
 ROW_DURATION_V8 = 50      # «Время на кадр»
+# Служебная строка метки неактивного кадра. Не R49: озвучка остаётся текстом.
+# 22–24 заняты блоком кадра 2 / персонажами / предметами, 67 — сразу после R66.
+ROW_FRAME_ACTIVITY_V8 = 67
+INACTIVE_COLUMN_MARK = "активен: False"
 
 # Подписи строки промта shot_01 (колонка A/B) — fallback если R45 пустая.
 _PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
@@ -58,18 +61,11 @@ _PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
     "image prompt",
 )
 
-_HIDDEN_FRAME_MARKER_RE = re.compile(r"\[кадр \d+ скрыт\]")
-
-
-def hidden_frame_marker(number: int) -> str:
-    """Метка колонки неактивного кадра: колонка остаётся на своём месте."""
-    return f"[кадр {int(number)} скрыт]"
-
-
-def is_hidden_frame_marker(text: str | None) -> bool:
-    if not text:
+def is_inactive_column_mark(text: str | None) -> bool:
+    """Метка служебной строки: колонка помечена, в БД её не пишем."""
+    if text is None:
         return False
-    return _HIDDEN_FRAME_MARKER_RE.fullmatch(" ".join(str(text).split())) is not None
+    return " ".join(str(text).split()).casefold() == INACTIVE_COLUMN_MARK.casefold()
 
 
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).
@@ -476,7 +472,7 @@ def _read_voiceover_blocks(wb) -> list[str]:
     out: list[str] = []
     for col in range(3, ws.max_column + 1):
         s = _cell_text(ws, ROW_VOICEOVER_V8, col)
-        if s is None or is_hidden_frame_marker(s):
+        if s is None:
             continue
         out.append(s)
     return out
@@ -514,7 +510,7 @@ def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
         out: dict[int, str] = {}
         for col in range(3, ws.max_column + 1):
             voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
-            if voice and not is_hidden_frame_marker(voice):
+            if voice:
                 out[col - 2] = voice
         return out
     finally:
@@ -684,8 +680,8 @@ async def apply_v8_image_prompts_from_xlsx(
 def _read_frame_fields(wb) -> list[dict[str, Any]]:
     """Поля кадров с листа «план». Номер — из шапки или col−2, не из позиции.
 
-    Пустая колонка в список не попадает и ничего в БД не затирает.
-    Маркер «[кадр N скрыт]» остаётся в списке с hidden_marker, но без озвучки.
+    Пустая колонка в список не попадает и соседей не сдвигает.
+    Метка R67 «активен: False» помечает колонку: её поля в БД не пишутся.
     """
     ws = _resolve_plan_sheet(wb)
     if ws is None:
@@ -696,16 +692,24 @@ def _read_frame_fields(wb) -> list[dict[str, Any]]:
         image = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
         anim = _cell_text(ws, ROW_VIDEO_PROMPT_V8, col)
         dur = _cell_float(ws, ROW_DURATION_V8, col)
-        marker = is_hidden_frame_marker(voice)
-        if voice is None and image is None and anim is None and dur is None:
+        marker = is_inactive_column_mark(
+            _cell_text(ws, ROW_FRAME_ACTIVITY_V8, col)
+        )
+        if (
+            not marker
+            and voice is None
+            and image is None
+            and anim is None
+            and dur is None
+        ):
             continue
         out.append({
             "number": _frame_number_for_plan_column(ws, col),
             "hidden_marker": marker,
-            "voiceover_text": None if marker else voice,
-            "image_prompt": None if marker else image,
-            "animation_prompt": None if marker else anim,
-            "duration_seconds": None if marker else dur,
+            "voiceover_text": voice,
+            "image_prompt": image,
+            "animation_prompt": anim,
+            "duration_seconds": dur,
         })
     return out
 
