@@ -192,7 +192,11 @@ def load_validators() -> tuple[Any, str | None]:
 
 
 def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
-    """Мягкий импорт WS1. Нет модуля — оба символа отсутствуют, зависимость не нужна."""
+    """Мягкий импорт WS1 #379 ``999c04a1``.
+
+    ``run_preservation_validators(before, after, ops=None, *, mode)``.
+    Модуля в базе нет — фолбэк, ветка WS1 не становится зависимостью.
+    """
     module = load_module(_PRESERVATION)
     if module is None:
         return None, None
