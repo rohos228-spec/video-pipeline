@@ -161,7 +161,11 @@ export interface ValidatorView {
 
 export interface ApprovalView {
   id: string;
-  /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
+  /**
+   * true, если id пришёл с сервера (`approval_id` или `change_id`).
+   * Кнопки решения смотрят на этот флаг.
+   * Событие закрывает карточку по `changeId`, а если его нет — по `id`.
+   */
   serverId: boolean;
   /** ApprovalEvent.change_id. Событие закрывает карточку только этим значением. */
   changeId: string | null;
@@ -386,6 +390,7 @@ function closeServerApproval(state: OrchScreenState, key: string, decision: "app
 /**
  * Карточка без change_id закрывается только сменой статуса своей задачи и сессии.
  * Если сервер не прислал session_id, карточку не закрываем: нельзя понять, чья это сессия.
+ * Терминальная block-* карточка тоже без change_id и закрывается тем же правилом.
  */
 function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, sessionId: string | null): void {
   if (!taskId || !sessionId) return;

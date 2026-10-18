@@ -93,6 +93,34 @@ test("терминальная block-карточка закрывается с�
   expect(done.approvals.find((item) => item.id === "block-3")?.resolved).toBe("closed");
 });
 
+test("serverId ставится, когда id пришёл с сервера", () => {
+  const both = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 1,
+      session_id: "own",
+      payload: { approval_id: "appr-other", change_id: "chg-own", reason: "risk", title: "Риск" },
+    },
+  });
+  expect(both.approvals[0]?.serverId).toBe(true);
+  expect(both.approvals[0]?.id).toBe("appr-other");
+  expect(both.approvals[0]?.changeId).toBe("chg-own");
+  const local = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 2,
+      seq: 2,
+      session_id: "own",
+      payload: { reason: "risk", title: "Без id" },
+    },
+  });
+  expect(local.approvals[0]?.serverId).toBe(false);
+  expect(local.approvals[0]?.id).toBe("local-2");
+});
+
 test("карточка без change_id и без session_id не закрывается сменой статуса", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
