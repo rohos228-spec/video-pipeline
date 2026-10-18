@@ -4,6 +4,7 @@ Enforcement stays OFF unless WEB_AUTH_USER+WEB_AUTH_PASSWORD are set (settings.w
 
 from __future__ import annotations
 
+import os
 import re
 
 from fastapi import APIRouter, HTTPException, Request
@@ -64,10 +65,10 @@ class DeleteBody(BaseModel):
 def _send_verify(req: Request, u) -> dict:
     code = ua.issue_token(u["id"], "verify")
     sent = ua.send_mail(u["email"], "VIA — код подтверждения", f"Ваш код подтверждения VIA: {code} (действует 24 ч)")
-    return {
-        "mail_sent": sent,
-        "dev_note": None if sent else "Почта не настроена — код записан в лог сервера",
-    }
+    out = {"mail_sent": sent}
+    if os.environ.get("VP_AUTH_DEV_MAIL") == "1":
+        out["dev_code"] = code
+    return out
 
 
 def _me(req: Request):
