@@ -1473,6 +1473,94 @@ async def test_scene_action_keeps_missing_shots_inactive(
 
 
 @pytest.mark.asyncio
+async def test_shrink_then_expand_revives_same_positional_id(
+    session: AsyncSession, project: Project
+) -> None:
+    """Сжатие гасит 8-K3. Явный активен: True или новый текст возвращает его."""
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent = Frame(
+        project_id=project.id,
+        number=8,
+        uuid="ee" * 12,
+        voiceover_text="раз два три",
+        status="planned",
+        sort_key=8.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ee" * 12,
+            },
+            "кадры": [
+                {"id": "8-K1", "действие": "один", "закадр": "раз"},
+                {"id": "8-K2", "действие": "два", "закадр": "два"},
+                {"id": "8-K3", "действие": "три", "закадр": "три"},
+            ],
+        },
+    )
+    session.add(parent)
+    await session.flush()
+    short = [
+        {"id": "8-K1", "действие": "один", "закадр": "раз"},
+        {"id": "8-K2", "действие": "два", "закадр": "два"},
+    ]
+    same = [
+        *short,
+        {"id": "8-K3", "действие": "три", "закадр": "три"},
+    ]
+    explicit = [
+        *short,
+        {"id": "8-K3", "действие": "три", "закадр": "три", "активен": True},
+    ]
+    changed = [
+        *short,
+        {"id": "8-K3", "действие": "три заново", "закадр": "новый текст"},
+    ]
+
+    async def _apply(rows: list[dict]) -> dict:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent],
+            "1. двор — один",
+            kadry=rows,
+            lock_parent_plan=False,
+            grow=False,
+        )
+        return {shot["id"]: shot for shot in parent.attrs["кадры"]}
+
+    shrunk = await _apply(short)
+    assert shrunk["8-K3"]["активен"] is False
+    assert shrunk["8-K3"]["закадр"] == "три"
+
+    still = await _apply(same)
+    assert still["8-K3"]["активен"] is False
+
+    revived = await _apply(explicit)
+    assert revived["8-K3"]["активен"] is True
+    assert revived["8-K3"]["закадр"] == "три"
+
+    await _apply(short)
+    renewed = await _apply(changed)
+    assert renewed["8-K3"].get("активен") is not False
+    assert renewed["8-K3"]["закадр"] == "новый текст"
+
+    quiet = merge_kadry_keep_missing(
+        [{"закадр": "тот же текст", "активен": False}],
+        [{"закадр": "тот же текст"}],
+    )
+    assert quiet[0]["активен"] is False
+    spoken = merge_kadry_keep_missing(
+        [{"закадр": "тот же текст", "активен": False}],
+        [{"закадр": "тот же текст", "активен": True}],
+    )
+    assert spoken[0]["активен"] is True
+
+
+@pytest.mark.asyncio
 async def test_clear_shot_action_marks_shots_inactive(
     session: AsyncSession, project: Project
 ) -> None:

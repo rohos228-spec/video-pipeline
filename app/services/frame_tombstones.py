@@ -116,6 +116,13 @@ def _shot_id(shot: dict[str, Any]) -> str | None:
     return None
 
 
+def _incoming_revives(old: dict[str, Any], incoming: dict[str, Any]) -> bool:
+    """Явный ``активен: True`` или другой текст снимают старую неактивность."""
+    if incoming.get(ACTIVE_MARK) is True:
+        return True
+    return _shot_content_identity(old) != _shot_content_identity(incoming)
+
+
 def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
     """Текст шота без ``порядок``/``номер``. Пустой текст не склеивает шоты."""
     parts: list[tuple[str, str]] = []
@@ -133,8 +140,10 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
 
     Та же семантика, что у WS1 ``_merge_kadry_keep_missing``: совпадение по id,
     без id — только по уникальному тексту, не по ``порядок``. Пропавшие шоты
-    остаются в хвосте с ``активен: False``. Входящий флаг не снимается, старый
-    неактивный шот не оживает.
+    остаются в хвосте с ``активен: False``. Входящий флаг не снимается.
+    Старый неактивный шот с тем же id оживает, если новый список прислал
+    явный ``активен: True`` или другой текст. Совпадение без id по тому же
+    тексту оживает только от явного ``активен: True``.
     """
     if not isinstance(new, list):
         logger.warning(
@@ -180,7 +189,9 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             if sid in seen_ids:
-                if shot.get(ACTIVE_MARK) is False:
+                if shot.get(ACTIVE_MARK) is False and not _incoming_revives(
+                    shot, incoming_by_id[sid]
+                ):
                     incoming_by_id[sid][ACTIVE_MARK] = False
                 continue
         else:
@@ -192,7 +203,7 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
             ):
                 if shot.get(ACTIVE_MARK) is False:
                     matched = incoming_by_content.get(ident) or []
-                    if len(matched) == 1:
+                    if len(matched) == 1 and not _incoming_revives(shot, matched[0]):
                         matched[0][ACTIVE_MARK] = False
                 continue
             if ident is None and any(
