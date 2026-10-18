@@ -132,6 +132,38 @@ def test_align_marks_foreign_room_and_keeps_shot_ids(warn_log) -> None:
     assert any("WARN align_shots_to_action_chain" in line for line in warn_log)
 
 
+def test_align_shots_marks_foreign_place_inactive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Чужое место остаётся в кадры[] с активен: False."""
+    from app.services.scene_shot_grammar import align_shots_to_action_chain
+
+    action = (
+        "1. кабинет следствия — следователь открывает папку\n"
+        "(Следователь открыл толстую следственную папку на столе.)"
+    )
+    shots = [
+        {"id": "a", "сцена": 1, "место": "кабинет следствия", "действие": "открывает"},
+        {"id": "lab", "сцена": 1, "место": "лаборатория криминалистики", "действие": "снимает"},
+        {"id": "c", "сцена": 1, "место": "кабинет следствия", "действие": "кладёт"},
+    ]
+    ops = [{"frame_uuid": "u1", "fields": {"кадры": shots}}]
+    frames = [{"uuid": "u1", "attrs": {"главное_действие": action}}]
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        align_shots_to_action_chain(ops, frames)
+    finally:
+        logger.remove(sink)
+    kept = ops[0]["fields"]["кадры"]
+    assert len(kept) == 3
+    assert [s["id"] for s in kept] == ["a", "lab", "c"]
+    assert kept[1]["активен"] is False
+    assert kept[0].get("активен") is not False
+    assert kept[2].get("активен") is not False
+    assert "WARN" in caplog.text
+    assert "lab" in caplog.text
+
+
 def test_vo_cap_marks_extra_shots_without_dropping_them(warn_log) -> None:
     from app.services.scene_shot_grammar import merge_gpt_shots_with_action
 
@@ -716,7 +748,7 @@ async def test_coverage_delete_in_auto_apply_marks_frame(
     live = await session.get(Frame, child_id)
     assert live is not None
     assert (live.attrs or {}).get("удалён") is True
-    assert frame_is_active(live) is False
+    assert frame_is_active(getattr(live, "attrs", None) or {}) is False
     assert live.status == FrameStatus.image_generated
     prompt = (
         await session.execute(select(PromptVersion).where(PromptVersion.frame_id == child_id))
@@ -776,9 +808,9 @@ async def test_delete_montage_frame_marks_parent_and_keeps_children(
         )
     ).scalars().all()
     assert [fr.id for fr in left] == [parent_id, child_id]
-    assert frame_is_active(left[0]) is False
+    assert frame_is_active(getattr(left[0], "attrs", None) or {}) is False
     assert (left[0].attrs or {}).get("пометка")
-    assert frame_is_active(left[1]) is True
+    assert frame_is_active(getattr(left[1], "attrs", None) or {}) is True
     assert any("WARN delete_montage_frame" in line for line in warn_log)
 
 
@@ -871,7 +903,7 @@ async def test_marked_frame_is_not_revived_or_duplicated_by_xlsx_import(
     assert live.image_prompt == "старый промт"
     assert live.status == FrameStatus.planned
     assert (live.attrs or {}).get("удалён") is True
-    assert frame_is_active(live) is False
+    assert frame_is_active(getattr(live, "attrs", None) or {}) is False
     assert deleted_numbers(project) == {3}
     assert sum(1 for fr in rows if fr.number == 3) == 1
     assert any("помечен «удалён»" in line for line in warn_log)
@@ -976,7 +1008,8 @@ def test_deleted_first_shot_stays_inactive_when_full_vo_lands(monkeypatch, warn_
         [foreign, {"id": "b", "закадр": ""}],
         "Целое предложение сцены.",
     )
-    assert out[0]["закадр"] == "Целое предложение сцены."
+    assert out[0]["закадр"] == ""
+    assert out[1]["закадр"] == "Целое предложение сцены."
     assert out[0]["удалён"] is True
     assert out[0]["карантин"] is True
     assert out[0]["активен"] is False
@@ -1379,52 +1412,17 @@ async def test_coverage_delete_stamps_parent_shot(
     assert ladder[0].get("карантин") is not True
     assert (child.attrs or {}).get("удалён") is True
     assert child.voiceover_text == "хвост"
-
-
-def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
-    from types import SimpleNamespace
-
-    from openpyxl import Workbook, load_workbook
-
-    from app.services.db_apply import export_project_xlsx
-    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8
-
-    path = tmp_path / "project.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "план"
-    ws.cell(row=ROW_VOICEOVER_V8, column=4, value="старый-закадр")
-    wb.save(path)
-    wb.close()
-    marked = SimpleNamespace(
-        number=2,
-        image_prompt="картинка",
-        animation_prompt="видео",
-        voiceover_text="секретный закадр",
-        duration_seconds=3.0,
-        start_ts=0.0,
-        end_ts=3.0,
-        attrs={"удалён": True, "активен": False, "карантин": True},
+    await apply_coverage_op(
+        session, project, {"type": "coverage_delete", "frame_number": 2}
     )
-    live = SimpleNamespace(
-        number=1,
-        image_prompt="",
-        animation_prompt="",
-        voiceover_text="живой",
-        duration_seconds=1.0,
-        start_ts=None,
-        end_ts=None,
-        attrs={},
-    )
-    project = SimpleNamespace(data_dir=tmp_path, meta={})
-    export_project_xlsx(project, [live, marked])  # type: ignore[arg-type]
-    wb2 = load_workbook(path)
-    sheet = wb2["план"]
-    assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
-    assert sheet.cell(ROW_VOICEOVER_V8, 4).value is None
-    wb2.close()
-    assert marked.voiceover_text == "секретный закадр"
-    assert marked.attrs["удалён"] is True
+    await session.refresh(parent)
+    await session.refresh(child)
+    again = list((parent.attrs or {}).get("кадры") or [])
+    assert [item["id"] for item in again] == ["1-S1-K1", "1-S1-K2"]
+    assert again[1]["удалён"] is True
+    assert again[1]["активен"] is False
+    assert (child.attrs or {}).get("удалён") is True
+    assert child.voiceover_text == "хвост"
 
 
 def test_assembly_clips_skip_marked_frame(tmp_path: Path) -> None:
@@ -1612,9 +1610,9 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
-    active_before = sum(1 for fr in rows if frame_is_active(fr))
+    active_before = sum(1 for fr in rows if frame_is_active(getattr(fr, "attrs", None) or {}))
     assert active_before == 2
-    assert frame_is_active(rows[1]) is False
+    assert frame_is_active(getattr(rows[1], "attrs", None) or {}) is False
 
     kadry = list((rows[0].attrs or {}).get("кадры") or [])
     await apply_coverage_scene_action(
@@ -1633,7 +1631,7 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
-    assert sum(1 for fr in rows if frame_is_active(fr)) == active_before
+    assert sum(1 for fr in rows if frame_is_active(getattr(fr, "attrs", None) or {})) == active_before
     marked = next(fr for fr in rows if fr.number == 2)
     assert marked.voiceover_text == "кусок шота"
     assert any(
@@ -1649,7 +1647,7 @@ async def test_delete_then_rebuild_does_not_grow_active_frames(
         )
     ).scalars().all()
     assert [fr.id for fr in rows if fr.number == 1] == [parent_row.id]
-    assert frame_is_active(rows[0]) is False
+    assert frame_is_active(getattr(rows[0], "attrs", None) or {}) is False
     assert result["promoted"] == 3
     head = next(fr for fr in rows if fr.number == 3)
     assert _cs(head).get("role") == "vo_parent"
@@ -2011,7 +2009,7 @@ async def test_drop_frame_rows_marks_and_keeps_related_rows(
     kept = await session.get(Frame, frame_id)
     assert kept is not None
     assert kept.voiceover_text == "не стирать"
-    assert frame_is_active(kept) is False
+    assert frame_is_active(getattr(kept, "attrs", None) or {}) is False
     assert (kept.attrs or {}).get("удалён") is True
     prompt = (
         await session.execute(select(PromptVersion).where(PromptVersion.frame_id == frame_id))
@@ -2097,14 +2095,14 @@ async def test_delete_merge_and_restore_keep_frame_rows(
     assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
     marked = next(fr for fr in rows if fr.uuid == child_uid)
     assert marked.attrs.get("удалён") is True
-    assert frame_is_active(marked) is False
+    assert frame_is_active(getattr(marked, "attrs", None) or {}) is False
     assert any("WARN delete_coverage_child" in line for line in warn_log)
 
     restored = await restore_montage_frame(session, project, int(marked.id))
     await session.refresh(marked)
     assert restored["restored"] == 1
     assert marked.attrs.get("удалён") is not True
-    assert frame_is_active(marked) is True
+    assert frame_is_active(getattr(marked, "attrs", None) or {}) is True
     assert any("WARN restore_montage_frame" in line for line in warn_log)
 
     result = await delete_montage_frame(session, project, int(parent.id))
@@ -2115,11 +2113,11 @@ async def test_delete_merge_and_restore_keep_frame_rows(
     assert {fr.uuid for fr in rows} == {parent_uid, child_uid, other_uid}
     head = next(fr for fr in rows if fr.uuid == parent_uid)
     assert head.attrs.get("удалён") is True
-    assert frame_is_active(head) is False
+    assert frame_is_active(getattr(head, "attrs", None) or {}) is False
 
     await restore_montage_frame(session, project, int(head.id))
     await session.refresh(head)
-    assert frame_is_active(head) is True
+    assert frame_is_active(getattr(head, "attrs", None) or {}) is True
 
     merged = await merge_montage_scenes(
         session,
@@ -2191,7 +2189,7 @@ async def test_collapse_and_apply_keep_frames_and_report_deleted_zero(
     archived = next(fr for fr in rows if fr.uuid == "k2" * 12)
     assert is_coverage_leftover(archived)
     assert archived.attrs.get("активен") is False
-    assert frame_is_active(archived) is False
+    assert frame_is_active(getattr(archived, "attrs", None) or {}) is False
     assert archived.image_prompt == "промт второго"
     assert any("WARN archive leftover" in line for line in warn_log)
     assert any("WARN collapse_flattened_coverage_cells" in line for line in warn_log)
@@ -2320,7 +2318,7 @@ async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
     ).scalars().all()
     promoted = next(fr for fr in rows if fr.number == 2)
     assert _cs(promoted).get("role") == "vo_parent"
-    assert frame_is_active(rows[0]) is False
+    assert frame_is_active(getattr(rows[0], "attrs", None) or {}) is False
 
     await restore_montage_frame(session, project, int(head.id))
     rows = (
@@ -2330,7 +2328,7 @@ async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
     ).scalars().all()
     assert [fr.number for fr in rows] == [1, 2, 3]
     restored = rows[0]
-    assert frame_is_active(restored) is True
+    assert frame_is_active(getattr(restored, "attrs", None) or {}) is True
     assert restored.attrs.get("удалён") is not True
     assert _cs(restored).get("role") == "vo_parent"
     assert _cs(restored).get("parent_uuid") == head_uid
@@ -2428,3 +2426,122 @@ def test_shifted_words_match_subtitles_without_marked_frame() -> None:
     assert by_text["один"][0] == pytest.approx(0.0, abs=0.05)
     assert by_text["три"][0] == pytest.approx(1.0, abs=0.05)
     assert by_text["три"][1] <= 2.0 + 0.05
+
+
+@pytest.mark.asyncio
+async def test_run_assemble_passes_marked_frame_to_r15(
+    session: AsyncSession, project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_run_assemble отдаёт в R15 полный список номеров, включая помеченный.
+
+    Без marked_numbers вызов _assemble_body падает с NameError — речь
+    помеченного кадра не доходит до вырезания.
+    """
+    import json
+
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", Path(settings.data_dir))
+
+    from app.models import Artifact, ArtifactKind
+    from app.orchestrator.steps.assemble import _run_assemble
+    from app.services.plan_timestamps import format_timecode_range
+
+    session.add(project)
+    await session.flush()
+    root = project.data_dir
+    audio = root / "audio"
+    audio.mkdir(parents=True)
+    voice = audio / "voice_full.wav"
+    voice.write_bytes(b"voice")
+    words_path = audio / "words.json"
+    words_path.write_text(
+        json.dumps(
+            {
+                "words": [
+                    {"word": "один", "start": 0.0, "end": 0.8, "prob": 0.9},
+                    {"word": "два", "start": 1.1, "end": 1.9, "prob": 0.9},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    session.add(
+        Frame(
+            project_id=project.id,
+            number=1,
+            uuid="11" * 12,
+            voiceover_text="один",
+            status=FrameStatus.planned,
+            attrs={},
+        )
+    )
+    session.add(
+        Frame(
+            project_id=project.id,
+            number=2,
+            uuid="22" * 12,
+            voiceover_text="два",
+            status=FrameStatus.planned,
+            attrs={"удалён": True, "активен": False, "карантин": True},
+        )
+    )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.audio,
+            uuid="au" * 12,
+            path=str(voice),
+            meta={"mode": "full_voice"},
+        )
+    )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid="ww" * 12,
+            path=str(words_path),
+            meta={},
+        )
+    )
+    await session.flush()
+
+    seen: list[list[int]] = []
+    captured: dict[str, list[int]] = {}
+
+    async def _fake_ensure(project_obj, *, frame_numbers, cells, words, voice_full_path, master=None):
+        seen.append([int(n) for n in frame_numbers])
+        ranges = [
+            (int(n), format_timecode_range(float(i), float(i) + 1.0))
+            for i, n in enumerate(frame_numbers)
+        ]
+        return ranges, 15
+
+    async def _body(*_args, **kwargs):
+        captured["marked"] = [int(n) for n in kwargs["marked_numbers"]]
+        captured["numbers"] = [int(n) for n in kwargs["frame_numbers"]]
+        return None
+
+    async def _video(_session, _project, frame, *, shot=1):
+        if frame.number == 1 and shot == 1:
+            return voice
+        return None
+
+    async def _noop(*_a, **_k):
+        return None
+
+    async def _enter(*_a, **_k):
+        return True, "", None
+
+    monkeypatch.setattr("app.orchestrator.steps.assemble.recover_before_assemble", _noop)
+    monkeypatch.setattr("app.orchestrator.steps.assemble.can_enter_running", _enter)
+    monkeypatch.setattr("app.orchestrator.steps.assemble._scene_video_path", _video)
+    monkeypatch.setattr("app.orchestrator.steps.assemble.subtitles_enabled_for_project", lambda _p: False)
+    monkeypatch.setattr("app.services.plan_timestamps.ensure_r15_from_asr", _fake_ensure)
+    monkeypatch.setattr("app.orchestrator.steps.assemble._assemble_body", _body)
+
+    await _run_assemble(session, project, None)  # type: ignore[arg-type]
+
+    assert seen == [[1, 2]]
+    assert captured["numbers"] == [1, 2]
+    assert captured["marked"] == [2]

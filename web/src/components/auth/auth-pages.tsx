@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { safeAuthNext } from "@/lib/safe-next";
 import { ArrowLeft, Check, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail, MailCheck, User, AtSign, ImageIcon } from "lucide-react";
 
 export const AUTH_TOKEN_KEY = "vp-auth-token";
@@ -157,7 +158,9 @@ export function LoginPage() {
   const [login, setLogin] = useState(""); const [pw, setPw] = useState("");
   const [err, setErr] = useState<string | null>(null); const [loading, setLoading] = useState(false); const [ok, setOk] = useState(false);
   const [touched, setTouched] = useState(false);
-  const next = typeof window !== "undefined" ? new URLSearchParams(location.search).get("next") || "/profile" : "/profile";
+  const next = typeof window !== "undefined"
+    ? safeAuthNext(new URLSearchParams(location.search).get("next"))
+    : "/profile";
   const reset = typeof window !== "undefined" && new URLSearchParams(location.search).get("reset") === "1";
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setTouched(true); setErr(null);
@@ -205,9 +208,8 @@ export function RegisterPage() {
     if (Object.values(e).some(Boolean)) return;
     setLoading(true);
     try {
-      const r = await authApi<{ token: string; dev_code?: string | null; dev_note?: string | null }>("/register", { email: f.email, username: f.username, name: f.name, password: f.password, plan: plan || null });
+      const r = await authApi<{ token: string }>("/register", { email: f.email, username: f.username, name: f.name, password: f.password, plan: plan || null });
       setToken(r.token);
-      try { if (r.dev_code) sessionStorage.setItem("vp-dev-code", r.dev_code); } catch {}
       location.href = "/verify-email";
     } catch (x: any) { setErr(x.message); } finally { setLoading(false); }
   }
@@ -244,19 +246,18 @@ export function RegisterPage() {
 
 export function VerifyEmailPage() {
   const [code, setCode] = useState(""); const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false); const [done, setDone] = useState(false); const [dev, setDev] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false); const [done, setDone] = useState(false);
   const { user, loading: ul } = useAuthUser();
-  useEffect(() => { try { setDev(sessionStorage.getItem("vp-dev-code")); } catch {} }, []);
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setErr(null);
     if (!/^\d{6}$/.test(code)) { setErr("Код — 6 цифр"); return; }
     setLoading(true);
-    try { await authApi("/verify", { code }); setDone(true); try { sessionStorage.removeItem("vp-dev-code"); } catch {} setTimeout(() => (location.href = "/profile"), 1200); }
+    try { await authApi("/verify", { code }); setDone(true); setTimeout(() => (location.href = "/profile"), 1200); }
     catch (x: any) { setErr(x.message); } finally { setLoading(false); }
   }
   async function resend() {
     setErr(null); setMsg(null);
-    try { const r = await authApi<{ dev_code?: string; mail_sent: boolean }>("/verify/resend", {}); setDev(r.dev_code ?? null); setMsg(r.mail_sent ? "Новый код отправлен" : "Новый код записан в лог сервера"); }
+    try { const r = await authApi<{ mail_sent: boolean }>("/verify/resend", {}); setMsg(r.mail_sent ? "Новый код отправлен" : "Новый код отправлен на почту, если она настроена"); }
     catch (x: any) { setErr(x.message); }
   }
   return (
@@ -265,7 +266,6 @@ export function VerifyEmailPage() {
         {done ? <Alert kind="ok"><span className="flex items-center gap-2"><MailCheck className="h-5 w-5" />Email подтверждён</span></Alert> : null}
         {err ? <Alert kind="error">{err}</Alert> : null}
         {msg ? <Alert kind="ok">{msg}</Alert> : null}
-        {dev ? <Alert kind="dev">Режим разработки: почта не настроена, код в логе сервера. Код: <b className="tracking-[0.3em]">{dev}</b></Alert> : null}
         <input name="code" inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="••••••"
           className="mb-6 h-[72px] w-full rounded-[14px] border border-white/10 bg-white/[0.03] text-center text-[34px] tracking-[0.5em] text-white outline-none transition-colors focus:border-teal-400/50" />
         <Submit loading={loading} disabled={!user}>Подтвердить</Submit>
@@ -277,7 +277,7 @@ export function VerifyEmailPage() {
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState(""); const [touched, setTouched] = useState(false); const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false); const [res, setRes] = useState<{ dev_note?: string | null; dev_link?: string | null } | null>(null);
+  const [loading, setLoading] = useState(false); const [res, setRes] = useState<{ dev_note?: string | null } | null>(null);
   const bad = !email ? "Введите email" : !EMAIL_RE.test(email) ? "Некорректный email" : null;
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setTouched(true); setErr(null);
@@ -290,7 +290,7 @@ export function ForgotPasswordPage() {
       <form onSubmit={submit} noValidate>
         {err ? <Alert kind="error">{err}</Alert> : null}
         {res ? <Alert kind="ok">Если аккаунт с таким email существует, мы отправили ссылку. Она действует 1 час.</Alert> : null}
-        {res?.dev_note ? <Alert kind="dev">Режим разработки: {res.dev_note}.{res.dev_link ? <> <a id="dev-reset-link" href={res.dev_link} className="underline">Открыть ссылку сброса</a></> : null}</Alert> : null}
+        {res?.dev_note ? <Alert kind="dev">Режим разработки: {res.dev_note}.</Alert> : null}
         <Field name="email" label="Email" icon={<Mail className="h-5 w-5" />} value={email} onChange={setEmail} type="email" autoComplete="email" placeholder="you@mail.com" error={touched ? bad : null} />
         <Submit loading={loading}>{res ? "Отправить ещё раз" : "Отправить ссылку"}</Submit>
       </form>

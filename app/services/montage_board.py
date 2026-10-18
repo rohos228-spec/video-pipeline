@@ -301,12 +301,19 @@ async def _entity_name_maps(
         )
     except Exception:  # noqa: BLE001
         return chars, items
+    from app.services.db_v2 import entity_is_archived
+    from app.services.frame_tombstones import entity_is_marked
+
     for ent in ents:
+        if entity_is_marked(ent):
+            continue
         code = str(getattr(ent, "code", "") or "").strip()
         name = str(getattr(ent, "name", "") or "").strip()
         if not code:
             continue
         kind = str(getattr(ent, "type", "") or "")
+        if kind == "character" and entity_is_archived(ent):
+            continue
         bucket = (
             chars
             if kind == "character"
@@ -691,7 +698,11 @@ def _first_text(*vals: Any) -> str:
 
 
 def _matching_kadry_item(frame: Any) -> dict[str, Any] | None:
-    planned = planned_shots_from_attrs(frame)
+    from app.services.frame_tombstones import shot_is_active
+
+    planned = [
+        item for item in planned_shots_from_attrs(frame) if shot_is_active(item)
+    ]
     if not planned:
         return None
     shot_id = coverage_shot_id(frame)
@@ -1188,6 +1199,8 @@ async def build_montage_board(
             layout_text,
         )
 
+        from app.orchestrator.validators.activity_flags import frame_is_active
+
         layout = layout_text(fr)
         img1_prompt = (prompts.get("image_prompt_shot1") or "").strip() or layout_start_text(
             layout
@@ -1215,7 +1228,7 @@ async def build_montage_board(
                 "frame_id": fr.id,
                 "number": fr.number,
                 "удалён": frame_marked_deleted(fr),
-                "активен": frame_is_active(fr),
+                "активен": frame_is_active(getattr(fr, "attrs", None) or {}),
                 "карантин": bool((fr.attrs or {}).get("карантин")),
                 "voiceover_text": fr.voiceover_text,
                 "voiceover_excel": ex.get("voiceover_excel") or "",
@@ -1257,6 +1270,7 @@ async def build_montage_board(
                     }
                 ),
                 "manual_refs": manual_refs_for_board(data_dir, fr),
+                "скрыт": not frame_is_active(fr.attrs or {}),
             }
         )
 

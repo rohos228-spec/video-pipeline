@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 
 import html
@@ -195,20 +196,20 @@ def _synth_shot(fr: Any) -> dict[str, Any]:
 
 
 def _collect_shots(frames: list[Any]) -> list[dict[str, Any]]:
-    """Один кадр БД = один шаг. Если в ячейке ещё лежит список кадры[] > 1 — все."""
+    """Один кадр БД = один шаг. Живые элементы кадры[]; неактивные в отчёт не входят."""
+    from app.services.frame_tombstones import shot_is_active
+
     index = _overlay_index(frames)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for fr in frames:
         if is_shot_child(fr):
             continue
-        kadry = _kadry_list(fr)
-        if len(kadry) > 1:
-            sources = kadry
-        elif kadry:
-            sources = kadry
-        else:
-            sources = [_synth_shot(fr)]
+        stored = _kadry_list(fr)
+        live = [s for s in stored if shot_is_active(s)]
+        if stored and not live:
+            continue
+        sources = live if live else [_synth_shot(fr)]
         number = _int(_top(fr).get("number") or getattr(fr, "number", 0), 0)
         for pos, shot in enumerate(sources, start=1):
             item = dict(shot)
@@ -354,6 +355,7 @@ def _plan_shot(row: dict[str, Any]) -> dict[str, Any]:
 
 def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Площадки ячеек: схема сверху + зоны/проходы + что починил код."""
+    from app.services.frame_tombstones import shot_is_active
     from app.services.scene_plan import accusative, plan_svg
 
     out: list[dict[str, Any]] = []
@@ -364,7 +366,7 @@ def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]
         if not isinstance(plan, dict) or not plan.get("зоны"):
             continue
         number = _int(_top(fr).get("number") or getattr(fr, "number", 0), 0)
-        kadry = _kadry_list(fr)
+        kadry = [s for s in _kadry_list(fr) if shot_is_active(s)]
         if len(kadry) > 1:
             shots = [_plan_shot(s) for s in kadry]
         else:
@@ -513,6 +515,15 @@ def build_shots_report_model(
     }
 
 
+def _safe_svg(raw: Any) -> str:
+    """SVG схемы — только data-URI в img, без разбора разметки в HTML отчёта."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return f'<img alt="" class="plan-svg" src="data:image/svg+xml;base64,{payload}">'
+
+
 def _plan_block(pl: dict[str, Any]) -> str:
     items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
     items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
@@ -524,7 +535,7 @@ def _plan_block(pl: dict[str, Any]) -> str:
     )
     return (
         f"<details class=plan><summary>Площадка · Ячейка {_esc(pl.get('cell'))}</summary>"
-        f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></details>"
+        f"{_safe_svg(pl.get('svg'))}<ul>{items}{extra}</ul></details>"
     )
 
 

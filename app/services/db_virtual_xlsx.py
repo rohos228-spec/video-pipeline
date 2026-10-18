@@ -89,7 +89,13 @@ async def build_virtual_project_sheets(
         .where(Entity.project_id == project.id)
         .order_by(Entity.id)
     )
-    entities = list((await session.execute(stmt_entities)).scalars().all())
+    from app.services.frame_tombstones import entity_is_marked
+
+    entities = [
+        row
+        for row in (await session.execute(stmt_entities)).scalars().all()
+        if not entity_is_marked(row)
+    ]
 
     sheets: dict[str, list[list[str]]] = {}
 

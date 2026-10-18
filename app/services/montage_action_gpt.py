@@ -300,10 +300,13 @@ async def _map_character_labels(
         )
     except Exception:  # noqa: BLE001
         return text
+    from app.services.frame_tombstones import entity_is_marked
+
     names = {
         str(getattr(e, "code", "") or "").strip(): str(getattr(e, "name", "") or "").strip()
         for e in ents
-        if str(getattr(e, "type", "") or "") == "character"
+        if not entity_is_marked(e)
+        and str(getattr(e, "type", "") or "") == "character"
         and str(getattr(e, "code", "") or "").strip()
     }
     if not names:
@@ -663,6 +666,9 @@ async def generate_cell_scene_with_images(
             mode=mode,
         )
     except (RuntimeError, ValueError) as exc:
+        from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+        reraise_if_spend_blocked(exc)
         gen_error = str(exc)
         logger.warning(
             "scene-generate-with-images GPT skip #{} frame={}: {}",

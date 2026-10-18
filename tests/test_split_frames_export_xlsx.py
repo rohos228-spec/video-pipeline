@@ -19,8 +19,9 @@ async def test_split_frames_exports_xlsx_before_snapshot():
     project.data_dir = MagicMock()
 
     existing = []  # force GPT path
+    # attrs={} — у MagicMock иначе attrs не словарь, и матрица считает кадр неактивным.
     created = [
-        MagicMock(spec=Frame, number=i, voiceover_text=f"vo{i}")
+        MagicMock(spec=Frame, number=i, voiceover_text=f"vo{i}", attrs={})
         for i in range(1, 4)
     ]
 

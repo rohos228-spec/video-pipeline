@@ -488,7 +488,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 rp,
                                 st.code if st else rp.status.value,
                                 node_key=meta.get("active_excel_gpt_node_key"),
-                                explicit_ui_start=True,
+                                explicit_ui_start=False,
                             )
                             await ps.commit()
                 except Exception:  # noqa: BLE001

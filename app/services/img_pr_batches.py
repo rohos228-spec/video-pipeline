@@ -321,6 +321,38 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     return clean
 
 
+def merge_img_pr_checkpoint(
+    raw_ops: list[Any],
+    applied: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """applied + ещё не применённые writeable + rejected.
+
+    ``_apply_img_pr_ops_now`` может вернуть ``[]`` (сессия не в ту БД).
+    Короткие опы не должны вытеснить из чекпоинта полные промты.
+    """
+    writeable, rejected = partition_img_pr_checkpoint(raw_ops)
+    applied_ids = {uuid_of_op(op) for op in applied if uuid_of_op(op)}
+    pending = [op for op in writeable if uuid_of_op(op) not in applied_ids]
+    stored = list(applied) + pending + list(rejected)
+    if not stored:
+        stored = [op for op in raw_ops if isinstance(op, dict)]
+    done = [uuid_of_op(op) for op in applied if uuid_of_op(op)]
+    return stored, done
+
+
+def partition_img_pr_checkpoint(ops: list[Any]) -> tuple[list[dict], list[dict]]:
+    """Пишемые опы и отброшенные. Чекпоинт хранит оба списка, не только фильтр."""
+    raw = [op for op in ops if isinstance(op, dict)]
+    writeable = writeable_img_pr_ops(raw)
+    writeable_ids = {uuid_of_op(op) for op in writeable if uuid_of_op(op)}
+    rejected = [
+        op
+        for op in raw
+        if not uuid_of_op(op) or uuid_of_op(op) not in writeable_ids
+    ]
+    return writeable, rejected
+
+
 def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
     """Ops, которые можно писать в DB: реальный uuid + полный промт."""
     kept: list[dict] = []

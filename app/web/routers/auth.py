@@ -4,6 +4,7 @@ Enforcement stays OFF unless WEB_AUTH_USER+WEB_AUTH_PASSWORD are set (settings.w
 
 from __future__ import annotations
 
+import os
 import re
 
 from fastapi import APIRouter, HTTPException, Request
@@ -23,8 +24,12 @@ def _pw_ok(pw: str) -> bool:
     return len(pw) >= 8 and re.search(r"[A-Za-zА-Яа-я]", pw) and re.search(r"\d", pw)
 
 
-def _origin(req: Request) -> str:
-    return (req.headers.get("origin") or str(req.base_url)).rstrip("/")
+def reset_link_base() -> str:
+    """База ссылки сброса только из настроек, не из заголовка Origin."""
+    public = (settings.fleet_public_url or "").strip().rstrip("/")
+    if public:
+        return public
+    return settings.fleet_local_web_url
 
 
 class LoginBody(BaseModel):
@@ -60,10 +65,10 @@ class DeleteBody(BaseModel):
 def _send_verify(req: Request, u) -> dict:
     code = ua.issue_token(u["id"], "verify")
     sent = ua.send_mail(u["email"], "VIA — код подтверждения", f"Ваш код подтверждения VIA: {code} (действует 24 ч)")
-    return {
-        "mail_sent": sent,
-        "dev_note": None if sent else "Почта не настроена — код записан в лог сервера",
-    }
+    out = {"mail_sent": sent}
+    if os.environ.get("VP_AUTH_DEV_MAIL") == "1":
+        out["dev_code"] = code
+    return out
 
 
 def _me(req: Request):
@@ -144,7 +149,7 @@ async def forgot(body: EmailBody, request: Request) -> dict:
     u = ua.get_by_login(body.email.strip())
     out = {"ok": True, "mail_sent": False, "dev_note": None}
     if u:  # same answer whether or not the user exists
-        link = f"{_origin(request)}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
+        link = f"{reset_link_base()}/reset-password?token={ua.issue_token(u['id'], 'reset')}"
         sent = ua.send_mail(u["email"], "VIA — восстановление пароля", f"Ссылка для смены пароля (1 ч): {link}")
         out.update(mail_sent=sent)
         if not sent:

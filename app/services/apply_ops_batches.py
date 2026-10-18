@@ -152,9 +152,11 @@ class _PackSendGate:
     """Не больше in_flight запросов этого прогона, старт с разницей в gap_s."""
 
     def __init__(self, gap_s: float, in_flight: int | None = None) -> None:
-        cap = PACK_IN_FLIGHT_MAX
+        from app.services.llm_pack_limit import llm_pack_limit
+
+        cap = llm_pack_limit()
         if in_flight is not None and int(in_flight) > 0:
-            cap = max(1, min(PACK_IN_FLIGHT_MAX, int(in_flight)))
+            cap = max(1, min(cap, int(in_flight)))
         self.sem = asyncio.Semaphore(cap)
         self.lock = asyncio.Lock()
         self.next_at = 0.0
@@ -794,10 +796,14 @@ def _shot_vo_len_reason(
     cell_vo: str,
     uid: str,
 ) -> str | None:
+    from app.services.frame_tombstones import shot_is_active
+
     cell_n = _vo_visible_len(cell_vo)
     if cell_n <= SHOT_VO_MIN_CHARS and len(shots) <= 1:
         return None
     for shot in shots:
+        if not shot_is_active(shot):
+            continue
         chunk = _shot_vo_chunk(shot)
         if not chunk:
             continue  # пустая перебивка — норма
@@ -1023,7 +1029,12 @@ def repair_action_ops(ops: list[Any]) -> int:
 
 
 def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Пустой закадр перебивки — норма. Хвост ячейки кладём на покрывающий кадр."""
+    """Пустой закадр перебивки — норма. Хвост ячейки кладём на живые кадры.
+
+    Неактивный шот текст не получает: его поля остаются как были.
+    Живых шотов нет — закадр остаётся на ячейке, список не трогаем.
+    """
+    from app.services.frame_tombstones import shot_is_active
     from app.services.scene_shot_grammar import _assign_vo_by_steps
 
     by_uid = _frames_by_uuid(frames)
@@ -1038,21 +1049,41 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
         if not isinstance(shots, list):
             continue
         uid = str(op.get("frame_uuid") or "").strip()
+        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         cell_vo = _frame_vo(by_uid.get(uid))
-        dict_shots = [s for s in shots if isinstance(s, dict)]
-        glued = " ".join(_shot_vo_chunk(s) for s in dict_shots if _shot_vo_chunk(s))
         cell = " ".join((cell_vo or "").split())
         if not cell:
             continue
+        active = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+        if not active:
+            logger.warning(
+                "WARN repair_shot_vo_ops: нет живых шотов (uuid {}) — "
+                "закадр ячейки остаётся на ячейке, шоты не меняются",
+                uid[:8] or "?",
+            )
+            continue
+        glued = " ".join(_shot_vo_chunk(s) for s in active if _shot_vo_chunk(s))
         if glued and " ".join(glued.split()) == cell:
             continue
         pieces = _assign_vo_by_steps(
-            cell_vo, [str(s.get("действие") or "") for s in dict_shots]
+            cell_vo, [str(s.get("действие") or "") for s in active]
         )
-        for shot, piece in zip(dict_shots, pieces, strict=False):
+        for shot, piece in zip(active, pieces, strict=False):
             if _shot_vo_chunk(shot) != (piece or "").strip():
                 shot["закадр"] = piece
                 fixed += 1
+        from app.pipeline.no_deletions_guard import run_preservation_validators
+
+        frame = by_uid.get(uid) or {}
+        number = frame.get("number")
+        if number is None:
+            number = frame.get("номер") or 0
+        run_preservation_validators(
+            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": before_rows}]},
+            {"сцены": [{"id": uid or "cell", "номер": number, "кадры": shots}]},
+            ops,
+            mode="soft",
+        )
         if "кадры" in fields:
             fields["кадры"] = shots
         elif "shots" in fields:
@@ -1438,8 +1469,10 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
+        from app.services.frame_tombstones import shot_is_active
+
         for shot in shots:
-            if not isinstance(shot, dict):
+            if not isinstance(shot, dict) or not shot_is_active(shot):
                 continue
             chunk = _shot_vo_chunk(shot)
             if vo_chunk_is_dangling(chunk):
@@ -1875,7 +1908,14 @@ _GATE_CHARACTERS: _cv.ContextVar[list[dict[str, Any]]] = _cv.ContextVar("_GATE_C
 
 
 def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
-    _GATE_CHARACTERS.set(list(cards or []))
+    from app.services.db_v2 import entity_is_archived
+
+    live = [
+        card
+        for card in (cards or [])
+        if isinstance(card, dict) and not entity_is_archived(card)
+    ]
+    _GATE_CHARACTERS.set(live)
 
 
 _REPLY_SPLIT = re.compile(r"\s+—\s+(?=[^:.—«»]{1,40}:)")
@@ -1968,7 +2008,9 @@ def rebalance_shot_vo(shots: list[Any]) -> list[str]:
     (2) кусок >80 — режем по границе слова, хвост/голову на соседний кадр. Только если склейка
     непустых кусков не меняется (между донором и приёмником нет непустого закадра) и кусок ≤80.
     Иначе оставляем как есть (неизбежно) — гейт сообщит."""
-    rows = [s for s in shots if isinstance(s, dict)]
+    from app.services.frame_tombstones import shot_is_active
+
+    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
     notes: list[str] = []
 
     def vo(s: dict[str, Any]) -> str:
@@ -2095,6 +2137,49 @@ def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(s) if isinstance(s, dict) else {"значение": s} for s in raw]
 
 
+def _preserve_pack_ops(ops: list[Any], chunk: list[dict[str, Any]]) -> None:
+    """Перед коммитом пачки: живой кадр из снимка не выпадает из кадры[]."""
+    from app.pipeline.no_deletions_guard import run_preservation_validators
+
+    by_uid = {
+        str(fr.get("uuid") or "").strip(): fr
+        for fr in chunk or []
+        if isinstance(fr, dict) and str(fr.get("uuid") or "").strip()
+    }
+    last: dict[str, dict[str, Any]] = {}
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        if not uid:
+            continue
+        if "кадры" in fields or "shots" in fields:
+            last[uid] = op
+    if not last:
+        return
+    before_scenes: list[dict[str, Any]] = []
+    after_scenes: list[dict[str, Any]] = []
+    for uid, op in last.items():
+        frame = by_uid.get(uid) or {}
+        fields = op["fields"]
+        key = "кадры" if "кадры" in fields else "shots"
+        new = fields.get(key)
+        number = frame.get("number")
+        if number is None:
+            number = frame.get("номер") or 0
+        before_scenes.append({"id": uid, "номер": number, "кадры": _frame_shot_rows(frame)})
+        after_scenes.append({"id": uid, "номер": number, "кадры": new})
+    run_preservation_validators(
+        {"сцены": before_scenes},
+        {"сцены": after_scenes},
+        ops,
+        mode="soft",
+    )
+
+
 def _frame_shot_rows(frame: dict[str, Any]) -> list[dict[str, Any]]:
     raw = frame.get("кадры")
     if not isinstance(raw, list):
@@ -2200,7 +2285,20 @@ def coalesce_cell_shot_ops(
         slot = merged[uid]
         fields = dict(slot["fields"])
         if slot["shots"]:
-            fields["кадры"] = slot["shots"]
+            from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
+
+            number = 0
+            for fr in frames or []:
+                if str(fr.get("uuid") or "").strip() == uid:
+                    number = fr.get("number") if fr.get("number") is not None else fr.get("номер") or 0
+                    break
+            before_rows = existing.get(uid) or []
+            fields["кадры"] = keep_soft_kadry(
+                before_rows,
+                retain_already_marked(before_rows, slot["shots"]),
+                scene_id=uid,
+                number=number,
+            )
         out.append({"frame_uuid": uid, "fields": fields})
     return out
 
@@ -3062,6 +3160,7 @@ async def run_apply_ops_batched(
             payload = dict(res.apply_ops or {})
             payload["ops"] = ops
             payload["export_xlsx"] = False
+            _preserve_pack_ops(payload["ops"], chunk)
             async with apply_lock:
                 await apply_fn(payload)
         if (footer_kind or "").strip().lower() in {
@@ -3404,6 +3503,22 @@ async def run_apply_ops_batched(
             _log_pack_errors(list(results))
         else:
             for wave_start in range(0, len(packs), wave_n):
+                if wave_start:
+                    from app.services.step_cancel import (
+                        is_stop_requested,
+                        node_stop_marked,
+                    )
+
+                    if node_stop_marked(project_id, node_key) or (
+                        project_id is not None and is_stop_requested(int(project_id))
+                    ):
+                        logger.warning(
+                            "WARN [#{}] apply_ops node={!r}: стоп между волнами, "
+                            "хвост пачек не отправляем",
+                            project_id,
+                            node_key,
+                        )
+                        break
                 wave = packs[wave_start : wave_start + wave_n]
                 logger.info(
                     "[#{}] apply_ops node={!r}: wave {}–{} / {} "

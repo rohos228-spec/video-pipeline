@@ -27,6 +27,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.orchestrator.validators.activity_flags import shot_is_active
 from app.services.scene_shot_grammar import (
     classify_object,
     visible_len,
@@ -586,17 +587,65 @@ def accusative(name: str) -> str:
 
 
 def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
-    """После вставки: K-номера сцены ``prefix`` по порядку, parent_id = K1."""
-    k = 0
-    first = f"{prefix}-K1"
+    """Уникальные id не переписываем. Дубль вставки получает новый K, без промтов."""
+    seen: set[str] = set()
+    max_k = 0
+    owned: list[dict[str, Any]] = []
     for shot in shots:
+        if not isinstance(shot, dict):
+            continue
         m = _ID_RE.match(str(shot.get("id") or ""))
         if not m or m.group(1) != prefix:
             continue
-        k += 1
-        shot["id"] = f"{prefix}-K{k}"
-        if k > 1:
-            shot["parent_id"] = first
+        owned.append(shot)
+        try:
+            max_k = max(max_k, int(m.group(2)))
+        except ValueError:
+            pass
+    first_real: dict[str, dict[str, Any]] = {}
+    for shot in owned:
+        if shot.get("_inserted"):
+            continue
+        sid = str(shot.get("id") or "")
+        if sid and sid not in first_real:
+            first_real[sid] = shot
+    seen = set(first_real)
+    prev_id = ""
+    for shot in owned:
+        sid = str(shot.get("id") or "")
+        if shot is first_real.get(sid):
+            prev_id = sid
+            shot.pop("_inserted", None)
+            continue
+        while True:
+            max_k += 1
+            new_id = f"{prefix}-K{max_k}"
+            if new_id not in seen:
+                break
+        shot["id"] = new_id
+        seen.add(new_id)
+        anchor = sid if sid in first_real else prev_id
+        if anchor:
+            shot["parent_id"] = anchor
+        inserted = bool(shot.get("_inserted"))
+        shot.pop("_inserted", None)
+        if inserted:
+            for key in (
+                "image_prompt",
+                "animation_prompt",
+                "промт_картинки",
+                "промт_видео",
+                "промт",
+                "media",
+                "png",
+                "video",
+                "child_prompts",
+            ):
+                shot.pop(key, None)
+        logger.warning(
+            "WARN _renumber_scene: вставке дан новый id {}, старые id не сдвинуты",
+            new_id,
+        )
 
 
 def _replace_open_adj(text: str) -> str:
@@ -1417,6 +1466,7 @@ class _Sim:
         m = _ID_RE.match(sid)
         if sid and not m:
             new["id"] = f"{sid}-порог"
+        new["_inserted"] = True
         prev["закадр"] = halves[0]
         cur = self.shots[i]
         if self.owned(cur):
@@ -1923,7 +1973,16 @@ class _Sim:
         return " ".join(parts)
 
 
-_TMP_KEYS = ("_zk", "_start", "_end", "_ro", "_cell", "_cam_given", "_почему_точность")
+_TMP_KEYS = (
+    "_zk",
+    "_start",
+    "_end",
+    "_ro",
+    "_cell",
+    "_inserted",
+    "_cam_given",
+    "_почему_точность",
+)
 
 # Дневник: apply_scene_plan_ops ставит список — сюда падают решения СТАРТ/КОНЕЦ.
 FREEZE_DECISIONS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
@@ -2019,8 +2078,13 @@ def apply_scene_plan_cells(
             # Срез не выбрасывает шоты: не-словари и всё, что симуляция не вернула, остаются.
             seen = {id(s) for s in mine}
             for shot in list(c.get("shots") or []):
-                if isinstance(shot, dict) and id(shot) not in seen and shot.get("_cell") == c["key"]:
-                    if not shot.get("карантин"):
+                if (
+                    isinstance(shot, dict)
+                    and id(shot) not in seen
+                    and shot.get("_cell") == c["key"]
+                ):
+                    if shot_is_active(shot):
+                        shot["активен"] = False
                         shot["карантин"] = True
                         shot["активен"] = False
                         shot["пометка"] = "срез плана не забрал кадр — сохранён"
@@ -2060,7 +2124,14 @@ def apply_scene_plan_cells(
                             "точность": bool(s.get("точность")),
                             "почему": s["_почему_точность"],
                         })
-        for s in flat:
+        stray = list(flat)
+        seen_ids = {id(s) for s in stray}
+        for c in cells:
+            for s in c.get("shots") or []:
+                if isinstance(s, dict) and id(s) not in seen_ids:
+                    stray.append(s)
+                    seen_ids.add(id(s))
+        for s in stray:
             for k in _TMP_KEYS:
                 s.pop(k, None)
     out = plan.to_dict()

@@ -54,7 +54,7 @@ def timeline_frames_and_cells(
 
     active: list[Frame] = []
     for fr in frames:
-        if frame_is_active(fr):
+        if frame_is_active(getattr(fr, "attrs", None) or {}):
             active.append(fr)
             continue
         if (fr.voiceover_text or "").strip():

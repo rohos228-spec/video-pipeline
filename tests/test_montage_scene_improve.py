@@ -459,6 +459,56 @@ def test_qc_soft_warns_plan_jump_and_missing_reaction() -> None:
     assert not any("вводит место" in w for w in soft)
 
 
+def test_qc_report_skips_inactive_shot() -> None:
+    """QC и промт правки не видят неактивный шот. Список кадров не режется."""
+    from types import SimpleNamespace
+
+    from app.services.montage_scene_improve import build_improve_qc_prompt
+
+    units = [{"n": 1, "бюджет": 1, "закадр": "Он стоит у стола."}]
+    shots = [
+        {
+            "id": "a",
+            "якорь_n": 1,
+            "действие": "стоит у стола",
+            "закадр": "Он стоит у стола.",
+            "план": "СРЕДНИЙ",
+            "ракурс": "3/4",
+            "движение": "статика",
+            "стык": "cut",
+            "объект": "тело",
+            "порядок": 1,
+        },
+        {
+            "id": "z",
+            "якорь_n": 9,
+            "действие": "стоит у стола",
+            "закадр": "",
+            "план": "НЕИЗВЕСТНО",
+            "ракурс": "нет",
+            "активен": False,
+            "порядок": 2,
+        },
+    ]
+    hard, soft = qc_reasons(shots, units)
+    blob = " ".join(hard + soft)
+    assert "НЕИЗВЕСТНО" not in blob
+    assert "пустой закадр" not in blob
+    assert "не разложены" not in blob
+    assert len(shots) == 2
+    assert shots[1]["активен"] is False
+    prompt = build_improve_qc_prompt(
+        parent=SimpleNamespace(uuid="u", number=1),
+        vo="Он стоит у стола.",
+        shots=shots,
+        units=units,
+        reasons=["проверка"],
+    )
+    assert "НЕИЗВЕСТНО" not in prompt
+    assert shots[1]["id"] == "z"
+    assert shots[1]["активен"] is False
+
+
 def test_merge_passport_keeps_operator_place_and_fills_empty() -> None:
     out, changed = merge_passport(
         {"place": "архив газет", "set": "архив газет", "characters": "c01, c02", "sense": ""},

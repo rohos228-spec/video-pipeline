@@ -111,11 +111,16 @@ def _krupnost_text(frame: Frame) -> str:
             if val:
                 return val
     kadry = attrs.get("кадры")
-    if isinstance(kadry, list) and kadry and isinstance(kadry[0], dict):
-        for key in ("план", "крупность"):
-            val = str(kadry[0].get(key) or "").strip()
-            if val:
-                return val
+    if isinstance(kadry, list):
+        from app.services.frame_tombstones import shot_is_active
+
+        for item in kadry:
+            if not isinstance(item, dict) or not shot_is_active(item):
+                continue
+            for key in ("план", "крупность"):
+                val = str(item.get(key) or "").strip()
+                if val:
+                    return val
     return ""
 
 
@@ -155,10 +160,12 @@ def _map_angle_v(text: str) -> str:
 
 
 def _character_codes(session_entities: list[Entity], frames: list[Frame]) -> list[str]:
+    from app.services.db_v2 import entity_is_archived
+
     codes = [
         str(e.code).strip()
         for e in session_entities
-        if e.code and str(e.type or "") == "character"
+        if e.code and str(e.type or "") == "character" and not entity_is_archived(e)
     ]
     codes = [c for c in codes if c]
     if codes:
@@ -258,6 +265,9 @@ async def ingest_scene(
             .order_by(Entity.sort_key, Entity.id)
         )
     ).scalars().all()
+    from app.services.frame_tombstones import entity_is_marked
+
+    entities = [row for row in entities if not entity_is_marked(row)]
     codes = _character_codes(list(entities), frames)
     plan, axes = default_plan(codes)
     if existing and existing.get("plan"):

@@ -638,6 +638,89 @@ async def test_run_apply_ops_splits_2_to_4_on_second_error(
 
 
 @pytest.mark.asyncio
+async def test_kill_sets_node_stop_key_and_apply_ops_stops_between_waves(
+    tmp_path, monkeypatch
+) -> None:
+    """⏹ пишет node_stop_key. Следующая волна apply_ops не стартует."""
+    import json
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base, Project, ProjectStatus
+    from app.services.gpt_operator_client import OperatorApiResult
+    from app.services.project_control import stop_project_running
+    from app.services.step_cancel import clear_node_stop, clear_stop
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(
+            slug="wave-stop",
+            topic="t",
+            status=ProjectStatus.enriching_2,
+            meta={"active_excel_gpt_node_key": "n_vo"},
+        )
+        session.add(project)
+        await session.flush()
+        await stop_project_running(session, project)
+        assert project.meta["node_stop_key"] == "n_vo"
+        project_id = int(project.id)
+    await engine.dispose()
+    clear_stop(project_id)
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        from app.services.step_cancel import mark_node_stop
+
+        mark_node_stop(project_id, "n_vo")
+        ops = [
+            {"frame_uuid": fr["uuid"], "fields": {"main_action": "x"}}
+            for fr in frames
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    try:
+        frames = [_frame(i) for i in range(3)]
+        ctx = tmp_path / "db_frames.json"
+        ctx.write_text("{}", encoding="utf-8")
+        res = await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_vo",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=project_id,
+            dense=False,
+            chunk_size=1,
+            parallel_max=1,
+            stagger_sec=0,
+        )
+        assert calls == [1]
+        assert len(res.apply_ops["ops"]) == 1
+    finally:
+        clear_node_stop(project_id)
+        from app.services.sidebar_layout import clear_gen_queue_halted
+
+        clear_gen_queue_halted(reason="test")
+
+
+@pytest.mark.asyncio
 async def test_vo_chunk_size_9_packs(tmp_path, monkeypatch) -> None:
     """Сценарист: заранее пачки по 9 ячеек закадра, не все 66 разом."""
     import json
@@ -1515,6 +1598,49 @@ def test_shots_vo_rejects_dangling_preposition() -> None:
     assert "обрубок" in reason or "закадр" in reason
 
 
+def test_shots_coverage_ignores_inactive_dangling_chunk() -> None:
+    """Обрубок неактивного шота не валит проверку. Шот остаётся в списке."""
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Его записывали как «душу»."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                        "действие": "читает имена",
+                        "закадр": vo,
+                    },
+                    {
+                        "id": "1-K0",
+                        "действие": "старый шаг",
+                        "закадр": "продавали вместе с",
+                        "активен": False,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert "обрубок" not in (reason or "")
+    assert "1-K0" not in (reason or "")
+    stored = ops[0]["fields"]["кадры"]
+    dead = next(s for s in stored if s.get("id") == "1-K0")
+    assert dead["активен"] is False
+    assert dead["закадр"] == "продавали вместе с"
+    assert len(stored) == 2
+
+
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
@@ -2265,4 +2391,95 @@ async def test_shots_network_error_retried_three_times(tmp_path, monkeypatch) ->
     assert n["calls"] == 1 + mod.SHOTS_NET_RETRIES
     skipped = res.apply_ops.get("skipped_packs") or []
     assert len(skipped) == 1 and len(skipped[0]["uuids"]) == 3
+
+
+def test_repair_vo_skips_inactive_shots() -> None:
+    """Закадр ячейки раскладывается только по живым шотам."""
+    from copy import deepcopy
+
+    from app.services.apply_ops_batches import repair_shot_vo_ops
+
+    cell = "Он вошёл в кабинет следователя. Затем он сел к столу и открыл папку."
+    inactive = {
+        "id": "1-K0",
+        "действие": "старый шаг",
+        "закадр": "СТАРЫЙ ХВОСТ",
+        "план": "ДЕТАЛЬ",
+        "активен": False,
+    }
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    inactive,
+                    {
+                        "id": "1-K1",
+                        "действие": "входит в кабинет",
+                        "закадр": "",
+                        "план": "СРЕДНИЙ",
+                    },
+                    {
+                        "id": "1-K2",
+                        "действие": "садится к столу",
+                        "закадр": "",
+                        "план": "КРУПНЫЙ",
+                    },
+                ]
+            },
+        }
+    ]
+    frames = [{"uuid": "aa" * 4, "voiceover_text": cell, "закадр": cell}]
+    before = deepcopy(inactive)
+    repair_shot_vo_ops(ops, frames)
+    shots = ops[0]["fields"]["кадры"]
+    assert shots[0] == before
+    assert "СТАРЫЙ" not in shots[1]["закадр"]
+    assert "СТАРЫЙ" not in shots[2]["закадр"]
+    got = " ".join(s["закадр"] for s in shots[1:] if s["закадр"])
+    assert got == cell
+    assert shots[1]["закадр"]
+    assert shots[2]["закадр"]
+    assert frames[0]["voiceover_text"] == cell
+    assert frames[0]["закадр"] == cell
+
+
+def test_repair_vo_zero_active_keeps_cell_text() -> None:
+    """Нет живых шотов: закадр ячейки на месте, шоты не меняются, WARN."""
+    from copy import deepcopy
+
+    from loguru import logger
+
+    from app.services.apply_ops_batches import repair_shot_vo_ops
+
+    cell = "Он вошёл в кабинет следователя и сел к столу."
+    shots = [
+        {
+            "id": "1-K1",
+            "действие": "старый шаг",
+            "закадр": "хвост один",
+            "план": "СРЕДНИЙ",
+            "активен": False,
+        },
+        {
+            "id": "1-K2",
+            "действие": "другой шаг",
+            "закадр": "хвост два",
+            "карантин": True,
+        },
+    ]
+    ops = [{"frame_uuid": "bb" * 4, "fields": {"кадры": shots}}]
+    frames = [{"uuid": "bb" * 4, "voiceover_text": cell, "закадр": cell}]
+    before_shots = deepcopy(shots)
+    before_frame = deepcopy(frames[0])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        fixed = repair_shot_vo_ops(ops, frames)
+    finally:
+        logger.remove(sink)
+    assert fixed == 0
+    assert ops[0]["fields"]["кадры"] == before_shots
+    assert frames[0] == before_frame
+    assert any("нет живых шотов" in line for line in lines)
 

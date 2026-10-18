@@ -861,7 +861,9 @@ export const api = {
   dbAddText: (frameId: number, kind: string, text: string) =>
     http<{ id: number }>(`/api/db/frames/${frameId}/texts`, { method: "POST", body: JSON.stringify({ kind, text }) }),
   dbDeleteText: (textId: number) =>
-    http<{ ok: boolean }>(`/api/db/texts/${textId}`, { method: "DELETE" }),
+    http<{ ok: boolean }>(`/api/db/texts/${textId}?confirm=true`, { method: "DELETE" }),
+  dbRestoreText: (textId: number) =>
+    http<{ ok: boolean }>(`/api/db/texts/${textId}/restore`, { method: "POST" }),
   dbAddPrompt: (frameId: number, kind: string, text: string, setActive = true) =>
     http<{ id: number; version: number }>(`/api/db/frames/${frameId}/prompts`, {
       method: "POST",
@@ -874,11 +876,15 @@ export const api = {
   dbPatchEntity: (entityId: number, body: { type: string; code?: string | null; name?: string | null; attrs?: Record<string, unknown> }) =>
     http<{ ok: boolean }>(`/api/db/entities/${entityId}`, { method: "PATCH", body: JSON.stringify(body) }),
   dbDeleteEntity: (entityId: number) =>
-    http<{ ok: boolean }>(`/api/db/entities/${entityId}`, { method: "DELETE" }),
+    http<{ ok: boolean }>(`/api/db/entities/${entityId}?confirm=true`, { method: "DELETE" }),
+  dbRestoreEntity: (entityId: number) =>
+    http<{ ok: boolean }>(`/api/db/entities/${entityId}/restore`, { method: "POST" }),
   dbAddEdge: (frameId: number, toFrameId: number, type = "next") =>
     http<{ id: number }>(`/api/db/frames/${frameId}/edges`, { method: "POST", body: JSON.stringify({ to_frame_id: toFrameId, type }) }),
   dbDeleteEdge: (edgeId: number) =>
-    http<{ ok: boolean }>(`/api/db/edges/${edgeId}`, { method: "DELETE" }),
+    http<{ ok: boolean }>(`/api/db/edges/${edgeId}?confirm=true`, { method: "DELETE" }),
+  dbRestoreEdge: (edgeId: number) =>
+    http<{ ok: boolean }>(`/api/db/edges/${edgeId}/restore`, { method: "POST" }),
   dbAddScene: (projectId: number, body: { title?: string; after_scene_id?: number | null }) =>
     http<{ id: number; sort_key: number }>(`/api/db/projects/${projectId}/scenes`, { method: "POST", body: JSON.stringify(body) }),
   dbExportXlsx: (projectId: number) =>

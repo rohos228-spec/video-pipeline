@@ -53,26 +53,67 @@ _BACKUP_ON_WIPE_KINDS = frozenset(
 )
 
 
-def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | None:
-    """Копия артефакта в data/.../old/characters|items|scenes|videos/ перед удалением."""
+def _backup_subdir(path: Path, kind: ArtifactKind | None) -> str:
+    if kind is ArtifactKind.final_video:
+        return "final"
+    if kind is ArtifactKind.subtitle:
+        return "subtitles"
+    if kind is ArtifactKind.hero_reference or "characters" in path.parts:
+        return "characters"
+    if kind is ArtifactKind.item_reference or "items" in path.parts:
+        return "items"
+    if kind is ArtifactKind.scene_image or "scenes" in path.parts:
+        return "scenes"
+    if kind is ArtifactKind.scene_video or "videos" in path.parts:
+        return "videos"
+    return "refs"
+
+
+def _verified_file_copy(src: Path, dest: Path) -> bool:
+    """Копия с проверкой: файл есть и размер совпадает. Иначе dest снимаем."""
+    shutil.copy2(src, dest)
+    src_size = src.stat().st_size
+    if dest.is_file() and dest.stat().st_size == src_size:
+        return True
+    logger.warning(
+        "WARN reset_step: копия {} не подтверждена (размер {} != {}), файл не удаляем",
+        src.name,
+        dest.stat().st_size if dest.is_file() else None,
+        src_size,
+    )
+    if dest.is_file():
+        dest.unlink()
+    return False
+
+
+def _backup_artifact_file_before_wipe(
+    project: Project,
+    path: Path,
+    *,
+    kind: ArtifactKind | None = None,
+) -> Path | None:
+    """Копия артефакта в data/.../old/ перед удалением. None — копия не подтверждена."""
     if not path.is_file():
         return None
-    if "characters" in path.parts:
-        sub = "characters"
-    elif "items" in path.parts:
-        sub = "items"
-    elif "scenes" in path.parts:
-        sub = "scenes"
-    elif "videos" in path.parts:
-        sub = "videos"
-    else:
-        sub = "refs"
-    dest_dir = project.data_dir / "old" / sub
+    dest_dir = project.data_dir / "old" / _backup_subdir(path, kind)
     dest_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest = dest_dir / f"{ts}_{path.name}"
+    first = dest_dir / f"{ts}_{path.name}"
+    dest = first
+    suffix = 2
+    while dest.exists():
+        dest = dest_dir / f"{ts}_{suffix}_{path.name}"
+        suffix += 1
+    if dest != first:
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} уже есть, копия записана в {}",
+            project.id,
+            first.name,
+            dest.name,
+        )
     try:
-        shutil.copy2(path, dest)
+        if not _verified_file_copy(path, dest):
+            return None
         logger.info(
             "[#{}] reset_step: backup {} -> {}",
             project.id,
@@ -82,11 +123,13 @@ def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | No
         return dest
     except Exception as e:  # noqa: BLE001
         logger.warning(
-            "[#{}] reset_step: backup {} failed: {}",
+            "WARN [#{}] reset_step: backup {} failed, файл не удаляем: {}",
             project.id,
             path.name,
             e,
         )
+        if dest.is_file():
+            dest.unlink()
         return None
 
 
@@ -138,15 +181,25 @@ async def _wipe_artifacts_by_kind(
                     )
                 else:
                     try:
-                        if a.kind in _BACKUP_ON_WIPE_KINDS:
-                            _backup_artifact_file_before_wipe(project, p)
+                        backup = _backup_artifact_file_before_wipe(
+                            project, p, kind=a.kind
+                        )
+                        if backup is None:
+                            logger.warning(
+                                "WARN [#{}] reset_step: {} без копии в old/, "
+                                "файл и строка Artifact сохранены",
+                                project.id,
+                                p.name,
+                            )
+                            continue
                         p.unlink()
                         files_deleted += 1
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
-                            "[#{}] reset_step: не смог удалить файл {}: {}",
+                            "WARN [#{}] reset_step: не смог удалить файл {}: {}",
                             project.id, p, e,
                         )
+                        continue
         await session.delete(a)
     return {"artifacts": len(arts), "files": files_deleted}
 
@@ -201,10 +254,16 @@ async def _wipe_script(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Удалить все Frame проекта. Артефакты с frame_id каскадно удаляются
-    через ondelete=CASCADE. Файлы соответствующих артефактов чистим
-    отдельно ДО удаления frame'ов."""
-    # сначала собираем пути файлов кадровых артефактов
+    """Пометить все Frame проекта. Строки кадров и артефакты не стираются.
+
+    Было: ``await session.delete(fr)`` после ``p.unlink()`` файлов кадровых
+    артефактов — сброс шага стирал кадры, cascade забирал артефакты.
+    """
+    from app.services.frame_tombstones import (
+        mark_frame_deleted,
+        park_marked_frame_numbers,
+    )
+
     frame_arts = (
         await session.execute(
             select(Artifact).where(
@@ -213,26 +272,26 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
             )
         )
     ).scalars().all()
-    files_deleted = 0
     for a in frame_arts:
         if a.path:
             p = Path(a.path)
-            if p.exists():
-                try:
-                    if a.kind in _BACKUP_ON_WIPE_KINDS:
-                        _backup_artifact_file_before_wipe(project, p)
-                    p.unlink()
-                    files_deleted += 1
-                except Exception:  # noqa: BLE001
-                    pass
-    # теперь сами frame'ы (cascade-каскад удалит остальное)
+            if p.is_file() and a.kind in _BACKUP_ON_WIPE_KINDS:
+                _backup_artifact_file_before_wipe(project, p, kind=a.kind)
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
         )
     ).scalars().all()
     for fr in frames:
-        await session.delete(fr)
+        mark_frame_deleted(
+            fr,
+            project,
+            "reset_step split: сброс шага помечает кадр, строка сохранена",
+            remember_number=False,
+        )
+    # Парковка пишет в deleted_frame_numbers только новый номер 900000+.
+    # Исходный 1..N не записываем: строки уедут, и импорт иначе выкинет колонку.
+    park_marked_frame_numbers(list(frames), project)
     meta = dict(project.meta or {})
     meta_cleared: list[str] = []
     for key in (
@@ -250,8 +309,9 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     if meta_cleared:
         project.meta = meta
     return {
-        "frames_deleted": len(frames),
-        "frame_artifact_files": files_deleted,
+        "frames_deleted": 0,
+        "frames_marked": len(frames),
+        "frame_artifact_files": 0,
         "meta_cleared": meta_cleared,
     }
 
@@ -897,19 +957,76 @@ async def _wipe_sfx_plan(session: AsyncSession, project: Project) -> dict[str, A
     return {"checkpoint_reset": True, "plan_file_deleted": deleted}
 
 
-async def _wipe_sfx_gen(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс «Звуки (SFX)»: чекпоинт ai_jobs.sfx_files + файлы sfx/."""
-    import shutil
+def _archive_dir_to_old(project: Project, src: Path, sub: str) -> Path | None:
+    """Перенос каталога в old/<sub>/<ts> после проверки размера каждого файла.
 
+    Если каталог с этой секундой уже есть, пишем в соседнее имя.
+    Ошибка копии не удаляет dest: проверенный архив остаётся на диске.
+    Снятие исходника идёт отдельно; его ошибка — WARN, архив не трогаем.
+    """
+    if not src.is_dir():
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    parent = project.data_dir / "old" / sub
+    first = parent / ts
+    dest = first
+    suffix = 2
+    while dest.exists():
+        dest = parent / f"{ts}_{suffix}"
+        suffix += 1
+    if dest != first:
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} уже есть, каталог записан в {}",
+            project.id,
+            first.name,
+            dest.name,
+        )
+    try:
+        shutil.copytree(src, dest)
+        for path in src.rglob("*"):
+            if not path.is_file():
+                continue
+            copied = dest / path.relative_to(src)
+            if not copied.is_file() or copied.stat().st_size != path.stat().st_size:
+                raise OSError(f"копия {path.name} не совпала по размеру")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "WARN [#{}] reset_step: перенос {} в old/ не удался, каталог сохранён: {}",
+            project.id,
+            src,
+            e,
+        )
+        return None
+    try:
+        shutil.rmtree(src)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "WARN [#{}] reset_step: архив {} готов, исходник {} не снят: {}",
+            project.id,
+            dest,
+            src,
+            e,
+        )
+        return dest
+    logger.info("[#{}] reset_step: {} → {}", project.id, src, dest)
+    return dest
+
+
+async def _wipe_sfx_gen(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс «Звуки (SFX)»: чекпоинт и перенос sfx/ в old/sfx."""
     from app.services.ai_result_io import drop_ai_job_checkpoint
 
     drop_ai_job_checkpoint(project, "sfx_files")
     sfx_dir = project.data_dir / "sfx"
+    archived = _archive_dir_to_old(project, sfx_dir, "sfx")
     removed = 0
-    if sfx_dir.is_dir():
-        removed = sum(1 for p in sfx_dir.iterdir() if p.is_file())
-        shutil.rmtree(sfx_dir, ignore_errors=True)
-    return {"checkpoint_reset": True, "files_deleted": removed}
+    if archived is not None:
+        removed = sum(1 for p in archived.rglob("*") if p.is_file())
+    return {
+        "checkpoint_reset": True,
+        "files_deleted": removed,
+        "archived_to": str(archived) if archived else None,
+    }
 
 
 async def _preserve_user_media_on_rerun(

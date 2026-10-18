@@ -175,12 +175,12 @@ async def test_edit_and_clear_voiceover(
     assert live is not None and live.voiceover_text == ""
     left = (
         await session.execute(
-            select(FrameText).where(
-                FrameText.frame_id == fr.id, FrameText.kind == "voiceover"
-            )
+            select(FrameText).where(FrameText.frame_id == fr.id)
         )
     ).scalars().all()
-    assert left == []
+    assert len(left) == 1
+    assert left[0].kind == "vo_archived"
+    assert left[0].text == "стало"
 
 
 @pytest.mark.asyncio
@@ -227,6 +227,7 @@ async def test_delete_parent_keeps_children(
     assert [fr.number for fr in left] == [1, 2, 3]
     assert [fr.id for fr in left if fr.number == 1] == [parent_id]
     assert (left[0].attrs or {}).get("удалён") is True
+    assert (left[0].attrs or {}).get("активен") is False
     assert left[1].voiceover_text == "кусок"
     assert left[2].voiceover_text == "дальше"
 
@@ -529,6 +530,9 @@ async def test_delete_does_not_resurrect_from_disk_png(
     await session.commit()
     assert not png.exists()
     assert await ensure_frames_from_disk_media(session, project) == []
+    hidden = await session.get(Frame, fr.id)
+    assert hidden is not None
+    assert (hidden.attrs or {}).get("активен") is False
     board = await build_montage_board(session, project)
     assert [row["number"] for row in board["frames"]] == [19, 20]
     marked = next(row for row in board["frames"] if row["number"] == 19)
@@ -573,3 +577,124 @@ async def test_delete_other_frame_keeps_pending_ops(
     ops = montage_meta(project).get("pending_ops") or []
     assert [op["frame_number"] for op in ops] == [1]
     assert ops[0]["action"] == "оставить"
+
+
+def test_board_action_skips_inactive_kadry() -> None:
+    """Действие на доске не берётся из неактивного шота. кадры[] не меняется."""
+    from types import SimpleNamespace
+
+    from app.services.montage_board import _action_for_frame
+
+    kadry = [
+        {"id": "d", "действие": "МЁРТВЫЙ ШАГ", "активен": False},
+        {"id": "l", "действие": "живой шаг"},
+    ]
+    frame = SimpleNamespace(
+        number=1,
+        attrs={
+            "кадры": kadry,
+            "camera_subdivide": {},
+        },
+    )
+    assert _action_for_frame(frame) == "живой шаг"
+    assert len(kadry) == 2
+    assert kadry[0]["активен"] is False
+    assert kadry[0]["действие"] == "МЁРТВЫЙ ШАГ"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_vo_cell_keeps_missing_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Пересборка ячейки не выкидывает шоты: пропавшие остаются с активен False."""
+    from loguru import logger
+
+    from app.services.montage_board_frames import _rewrite_vo_cell
+
+    session.add(project)
+    parent = _vo_parent(project.id, 21, "aa" * 12, "голова")
+    parent.attrs = {
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12},
+        "кадры": [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "21-K2", "закадр": "середина", "действие": "идёт"},
+            {
+                "id": "21-K3",
+                "закадр": "хвост",
+                "действие": "пропал",
+                "активен": False,
+            },
+        ],
+    }
+    session.add(parent)
+    await session.flush()
+    before = list(parent.attrs["кадры"])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        _rewrite_vo_cell(parent, [parent])
+    finally:
+        logger.remove(sink)
+
+    kadry = parent.attrs["кадры"]
+    assert len(kadry) == len(before)
+    by_id = {shot["id"]: shot for shot in kadry}
+    assert by_id["21-K1"].get("активен") is not False
+    assert by_id["21-K2"]["активен"] is False
+    assert by_id["21-K3"]["активен"] is False
+    assert by_id["21-K2"]["действие"] == "идёт"
+    assert any("21-K2" in line and "активен: False" in line for line in lines)
+
+
+def test_rewrite_vo_cell_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch) -> None:
+    """Склейка, которая выкинула шот, не стирает его закадр. Неактивный остаётся один раз."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import merge_kadry_keep_missing as real_merge
+    from app.services.montage_board_frames import _rewrite_vo_cell
+
+    def _parent(shots: list[dict]):
+        return SimpleNamespace(
+            uuid="aa" * 12,
+            number=21,
+            voiceover_text="голова",
+            attrs={
+                "camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12},
+                "кадры": shots,
+                "shot01_action": "смотрит",
+                "place": "двор",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        lambda old, new: new,
+    )
+    dropped = _parent(
+        [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "DROP", "закадр": "фраза на месте", "действие": "хвост"},
+        ]
+    )
+    _rewrite_vo_cell(dropped, [dropped])
+    rows = {shot["id"]: shot for shot in dropped.attrs["кадры"]}
+    assert rows["DROP"]["активен"] is False
+    assert rows["DROP"]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in rows["DROP"]
+
+    monkeypatch.setattr(
+        "app.services.frame_tombstones.merge_kadry_keep_missing",
+        real_merge,
+    )
+    quiet = _parent(
+        [
+            {"id": "21-K1", "закадр": "голова", "действие": "смотрит"},
+            {"id": "QUIET", "закадр": "фраза на месте", "активен": False, "действие": "пауза"},
+        ]
+    )
+    _rewrite_vo_cell(quiet, [quiet])
+    kept = [shot for shot in quiet.attrs["кадры"] if shot["id"] == "QUIET"]
+    assert len(kept) == 1
+    assert kept[0]["активен"] is False
+    assert kept[0]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in kept[0]

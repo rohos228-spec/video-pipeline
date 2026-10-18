@@ -10,9 +10,14 @@ from __future__ import annotations
 import copy
 import uuid
 from collections import defaultdict
+from contextvars import ContextVar
 from typing import Any
 
 from loguru import logger
+
+_TEXT_ARCHIVE: ContextVar[list[dict[str, str]] | None] = ContextVar(
+    "nii67_text_archive", default=None
+)
 
 META_KEY = "nii67_card"
 
@@ -78,10 +83,22 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def _clip(value: Any, limit: int) -> str:
+def _clip(value: Any, limit: int, *, field: str = "") -> str:
     if not isinstance(value, str):
         return ""
-    return value.strip()[:limit]
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    bucket = _TEXT_ARCHIVE.get()
+    if bucket is not None:
+        bucket.append({"field": field or "text", "text": text})
+    logger.warning(
+        "WARN normalize_card: поле {} длиннее {} ({} симв) — текст сохранён целиком",
+        field or "text",
+        limit,
+        len(text),
+    )
+    return text
 
 
 def _as_bool(value: Any) -> bool:
@@ -174,6 +191,8 @@ def _normalize_block(raw: Any) -> dict[str, Any]:
         block["пометка"] = note
     if _as_bool(src.get("карантин")):
         block["карантин"] = True
+    if src.get("активен") is False:
+        block["активен"] = False
     return block
 
 
@@ -204,10 +223,13 @@ def _normalize_door(door_id: str, raw: dict[str, Any]) -> dict[str, Any]:
         blocks = []
         seen: set[str] = set()
         for item in blocks_raw:
-            if len(blocks) >= MAX_BLOCKS:
-                break
             if not isinstance(item, dict):
                 continue
+            if len(blocks) >= MAX_BLOCKS:
+                logger.warning(
+                    "WARN normalize_card: блок сверх {} сохранён, не отброшен",
+                    MAX_BLOCKS,
+                )
             block = _normalize_block(item)
             if block["id"] in seen:
                 block["id"] = _new_id("b")
@@ -291,6 +313,18 @@ def default_card() -> dict[str, Any]:
 
 def normalize_card(raw: Any) -> dict[str, Any]:
     """Починить карточку: ровно Door 1 и Door 2, известные типы блоков, лимиты."""
+    bucket: list[dict[str, str]] = []
+    token = _TEXT_ARCHIVE.set(bucket)
+    try:
+        card = _normalize_card_body(raw)
+    finally:
+        _TEXT_ARCHIVE.reset(token)
+    if bucket:
+        card["text_archive"] = bucket
+    return card
+
+
+def _normalize_card_body(raw: Any) -> dict[str, Any]:
     src = raw if isinstance(raw, dict) else {}
     found: dict[str, dict[str, Any]] = {}
     doors_raw = src.get("doors")
@@ -390,7 +424,16 @@ def delete_block(card: dict[str, Any], door_id: str, block_id: str) -> dict[str,
     door = _with_door(out, door_id)
     if door is None:
         return out
+    before_blocks = [dict(block) for block in door["blocks"]]
     door["blocks"] = [block for block in door["blocks"] if block["id"] != block_id]
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
+
+    door["blocks"] = keep_soft_kadry(
+        before_blocks,
+        retain_already_marked(before_blocks, door["blocks"]),
+        scene_id=door_id,
+        number=1,
+    )
     return out
 
 
@@ -566,6 +609,7 @@ def apply_generated_scenario(
             if kind is None:
                 continue
             pending[kind].append(beat)
+        before_blocks = [dict(block) for block in door["blocks"]]
         merged_blocks: list[dict[str, Any]] = []
         for block in list(door["blocks"]):
             queue = pending.get(str(block.get("kind") or ""))
@@ -581,7 +625,14 @@ def apply_generated_scenario(
         for kind, beats_left in pending.items():
             for beat in beats_left:
                 merged_blocks.append(_merge_generated_beat(new_block(kind), beat, scenario))
-        door["blocks"] = merged_blocks
+        from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+        door["blocks"] = keep_soft_kadry(
+            before_blocks,
+            merged_blocks,
+            scene_id=door_id,
+            number=1,
+        )
         side = "left" if door_id == "door1" else "right"
         out["portal"][f"{side}_design"] = str(scenario.get("door_design") or "")
         out["portal"][f"{side}_anim"] = str(scenario.get("door_anim") or "")

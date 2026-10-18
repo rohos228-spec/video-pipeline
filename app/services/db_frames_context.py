@@ -475,15 +475,17 @@ def camera_chips_from_frame(frame: Any) -> dict[str, str]:
     item: dict[str, Any] = {}
     kadry = src.get("кадры")
     if isinstance(kadry, list):
+        from app.services.frame_tombstones import shot_is_active
+
         sid = str(cs.get("shot_id") or "").strip()
-        for raw in kadry:
-            if not isinstance(raw, dict):
-                continue
-            if sid and str(raw.get("id") or "").strip() == sid:
-                item = raw
-                break
-        if not item and len(kadry) == 1 and isinstance(kadry[0], dict):
-            item = kadry[0]
+        live = [raw for raw in kadry if isinstance(raw, dict) and shot_is_active(raw)]
+        if sid:
+            item = next(
+                (raw for raw in live if str(raw.get("id") or "").strip() == sid),
+                {},
+            )
+        elif len(live) == 1:
+            item = live[0]
 
     def _pick(*vals: Any) -> str:
         for val in vals:
@@ -577,19 +579,17 @@ def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
     shot_id = str(row.get("shot_id") or "").strip()
     kadry = row.get("кадры")
     if isinstance(kadry, list):
+        from app.services.frame_tombstones import shot_is_active
+
+        live = [shot for shot in kadry if isinstance(shot, dict) and shot_is_active(shot)]
         match: dict[str, Any] | None = None
         if shot_id:
             match = next(
-                (
-                    shot
-                    for shot in kadry
-                    if isinstance(shot, dict) and str(shot.get("id") or "") == shot_id
-                ),
+                (shot for shot in live if str(shot.get("id") or "") == shot_id),
                 None,
             )
-        if match is None:
-            first = kadry[0] if kadry else None
-            match = first if isinstance(first, dict) else None
+        elif live:
+            match = live[0]
         if match is not None:
             keep = (
                 "id",

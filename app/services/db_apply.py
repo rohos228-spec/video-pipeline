@@ -22,6 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import (
+    flag_is_false,
+    flag_is_true,
+    frame_is_active,
+)
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -30,8 +35,11 @@ from app.services.xlsx_v8_import import (
     ROW_TIMECODE_V8,
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
+    ROW_FRAME_ACTIVITY_V8,
     ROW_VOICEOVER_V8,
     SHEET_GENERAL_V8,
+    INACTIVE_COLUMN_MARK,
+    is_inactive_column_mark,
     _normalize_sheet_name,
     _resolve_plan_sheet,
 )
@@ -326,6 +334,83 @@ class ApplyOpsError(ValueError):
 def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     key = str(raw).strip().lower().replace(" ", "_")
     return aliases.get(key)
+
+
+def _structured_container_empty(value: Any) -> bool:
+    """Пустой список или объект не считаем новой лестницей."""
+    return isinstance(value, (list, dict)) and len(value) == 0
+
+
+def _shot_row_id(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("id") or "").strip()
+
+
+def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
+    """Пометки скрытия старой строки переживают входящее обновление."""
+    marks: dict[str, Any] = {}
+    if flag_is_false(row.get("активен")):
+        marks["активен"] = row.get("активен")
+    for key in ("удалён", "удален"):
+        if flag_is_true(row.get(key), mark=key):
+            marks[key] = row[key]
+    if flag_is_true(row.get("карантин"), mark="карантин"):
+        marks["карантин"] = row["карантин"]
+    note = row.get("пометка")
+    if str(note or "").strip():
+        marks["пометка"] = note
+    return marks
+
+
+def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
+    """Короткий список не выкидывает старые шоты: их хвост с активен False.
+
+    Строка без id остаётся. Совпадающий id сливается как {**old, **new},
+    но пометки скрытия старой строки не стираются.
+    Пустой incoming не подменяет лестницу — это делает вызывающий код.
+    """
+    old_rows = (
+        [dict(row) for row in old if isinstance(row, dict)]
+        if isinstance(old, list)
+        else []
+    )
+    new_rows = (
+        [dict(row) for row in incoming if isinstance(row, dict)]
+        if isinstance(incoming, list)
+        else []
+    )
+    if not new_rows:
+        return old_rows
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[dict[str, Any]] = []
+    for row in old_rows:
+        sid = _shot_row_id(row)
+        if not sid:
+            old_without_id.append(dict(row))
+            continue
+        old_by_id.setdefault(sid, dict(row))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in new_rows:
+        sid = _shot_row_id(row)
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **row}
+            merged.update(_kept_hide_marks(old_by_id[sid]))
+            out.append(merged)
+            seen.add(sid)
+            continue
+        out.append(dict(row))
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
+            continue
+        kept = dict(row)
+        kept["активен"] = False
+        out.append(kept)
+    out.extend(dict(row) for row in old_without_id)
+    return out
 
 
 def _coerce_structured_attr(value: Any) -> Any:
@@ -792,8 +877,44 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
         raise ApplyOpsError("scenes: нужен список")
     if not scenes:
         return 0
-    normalized = [_normalize_scene_card(s) for s in scenes]
+    normalized_in = [_normalize_scene_card(s) for s in scenes]
     meta = dict(project.meta or {})
+    old = meta.get("scene_registry")
+    old_by_id: dict[str, dict[str, Any]] = {}
+    old_without_id: list[Any] = []
+    if isinstance(old, list):
+        for row in old:
+            if not isinstance(row, dict):
+                old_without_id.append(row)
+                continue
+            sid = str(row.get("id_scene") or row.get("id") or "").strip()
+            if not sid:
+                old_without_id.append(dict(row))
+                continue
+            old_by_id.setdefault(sid, dict(row))
+    normalized: list[Any] = []
+    seen: set[str] = set()
+    for card in normalized_in:
+        sid = str(card.get("id_scene") or "").strip()
+        if sid and sid in old_by_id:
+            merged = {**old_by_id[sid], **card}
+            merged.update(_kept_hide_marks(old_by_id[sid]))
+            merged["id_scene"] = sid
+            normalized.append(merged)
+            seen.add(sid)
+            continue
+        normalized.append(card)
+        if sid:
+            seen.add(sid)
+    for sid, row in old_by_id.items():
+        if sid in seen:
+            continue
+        kept = dict(row)
+        kept["id_scene"] = sid
+        kept["активен"] = False
+        normalized.append(kept)
+        seen.add(sid)
+    normalized.extend(old_without_id)
     meta["scene_registry"] = normalized
     project.meta = meta
     return len(normalized)
@@ -1106,7 +1227,8 @@ async def upsert_characters(
 ) -> int:
     """Записать/обновить сущности type=character по code (c01…).
 
-    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
+    replace=True: коды, которых нет в новом списке, помечаются archived
+    (карточка и hero_reference остаются)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1148,17 +1270,30 @@ async def upsert_characters(
             by_code[code] = en
         else:
             en.name = card["name"]
-            en.attrs = card["attrs"]
             en.type = "character"
+            old = dict(en.attrs) if isinstance(en.attrs, dict) else {}
+            merged = {**old, **card["attrs"]}
+            # Код снова в ответе Каркаса — карточка живая, реф не стираем.
+            merged.pop("archived", None)
+            merged.pop("inactive", None)
+            en.attrs = merged
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(en, "attrs")
         n += 1
     if replace and seen:
         from loguru import logger
+        from sqlalchemy.orm.attributes import flag_modified
 
         for code, en in list(by_code.items()):
             if code not in seen:
-                await session.delete(en)
+                attrs = dict(en.attrs or {})
+                attrs["archived"] = True
+                attrs["inactive"] = True
+                en.attrs = attrs
+                flag_modified(en, "attrs")
                 logger.info(
-                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    "[#{}] upsert_characters replace: помечен archived {} ({})",
                     project.id,
                     code,
                     en.name,
@@ -1179,10 +1314,14 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         SHEET_PERSONS,
     )
 
+    from app.services.db_v2 import entity_is_archived
+
     chars = [
         e
         for e in entities
-        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+        if getattr(e, "type", None) == "character"
+        and getattr(e, "code", None)
+        and not entity_is_archived(e)
     ]
     chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
     if SHEET_PERSONS in wb.sheetnames:
@@ -1265,34 +1404,16 @@ def export_project_xlsx(
             snap = backup_to_old(path)
         except Exception:  # noqa: BLE001
             snap = None
-        cells = 0
-        from app.services.frame_tombstones import frame_is_active
+        from loguru import logger
 
-        plan_rows = {
-            ROW_IMAGE_PROMPT_V8,
-            ROW_IMAGE_PROMPT_2_V8,
-            ROW_VIDEO_PROMPT_V8,
-            ROW_VIDEO_PROMPT_2_V8,
-            ROW_VOICEOVER_V8,
-            ROW_DURATION_V8,
-            ROW_TIMECODE_V8,
-            ROW_PERSONS_PRIMARY,
-            *(_ATTR_EXCEL_ROWS.values()),
-        }
+        cells = 0
         for fr in frames:
             col = fr.number + 2
-            if not frame_is_active(fr):
-                from loguru import logger
-
-                logger.warning(
-                    "WARN export_project_xlsx: кадр #{} помечен — колонка плана очищена, строка БД на месте",
-                    fr.number,
-                )
-                for row in plan_rows:
-                    ws.cell(row=row, column=col).value = None
-                    cells += 1
-                continue
-            attrs = fr.attrs or {}
+            raw_attrs = getattr(fr, "attrs", None)
+            inactive = not frame_is_active(
+                raw_attrs if isinstance(raw_attrs, dict) else {}
+            )
+            attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
             writes = {
                 ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
                 ROW_IMAGE_PROMPT_2_V8: str(attrs.get(SHOT2_PROMPT_ATTR) or ""),
@@ -1327,6 +1448,26 @@ def export_project_xlsx(
                     continue
                 ws.cell(row=row, column=col, value=str(val))
                 cells += 1
+            if inactive:
+                logger.warning(
+                    "WARN export_project_xlsx: кадр #{} неактивен — колонка {} помечена «{}», данные на месте",
+                    fr.number,
+                    col,
+                    INACTIVE_COLUMN_MARK,
+                )
+                label = ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1).value
+                if not str(label or "").strip():
+                    ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=1, value="активен")
+                ws.cell(
+                    row=ROW_FRAME_ACTIVITY_V8,
+                    column=col,
+                    value=INACTIVE_COLUMN_MARK,
+                )
+                cells += 1
+            elif is_inactive_column_mark(
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value
+            ):
+                ws.cell(row=ROW_FRAME_ACTIVITY_V8, column=col).value = None
         # Стереть хвост колонок после последнего кадра — иначе sync_project_xlsx
         # снова поднимет удалённые VO/таймкоды (было 182 после truncate до 20).
         max_col = int(ws.max_column or 2)
@@ -1341,6 +1482,7 @@ def export_project_xlsx(
                 ROW_DURATION_V8,
                 ROW_TIMECODE_V8,
                 ROW_PERSONS_PRIMARY,
+                ROW_FRAME_ACTIVITY_V8,
                 *(_ATTR_EXCEL_ROWS.values()),
             }
             for col in range(clear_from, max_col + 1):
@@ -1584,10 +1726,29 @@ async def apply_ops(
             attrs["промты_детей"] = children
         if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
             attrs = _merge_camera_subdivide(attrs, fields)
+        from loguru import logger
+
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            raw_attr = fields[attr_key]
+            blank = raw_attr is None or (
+                isinstance(raw_attr, str) and not raw_attr.strip()
+            )
+            empty_text = isinstance(raw_attr, str) and raw_attr.strip() in {"[]", "{}"}
+            empty_box = attr_key in {"кадры", "биты"} and (
+                _structured_container_empty(raw_attr) or empty_text
+            )
+            if blank or empty_box:
+                logger.warning(
+                    "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
+                    attr_key,
+                )
+                continue
+            coerced = _coerce_structured_attr(raw_attr)
+            if attr_key == "кадры" and isinstance(coerced, list):
+                coerced = merge_kadry_keep_missing(attrs.get("кадры"), coerced)
+            attrs[attr_key] = coerced
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")

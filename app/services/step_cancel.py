@@ -175,6 +175,36 @@ def clear_stop(project_id: int) -> None:
     _clear_stop_flag(project_id)
 
 
+# ⏹ во время пачек: ключ ноды живёт и после clear_stop, чтобы следующая волна не ушла.
+_node_stop_keys: set[tuple[int, str]] = set()
+
+
+def mark_node_stop(project_id: int, node_key: str) -> None:
+    key = str(node_key or "").strip()
+    if not key:
+        return
+    _node_stop_keys.add((int(project_id), key))
+
+
+def node_stop_marked(project_id: int | None, node_key: str | None) -> bool:
+    if project_id is None:
+        return False
+    key = str(node_key or "").strip()
+    if not key:
+        return False
+    return (int(project_id), key) in _node_stop_keys
+
+
+def clear_node_stop(project_id: int, node_key: str | None = None) -> None:
+    pid = int(project_id)
+    if node_key is None:
+        _node_stop_keys.difference_update(
+            {item for item in _node_stop_keys if item[0] == pid}
+        )
+        return
+    _node_stop_keys.discard((pid, str(node_key).strip()))
+
+
 def request_stop(
     project_id: int,
     *,

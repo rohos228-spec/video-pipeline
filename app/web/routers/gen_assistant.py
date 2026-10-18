@@ -68,13 +68,17 @@ async def post_gen_assistant_prompts(body: GenAssistantPromptsBody) -> dict[str,
 class AnalyzeStyleBody(BaseModel):
     paths: list[str] = Field(..., description="Локальные пути к референсным изображениям")
     name_hint: str | None = None
+    project_id: int | None = None
 
 
 @router.post("/analyze-style")
 async def post_analyze_style(body: AnalyzeStyleBody) -> dict[str, Any]:
     """Референсы → запись стиля (name/desc/category/prompt_core)."""
     try:
-        return await analyze_style_images(body.paths, name_hint=body.name_hint)
+        safe = [str(_safe_cover_source(path)) for path in body.paths]
+        return await analyze_style_images(
+            safe, name_hint=body.name_hint, project_id=body.project_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -84,6 +88,7 @@ async def post_build_agent(  # noqa: B008
     files: list[UploadFile] = File(..., description="Референсные изображения"),
     request: str = Form("", description="Пожелание/правка пользователя"),
     name_hint: str = Form(""),
+    project_id: int | None = Form(None),
 ) -> dict[str, Any]:
     """Картинки + пожелание → готовый текст агента стиля (окно «+» в помощнике)."""
     uploads = [f for f in files if f and f.filename]
@@ -109,7 +114,10 @@ async def post_build_agent(  # noqa: B008
                 shutil.copyfileobj(up.file, fh)
             paths.append(str(dst))
         return await build_style_agent(
-            paths, user_request=request, name_hint=name_hint.strip() or None
+            paths,
+            user_request=request,
+            name_hint=name_hint.strip() or None,
+            project_id=project_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -125,13 +133,14 @@ async def post_build_agent(  # noqa: B008
 
 class CategorizeStylesBody(BaseModel):
     entries: list[dict[str, Any]] = Field(..., description="Записи стилей из analyze-style")
+    project_id: int | None = None
 
 
 @router.post("/categorize-styles")
 async def post_categorize_styles(body: CategorizeStylesBody) -> dict[str, Any]:
     """Список стилей → категории по общим критериям."""
     try:
-        return await categorize_styles(body.entries)
+        return await categorize_styles(body.entries, project_id=body.project_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

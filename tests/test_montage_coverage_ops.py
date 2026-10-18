@@ -1371,3 +1371,412 @@ async def test_apply_vo_span_writes_edited_full_text(
     group_parent, members = scene_group([parent], parent)
     assert cell_scene_text(group_parent, members) == "Новый закадр."
 
+
+
+@pytest.mark.asyncio
+async def test_scene_action_keeps_missing_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Новая цепь не затирает лестницу: отсутствующие шоты остаются неактивными."""
+    from loguru import logger
+
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent = Frame(
+        project_id=project.id,
+        number=8,
+        uuid="ee" * 12,
+        voiceover_text="раз два",
+        status="planned",
+        sort_key=8.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ee" * 12,
+            },
+            "кадры": [
+                {"id": "8-K1", "действие": "старое один", "план": "СРЕДНИЙ", "закадр": "раз"},
+                {"id": "8-K2", "действие": "старое два", "план": "КРУПНЫЙ", "закадр": "два"},
+                {"id": "8-GONE", "действие": "пропавший шаг", "план": "ДЕТАЛЬ", "закадр": "три"},
+            ],
+        },
+    )
+    session.add(parent)
+    await session.flush()
+    before = len(parent.attrs["кадры"])
+    incoming = [
+        {"id": "8-K1", "действие": "новый один", "план": "СРЕДНИЙ", "закадр": "раз"},
+        {"id": "8-K2", "действие": "новый два", "план": "КРУПНЫЙ", "закадр": "два"},
+    ]
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent],
+            "1. двор — новый один\n2. двор — новый два",
+            kadry=incoming,
+            lock_parent_plan=False,
+        )
+    finally:
+        logger.remove(sink)
+
+    stored = parent.attrs["кадры"]
+    assert len(stored) == before
+    by_id = {shot["id"]: shot for shot in stored}
+    assert by_id["8-K1"].get("активен") is not False
+    assert by_id["8-K1"]["действие"] == "новый один"
+    assert by_id["8-K2"].get("активен") is not False
+    assert by_id["8-GONE"]["активен"] is False
+    assert by_id["8-GONE"]["действие"] == "пропавший шаг"
+    assert any("8-GONE" in line and "активен: False" in line for line in lines)
+
+    dead = Frame(
+        project_id=project.id,
+        number=9,
+        uuid="ff" * 12,
+        voiceover_text="пусто",
+        status="planned",
+        sort_key=9.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ff" * 12,
+            },
+            "кадры": [
+                {"id": "9-KEEP", "действие": "спит", "активен": False},
+                {"id": "9-GONE", "действие": "тоже пропал"},
+            ],
+        },
+    )
+    session.add(dead)
+    await session.flush()
+    dead_before = len(dead.attrs["кадры"])
+    report = await apply_coverage_scene_action(
+        session,
+        project,
+        dead,
+        [dead],
+        "стоит",
+        kadry=[{"id": "9-KEEP", "действие": "спит", "активен": False, "закадр": "пусто"}],
+        lock_parent_plan=False,
+    )
+    assert report["shots"] == 0
+    dead_stored = dead.attrs["кадры"]
+    assert len(dead_stored) == dead_before
+    dead_by = {shot["id"]: shot for shot in dead_stored}
+    assert dead_by["9-KEEP"]["активен"] is False
+    assert dead_by["9-GONE"]["активен"] is False
+
+
+@pytest.mark.asyncio
+async def test_shrink_then_expand_revives_same_positional_id(
+    session: AsyncSession, project: Project
+) -> None:
+    """Сжатие гасит 8-K3. Новый текст и «активен: True» на строке его не оживляют."""
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent = Frame(
+        project_id=project.id,
+        number=8,
+        uuid="ee" * 12,
+        voiceover_text="раз два три",
+        status="planned",
+        sort_key=8.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ee" * 12,
+            },
+            "кадры": [
+                {"id": "8-K1", "действие": "один", "закадр": "раз"},
+                {"id": "8-K2", "действие": "два", "закадр": "два"},
+                {"id": "8-K3", "действие": "три", "закадр": "три"},
+            ],
+        },
+    )
+    session.add(parent)
+    await session.flush()
+    short = [
+        {"id": "8-K1", "действие": "один", "закадр": "раз"},
+        {"id": "8-K2", "действие": "два", "закадр": "два"},
+    ]
+    same = [
+        *short,
+        {"id": "8-K3", "действие": "три", "закадр": "три"},
+    ]
+    explicit = [
+        *short,
+        {"id": "8-K3", "действие": "три", "закадр": "три", "активен": True},
+    ]
+    changed = [
+        *short,
+        {"id": "8-K3", "действие": "три заново", "закадр": "новый текст"},
+    ]
+
+    async def _apply(rows: list[dict]) -> dict:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent],
+            "1. двор — один",
+            kadry=rows,
+            lock_parent_plan=False,
+            grow=False,
+        )
+        return {shot["id"]: shot for shot in parent.attrs["кадры"]}
+
+    shrunk = await _apply(short)
+    assert shrunk["8-K3"]["активен"] is False
+    assert shrunk["8-K3"]["закадр"] == "три"
+
+    still = await _apply(same)
+    assert still["8-K3"]["активен"] is False
+
+    revived = await _apply(explicit)
+    assert revived["8-K3"]["активен"] is False
+    assert revived["8-K3"]["закадр"] == "три"
+
+    await _apply(short)
+    renewed = await _apply(changed)
+    assert renewed["8-K3"]["активен"] is False
+    assert renewed["8-K3"]["закадр"] == "новый текст"
+
+    quiet = merge_kadry_keep_missing(
+        [{"закадр": "тот же текст", "активен": False}],
+        [{"закадр": "тот же текст"}],
+    )
+    assert quiet[0]["активен"] is False
+    spoken = merge_kadry_keep_missing(
+        [{"закадр": "тот же текст", "активен": False}],
+        [{"закадр": "тот же текст", "активен": True}],
+    )
+    assert spoken[0]["активен"] is True
+
+
+@pytest.mark.asyncio
+async def test_same_id_new_text_keeps_deleted_out_of_paid_generation(
+    session: AsyncSession, project: Project, tmp_path: Path
+) -> None:
+    """Тот же id и новый текст не снимают «удалён: да» и не идут в платную генерацию.
+
+    Обе точки: ``_rewrite_vo_cell`` и ``apply_coverage_scene_action``.
+    """
+    from types import SimpleNamespace
+
+    from loguru import logger
+
+    from app.models import FrameStatus
+    from app.orchestrator.steps.generate_images import frame_hidden_from_paid_generation
+    from app.orchestrator.steps.generate_videos import _skip_frame_video_generation
+    from app.orchestrator.validators.activity_flags import shot_is_active
+    from app.services.animation_prompt_gpt import collect_batch_items
+    from app.services.montage_board_frames import _rewrite_vo_cell
+    from app.services.montage_coverage_ops import (
+        _restore_ops_for_revived,
+        apply_coverage_scene_action,
+    )
+
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        parent = SimpleNamespace(
+            uuid="bb" * 12,
+            number=1,
+            voiceover_text="новый текст",
+            attrs={
+                "кадры": [
+                    {"id": "1-K1", "удалён": "да", "закадр": "секрет", "действие": "старое"}
+                ]
+            },
+        )
+        member = SimpleNamespace(
+            number=1,
+            voiceover_text="новый текст",
+            attrs={"действие": "новое", "место": "двор"},
+        )
+        _rewrite_vo_cell(parent, [member])
+        board_shot = next(row for row in parent.attrs["кадры"] if row.get("id") == "1-K1")
+        assert board_shot["удалён"] == "да"
+        assert board_shot["закадр"] == "новый текст"
+        assert shot_is_active(board_shot) is False
+
+        lost = [{"id": "k", "удалён": "да", "закадр": "секрет"}]
+        revived_row = [{"id": "k", "закадр": "новый", "активен": True}]
+        assert _restore_ops_for_revived(lost, revived_row, frame_uuid="frame-1") == []
+        assert revived_row[0]["удалён"] == "да"
+        assert shot_is_active(revived_row[0]) is False
+        user = [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-1"}]
+        active = [{"id": "k", "закадр": "новый", "активен": True}]
+        assert _restore_ops_for_revived(
+            lost, active, frame_uuid="frame-1", user_ops=user
+        ) == [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-1"}]
+        assert shot_is_active(active[0]) is True
+
+        session.add(project)
+        cell = Frame(
+            project_id=project.id,
+            number=4,
+            uuid="cc" * 12,
+            voiceover_text="секрет",
+            status="planned",
+            sort_key=4.0,
+            image_prompt="герой стоит у двери на общем плане",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "cc" * 12,
+                },
+                "кадры": [
+                    {"id": "4-K1", "удалён": "да", "закадр": "секрет", "действие": "старое"}
+                ],
+            },
+        )
+        session.add(cell)
+        await session.flush()
+        report = await apply_coverage_scene_action(
+            session,
+            project,
+            cell,
+            [cell],
+            "1. двор — новый текст",
+            kadry=[{"id": "4-K1", "закадр": "новый текст", "действие": "новое"}],
+            lock_parent_plan=False,
+        )
+        stored = next(row for row in cell.attrs["кадры"] if row.get("id") == "4-K1")
+        assert stored["удалён"] == "да"
+        assert stored["закадр"] == "новый текст"
+        assert shot_is_active(stored) is False
+        assert report["shots"] == 0
+    finally:
+        logger.remove(sink)
+
+    assert any("1-K1" in line and "без явного restore" in line for line in lines)
+    assert any("4-K1" in line and "без явного restore" in line for line in lines)
+
+    hidden_board = SimpleNamespace(
+        number=1,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="новый текст",
+        status=FrameStatus.planned,
+        attrs=dict(board_shot),
+    )
+    hidden_coverage = SimpleNamespace(
+        number=4,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="новый текст",
+        status=FrameStatus.planned,
+        attrs=dict(stored),
+    )
+    live = SimpleNamespace(
+        number=5,
+        image_prompt="герой стоит у двери на общем плане",
+        animation_prompt="",
+        voiceover_text="живой кадр",
+        status=FrameStatus.planned,
+        attrs={},
+    )
+    paid_project = SimpleNamespace(id=project.id, data_dir=tmp_path)
+    items = collect_batch_items(paid_project, [hidden_board, hidden_coverage, live])
+    assert [item.frame.number for item in items] == [5]
+    assert frame_hidden_from_paid_generation(hidden_board) is True
+    assert frame_hidden_from_paid_generation(hidden_coverage) is True
+    assert _skip_frame_video_generation(hidden_board, False) is True
+    assert _skip_frame_video_generation(hidden_coverage, False) is True
+    assert _skip_frame_video_generation(live, False) is False
+
+
+@pytest.mark.asyncio
+async def test_clear_shot_action_marks_shots_inactive(
+    session: AsyncSession, project: Project
+) -> None:
+    """Лишний шот ячейки не теряет кадры[]: шоты остаются с активен False."""
+    from loguru import logger
+
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    session.add(project)
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="голова",
+        status="planned",
+        sort_key=1.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="хвост",
+        status="planned",
+        sort_key=2.0,
+        attrs={
+            "shot01_action": "старый уход",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+            },
+            "кадры": [
+                {"id": "extra-1", "действие": "первый лишний"},
+                {"id": "extra-2", "действие": "второй лишний", "активен": False},
+            ],
+            "shots": [{"id": "extra-1", "действие": "первый лишний"}],
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    before = len(child.attrs["кадры"])
+    shots_before = len(child.attrs["shots"])
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    try:
+        await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            [parent, child],
+            "1. двор — только голова",
+            kadry=[
+                {
+                    "id": "1-K1",
+                    "действие": "только голова",
+                    "план": "СРЕДНИЙ",
+                    "закадр": "голова",
+                }
+            ],
+            lock_parent_plan=False,
+        )
+    finally:
+        logger.remove(sink)
+
+    kadry = child.attrs["кадры"]
+    shots = child.attrs["shots"]
+    assert len(kadry) == before
+    assert len(shots) == shots_before
+    assert all(shot["активен"] is False for shot in kadry)
+    assert all(shot["активен"] is False for shot in shots)
+    assert kadry[0]["действие"] == "первый лишний"
+    assert any("extra-1" in line and "активен: False" in line for line in lines)
+
+
+def test_remove_kadry_id_is_gone() -> None:
+    """Снос шота по id убран: список кадры[] больше нечем вырезать."""
+    import app.services.montage_coverage_ops as ops
+
+    assert not hasattr(ops, "_remove_kadry_id")

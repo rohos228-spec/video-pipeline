@@ -209,10 +209,17 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
         kadry = row.get("кадры")
         if not isinstance(kadry, list) or not kadry:
             continue
-        match = [
+        from app.services.frame_tombstones import shot_is_active
+
+        live = [
             item
             for item in kadry
-            if isinstance(item, dict) and str(item.get("id") or "").strip() == sid
+            if isinstance(item, dict) and shot_is_active(item)
+        ]
+        match = [
+            item
+            for item in live
+            if str(item.get("id") or "").strip() == sid
         ]
         if match:
             row["кадры"] = match
@@ -220,16 +227,17 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
         if action:
             same = [
                 item
-                for item in kadry
-                if isinstance(item, dict)
-                and str(item.get("действие") or item.get("action") or "").strip()
+                for item in live
+                if str(item.get("действие") or item.get("action") or "").strip()
                 == action
             ]
             if same:
                 row["кадры"] = same
                 continue
-        if len(kadry) > 1:
-            row["кадры"] = [kadry[0]] if isinstance(kadry[0], dict) else kadry[:1]
+        if live and (len(kadry) > 1 or not shot_is_active(kadry[0])):
+            row["кадры"] = [live[0]]
+        elif not live:
+            row["кадры"] = []
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:

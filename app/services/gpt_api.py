@@ -2582,6 +2582,9 @@ async def _chat_completions_nostream(
     use_model: str,
 ) -> GptChatResult:
     """Один non-stream POST — когда SSE пришёл пустым или без ``data:``."""
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider="gpt", model=use_model)
     nostream = {**body, "stream": False}
     async with _async_client(timeout=_http_timeout(timeout)) as client:
         resp = await client.post(url, headers=headers, json=nostream)
@@ -3015,9 +3018,6 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
-_LLM_PACK_PARALLEL = 4
-
-
 def _merge_packed_apply_ops(texts: list[str]) -> str:
     from app.services.db_apply import extract_apply_ops_json
 
@@ -3057,9 +3057,10 @@ async def _chat_packed_parallel(
     """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
     import asyncio
 
+    from app.services.llm_pack_limit import llm_pack_limit
     from app.services.volume_batches import is_db_frames_path
 
-    sem = asyncio.Semaphore(_LLM_PACK_PARALLEL)
+    sem = asyncio.Semaphore(llm_pack_limit())
 
     async def _one(slice_path: Path, idx: int) -> GptChatResult:
         async with sem:
@@ -3270,13 +3271,19 @@ async def chat(
             on_delta=on_delta,
         )
 
-    from app.services.llm_override import current_text_model_id
+    from app.services.llm_override import current_override, current_text_model_id
     from app.services.pay52_routes import resolve_text
 
     use_model = (
         model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
     ).strip()
     routed = resolve_text(use_model)
+    ov_now = current_override()
+    if routed is None and ov_now is not None and ov_now.provider == "52pay":
+        raise GptApiError(
+            f"нет маршрута 52pay для модели {use_model}",
+            context={"error_kind": "no_pay52_route", "model": use_model},
+        )
     if routed is not None:
         use_model = routed.api_model
         headers = routed.headers()
@@ -3393,6 +3400,7 @@ async def chat(
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
+        check_api_allowed(provider=provider_label, model=use_model)
         t0 = time.perf_counter()
         try:
             await _ensure_url_host_resolves(url)

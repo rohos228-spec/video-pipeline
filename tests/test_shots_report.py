@@ -393,8 +393,14 @@ def test_plan_section_legend_and_skips_shot_child() -> None:
     html = render_shots_report_html(model, slug="x")
     assert "Север сверху" in html
     assert "overflow-x:auto" in html
-    assert "К1↑" in html
-    assert "К2↑" in html
+    import base64
+    import re
+
+    payload = re.search(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)", html)
+    assert payload
+    diagram = base64.b64decode(payload.group(1)).decode("utf-8")
+    assert "К1↑" in diagram
+    assert "К2↑" in diagram
     assert html.count("Ячейка 1") == 1
     assert "Ячейка 2" not in html
 

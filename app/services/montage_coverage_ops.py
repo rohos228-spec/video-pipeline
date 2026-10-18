@@ -323,25 +323,6 @@ def _patch_kadry_item(frame: Frame, **fields: Any) -> None:
     _flag_attrs(frame)
 
 
-def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
-    sid = (shot_id or "").strip()
-    if not sid:
-        return
-    planned = [
-        item
-        for item in planned_shots_from_attrs(frame)
-        if str(item.get("id") or "").strip() != sid
-    ]
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    if planned:
-        attrs["кадры"] = planned
-    else:
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
-    frame.attrs = attrs
-    _flag_attrs(frame)
-
-
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
     """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")
@@ -409,13 +390,13 @@ def _detach_from_coverage_ancestor(
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
     from app.services.frame_tombstones import frame_is_active
 
-    if not frame_is_active(parent):
+    if not frame_is_active(getattr(parent, "attrs", None) or {}):
         logger.warning(
             "WARN _refresh_shots_in_beat: голова #{} помечена, состав шотов не переписываем",
             getattr(parent, "number", None),
         )
         return
-    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(fr)]
+    kids = [fr for fr in _children_of(frames, parent) if frame_is_active(getattr(fr, "attrs", None) or {})]
     total = 1 + len(kids)
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
@@ -499,8 +480,16 @@ def _clear_shot_action(frame: Frame) -> None:
     if role != "vo_parent":
         attrs["главное_действие"] = ""
         attrs["main_action"] = ""
-        attrs.pop("кадры", None)
-        attrs.pop("shots", None)
+        from app.services.frame_tombstones import mark_shots_inactive
+
+        if "кадры" in attrs:
+            attrs["кадры"] = mark_shots_inactive(
+                attrs.get("кадры"), where="_clear_shot_action"
+            )
+        if "shots" in attrs:
+            attrs["shots"] = mark_shots_inactive(
+                attrs.get("shots"), where="_clear_shot_action"
+            )
     frame.attrs = attrs
     _flag_attrs(frame)
     _set_cs(
@@ -771,21 +760,21 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover и помеченные «удалён» не маппим.
+    """Живые шоты ячейки: leftover и скрытый кадр не получают слот покрытия.
 
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр»,
-    а помеченный шот возвращается новым активным кадром.
+    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
     """
-    from app.services.frame_tombstones import frame_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active
 
     live = [
         m
         for m in members
-        if not bool(_cs(m).get("leftover")) and frame_is_active(m)
+        if not bool(_cs(m).get("leftover"))
+        and frame_is_active(getattr(m, "attrs", None) or {})
     ]
     if not live:
         live = [parent]
-    elif parent not in live and frame_is_active(parent):
+    elif parent not in live:
         live = [parent, *[m for m in live if int(m.id) != int(parent.id)]]
     live.sort(
         key=lambda m: (
@@ -1169,11 +1158,12 @@ async def delete_coverage_child(
     reason = "delete_coverage_child: дочерний кадр помечен, не удалён; медиа в карантине"
     quarantine_frame_media(project, int(frame.number))
     mark_frame_deleted(frame, project, reason)
+    _set_cs(frame, leftover=True)
     _stamp_deleted_shot(frames, frame, reason)
     if parent is not None and int(parent.number) != int(frame.number):
         from app.services.frame_tombstones import frame_is_active
 
-        if frame_is_active(parent):
+        if frame_is_active(getattr(parent, "attrs", None) or {}):
             _refresh_shots_in_beat(frames, parent)
     await session.flush()
     logger.warning(
@@ -1196,6 +1186,26 @@ def _clear_child_scene_chain(frame: Frame) -> None:
 MAX_IMPROVE_SHOTS = 12
 
 
+def fold_excess_shot_voiceover(kadry: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Хвост закадра, который не влезает в keep кадров, склеивается в последний.
+
+    Кадры и шоты не удаляются: режется только список, который пишем на ячейку,
+    а текст закадра остаётся целиком.
+    """
+    if keep <= 0 or len(kadry) <= keep:
+        return kadry
+    kept = [dict(shot) for shot in kadry[:keep]]
+    extra: list[str] = []
+    for shot in kadry[keep:]:
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece:
+            extra.append(piece)
+    if extra:
+        base = " ".join(str(kept[-1].get("закадр") or "").split())
+        kept[-1]["закадр"] = " ".join(part for part in (base, *extra) if part)
+    return kept
+
+
 def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]) -> None:
     """Покрытие кадра с улучшения сцены → те же ключи, что пишут чипы доски."""
     for key, fn in (
@@ -1213,6 +1223,172 @@ def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]
     if extra:
         _set_cs(member, **extra)
         _patch_kadry_item(member, **{k: v for k, v in (("роль", role), ("объект", obj)) if v})
+
+
+def _shot_address(shot: Any) -> str:
+    if not isinstance(shot, dict):
+        return ""
+    for key in ("id", "shot_id", "frame_id", "uuid"):
+        value = shot.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _revive_coverage_shots(
+    before_rows: list[Any], incoming_rows: list[Any], merged: list[Any]
+) -> None:
+    """Смена текста и ``активен: True`` на строке шот не оживляют.
+
+    Явный restore — операция пользователя. Её читает
+    ``_restore_ops_for_revived`` и только тогда пропускает шот в живые.
+    """
+
+    del before_rows, incoming_rows, merged
+
+
+def _warn_coverage_parked(
+    before_rows: list[Any], merged: list[Any], project_id: Any, number: Any
+) -> None:
+    was_live: set[str] = set()
+    for shot in before_rows:
+        if not isinstance(shot, dict):
+            continue
+        sid = str(shot.get("id") or "").strip()
+        if sid and shot.get("активен") is not False:
+            was_live.add(sid)
+    for shot in merged:
+        if not isinstance(shot, dict) or shot.get("активен") is not False:
+            continue
+        sid = str(shot.get("id") or "").strip()
+        if sid not in was_live:
+            continue
+        logger.warning(
+            "WARN montage scene_action #{} ячейка {}: шот {} нет в новой цепи, активен: False",
+            project_id,
+            number,
+            sid,
+        )
+
+
+_USER_RESTORE_VERBS = {"activate", "set_active", "restore", "восстановить"}
+
+
+def _op_is_explicit_restore(op: dict[str, Any]) -> bool:
+    for source in (op.get("fields"), op):
+        if isinstance(source, dict) and source.get("активен") is True:
+            return True
+    verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+    return verb in _USER_RESTORE_VERBS
+
+
+def _explicit_restore_ids(user_ops: Any, frame_uuid: str) -> set[str]:
+    found: set[str] = set()
+    for op in list(user_ops or []):
+        if not isinstance(op, dict) or not _op_is_explicit_restore(op):
+            continue
+        fid = ""
+        for source in (op, op.get("fields") if isinstance(op.get("fields"), dict) else {}):
+            for key in ("shot_id", "id"):
+                value = source.get(key)
+                if value not in (None, ""):
+                    fid = str(value)
+                    break
+            if fid:
+                break
+        if not fid:
+            continue
+        frame_ref = str(op.get("frame_uuid") or "")
+        if frame_ref and frame_ref != frame_uuid:
+            continue
+        found.add(fid)
+    return found
+
+
+def _shot_voice(shot: dict[str, Any]) -> str:
+    return " ".join(str(shot.get("закадр") or shot.get("действие") or "").split())
+
+
+def _restore_ops_for_revived(
+    before_rows: list[Any],
+    after_rows: Any,
+    *,
+    frame_uuid: str,
+    user_ops: Any = None,
+) -> list[dict[str, str]]:
+    """Restore только из явной операции пользователя.
+
+    Если код потерял пометку или прислал другой текст без этой операции,
+    шот остаётся неактивным и в лог пишется WARN. Свою операцию функция
+    не сочиняет.
+    """
+
+    from app.services.frame_tombstones import _overlay_hide_marks, shot_is_active
+
+    allowed = _explicit_restore_ids(user_ops, frame_uuid)
+    before_by: dict[str, dict[str, Any]] = {}
+    for shot in before_rows:
+        if not isinstance(shot, dict) or shot_is_active(shot):
+            continue
+        fid = _shot_address(shot)
+        if fid:
+            before_by.setdefault(fid, shot)
+    ops: list[dict[str, str]] = []
+    seen: set[str] = set()
+    rows = after_rows if isinstance(after_rows, list) else []
+    for shot in rows:
+        if not isinstance(shot, dict):
+            continue
+        fid = _shot_address(shot)
+        if not fid or fid not in before_by or fid in seen:
+            continue
+        seen.add(fid)
+        old = before_by[fid]
+        if shot_is_active(shot):
+            if fid in allowed:
+                ops.append({"op": "restore", "shot_id": fid, "frame_uuid": frame_uuid})
+                continue
+            _overlay_hide_marks(old, shot)
+            if shot_is_active(shot):
+                shot["активен"] = False
+            logger.warning(
+                "WARN montage: шот {} без явного restore остаётся неактивным",
+                fid,
+            )
+            continue
+        if _shot_voice(old) != _shot_voice(shot):
+            logger.warning(
+                "WARN montage: шот {} без явного restore остаётся неактивным",
+                fid,
+            )
+    return ops
+
+
+def _preserve_parent_kadry(
+    parent: Any,
+    before_rows: list[Any],
+    kadry: Any,
+    ops: list[dict[str, str]] | None = None,
+) -> Any:
+    """Перед заменой зеркала кадры[]: пропавший живой кадр остаётся неактивным."""
+    from app.pipeline.no_deletions_guard import run_preservation_validators
+
+    if not isinstance(kadry, list):
+        return kadry
+    from app.pipeline.no_deletions_guard import retain_already_marked
+
+    uid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
+    number = getattr(parent, "number", None)
+    if number is None:
+        number = 0
+    rows = retain_already_marked(before_rows, kadry)
+    run_preservation_validators(
+        {"сцены": [{"id": uid, "номер": number, "кадры": before_rows}]},
+        {"сцены": [{"id": uid, "номер": number, "кадры": rows}]},
+        ops,
+        mode="soft",
+    )
+    return rows
 
 
 async def apply_coverage_scene_action(
@@ -1262,14 +1438,43 @@ async def apply_coverage_scene_action(
         kadry = explode_scene_action_to_kadry(
             raw, place=place, vo=scene_vo, cell_number=int(parent.number)
         )
-    if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
-        kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    from app.services.frame_tombstones import shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
+    from app.services.db_apply import merge_kadry_keep_missing
 
+    old_kadry = (getattr(parent, "attrs", None) or {}).get("кадры")
+    before_rows = [
+        dict(shot) if isinstance(shot, dict) else shot
+        for shot in old_kadry
+    ] if isinstance(old_kadry, list) else []
+    incoming_rows = [dict(shot) for shot in kadry if isinstance(shot, dict)]
+    kadry = merge_kadry_keep_missing(old_kadry, kadry)
+    _revive_coverage_shots(before_rows, incoming_rows, kadry)
+    _warn_coverage_parked(before_rows, kadry, project.id, getattr(parent, "number", "?"))
+    frame_uuid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
+    restore_ops = _restore_ops_for_revived(before_rows, kadry, frame_uuid=frame_uuid)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
-    layout = live_kadry or kadry
+    layout = live_kadry
+    if not layout:
+        logger.warning(
+            "WARN montage scene_action #{} ячейка {}: нет живых шотов, "
+            "раскладка пустая, неактивные сохранены",
+            project.id,
+            getattr(parent, "number", "?"),
+        )
+        attrs = dict(getattr(parent, "attrs", None) or {})
+        attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry, restore_ops)
+        parent.attrs = attrs
+        _flag_attrs(parent)
+        return {
+            "shots": 0,
+            "frames": 0,
+            "inserted_frames": 0,
+            "skipped_shots": 0,
+            "renumber": {},
+            "chain": "",
+        }
     if lock_parent_plan:
         parent_plan = parent_establishing_plan(layout[0].get("план"))
     else:
@@ -1291,7 +1496,7 @@ async def apply_coverage_scene_action(
                     "action": str(shot.get("действие") or ""),
                     "vo": str(shot.get("закадр") or ""),
                 }
-                for i, shot in enumerate(kadry)
+                for i, shot in enumerate(layout)
             ]
         )
     if not chain_text:
@@ -1306,15 +1511,22 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = kadry
+    merged_kadry = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
+    _revive_coverage_shots(before_rows, incoming_rows, merged_kadry)
+    attrs["кадры"] = merged_kadry
     parent.attrs = attrs
     _flag_attrs(parent)
 
     group = _visible_cell_members(parent, members)
     inserted: list[Frame] = []
     remap: dict[int, int] = {}
-    if grow and len(layout) > len(group):
-        need = len(layout) - len(group)
+    # Кэп только на рост без готового покрытия. Уже лежащие кадры и
+    # attrs["кадры"] не режем: фикс D хранит полный список, включая хвост.
+    grow_target = len(layout)
+    if not with_coverage:
+        grow_target = min(grow_target, MAX_IMPROVE_SHOTS)
+    if grow and grow_target > len(group):
+        need = grow_target - len(group)
         group, inserted, remap = await _grow_cell_shots(
             session,
             project,
@@ -1326,19 +1538,27 @@ async def apply_coverage_scene_action(
         frames = await _load_frames(session, int(project.id))
         parent, members = scene_group(frames, parent)
         group = _visible_cell_members(parent, members)
-    elif len(kadry) > len(group):
+    elif len(layout) > len(group):
         logger.info(
             "montage scene_action #{} ячейка {} цепь={} кадров, в ячейке {} — без вставки",
             project.id,
             parent.number,
-            len(kadry),
+            len(layout),
             len(group),
         )
 
+    shot_total = len(kadry)
     used = min(len(layout), len(group))
-    parent_sid = str(layout[0].get("id") or f"{int(parent.number)}-K1")
+    # Хвост закадра живых шотов клеится на последний кадр. Помеченный
+    # в layout не входит — его закадр не садится на живой кадр.
+    voiced = (
+        fold_excess_shot_voiceover(layout, used)
+        if used and len(layout) > used
+        else layout
+    )
+    parent_sid = str((layout[0].get("id") if layout else "") or master_id)
     for i, member in enumerate(group[:used]):
-        shot = layout[i]
+        shot = voiced[i]
         _apply_shot_meta(member, shot)
         from app.services.freeze_stills import seed_end_still_prompt
 
@@ -1416,7 +1636,7 @@ async def apply_coverage_scene_action(
         "shots": used,
         "frames": len(group),
         "inserted_frames": len(inserted),
-        "skipped_shots": max(0, len(kadry) - used),
+        "skipped_shots": max(0, shot_total - used),
         "renumber": remap,
         "chain": chain_text,
     }
@@ -1515,7 +1735,7 @@ async def apply_coverage_op(
         quarantine_frame_media(project, int(frame.number))
         mark_frame_deleted(frame, project, reason)
         _stamp_deleted_shot(frames, frame, reason)
-        if parent is not None and frame_is_active(parent):
+        if parent is not None and frame_is_active(getattr(parent, "attrs", None) or {}):
             _refresh_shots_in_beat(frames, parent)
 
     await session.flush()

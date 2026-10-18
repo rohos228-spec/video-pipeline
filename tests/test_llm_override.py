@@ -171,7 +171,7 @@ _SFQC_GRAPH = {
 
 
 def test_bind_script_frames_qc_uses_vibecode_high(monkeypatch) -> None:
-    """Каркас идёт на vibecode с высоким мышлением, канвасная модель не перебивает."""
+    """Каркас идёт на 52pay с высоким мышлением, канвасная модель не перебивает."""
     from app.services.llm_override import current_override
     from app.settings import settings
 
@@ -183,14 +183,14 @@ def test_bind_script_frames_qc_uses_vibecode_high(monkeypatch) -> None:
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "vibecode"
+        assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
         assert current_text_model_id() == "gpt-5.6-sol"
 
 
 def test_bind_script_frames_qc_shots_uses_vibecode_high(monkeypatch) -> None:
-    """Кадры идут на vibecode с высоким мышлением, канвасная модель не перебивает."""
+    """Кадры идут на 52pay с высоким мышлением, канвасная модель не перебивает."""
     from app.services.llm_override import current_override
     from app.settings import settings
 
@@ -202,7 +202,7 @@ def test_bind_script_frames_qc_shots_uses_vibecode_high(monkeypatch) -> None:
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "vibecode"
+        assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
         assert current_text_model_id() == "gpt-5.6-sol"
@@ -269,19 +269,20 @@ def test_script_frames_qc_routes_chat_to_vibecode_direct_while_header_is_kie(
         "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
     }
     assert gpt_api.is_responses_mode() is True
+    monkeypatch.setattr(gpt_api.settings, "pay52_gpt_api_key", "pay52-test")
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "vibecode"
+        assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
         assert ov.reasoning_effort == "high"
-        assert gpt_api.is_responses_mode() is False
-        assert gpt_api._chat_url("gpt-5.6-sol") == (
-            "https://vibecode.moe/v1/chat/completions"
-        )
-        headers = gpt_api._headers()
-        assert headers["Authorization"] == "Bearer vk-test"
-        assert "X-VP-Relay-Token" not in headers
+        assert gpt_api._node_vibecode_override() is False
+        from app.services.pay52_routes import resolve_text
+
+        route = resolve_text("gpt-5.6-sol")
+        assert route is not None
+        assert route.api_model == "gpt-5.6-sol"
+        assert "52pay" in route.url or route.url.endswith("/chat/completions")
         assert gpt_api._node_reasoning_effort() == "high"
     assert gpt_api.is_responses_mode() is True
     assert gpt_api._node_reasoning_effort() is None
@@ -301,18 +302,17 @@ def test_shots_routes_chat_to_vibecode_direct_while_header_is_kie(
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
     }
+    monkeypatch.setattr(gpt_api.settings, "pay52_gpt_api_key", "pay52-test")
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "vibecode"
+        assert ov.provider == "52pay"
         assert ov.model_id == "gpt-5.6-sol"
-        assert gpt_api.is_responses_mode() is False
-        assert gpt_api._chat_url("gpt-5.6-sol") == (
-            "https://vibecode.moe/v1/chat/completions"
-        )
-        headers = gpt_api._headers()
-        assert headers["Authorization"] == "Bearer vk-test"
-        assert "X-VP-Relay-Token" not in headers
+        assert gpt_api._node_vibecode_override() is False
+        from app.services.pay52_routes import resolve_text
+
+        route = resolve_text("gpt-5.6-sol")
+        assert route is not None
         assert current_text_model_id() == "gpt-5.6-sol"
         assert gpt_api._node_reasoning_effort() == "high"
     assert gpt_api._node_reasoning_effort() is None

@@ -41,7 +41,15 @@ async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str)
     ).scalars().first()
     if not vo:
         if existing is not None:
-            await session.delete(existing)
+            # Было: ``await session.delete(existing)`` — пустой закадр стирал
+            # единственную строку FrameText. Текст остаётся, kind прячет её
+            # из живой выборки voiceover.
+            existing.kind = "vo_archived"
+            logger.warning(
+                "WARN montage: FrameText id={} не удалён, kind=vo_archived, "
+                "текст сохранён",
+                existing.id,
+            )
         return
     if existing is None:
         session.add(
@@ -226,6 +234,33 @@ def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
     return True
 
 
+def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
+    """Лестница головы плюс шоты ребёнка. Совпадающий id не дублируется."""
+    out: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+
+    def _take(raw: Any, *, child: bool) -> None:
+        if not isinstance(raw, list):
+            return
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or "").strip()
+            item = dict(row)
+            if sid and sid in index:
+                if child:
+                    merged = dict(out[index[sid]])
+                    merged.update(item)
+                    out[index[sid]] = merged
+                continue
+            index[sid or f"#{len(out)}"] = len(out)
+            out.append(item)
+
+    _take(parent_rows, child=False)
+    _take(child_rows, child=True)
+    return out
+
+
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
     if not kids:
@@ -234,9 +269,15 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     head = ordered[0]
     src = dict(getattr(parent, "attrs", None) or {})
     dst = dict(getattr(head, "attrs", None) or {})
+    import copy
+
     for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
         if src.get(key) and not dst.get(key):
-            dst[key] = src[key]
+            val = src[key]
+            dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+    for key in ("кадры", "shots"):
+        if src.get(key) or dst.get(key):
+            dst[key] = _merge_ladders_by_id(src.get(key), dst.get(key))
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(
@@ -295,7 +336,7 @@ async def delete_montage_frame(
 
     from app.services.frame_tombstones import frame_is_active
 
-    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(fr)]
+    kids = [fr for fr in _children_of(frames, frame) if frame_is_active(getattr(fr, "attrs", None) or {})]
     if kids:
         _store_head_rollback(frame, kids)
     reason = "delete_montage_frame: кадр помечен, не удалён; медиа в карантине"
@@ -384,6 +425,18 @@ async def merge_montage_scenes(
                 coverage_parent_id="",
                 coverage_parent_number=None,
             )
+            chain_attrs = dict(getattr(member, "attrs", None) or {})
+            chain = str(
+                chain_attrs.get("главное_действие") or chain_attrs.get("main_action") or ""
+            ).strip()
+            if chain:
+                chain_attrs["главное_действие_архив"] = chain
+                member.attrs = chain_attrs
+                _flag_attrs(member)
+                logger.warning(
+                    "WARN merge_montage_scenes: цепь правой сцены #{} сохранена в архиве",
+                    member.number,
+                )
             _clear_child_scene_chain(member)
             attrs = dict(getattr(member, "attrs", None) or {})
             if "vo_cell_full" in attrs:
@@ -500,6 +553,7 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
     else:
         attrs.pop("vo_cell_full", None)
     place = frame_place(parent)
+    old_kadry = attrs.get("кадры")
     kadry: list[dict[str, Any]] = []
     chain: list[dict[str, Any]] = []
     for i, member in enumerate(members):
@@ -516,7 +570,25 @@ def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
             }
         )
         chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
-    attrs["кадры"] = kadry
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    before_rows = (
+        [dict(row) if isinstance(row, dict) else row for row in old_kadry]
+        if isinstance(old_kadry, list)
+        else []
+    )
+    merged = merge_kadry_keep_missing(old_kadry, kadry)
+    frame_uuid = str(getattr(parent, "uuid", None) or "") or "cell"
+    from app.services.montage_coverage_ops import _restore_ops_for_revived
+
+    attrs["кадры"] = keep_soft_kadry(
+        before_rows,
+        merged,
+        scene_id=frame_uuid,
+        number=getattr(parent, "number", None) or 0,
+        ops=_restore_ops_for_revived(before_rows, merged, frame_uuid=frame_uuid),
+    )
     chain_text = format_scene_chain(chain)
     if chain_text:
         attrs["главное_действие"] = chain_text

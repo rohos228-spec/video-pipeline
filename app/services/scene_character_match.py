@@ -139,7 +139,10 @@ def format_character_labels(rows: list[dict[str, str]]) -> str:
 async def load_character_registry(
     session: AsyncSession, project_id: int
 ) -> list[Entity]:
-    return list(
+    from app.services.db_v2 import entity_is_archived
+    from app.services.frame_tombstones import entity_is_marked
+
+    rows = list(
         (
             await session.execute(
                 select(Entity)
@@ -153,6 +156,11 @@ async def load_character_registry(
         .scalars()
         .all()
     )
+    return [
+        row
+        for row in rows
+        if not entity_is_marked(row) and not entity_is_archived(row)
+    ]
 
 
 def intersect_codes_with_registry(

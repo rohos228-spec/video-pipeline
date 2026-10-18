@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import pytest
 import pytest_asyncio
+from loguru import logger
 from pathlib import Path
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -12,10 +16,17 @@ from app.models import Artifact, ArtifactKind, Base, Frame, FrameStatus, Project
 from app.services.artifact_recovery import restore_scene_images_from_old
 from app.services.reset_step import (
     _BACKUP_ON_WIPE_KINDS,
+    _archive_dir_to_old,
     _backup_artifact_file_before_wipe,
     _wipe_artifacts_by_kind,
     _wipe_split,
 )
+
+
+class _FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 10, 17, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest_asyncio.fixture
@@ -122,3 +133,109 @@ async def test_wipe_split_backs_up_frame_images(db_session) -> None:
     assert old_scenes.is_dir()
     backed_files = list(old_scenes.glob("*frame_002_a9876543.png"))
     assert len(backed_files) >= 1
+
+
+def test_backup_same_name_same_second_keeps_both(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Вторая копия с тем же именем в ту же секунду не затирает первую."""
+    monkeypatch.setattr("app.services.reset_step.datetime", _FrozenDateTime)
+    project = SimpleNamespace(id=4, data_dir=tmp_path)
+    first_src = tmp_path / "a" / "frame.png"
+    second_src = tmp_path / "b" / "frame.png"
+    first_src.parent.mkdir()
+    second_src.parent.mkdir()
+    first_src.write_bytes(b"AAA")
+    second_src.write_bytes(b"BBBB")
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        older = _backup_artifact_file_before_wipe(
+            project, first_src, kind=ArtifactKind.scene_image
+        )
+        newer = _backup_artifact_file_before_wipe(
+            project, second_src, kind=ArtifactKind.scene_image
+        )
+    finally:
+        logger.remove(sink)
+    assert older is not None and newer is not None
+    assert older != newer
+    assert older.read_bytes() == b"AAA"
+    assert newer.read_bytes() == b"BBBB"
+    assert "уже есть" in caplog.text
+
+
+def test_archive_same_second_keeps_previous_tree(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Повторный перенос в ту же секунду не стирает уже лежащий архив."""
+    monkeypatch.setattr("app.services.reset_step.datetime", _FrozenDateTime)
+    project = SimpleNamespace(id=5, data_dir=tmp_path)
+    previous = tmp_path / "old" / "sfx" / "20261017_120000"
+    previous.mkdir(parents=True)
+    (previous / "kept.txt").write_bytes(b"OLD-ARCHIVE")
+    src = tmp_path / "sfx"
+    src.mkdir()
+    (src / "new.txt").write_bytes(b"NEW-FILE")
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        dest = _archive_dir_to_old(project, src, "sfx")
+    finally:
+        logger.remove(sink)
+    assert dest is not None and dest != previous
+    assert (previous / "kept.txt").read_bytes() == b"OLD-ARCHIVE"
+    assert (dest / "new.txt").read_bytes() == b"NEW-FILE"
+    assert not src.exists()
+    assert "уже есть" in caplog.text
+
+
+def test_archive_failure_does_not_delete_previous_tree(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Ошибка copytree не сносит каталог, который уже лежал в old/."""
+    monkeypatch.setattr("app.services.reset_step.datetime", _FrozenDateTime)
+    project = SimpleNamespace(id=6, data_dir=tmp_path)
+    previous = tmp_path / "old" / "sfx" / "20261017_120000"
+    previous.mkdir(parents=True)
+    (previous / "kept.txt").write_bytes(b"OLD-ARCHIVE")
+    src = tmp_path / "sfx"
+    src.mkdir()
+    (src / "new.txt").write_bytes(b"NEW-FILE")
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.services.reset_step.shutil.copytree", _boom)
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        assert _archive_dir_to_old(project, src, "sfx") is None
+    finally:
+        logger.remove(sink)
+    assert (previous / "kept.txt").read_bytes() == b"OLD-ARCHIVE"
+    assert (src / "new.txt").read_bytes() == b"NEW-FILE"
+    assert "каталог сохранён" in caplog.text
+
+
+def test_archive_source_rmtree_failure_keeps_verified_dest(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Проверенный архив не сносится, если снять исходник не удалось."""
+    monkeypatch.setattr("app.services.reset_step.datetime", _FrozenDateTime)
+    project = SimpleNamespace(id=7, data_dir=tmp_path)
+    src = tmp_path / "sfx"
+    src.mkdir()
+    payload = b"VERIFIED-WAV"
+    (src / "hit.wav").write_bytes(payload)
+
+    def _boom_src(path, *args, **kwargs):
+        raise OSError("src busy")
+
+    monkeypatch.setattr("app.services.reset_step.shutil.rmtree", _boom_src)
+    sink = logger.add(caplog.handler, level="WARNING", format="{message}")
+    try:
+        dest = _archive_dir_to_old(project, src, "sfx")
+    finally:
+        logger.remove(sink)
+    assert dest is not None
+    assert (dest / "hit.wav").read_bytes() == payload
+    assert (src / "hit.wav").read_bytes() == payload
+    assert "исходник" in caplog.text and "не снят" in caplog.text

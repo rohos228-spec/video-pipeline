@@ -16,6 +16,28 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
+    """Сверх лимита кадры остаются в списке с активен False."""
+    if limit <= 0 or len(out) <= limit:
+        return
+    normal_n = 0
+    for shot in out:
+        over = False
+        if is_cutaway_shot(shot) and normal_n >= limit:
+            over = False
+        elif normal_n < limit:
+            if not is_cutaway_shot(shot):
+                normal_n += 1
+        else:
+            over = True
+        if over and shot.get("активен") is not False and not shot.get("карантин"):
+            _mark_shot_kept(
+                shot,
+                f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+
+
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
     shot["карантин"] = True
@@ -749,6 +771,7 @@ def merge_gpt_shots_with_action(
         action, cell_number=cell_number, prev_place=prev_place
     )
     if not canonical:
+        _mark_over_shot_limit(cleaned, expected if expected > 0 else cap)
         return cleaned, None
     by_stem: dict[str, dict[str, Any]] = {}
     for s in cleaned:
@@ -830,24 +853,7 @@ def merge_gpt_shots_with_action(
     # «общий вид»), дописываем. Идентификаторы не теряем.
     _append_unmatched_gpt_shots(out, cleaned, matched_sources)
     # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
-    limit = expected if expected > 0 else cap
-    if limit > 0 and len(out) > limit:
-        normal_n = 0
-        for shot in out:
-            over = False
-            if is_cutaway_shot(shot) and normal_n >= limit:
-                over = False
-            elif normal_n < limit:
-                if not is_cutaway_shot(shot):
-                    normal_n += 1
-            else:
-                over = True
-            if over and not shot.get("карантин"):
-                _mark_shot_kept(
-                    shot,
-                    f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
-                    where="merge_gpt_shots_with_action",
-                )
+    _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
 
 
@@ -888,6 +894,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 ).strip()
         if action and isinstance(shots, list) and shots:
             num = int(fr.get("number") or 1)
+            before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
             merged, err = merge_gpt_shots_with_action(
                 shots, action, cell_number=num, prev_place=prev_place, vo=vo
             )
@@ -896,6 +903,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 op["_shots_under_warn"] = err
                 fields.pop("_shots_under_warn", None)
                 if merged is not None:
+                    merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                     fields["кадры"] = merged
                     shots = merged
                 # soft underproduction: не incomplete, не invent шагов
@@ -903,6 +911,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 fields["_shots_incomplete"] = err
                 # оставляем GPT как есть — вызывающий код обязан упасть/добрать
             elif merged is not None:
+                merged = _keep_grammar_kadry(before_rows, merged, uid=uid, number=num)
                 fields["кадры"] = merged
                 shots = merged
         elif action and (not isinstance(shots, list) or len(shots) < 1):
@@ -912,16 +921,16 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
             )
         if isinstance(shots, list) and shots:
             # Пустой закадр у части кадров — норма (пауза/перебивка, промт §4).
-            # Раскладываем VO по кадрам, только если GPT не дал закадр ни одному
-            # кадру; иначе куски ложились поверх уже разложенных — дубли.
-            missing_vo = not any(
-                isinstance(s, dict) and str(s.get("закадр") or "").strip()
-                for s in shots
-            )
-            if vo and missing_vo:
-                pieces = _split_vo_for_steps(vo, len(shots))
-                for shot, piece in zip(shots, pieces, strict=False):
-                    if isinstance(shot, dict) and not str(shot.get("закадр") or "").strip():
+            # Раскладываем VO по живым кадрам, только если GPT не дал закадр
+            # ни одному живому; неактивные остаются в списке без куска.
+            from app.services.frame_tombstones import shot_is_active
+
+            live = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+            missing_vo = not any(str(s.get("закадр") or "").strip() for s in live)
+            if vo and missing_vo and live:
+                pieces = _split_vo_for_steps(vo, len(live))
+                for shot, piece in zip(live, pieces, strict=False):
+                    if not str(shot.get("закадр") or "").strip():
                         shot["закадр"] = piece
             _fill_missing_camera(shots, prev_place=prev_place)
             fill_kadry_scene_numbers(shots)
@@ -1062,6 +1071,7 @@ def align_shots_to_action_chain(
         shots = fields.get("кадры")
         if not isinstance(shots, list) or not shots:
             continue
+        before_rows = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
         uid = str(op.get("frame_uuid") or "").strip()
         chain = parse_scene_chain(_frame_action(op, by_uid.get(uid) or {}))
         places: dict[int, str] = {}
@@ -1087,20 +1097,33 @@ def align_shots_to_action_chain(
             scene_place = places.get(n) or ""
             shot_place = str(shot.get("место") or "").strip()
             if scene_place and shot_place and not _same_place(shot_place, scene_place):
-                reason = (
-                    f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён"
-                )
-                if not shot.get("карантин"):
+                if shot.get("активен") is not False and not shot.get("карантин"):
                     _mark_shot_kept(
-                        shot, reason, where="align_shots_to_action_chain"
+                        shot,
+                        f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён",
+                        where="align_shots_to_action_chain",
                     )
                     removed += 1
                 kept.append(shot)
                 continue
             kept.append(shot)
+        frame = by_uid.get(uid) or {}
+        number = frame.get("number") or frame.get("номер") or 0
+        kept = _keep_grammar_kadry(before_rows, kept, uid=uid, number=number)
         if len(kept) != len(shots):
             fields["кадры"] = kept
     return removed
+
+
+def _keep_grammar_kadry(before_rows, after_rows, *, uid: str, number: Any):
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
+
+    return keep_soft_kadry(
+        before_rows,
+        retain_already_marked(before_rows, after_rows),
+        scene_id=uid or "cell",
+        number=number,
+    )
 
 
 def scene_script_text(place: str, action: str) -> str:
@@ -1150,10 +1173,14 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         # guard: закадр никогда не кладём на кадр с непустой «реплика»
         return isinstance(s, dict) and bool(str(s.get("реплика") or "").strip())
 
-    # 1) длиннее 80 — разрезать; куски в следующие пустые кадры до первого непустого
+    # 1) длиннее 80 — разрезать; куски в следующие пустые живые кадры
+    # до первого непустого живого. Неактивный источник не режем и не пишем в него хвост.
     idx = 0
     while idx < len(shots):
         shot = shots[idx]
+        if not isinstance(shot, dict) or not shot_is_active(shot):
+            idx += 1
+            continue
         chunk = _vo(shot)
         n = visible_len(chunk)
         if not chunk or n <= SHOT_VO_MAX:
@@ -1162,7 +1189,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         empties: list[int] = []
         j = idx + 1
         while j < len(shots):
-            if not isinstance(shots[j], dict):
+            if not isinstance(shots[j], dict) or not shot_is_active(shots[j]):
                 j += 1
                 continue
             if _vo(shots[j]):
@@ -1170,12 +1197,16 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             if _reply(shots[j]):
                 j += 1
                 continue
-            if not shot_is_active(shots[j]):
-                j += 1
-                continue
             empties.append(j)
             j += 1
-        nxt_i = j if j < len(shots) and not _reply(shots[j]) else None
+        nxt_i = (
+            j
+            if j < len(shots)
+            and isinstance(shots[j], dict)
+            and shot_is_active(shots[j])
+            and not _reply(shots[j])
+            else None
+        )
         target = max(2, (n + SHOT_VO_IDEAL - 1) // SHOT_VO_IDEAL)
         target = min(target, 1 + len(empties)) if empties else target
         parts = [" ".join(p.split()) for p in split_text_into_parts(chunk, target)]
@@ -1207,10 +1238,14 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         warnings.append(f"кадр[{idx}] закадр {n} разрезан на {1 + len(slots)}")
         idx = (slots[-1] if slots else idx) + 1
 
-    # 2) короткие (<26, не перебивка) → в ближайший непустой кусок, кадр оставляем
+    # 2) короткие (<26, не перебивка) → в ближайший непустой живой кусок.
+    # Неактивный источник не переносим: его закадр остаётся на месте.
     i = 0
     while i < len(shots):
         shot = shots[i]
+        if not isinstance(shot, dict) or not shot_is_active(shot):
+            i += 1
+            continue
         chunk = _vo(shot)
         n = visible_len(chunk)
         if not chunk or n >= SHOT_VO_MIN or is_cutaway_shot(shot):
@@ -1251,7 +1286,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
     )
     empty_n = 0
     for s in shots:
-        if not isinstance(s, dict):
+        if not isinstance(s, dict) or not shot_is_active(s):
             continue
         if (
             not _vo(s)
@@ -1270,7 +1305,9 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
     if empty_n:
         warnings.append(f"помечены пустые оболочки без шага {empty_n} шт")
 
-    glued = " ".join(_vo(s) for s in shots if _vo(s))
+    glued = " ".join(
+        _vo(s) for s in shots if isinstance(s, dict) and shot_is_active(s) and _vo(s)
+    )
     if norm_vo and glued and " ".join(glued.split()) != norm_vo:
         warnings.append("после перерезки склейка != VO — флаг")
     # R-VO-SENTENCE: закадр режется ТОЛЬКО по концу предложения (.!?…);
@@ -1281,21 +1318,22 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
 
 
 def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None:
+    from app.services.frame_tombstones import shot_is_active
+
     prefix = f"uuid {uid[:8]}: " if uid else ""
     if not shots:
         return f"{prefix}пустые кадры"
-    if not any(
-        isinstance(s, dict) and str(s.get("закадр") or "").strip() for s in shots
-    ):
+    live = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
+    if not live:
+        return None
+    if not any(str(s.get("закадр") or "").strip() for s in live):
         return (
             f"{prefix}кадр пустой закадр "
             "— у каждого кадра свой кусок"
         )
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
+    for shot in live:
         step = str(shot.get("действие") or "")
         if not has_visible_verb(step) and step:
             return f"{prefix}шаг без видимого глагола «{step[:40]}»"
@@ -1317,7 +1355,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         chunk = str(shot.get("закадр") or "").strip()
         if chunk:
             n = visible_len(chunk)
-            cell_short = len(shots) == 1 and visible_len(vo) < SHOT_VO_MIN
+            cell_short = len(live) == 1 and visible_len(vo) < SHOT_VO_MIN
             cutaway = is_cutaway_shot(shot)
             # Точка в конце не отменяет норму длины: целая фраза длиннее 80
             # или короче 26 (не перебивка) — всё ещё «симв».
@@ -1364,8 +1402,8 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         prev = shot
     glued = " ".join(
         str(s.get("закадр") or "").strip()
-        for s in shots
-        if isinstance(s, dict) and str(s.get("закадр") or "").strip()
+        for s in live
+        if str(s.get("закадр") or "").strip()
     )
     cell = " ".join((vo or "").split())
     if cell and glued and " ".join(glued.split()) != cell:
@@ -1398,10 +1436,13 @@ def vo_piece_ends_sentence(piece):
 
 
 def reflow_vo_by_sentences(shots, vo):
-    """Детерминированно: каждое предложение VO целиком — в кадр, где оно началось
+    """Детерминированно: каждое предложение VO целиком — в живой кадр, где оно началось
     (по текущей раскладке), на кадрах с репликой закадра нет (предложение уходит на
-    ближайший предыдущий кадр без реплики, иначе — следующий). Склейка = VO."""
-    rows = [s for s in shots if isinstance(s, dict)]
+    ближайший предыдущий кадр без реплики, иначе — следующий). Склейка = VO.
+    Неактивные кадры не слоты: их закадр не переписывается."""
+    from app.services.frame_tombstones import shot_is_active
+
+    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
     sents = split_vo_sentences(vo)
     if not rows or not sents:
         return []
@@ -1455,9 +1496,12 @@ def reflow_vo_by_sentences(shots, vo):
 
 def vo_sentence_problems(shots, vo):
     """Гейт: кусок закадра = целые предложения; нет закадра на кадре реплики;
-    реплика не стоит внутри предложения (гарантируется первым)."""
+    реплика не стоит внутри предложения (гарантируется первым).
+    Неактивные кадры в гейт не входят."""
+    from app.services.frame_tombstones import shot_is_active
+
     out = []
-    rows = [s for s in shots if isinstance(s, dict)]
+    rows = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
     pieces = [(s, " ".join(str(s.get("закадр") or "").split())) for s in rows]
     nonempty = [(s, t) for s, t in pieces if t]
     cell = " ".join(str(vo or "").split())
@@ -1703,7 +1747,9 @@ def _prompts_text(s):
 
 
 def shots_continuity_problems(shots):
-    rows = [s for s in shots or [] if isinstance(s, dict)]
+    from app.services.frame_tombstones import shot_is_active
+
+    rows = [s for s in shots or [] if isinstance(s, dict) and shot_is_active(s)]
     out = []
     exited = False
     for i, s in enumerate(rows):
@@ -1916,6 +1962,9 @@ def ensure_wide_before_dialogue(shots):
         j = i
         speakers = set()
         while j < len(shots) and isinstance(shots[j], dict) and _is_reply(shots[j]):
+            if not shot_is_active(shots[j]):
+                j += 1
+                continue
             speakers.add(_shot_s(shots[j], "говорит").casefold())
             j += 1
         prev = shots[i - 1] if i > 0 and isinstance(shots[i - 1], dict) else None
@@ -1931,28 +1980,56 @@ def ensure_wide_before_dialogue(shots):
             if "точка" in w:
                 w["точка"] = "фронт"
             _set_cam_text(w, "ОБЩИЙ", "Ракурс фронт — камера спереди, видны оба собеседника.")
+            for key in (
+                "image_prompt",
+                "animation_prompt",
+                "промт_картинки",
+                "промт_видео",
+                "промт",
+                "media",
+                "png",
+                "video",
+                "child_prompts",
+            ):
+                w.pop(key, None)
+            used = {str(row.get("id") or "") for row in shots if isinstance(row, dict)}
+            m_id = _KID_RE.match(str(s.get("id") or ""))
+            if m_id:
+                stem = m_id.group(1)
+                max_k = 0
+                for row in shots:
+                    if not isinstance(row, dict):
+                        continue
+                    rm = _KID_RE.match(str(row.get("id") or ""))
+                    if not rm or rm.group(1) != stem:
+                        continue
+                    try:
+                        max_k = max(max_k, int(rm.group(2)))
+                    except ValueError:
+                        pass
+                cand = f"{stem}{max_k + 1}"
+                while cand in used:
+                    max_k += 1
+                    cand = f"{stem}{max_k + 1}"
+            else:
+                base = str(s.get("id") or "wide")
+                n_id = 1
+                cand = f"{base}-K{n_id}"
+                while cand in used:
+                    n_id += 1
+                    cand = f"{base}-K{n_id}"
+            w["id"] = cand
+            if "порядок" in w:
+                for row in shots[i:]:
+                    if not isinstance(row, dict) or "порядок" not in row:
+                        continue
+                    try:
+                        row["порядок"] = int(row["порядок"]) + 1
+                    except (TypeError, ValueError):
+                        pass
             shots.insert(i, w)
             notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
             i = j + 1
             continue
         i = j
-    if notes:
-        idmap = {}
-        k = 0
-        for s in shots:
-            if not isinstance(s, dict):
-                continue
-            k += 1
-            old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
-                if old and old not in idmap:
-                    idmap[old] = new
-                s["id"] = new
-            if "порядок" in s:
-                s["порядок"] = k
-        for s in shots:
-            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
-                s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes

@@ -16,10 +16,16 @@ from typing import Any
 
 from loguru import logger
 
+from app.orchestrator.validators.activity_flags import shot_is_active
 from app.project_root import find_project_root
 
 
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
+    if not shot_is_active(shot):
+        shot["активен"] = False
+        if not str(shot.get("пометка") or "").strip():
+            shot["пометка"] = reason
+        return
     shot["карантин"] = True
     shot["пометка"] = reason
     shot["активен"] = False
@@ -790,16 +796,38 @@ def _assign_scene_vo(
     *,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Каждый кадр — свой кусок закадра. Пустой кадр помечаем, не выкидываем."""
+    """Каждый живой кадр — свой кусок закадра. Пустой помечаем, не выкидываем.
+
+    Неактивные остаются в том же списке и не получают кусок.
+    """
+    from app.services.frame_tombstones import shot_is_active
+
     vo = plain_scene_vo(vo)
     if not shots:
         return []
+
+    def _live() -> list[dict[str, Any]]:
+        return [s for s in shots if shot_is_active(s)]
+
+    def _catalog_for(live: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        if catalog_rows is None:
+            return None
+        ids = {id(s) for s in live}
+        aligned: list[dict[str, Any]] = []
+        for i, shot in enumerate(shots):
+            if id(shot) not in ids:
+                continue
+            aligned.append(catalog_rows[i] if i < len(catalog_rows) else {})
+        return aligned
+
     if not vo:
         logger.warning(
             "WARN _assign_scene_vo: пустой закадр, {} кадров сцены сохранены",
-            len(shots),
+            len(_live()),
         )
         for shot in shots:
+            if not shot_is_active(shot):
+                continue
             shot["закадр"] = str(shot.get("закадр") or "")
             if not shot.get("карантин"):
                 _mark_shot_kept(
@@ -808,26 +836,40 @@ def _assign_scene_vo(
                     where="_assign_scene_vo",
                 )
         return list(shots)
-    existing = [" ".join(str(s.get("закадр") or "").split()) for s in shots]
+    live = _live()
+    if not live:
+        logger.warning(
+            "WARN _assign_scene_vo: нет живых кадров, закадр не разложен, {} сохранены",
+            len(shots),
+        )
+        return list(shots)
+    existing = [" ".join(str(s.get("закадр") or "").split()) for s in live]
     if all(existing) and _norm_vo_words(" ".join(existing)) == _norm_vo_words(vo):
-        return shots
+        return list(shots)
     from app.services.scene_design.camera_expand import split_text_into_parts
     from app.services.vo_shot_expand import (
         kadry_vo_partition,
         kadry_vo_partition_aligned,
     )
 
-    parts = kadry_vo_partition(vo, shots) or kadry_vo_partition_aligned(vo, shots)
+    parts = kadry_vo_partition(vo, live) or kadry_vo_partition_aligned(vo, live)
     if not parts:
-        parts = split_text_into_parts(vo, len(shots))
+        parts = split_text_into_parts(vo, len(live))
     nonempty = [" ".join((p or "").split()) for p in parts if str(p or "").strip()]
-    if len(nonempty) < len(shots):
-        shots = _drop_extra_shots(shots, len(nonempty) or 1, catalog_rows)
-        parts = kadry_vo_partition(vo, shots) or kadry_vo_partition_aligned(vo, shots)
+    if len(nonempty) < len(live):
+        _drop_extra_shots(live, len(nonempty) or 1, _catalog_for(live))
+        live = _live()
+        if not live:
+            logger.warning(
+                "WARN _assign_scene_vo: нет живых кадров, закадр не разложен, {} сохранены",
+                len(shots),
+            )
+            return list(shots)
+        parts = kadry_vo_partition(vo, live) or kadry_vo_partition_aligned(vo, live)
         if not parts:
-            parts = split_text_into_parts(vo, len(shots))
-    kept: list[dict[str, Any]] = []
-    for sh, piece in zip(shots, parts):
+            parts = split_text_into_parts(vo, len(live))
+    targets = live
+    for sh, piece in zip(targets, parts):
         piece = " ".join((piece or "").split())
         if not piece:
             sh["закадр"] = ""
@@ -839,8 +881,7 @@ def _assign_scene_vo(
                 )
         else:
             sh["закадр"] = piece
-        kept.append(sh)
-    for sh in shots[len(kept) :]:
+    for sh in targets[len(parts) :]:
         sh["закадр"] = str(sh.get("закадр") or "")
         if not sh.get("карантин"):
             _mark_shot_kept(
@@ -848,30 +889,30 @@ def _assign_scene_vo(
                 "нет куска закадра — кадр сохранён",
                 where="_assign_scene_vo",
             )
-        kept.append(sh)
-    if vo and shots and not any(str(s.get("закадр") or "").strip() for s in kept):
-        shots[0]["закадр"] = vo
-        # Весь закадр теперь на первом кадре. Снимаем только свой карантин
+    if vo and targets and not any(str(s.get("закадр") or "").strip() for s in targets):
+        target = targets[0]
+        target["закадр"] = vo
+        # Весь закадр теперь на первом живом кадре. Снимаем только свой карантин
         # «пустой кусок», который только что поставили в этом проходе.
         # Чужую пометку и удалён не трогаем.
-        mark = str(shots[0].get("пометка") or "")
+        mark = str(target.get("пометка") or "")
         own_empty_piece = mark in (
             "пустой кусок закадра — кадр сохранён",
             "нет куска закадра — кадр сохранён",
         )
         if (
-            shots[0].get("карантин")
+            target.get("карантин")
             and own_empty_piece
-            and not shots[0].get("удалён")
+            and not target.get("удалён")
         ):
-            shots[0].pop("карантин", None)
-            shots[0].pop("пометка", None)
-            shots[0].pop("активен", None)
+            target.pop("карантин", None)
+            target.pop("пометка", None)
+            target.pop("активен", None)
             logger.warning(
                 "WARN _assign_scene_vo: кадр {} получил весь закадр, карантин снят",
-                shots[0].get("id"),
+                target.get("id"),
             )
-    return kept if kept else list(shots)
+    return list(shots)
 
 
 def fill_kadry_from_catalog(
@@ -889,6 +930,7 @@ def fill_kadry_from_catalog(
     plan = plan_templates_for_action(action)
     plan_by_n = {int(row["n"]): row for row in plan}
     incoming = [dict(s) for s in shots if isinstance(s, dict)]
+    consumed: set[int] = set()
     by_scene: dict[int, list[dict[str, Any]]] = {}
     unmatched: list[dict[str, Any]] = []
     parsed: list[tuple[int | None, dict[str, Any]]] = []
@@ -953,6 +995,7 @@ def fill_kadry_from_catalog(
                 for sh in existing:
                     _ensure_full_shot_action(sh, place=place, scene_action=act)
                     scene_acc.append(sh)
+                    consumed.add(id(sh))
                 out.extend(_assign_scene_vo(scene_acc, vo))
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
@@ -971,46 +1014,66 @@ def fill_kadry_from_catalog(
                     catalog_role=role,
                 )
                 scene_acc.append(sh)
+                consumed.add(id(sh))
             out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
             continue
-        incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
-        master_id = str(
-            (existing[0].get("id") if existing else "")
-            or f"{cell_number}-S{n}-K1"
-        )
+        active_existing = [sh for sh in existing if shot_is_active(sh)]
+        reserved_ids = {
+            str(sh.get("id") or "").strip()
+            for sh in existing
+            if not shot_is_active(sh) and str(sh.get("id") or "").strip()
+        }
+        for sh in active_existing[: len(rows)]:
+            consumed.add(id(sh))
+        incoming_vo = [str(s.get("закадр") or "").strip() for s in active_existing]
+        master_id = ""
         scene_acc = []
         for i, row in enumerate(rows):
-            sid = f"{cell_number}-S{n}-K{i + 1}"
+            src = active_existing[i] if i < len(active_existing) else None
+            n_id = i + 1
+            sid = f"{cell_number}-S{n}-K{n_id}"
+            if src and str(src.get("id") or "").strip():
+                sid = str(src["id"]).strip()
+            while sid in reserved_ids:
+                n_id += 1
+                sid = f"{cell_number}-S{n}-K{n_id}"
+            reserved_ids.add(sid)
+            if not master_id:
+                master_id = sid
             plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
             cat = str(row.get("action") or "")
-            src = existing[i] if i < len(existing) else None
             shot = dict(src) if isinstance(src, dict) else {}
-            shot.setdefault("id", sid)
-            if i == 0:
-                shot["parent_id"] = None
-                shot["id"] = master_id
-            else:
-                shot.setdefault("parent_id", master_id)
-            shot.setdefault("порядок", i + 1)
-            shot.setdefault("сцена", n)
-            shot.setdefault("шаблон", tid)
-            shot.setdefault("план", plan_name)
-            shot.setdefault("ракурс", angle if angle != "—" else "")
-            shot.setdefault("место", place)
-            if (
-                not str(shot.get("действие") or "").strip()
-                or is_stub_shot_action(str(shot.get("действие") or ""))
+            shot["id"] = sid
+            shot["parent_id"] = None if i == 0 else master_id
+            shot["порядок"] = i + 1
+            shot["сцена"] = n
+            shot["шаблон"] = tid
+            shot["план"] = plan_name
+            shot["ракурс"] = angle if angle != "—" else ""
+            shot["место"] = place
+            shot["действие"] = compose_shot_action(
+                plan=plan_name,
+                place=place,
+                scene_action=act,
+                catalog_action=cat,
+                catalog_role=str(row.get("role") or ""),
+            )
+            shot["закадр"] = incoming_vo[i] if i < len(incoming_vo) else ""
+            if src and src.get("закадр"):
+                shot["закадр"] = str(src.get("закадр") or shot.get("закадр") or "")
+            if src and not is_stub_shot_action(str(src.get("действие") or "")):
+                shot["действие"] = str(src.get("действие") or shot["действие"])
+            for media_key in (
+                "png",
+                "video",
+                "media",
+                "image_prompt",
+                "animation_prompt",
+                "child_prompts",
             ):
-                shot["действие"] = compose_shot_action(
-                    plan=plan_name,
-                    place=place,
-                    scene_action=act,
-                    catalog_action=cat,
-                    catalog_role=str(row.get("role") or ""),
-                )
-            if not str(shot.get("закадр") or "").strip():
-                shot["закадр"] = incoming_vo[i] if i < len(incoming_vo) else ""
+                if src and src.get(media_key) not in (None, "", []):
+                    shot[media_key] = src[media_key]
             _ensure_full_shot_action(
                 shot,
                 place=place,
@@ -1041,6 +1104,7 @@ def fill_kadry_from_catalog(
                 scene_action=action,
             )
             leftover.append(sh)
+            consumed.add(id(sh))
         glue = " ".join(
             str(s.get("закадр") or "").strip()
             for s in leftover
@@ -1049,7 +1113,108 @@ def fill_kadry_from_catalog(
         out.extend(_assign_scene_vo(leftover, glue))
     elif unmatched:
         out.extend(unmatched)
-    return out
+    tail: list[dict[str, Any]] = []
+    for sh in incoming:
+        if id(sh) in consumed:
+            continue
+        if any(sh is row for row in out):
+            continue
+        marked = dict(sh)
+        if shot_is_active(marked):
+            marked["активен"] = False
+            marked["карантин"] = True
+            marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
+        else:
+            marked["активен"] = False
+        tail.append(marked)
+    if tail:
+        logger.warning(
+            "WARN fill_kadry_from_catalog: {} кадров не вошли в каталог и остаются с активен: False",
+            len(tail),
+        )
+        out.extend(tail)
+    _keep_anonymous_source_text(incoming, out)
+    from app.pipeline.no_deletions_guard import keep_soft_kadry, retain_already_marked
+
+    return keep_soft_kadry(
+        incoming,
+        retain_already_marked(incoming, out),
+        scene_id=cell_number,
+        number=cell_number,
+    )
+
+
+def _anonymous_shot_text(shot: dict[str, Any]) -> str:
+    for key in ("закадр", "voiceover", "vo", "text", "текст", "действие"):
+        text = " ".join(str(shot.get(key) or "").split())
+        if text:
+            return text
+    return ""
+
+
+def _shot_has_id(shot: dict[str, Any]) -> bool:
+    return any(shot.get(key) not in (None, "") for key in ("id", "uuid", "frame_id", "shot_id"))
+
+
+def _keep_anonymous_source_text(incoming: list[dict[str, Any]], out: list[dict[str, Any]]) -> None:
+    """Кадр без id остаётся живым и без id, с тем же текстом.
+
+    Лестница каталога даёт новым шотам id и другой закадр. Текст исходного
+    кадра без id иначе выглядит как удаление.
+    """
+    carried = {
+        _anonymous_shot_text(shot)
+        for shot in out
+        if isinstance(shot, dict) and shot_is_active(shot) and not _shot_has_id(shot)
+    }
+    existing_actions = {
+        " ".join(str(shot.get("действие") or "").split()).casefold()
+        for shot in out
+        if isinstance(shot, dict)
+    }
+    for src in incoming:
+        if not isinstance(src, dict) or _shot_has_id(src) or not shot_is_active(src):
+            continue
+        text = _anonymous_shot_text(src)
+        if not text or text in carried:
+            continue
+        try:
+            scene_n = int(src.get("сцена"))
+        except (TypeError, ValueError):
+            scene_n = None
+        host = next(
+            (
+                shot
+                for shot in out
+                if isinstance(shot, dict)
+                and shot_is_active(shot)
+                and (scene_n is None or shot.get("сцена") == scene_n)
+            ),
+            None,
+        )
+        base = " ".join(str((host or {}).get("действие") or "").split())
+        if not base or is_stub_shot_action(base) or " / " in base:
+            base = " ".join(str(src.get("действие") or "").split())
+        if not base or is_stub_shot_action(base) or " / " in base:
+            base = "кадр"
+        action = f"{base} — текст кадра сохранён"
+        if action.casefold() in existing_actions:
+            action = f"{base} — текст кадра сохранён: {text}"
+        kept: dict[str, Any] = {
+            "сцена": src.get("сцена"),
+            "закадр": text,
+            "действие": action,
+        }
+        template = (host or src).get("шаблон") or src.get("шаблон")
+        if template:
+            kept["шаблон"] = template
+        out.append(kept)
+        existing_actions.add(action.casefold())
+        carried.add(text)
+        logger.warning(
+            "WARN fill_kadry_from_catalog: кадр без id «{}» остаётся в лестнице",
+            text,
+        )
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:
@@ -1057,11 +1222,12 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
 
     Повтор одного T* на соседних сценах НЕ брак (Excel «Цепи»: T8>T8>T8).
     """
+    from app.services.frame_tombstones import shot_is_active
+
     prefix = f"uuid {uid[:8]}: " if uid else ""
+    live = [s for s in shots if isinstance(s, dict) and shot_is_active(s)]
     blocks: list[tuple[str, str, int, list[str]]] = []
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
+    for shot in live:
         sc = shot.get("сцена")
         place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
         key = str(sc) if sc not in (None, "") else f"p:{place}"
@@ -1099,9 +1265,7 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
             )
     # Кадры-вариации одной позы: одинаковое действие у кадров одной сцены.
     by_scene: dict[str, set[str]] = {}
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
+    for shot in live:
         sc = shot.get("сцена")
         key = str(sc) if sc not in (None, "") else "?"
         act = _action_stem(

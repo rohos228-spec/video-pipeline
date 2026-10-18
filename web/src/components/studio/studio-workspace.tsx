@@ -455,7 +455,7 @@ export function StudioWorkspace({
       onRunNode: async (nodeKey: string, nodeType: string, mode: "full" | "resume" = "resume") => {
         if (!projectId) return;
         if (disabledNodes.has(nodeKey)) {
-          toast.error("Нода отключена — включите её в меню V");
+          toast.error("Нода отключена — включите её в настройках ноды");
           return;
         }
         const step = stepCodeForNodeType(nodeType);
@@ -712,6 +712,17 @@ export function StudioWorkspace({
         }
         nodeDisabled={
           effectiveNodeKey != null && disabledNodes.has(effectiveNodeKey)
+        }
+        onEnableNode={
+          effectiveNodeKey
+            ? () => {
+                const next = new Set(disabledNodes);
+                next.delete(effectiveNodeKey);
+                void persistMeta({ disabled_nodes: [...next] }).then(() => {
+                  toast.message("Нода включена");
+                });
+              }
+            : undefined
         }
         promptSlots={
           effectiveNodeKey

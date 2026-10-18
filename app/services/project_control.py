@@ -23,6 +23,26 @@ from app.telegram.menu import step_by_running_status
 MASS_FAMILY_HALTED_KEY = "mass_family_halted"
 
 
+def _remember_node_stop_key(project: Project) -> None:
+    """⏹ запоминает текущую GPT-ноду: следующие волны apply_ops не стартуют."""
+    from app.services.excel_gpt_node import active_excel_gpt_node_key
+    from app.services.step_cancel import mark_node_stop
+
+    key = active_excel_gpt_node_key(project)
+    if not key or getattr(project, "id", None) is None:
+        return
+    meta = dict(project.meta or {})
+    meta["node_stop_key"] = key
+    project.meta = meta
+    flag_modified(project, "meta")
+    mark_node_stop(int(project.id), key)
+    logger.warning(
+        "WARN [#{}] STOP: node_stop_key={} — стоп между волнами apply_ops",
+        project.id,
+        key,
+    )
+
+
 def _set_user_stop_gate(project: Project) -> None:
     """Железный STOP: блок worker + auto_advance до ручного ▶."""
     meta = dict(project.meta or {})
@@ -43,6 +63,11 @@ def clear_user_stop_gate(project: Project) -> list[str]:
     cleared: list[str] = []
     if meta.pop("user_stop", None) is not None:
         cleared.append("user_stop")
+    if meta.pop("node_stop_key", None) is not None:
+        cleared.append("node_stop_key")
+        from app.services.step_cancel import clear_node_stop
+
+        clear_node_stop(int(project.id))
     if meta.pop("mass_lane_user_stop", None) is not None:
         cleared.append("mass_lane_user_stop")
     if cleared:
@@ -208,6 +233,7 @@ async def stop_project_running(
     следующий слот/lane сам не стартует.
     """
     request_stop(project.id)
+    _remember_node_stop_key(project)
     from app.services.montage_board_apply_job import cancel_all_montage_jobs
 
     await cancel_all_montage_jobs(project.id)

@@ -67,9 +67,12 @@ def test_insert_duplicate_delete_reorder_stay_on_one_door() -> None:
     assert copied["id"] != custom["id"]
     assert copied["collapsed"] is False
     card = delete_block(card, "door1", custom["id"])
-    ids = [block["id"] for block in card["doors"][0]["blocks"]]
-    assert custom["id"] not in ids
-    assert copied["id"] in ids
+    blocks = card["doors"][0]["blocks"]
+    kept = next(block for block in blocks if block["id"] == custom["id"])
+    assert kept["активен"] is False
+    assert kept["text"] == "мост между мирами"
+    assert [block["id"] for block in blocks].count(custom["id"]) == 1
+    assert copied["id"] in [block["id"] for block in blocks]
     card = move_block(card, "door1", copied["id"], -1)
     assert card["doors"][0]["blocks"][1]["id"] == copied["id"]
     card = move_block(card, "door1", card["doors"][0]["blocks"][0]["id"], -1)
@@ -78,6 +81,19 @@ def test_insert_duplicate_delete_reorder_stay_on_one_door() -> None:
     card = reorder_block(card, "door1", 0, 2)
     assert card["doors"][0]["blocks"][2]["id"] == top_id
     assert [block["id"] for block in card["doors"][1]["blocks"]] == before_right
+
+
+def test_delete_already_marked_block_stays() -> None:
+    card = default_card()
+    block = card["doors"][0]["blocks"][0]
+    block_id = block["id"]
+    card = delete_block(card, "door1", block_id)
+    again = delete_block(card, "door1", block_id)
+    kept = next(item for item in card["doors"][0]["blocks"] if item["id"] == block_id)
+    matches = [item for item in again["doors"][0]["blocks"] if item["id"] == block_id]
+    assert len(matches) == 1
+    assert matches[0]["активен"] is False
+    assert matches[0]["text"] == kept["text"]
 
 
 def test_normalize_repairs_shape_and_limits() -> None:
@@ -103,12 +119,15 @@ def test_normalize_repairs_shape_and_limits() -> None:
     assert [door["id"] for door in card["doors"]] == ["door1", "door2"]
     assert card["doors"][0]["theme"] == "Лес"
     assert card["doors"][0]["blocks"][0]["kind"] == "custom"
-    assert len(card["doors"][0]["blocks"][0]["text"]) == TEXT_LIMIT
+    assert card["doors"][0]["blocks"][0]["text"] == "x" * (TEXT_LIMIT + 50)
+    assert any(
+        item.get("text") == "x" * (TEXT_LIMIT + 50) for item in card.get("text_archive") or []
+    )
     assert card["doors"][0]["blocks"][0]["id"] != card["doors"][0]["blocks"][1]["id"]
     assert card["doors"][0]["blocks"][1]["collapsed"] is True
     assert card["doors"][0]["blocks"][1]["exit_action"] == "закрылась"
     assert len(card["doors"][1]["blocks"]) == len(CANONICAL_KINDS)
-    assert len(card["finale"]["standard"]) == FINALE_LIMIT
+    assert card["finale"]["standard"] == "y" * (FINALE_LIMIT + 80)
     assert card["finale"]["notes"] == ""
     assert card["gg"]["name"] == "Лея"
     assert card["intro"]["text"] == "вход"
