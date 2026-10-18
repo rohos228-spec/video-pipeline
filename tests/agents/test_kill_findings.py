@@ -1,0 +1,255 @@
+"""Находки R0c-B по kill. Ветка cursor/ws3-kill-fixes, не #370."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from app.orchestrator.agents.planner import RouterPlanner
+from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.auth import OrchestratorAuthMiddleware
+from app.orchestrator.checkpoints import CheckpointStore
+from app.orchestrator.contracts import ActionResult, CheckpointData, PlanStep, TaskStatus
+from app.services.step_cancel import clear_stop, is_stop_requested
+from app.web.routers.orchestrator_chat import router as chat_router
+from tests.agents.conftest import TEST_TOKEN
+from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
+
+
+class _ThreeWrites(MockActions):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[int] = []
+
+    async def execute(self, name: str, params: dict, task_ctx: dict) -> ActionResult:
+        self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
+        if name != "write":
+            return ActionResult(ok=True, data={"name": name}, change_id=f"chg-{name}", cost=0.0)
+        self.rows.append(1)
+        self.started.set()
+        await self.release.wait()
+        self.rows.append(2)
+        await asyncio.sleep(0)
+        self.rows.append(3)
+        return ActionResult(ok=True, data={"name": name}, change_id="chg-write", cost=0.0)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_waits_for_mutating_unpaid_step(token: str) -> None:
+    del token
+    actions = _ThreeWrites()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="write", mutating=True, paid=False, risk="none"),
+                PlanStep(action="later", mutating=True, paid=False, risk="none"),
+            ]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-1a"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "пиши", project_id=13)
+        await actions.started.wait()
+        assert actions.rows == [1]
+        runtime.supervisor.request_cancel(session)
+        actions.release.set()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.rows == [1, 2, 3]
+        assert [call["name"] for call in actions.calls] == ["write"]
+        assert runtime.tasks.get(task_id)["status"] in {
+            TaskStatus.paused.value,
+            TaskStatus.cancelled.value,
+        }
+        row = runtime.tasks.list_steps(task_id)[0]
+        assert row["change_id"] == "chg-write"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_kill_sets_node_stop_key(token: str) -> None:
+    """Kill с проектом сразу зовёт request_stop и шлёт stop_key_set=true.
+
+    Ключ — имя файла ``project_{id}.stop`` из ``app.services.step_cancel``.
+    """
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="slow", params={"_block": True, "_seconds": 30})]),
+    )
+    set_runtime(runtime)
+    session = "kill-1c"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "стой", project_id=13)
+        await actions.started.wait()
+        runtime.supervisor.request_kill(session)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        kill = next(event for event in runtime.bus.replay(session, 0) if event.type == "kill_switch")
+        assert kill.payload["stop_key_set"] is True
+        assert kill.payload["stop_key"] == "project_13.stop"
+        assert kill.payload["only_node"] is True
+        assert is_stop_requested(13)
+    finally:
+        clear_stop(13)
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_mutating_step_checkpoints_and_warns(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-1b"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "рви", project_id=13)
+        await actions.started.wait()
+        row = runtime.tasks.list_steps(task_id)[0]
+        runtime.tasks.note_running_outcome(int(row["id"]), "chg-partial", 0.0)
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        saved = runtime.tasks.list_steps(task_id)[0]
+        assert saved["status"] == "partial"
+        assert saved["change_id"] == "chg-partial"
+        checkpoint = runtime.checkpoints.load_latest(task_id)
+        assert checkpoint is not None
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["level"] == "WARN"
+        assert warned[-1].payload["change_ids"] == ["chg-partial"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+    finally:
+        actions.release.set()
+        set_runtime(None)
+
+
+class _MeterRouter(ScriptedRouter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.partial_cost_usd = 0.0
+
+    async def call(self, *args, **kwargs):
+        del args, kwargs
+        self.partial_cost_usd = 0.37
+        self.started.set()
+        await asyncio.Event().wait()
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_step_records_spent_tokens(token: str) -> None:
+    del token
+    router = _MeterRouter()
+    runtime = build_runtime(
+        actions=MockActions(),
+        validators=MockValidators(),
+        router=router,
+        planner=RouterPlanner(router),
+    )
+    set_runtime(runtime)
+    session = "kill-3b"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "план")
+        await router.started.wait()
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.cancelled.value
+        assert float(runtime.tasks.get(task_id)["spend_internal"] or 0) == pytest.approx(0.37)
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_rerun_after_cancelled_mutating_step_is_idempotent(token: str) -> None:
+    del token
+    actions = MockActions()
+    step = PlanStep(
+        action="write",
+        params={"idempotency_key": "k1"},
+        mutating=True,
+        paid=False,
+    )
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+    )
+    set_runtime(runtime)
+    session = "kill-4b"
+    try:
+        task_id = runtime.tasks.insert(session, "повтор", TaskStatus.paused.value, project_id=13)
+        runtime.tasks.save_plan(task_id, [step], position=0)
+        step_id = runtime.tasks.insert_step(task_id, 0, step)
+        runtime.tasks.finish_step(step_id, "partial", "chg-once", 0.0)
+        CheckpointStore().save(task_id, session, CheckpointData(plan=[step], position=0))
+        await runtime.supervisor.resume(task_id)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        rows = runtime.tasks.list_steps(task_id)
+        assert [row["change_id"] for row in rows] == ["chg-once"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_partial_write_marker_lists_change_ids(token: str) -> None:
+    del token
+    actions = MockActions()
+    runtime = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [PlanStep(action="write", params={"_wait": True}, mutating=True, paid=False)]
+        ),
+    )
+    set_runtime(runtime)
+    session = "kill-2"
+    try:
+        task_id = await runtime.supervisor.start_task(session, "частично", project_id=13)
+        await actions.started.wait()
+        row = runtime.tasks.list_steps(task_id)[0]
+        runtime.tasks.note_running_outcome(int(row["id"]), "chg-list", 0.0)
+        runtime.supervisor._runs[task_id].cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.supervisor.wait(task_id, timeout=5)
+        assert runtime.supervisor.list_partial_change_ids(task_id) == ["chg-list"]
+        app = FastAPI()
+        app.add_middleware(OrchestratorAuthMiddleware)
+        app.include_router(chat_router, prefix="/api")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get(
+                f"/api/orchestrator/chat/{session}/partial-changes",
+                params={"task_id": task_id},
+                headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+            )
+        assert listed.status_code == 200
+        assert listed.json()["change_ids"] == ["chg-list"]
+        assert TEST_TOKEN not in listed.text
+        warned = [event for event in runtime.bus.replay(session, 0) if event.type == "partial_write"]
+        assert warned[-1].payload["change_ids"] == ["chg-list"]
+    finally:
+        actions.release.set()
+        set_runtime(None)
