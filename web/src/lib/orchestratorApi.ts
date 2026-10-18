@@ -141,6 +141,11 @@ function discardedOrchApiLabel(raw: string): string {
 
 const discardedOrchApiLabels = new Set<string>();
 
+/** Тесты сбрасывают дедуп, иначе второй прогон не видит то же предупреждение. */
+export function resetDiscardedOrchApiWarnings(): void {
+  discardedOrchApiLabels.clear();
+}
+
 function warnDiscardedOrchApi(raw: string): void {
   const label = discardedOrchApiLabel(raw);
   if (discardedOrchApiLabels.has(label)) return;

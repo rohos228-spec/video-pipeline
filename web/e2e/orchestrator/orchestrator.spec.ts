@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   bearerTargetAllowed,
   envOrchApiBase,
+  resetDiscardedOrchApiWarnings,
   normalizedOrchEnvApi,
   postOrchApprove,
   postOrchMessage,
@@ -20,6 +21,10 @@ const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../test-results/orch-shots");
 
+test.beforeEach(() => {
+  resetDiscardedOrchApiWarnings();
+});
+
 async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
@@ -33,6 +38,31 @@ test("JSDoc changeId отличает change_id от старого approval_id"
   const doc = src.match(/\/\*\*(?:(?!\/\*\*)[\s\S])*?\*\/\s*changeId:/);
   expect(doc?.[0]).toContain("change_id");
   expect(doc?.[0]).toContain("approval_id");
+});
+
+test("сброс Set снова пишет предупреждение об отброшенном API", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_API;
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    resetDiscardedOrchApiWarnings();
+    process.env.NEXT_PUBLIC_ORCH_API = "javascript:alert(1)";
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toHaveLength(1);
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toHaveLength(1);
+    resetDiscardedOrchApiWarnings();
+    expect(envOrchApiBase()).toBe("");
+    expect(warnings).toHaveLength(2);
+  } finally {
+    console.warn = original;
+    resetDiscardedOrchApiWarnings();
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_API;
+    else process.env.NEXT_PUBLIC_ORCH_API = previous;
+  }
 });
 
 test("approve и message делят отказ 401", async () => {
