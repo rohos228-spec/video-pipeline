@@ -1084,19 +1084,34 @@ def _write_frame_shot_id(
     planned = planned_shots_from_attrs(frame)
     if not planned:
         return
-    from app.services.frame_tombstones import merge_kadry_keep_missing
+    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
 
     old_rows = (
         [dict(item) if isinstance(item, dict) else item for item in raw]
         if isinstance(raw, list)
         else [dict(shot) for shot in planned]
     )
-    live = dict(planned[0])
+    inactive_ids = {
+        str(shot.get("id"))
+        for shot in planned
+        if shot.get("id") and not shot_is_active(shot)
+    }
+    active = [shot for shot in planned if shot_is_active(shot)]
+    if not active:
+        frame.attrs = attrs
+        _flag_attrs(frame)
+        return
+    live = dict(active[0])
+    live.pop("активен", None)
     live["id"] = sid
     if parent_sid is not None:
         live["parent_id"] = parent_sid or None
-    rest = [dict(shot) for shot in planned[1:]]
-    attrs["кадры"] = merge_kadry_keep_missing(old_rows, [live, *rest])
+    rest = [dict(shot) for shot in active[1:]]
+    merged = merge_kadry_keep_missing(old_rows, [live, *rest])
+    for row in merged:
+        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+            row["активен"] = False
+    attrs["кадры"] = merged
     frame.attrs = attrs
     _flag_attrs(frame)
 

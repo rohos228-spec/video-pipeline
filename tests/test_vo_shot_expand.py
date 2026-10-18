@@ -217,6 +217,38 @@ def test_strip_non_scene_kadry_keeps_tx() -> None:
     assert frame_has_scene_shots(tx) is True
 
 
+def test_write_frame_shot_id_does_not_revive_inactive_head() -> None:
+    """Новый живой id не надевается на неактивный первый шот."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.vo_shot_expand import _write_frame_shot_id
+
+    frame = SimpleNamespace(
+        attrs={
+            "camera_subdivide": {},
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "действие": "архив",
+                    "активен": False,
+                    "карантин": True,
+                },
+                {"id": "1-K2", "действие": "встал", "parent_id": "1-K1"},
+            ],
+        }
+    )
+    _write_frame_shot_id(frame, "1-S1-K9", parent_sid="1-S1-K1")
+    rows = frame.attrs["кадры"]
+    by_id = {row["id"]: row for row in rows}
+    assert shot_is_active(by_id["1-S1-K9"])
+    assert by_id["1-S1-K9"]["действие"] == "встал"
+    assert by_id["1-K1"]["id"] == "1-K1"
+    assert by_id["1-K1"]["активен"] is False
+    assert by_id["1-K1"]["действие"] == "архив"
+    assert shot_is_active(by_id["1-K1"]) is False
+
+
 def test_write_frame_shot_id_keeps_previous_id_inactive() -> None:
     """Перепись id не стирает прежний шот: он остаётся в хвосте с активен: False."""
     from types import SimpleNamespace
