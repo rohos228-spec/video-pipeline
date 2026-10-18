@@ -158,20 +158,20 @@ async def _drop_frame_rows(
     frames_to_drop: list[Frame],
 ) -> None:
     """Пометить кадры. Строки, тексты, промты и связи не стираются."""
+    from app.services.frame_tombstones import mark_frame_deleted
+
     pending = [fr for fr in frames_to_drop if getattr(fr, "id", None)]
     if not pending:
         return
     for fr in pending:
-        attrs = dict(getattr(fr, "attrs", None) or {})
-        attrs["активен"] = False
-        attrs["удалён"] = True
-        attrs["карантин"] = True
-        attrs["пометка"] = "_drop_frame_rows: кадр скрыт, не удалён"
-        fr.attrs = attrs
-        _flag_attrs(fr)
+        mark_frame_deleted(
+            fr,
+            project,
+            "_drop_frame_rows: кадр помечен, не удалён",
+        )
     await session.flush()
     logger.warning(
-        "WARN _drop_frame_rows: кадры {} скрыты, строки сохранены",
+        "WARN _drop_frame_rows: кадры {} помечены, строки сохранены",
         [int(fr.number) for fr in pending],
     )
 
