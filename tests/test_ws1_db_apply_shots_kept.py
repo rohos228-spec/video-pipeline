@@ -465,3 +465,68 @@ async def test_garbage_kadry_returns_old_unchanged(
         assert by_id["a"]["закадр"] == "альфа"
         assert by_id["b"]["закадр"] == "бета"
     assert any("WARN" in line and "кадры" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_repeated_same_text_without_id_does_not_grow(session: AsyncSession) -> None:
+    """Одинаковый закадр без id не копит неактивные копии на каждом apply.
+
+    Уникальный текст, которого нет в новом списке, остаётся одной неактивной
+    копией и на втором прогоне не двоится.
+    """
+    project = Project(slug="ws1-dedup", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    same = {"закадр": "один и тот же"}
+    repeated = await _frame_with_kadry(
+        session,
+        project,
+        "dedup-same",
+        [{"порядок": 1, **same}, {"порядок": 2, **same}],
+        number=1,
+    )
+    mixed = await _frame_with_kadry(
+        session,
+        project,
+        "dedup-mixed",
+        [
+            {"порядок": 1, **same},
+            {"порядок": 2, **same},
+            {"порядок": 3, "закадр": "другой", "описание": "только у него"},
+        ],
+        number=2,
+    )
+    await session.commit()
+    same_ops = [
+        {"порядок": 1, "закадр": "один и тот же"},
+        {"порядок": 2, "закадр": "один и тот же"},
+    ]
+
+    async def _apply(frame: Frame, kadry: list[dict]) -> list[dict]:
+        await apply_ops(
+            session,
+            project,
+            [{"frame_uuid": frame.uuid, "fields": {"кадры": kadry}}],
+            export_xlsx=False,
+        )
+        await session.refresh(frame)
+        return list(frame.attrs["кадры"])
+
+    first = await _apply(repeated, same_ops)
+    second = await _apply(repeated, same_ops)
+    assert len(first) == 2, first
+    assert len(second) == len(first)
+    assert all(shot_is_active(shot) for shot in second)
+    assert [shot["закадр"] for shot in second] == ["один и тот же", "один и тот же"]
+
+    dropped = await _apply(mixed, same_ops)
+    again = await _apply(mixed, same_ops)
+    assert len(dropped) == 3, dropped
+    assert len(again) == len(dropped)
+    active = [shot for shot in again if shot_is_active(shot)]
+    inactive = [shot for shot in again if not shot_is_active(shot)]
+    assert [shot["закадр"] for shot in active] == ["один и тот же", "один и тот же"]
+    assert len(inactive) == 1
+    assert inactive[0]["закадр"] == "другой"
+    assert inactive[0]["описание"] == "только у него"
+    assert inactive[0]["активен"] is False

@@ -352,6 +352,22 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
     return tuple(parts)
 
 
+def _kadry_dedup_key(shot: Any) -> tuple:
+    """Ключ хвоста: id, иначе текст, иначе поля без ``активен``."""
+    if not isinstance(shot, dict):
+        return ("raw", repr(shot))
+    sid = _shot_id(shot)
+    if sid:
+        return ("id", sid)
+    ident = _shot_content_identity(shot)
+    if ident is not None:
+        return ("content", ident)
+    raw = tuple(
+        sorted((str(key), repr(val)) for key, val in shot.items() if key != "активен")
+    )
+    return ("raw", raw)
+
+
 def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     """Новый список ``кадры`` не выбрасывает старые шоты.
 
@@ -433,6 +449,15 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 continue
         marked = dict(shot)
         marked["активен"] = False
+        key = _kadry_dedup_key(marked)
+        if any(_kadry_dedup_key(item) == key for item in kept):
+            continue
+        # Активная копия того же текста уже в новом списке — хвост не растим.
+        # Неактивную оставляем одной копией: явный False не оживает.
+        if shot.get("активен") is not False and any(
+            _kadry_dedup_key(item) == key for item in incoming
+        ):
+            continue
         kept.append(marked)
     return [*incoming, *kept]
 
