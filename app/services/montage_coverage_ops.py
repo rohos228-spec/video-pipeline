@@ -1109,18 +1109,20 @@ def _stamp_deleted_shot(frames: list[Frame], frame: Frame, reason: str) -> None:
         "активен": False,
     }
     sid = coverage_shot_id(frame)
+    if not sid:
+        return
     own = planned_shots_from_attrs(frame)
     if own:
         for item in own:
             item_id = str(item.get("id") or "").strip()
-            if sid and item_id == sid:
+            if item_id == sid:
                 item.update(fields)
         attrs = dict(getattr(frame, "attrs", None) or {})
         attrs["кадры"] = own
         frame.attrs = attrs
         _flag_attrs(frame)
     parent = _vo_parent_frame(frames, frame)
-    if not sid or parent is None:
+    if parent is None:
         return
     seen: set[int] = set()
     for host in _vo_members(frames, parent):
@@ -1142,18 +1144,20 @@ def _unstamp_deleted_shot(frames: list[Frame], frame: Frame) -> None:
             item.pop(key, None)
 
     sid = coverage_shot_id(frame)
+    if not sid:
+        return
     own = planned_shots_from_attrs(frame)
     if own:
         for item in own:
             item_id = str(item.get("id") or "").strip()
-            if not sid or item_id == sid:
+            if item_id == sid:
                 _clear(item)
         attrs = dict(getattr(frame, "attrs", None) or {})
         attrs["кадры"] = own
         frame.attrs = attrs
         _flag_attrs(frame)
     parent = _vo_parent_frame(frames, frame)
-    if not sid or parent is None:
+    if parent is None:
         return
     seen: set[int] = set()
     for host in _vo_members(frames, parent):

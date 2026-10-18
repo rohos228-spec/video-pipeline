@@ -2232,3 +2232,109 @@ async def test_collapse_and_apply_keep_frames_and_report_deleted_zero(
     assert "sd" * 12 in uuids
     assert "em" * 12 in uuids
     assert k2_id in {int(fr.id) for fr in rows}
+
+
+@pytest.mark.asyncio
+async def test_restore_head_rolls_back_promotion_and_keeps_foreign_marks(
+    session: AsyncSession, project: Project
+) -> None:
+    """Удалить голову и вернуть: роли как до удаления, чужие пометки на месте."""
+    from app.services.frame_tombstones import frame_is_active
+    from app.services.montage_board_frames import delete_montage_frame, restore_montage_frame
+    from app.services.vo_shot_expand import _cs
+
+    session.add(project)
+    await session.flush()
+    head_uid = "hd" * 12
+    foreign = {
+        "id": "чужой",
+        "закадр": "не трогать",
+        "удалён": True,
+        "активен": False,
+        "пометка": "чужая",
+        "карантин": True,
+    }
+    head = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=head_uid,
+        voiceover_text="голова ячейки",
+        status=FrameStatus.planned,
+        sort_key=10.0,
+        attrs={
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": head_uid},
+            "кадры": [
+                {"закадр": "голова ячейки"},
+                dict(foreign),
+            ],
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="c2" * 12,
+        voiceover_text="первый шот",
+        status=FrameStatus.planned,
+        sort_key=20.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": head_uid,
+                "shot_id": "2-K1",
+            }
+        },
+    )
+    sibling = Frame(
+        project_id=project.id,
+        number=3,
+        uuid="c3" * 12,
+        voiceover_text="второй шот",
+        status=FrameStatus.planned,
+        sort_key=30.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": head_uid,
+                "shot_id": "3-K1",
+            }
+        },
+    )
+    session.add_all([head, child, sibling])
+    await session.flush()
+
+    result = await delete_montage_frame(session, project, int(head.id))
+    assert result["promoted"] == 2
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    promoted = next(fr for fr in rows if fr.number == 2)
+    assert _cs(promoted).get("role") == "vo_parent"
+    assert frame_is_active(rows[0]) is False
+
+    await restore_montage_frame(session, project, int(head.id))
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    assert [fr.number for fr in rows] == [1, 2, 3]
+    restored = rows[0]
+    assert frame_is_active(restored) is True
+    assert restored.attrs.get("удалён") is not True
+    assert _cs(restored).get("role") == "vo_parent"
+    assert _cs(restored).get("parent_uuid") == head_uid
+    assert restored.voiceover_text == "голова ячейки"
+    kept = next(item for item in restored.attrs["кадры"] if item.get("id") == "чужой")
+    assert kept["удалён"] is True
+    assert kept["активен"] is False
+    assert kept["пометка"] == "чужая"
+    assert kept["карантин"] is True
+    assert _cs(rows[1]).get("role") == "shot"
+    assert _cs(rows[1]).get("parent_uuid") == head_uid
+    assert rows[1].voiceover_text == "первый шот"
+    assert _cs(rows[2]).get("role") == "shot"
+    assert _cs(rows[2]).get("parent_uuid") == head_uid
+    assert rows[2].voiceover_text == "второй шот"
+    assert sum(1 for fr in rows if _cs(fr).get("role") == "vo_parent") == 1
