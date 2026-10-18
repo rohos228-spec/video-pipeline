@@ -108,6 +108,29 @@ test("чужая сессия не съедает переход статуса 
   expect(state.tasks[0]?.status).toBe("executing");
 });
 
+test("чужая смена статуса закрывает только карточку своей сессии", () => {
+  let seq = 0;
+  let state = initialOrchScreen("own");
+  const push = (type: string, session: string, payload: Record<string, unknown>) => {
+    seq += 1;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: { type, task_id: 1, seq, session_id: session, payload },
+    });
+  };
+  push("approval_required", "own", { reason: "budget_exhausted", approval_id: "ap-own" });
+  push("approval_required", "foreign", { reason: "budget_exhausted", approval_id: "ap-foreign" });
+  expect(state.approvals.find((item) => item.id === "ap-own")?.resolved).toBeNull();
+  expect(state.approvals.find((item) => item.id === "ap-foreign")?.resolved).toBeNull();
+  expect(state.tasks[0]?.status).toBe("waiting_approval");
+
+  push("agent_status", "foreign", { agent: "supervisor", status: "running", task_status: "executing" });
+  expect(state.approvals.find((item) => item.id === "ap-own")?.resolved).toBeNull();
+  expect(state.approvals.find((item) => item.id === "ap-foreign")?.resolved).toBe("closed");
+  expect(state.tasks[0]?.status).toBe("waiting_approval");
+  expect(state.tasks[0]?.statusBySession.foreign).toBe("executing");
+});
+
 test("автозакрытие по статусу не трогает терминальную карточку", () => {
   let seq = 0;
   let state = initialOrchScreen();
