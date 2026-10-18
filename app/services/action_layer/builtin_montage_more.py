@@ -8,8 +8,8 @@ from app.services.action_layer.builtin_montage import (
     _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
 from app.services.action_layer.context import ActionCallError, ActionContext
 from app.services.action_layer.soft_restore import (
-    capture_frame, capture_frame_by_number, frame_restore, remember_soft_delete,
-    precondition_restore_ref, restore_params_schema)
+    capture_frame, capture_frame_by_number, frame_restore, mark_frame_soft_deleted,
+    precondition_restore_ref, remember_soft_delete, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
     ActionSpec, CostEstimate, JobState, Precondition)
@@ -527,22 +527,19 @@ async def _delete_child(ctx, params):
     project_id = int(params["project_id"])
     number = int(params["frame_number"])
     before = await capture_frame_by_number(project_id, number)
-    snap = None
-    if before is not None:
-        snap = await remember_soft_delete(
-            ctx,
-            action_id="montage.delete_child_frame",
-            project_id=project_id,
-            kind="frame",
-            target={"frame_id": before["frame_id"], "number": before["number"]},
-            before=before,
-        )
-    data = await ctx.call("POST", f"{_base(project_id)}/coverage", json={
-        "type": "coverage_delete", "frame_number": number})
-    out = {"ok": bool(data.get("ok")), "deleted_frame_number": number}
-    if snap is not None:
-        out["snapshot_id"] = snap
-    return out
+    if before is None:
+        return {"ok": False, "deleted_frame_number": number, "soft": True}
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="montage.delete_child_frame",
+        project_id=project_id,
+        kind="frame",
+        target={"frame_id": before["frame_id"], "number": before["number"]},
+        before=before,
+    )
+    marked = await mark_frame_soft_deleted(project_id, number)
+    return {"ok": bool(marked), "deleted_frame_number": number, "soft": True,
+            "snapshot_id": snap}
 
 
 
@@ -586,21 +583,21 @@ async def _delete_frame(ctx, params):
     project_id = int(params["project_id"])
     frame_id = int(params["frame_id"])
     before = await capture_frame(project_id, frame_id)
-    snap = None
-    if before is not None:
-        snap = await remember_soft_delete(
-            ctx,
-            action_id="montage.delete_frame",
-            project_id=project_id,
-            kind="frame",
-            target={"frame_id": frame_id, "number": before["number"]},
-            before=before,
-        )
-    data = await ctx.call("DELETE", f"{_base(project_id)}/frames/{frame_id}")
-    out = {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
-    if snap is not None:
-        out["snapshot_id"] = snap
-    return out
+    if before is None:
+        return {"frame_id": frame_id, "number": None, "deleted": 0,
+                "promoted": None, "soft": True}
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="montage.delete_frame",
+        project_id=project_id,
+        kind="frame",
+        target={"frame_id": frame_id, "number": before["number"]},
+        before=before,
+    )
+    marked = await mark_frame_soft_deleted(project_id, before["number"])
+    return {"frame_id": frame_id, "number": before["number"],
+            "deleted": 1 if marked else 0, "promoted": None, "soft": True,
+            "snapshot_id": snap}
 
 
 
