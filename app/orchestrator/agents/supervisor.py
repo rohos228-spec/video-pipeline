@@ -213,6 +213,8 @@ class Supervisor:
         self._partial_llm_cost: dict[int, float] = {}
         self._mutating_result: dict[int, str] = {}
         self._partial_announced: set[tuple[int, int]] = set()
+        self._stop_holders: dict[int, set[int]] = {}
+        self._stop_external: set[int] = set()
         self._bind_partial_llm_cost()
 
     async def start_task(
@@ -528,13 +530,40 @@ class Supervisor:
         self._clear_project_stop(task_id)
 
     def _clear_project_stop(self, task_id: int) -> None:
-        """Снять ``project_{id}.stop``, который поставил kill этой задачи."""
+        """Снять stop только если его поставил kill этой задачи и держателей больше нет.
+
+        ``user_stop``, stop другой сессии и файл, который уже был до нашего
+        kill, остаются.
+        """
         project_id = self._task_project_id(task_id)
-        if project_id is None:
+        if project_id is None or project_id in self._stop_external:
             return
+        holders = self._stop_holders.get(project_id)
+        if not holders or int(task_id) not in holders:
+            return
+        holders.discard(int(task_id))
+        if holders:
+            return
+        self._stop_holders.pop(project_id, None)
         from app.services.step_cancel import clear_stop
 
         clear_stop(project_id)
+
+    def _note_kill_stop(self, project_id: int, task_id: int | None) -> None:
+        """Записать, что kill этой задачи поставил stop, либо что stop чужой."""
+        from app.services.step_cancel import is_stop_requested, request_stop
+
+        if project_id in self._stop_external:
+            return
+        holders = self._stop_holders.setdefault(project_id, set())
+        if not holders and is_stop_requested(project_id):
+            self._stop_external.add(project_id)
+            self._stop_holders.pop(project_id, None)
+            return
+        if not is_stop_requested(project_id):
+            request_stop(project_id, reason="orchestrator_kill")
+        if task_id is not None:
+            holders.add(int(task_id))
 
     def request_cancel(self, session_id: str) -> None:
         """Взвести cancel-флаг и отменить текущий неплатный шаг, если он есть.
@@ -1179,9 +1208,9 @@ class Supervisor:
         }
         project_id = self._task_project_id(task_id) if task_id is not None else None
         if project_id is not None:
-            from app.services.step_cancel import request_stop, stop_flag_path
+            from app.services.step_cancel import stop_flag_path
 
-            request_stop(project_id, reason="orchestrator_kill")
+            self._note_kill_stop(project_id, task_id)
             payload["stop_key_set"] = True
             payload["stop_key"] = stop_flag_path(project_id).name
         await self.bus.publish(session_id, "kill_switch", payload, task_id=task_id)
