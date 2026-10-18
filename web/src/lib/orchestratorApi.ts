@@ -139,8 +139,13 @@ function discardedOrchApiLabel(raw: string): string {
   }
 }
 
+const discardedOrchApiLabels = new Set<string>();
+
 function warnDiscardedOrchApi(raw: string): void {
-  console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${discardedOrchApiLabel(raw)}`);
+  const label = discardedOrchApiLabel(raw);
+  if (discardedOrchApiLabels.has(label)) return;
+  discardedOrchApiLabels.add(label);
+  console.warn(`NEXT_PUBLIC_ORCH_API отброшен: ${label}`);
 }
 
 /** Абсолютный хост API из сборки. Пусто или отброшенный env — относительный `/api/...` на том же origin. */
