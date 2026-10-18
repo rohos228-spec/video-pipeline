@@ -1,17 +1,18 @@
 /**
  * Карточки результатов действий по контракту WS2.
  *
- * ws2-r2.3 — PR #378 @ 627580674c8b80a4507be113ebb54b3e839ac6e4.
+ * ws2-r2.3 — PR #378 @ 2216f10e27eef6117e31e81d915824140135a145.
  * Схема: app/orchestrator/action_contracts
  * Копия для моков: web/src/lib/orchestratorActionResults.schema.json
- * sha256 a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c
+ * sha256 76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123
  *
  * Формат результатов тот же, что у r2.2. version строго больше base_version;
  * пустой snapshot_id и archive_ref недействительны. Непустой skipped без
  * partial=true — некорректный ответ, карточка «Некорректный ответ действия».
  * Риск и approval карточки берутся из metadata, не из имени действия.
- * Имя с «@» отвергает UI, не схема: ответ некорректный, карточка не рисуется.
- * Отдельной строки name@… в таблице нет.
+ * action, edit_action, restore_action и ActionMetadata.name сверяются с
+ * шаблоном ^[a-z0-9_]+(\.[a-z0-9_]+)*$. Имя вне шаблона — некорректный ответ;
+ * у action карточка не рисуется. Отдельной строки name@… в таблице нет.
  *
  * Моки — JSON этой версии (#378).
  * Обязательны: version и base_version у правки, before или snapshot_id,
@@ -29,9 +30,9 @@
  */
 
 export const ACTION_CONTRACT_VERSION = "ws2-r2.3";
-export const ACTION_CONTRACT_REF = "627580674c8b80a4507be113ebb54b3e839ac6e4";
+export const ACTION_CONTRACT_REF = "2216f10e27eef6117e31e81d915824140135a145";
 export const ACTION_SCHEMA_PATH = "app/orchestrator/action_contracts";
-export const ACTION_SCHEMA_SHA256 = "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c";
+export const ACTION_SCHEMA_SHA256 = "76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123";
 export const INVALID_ACTION_TEXT = "Некорректный ответ действия";
 export const REPORT_EDIT_ACTION = "update_report";
 const CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
@@ -167,13 +168,16 @@ export function isKnownActionName(name: string): boolean {
 
 const RISK_NAMES = new Set(["none", "low", "medium", "high"]);
 
-/** Риск из объекта metadata. Имя с «@» и неполная метадата не принимаются. */
+/** Шаблон схемы ws2-r2.3 для action, edit_action, restore_action и metadata.name. */
+const ACTION_NAME = /^[a-z0-9_]+(\.[a-z0-9_]+)*$/;
+
+/** Риск из объекта metadata. Имя вне шаблона и неполная метадата не принимаются. */
 export function metadataFrom(raw: unknown): ActionMetadata | null {
   const obj = plainObject(raw);
   if (!obj) return null;
   const name = str(obj.name).trim();
   const risk = str(obj.risk);
-  if (!name || name.includes("@") || !RISK_NAMES.has(risk)) return null;
+  if (!name || !ACTION_NAME.test(name) || !RISK_NAMES.has(risk)) return null;
   if (typeof obj.read_only !== "boolean" || typeof obj.destructive !== "boolean" || typeof obj.paid !== "boolean") {
     return null;
   }
@@ -192,7 +196,10 @@ export function needsApproval(metadata: ActionMetadata): boolean {
 }
 
 function badActionName(value: unknown): boolean {
-  return str(value).includes("@");
+  if (typeof value !== "string") return false;
+  const name = value.trim();
+  if (!name) return false;
+  return !ACTION_NAME.test(name);
 }
 
 /** Имя вне таблицы — платное и деструктивное. Сырые флаги конверта не доверяем. */
@@ -469,7 +476,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
     result &&
     (badActionName(result.action) || badActionName(result.edit_action) || badActionName(result.restore_action))
   ) {
-    // Шаблон схемы на «@» ещё не закреплён. Имя отвергает сам UI, карточка не рисуется.
+    // Имя не по шаблону схемы. Карточка не рисуется.
     return null;
   }
   const metaRaw = result ? plainObject(result.metadata) : null;
