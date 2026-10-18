@@ -53,7 +53,9 @@ class PromptHistory:
             raise VersionConflict(
                 "текст мастер-промта изменился после снимка: откат отклонён"
             )
-        self.texts[(target["step_code"], target["name"])] = row["before"]
+        key = (target["step_code"], target["name"])
+        self.texts[key] = row["before"]
+        self.versions[key] = self.versions.get(key, 0) + 1
         return {"restored_snapshot_id": row["id"], "content": row["before"]}
 
     def _get(self, snapshot_id: int) -> dict:

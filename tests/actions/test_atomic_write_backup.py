@@ -9,7 +9,8 @@ from app.orchestrator.node_store.atomic_write import atomic_write_text
 from app.settings import settings
 
 
-def test_old_version_backup_not_overwritten(tmp_path: Path) -> None:
+def test_old_version_backup_not_overwritten(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     dest = Path(settings.data_dir) / "node_overrides" / f"bak-{tmp_path.name}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     backup = dest.parent / "old" / f"{dest.name}.v1"

@@ -2483,7 +2483,7 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
     )
 
 
-def test_versioned_requires_version_compare(tmp_path: Path) -> None:
+def test_versioned_requires_version_compare(tmp_path: Path, monkeypatch) -> None:
     """Параметр version без сравнения с текущей версией запись не разрешает."""
     unused = (
         "import os\n"
@@ -2532,6 +2532,7 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
 
     from app.settings import settings
 
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     dest = Path(settings.data_dir) / "node_overrides" / f"version-{tmp_path.name}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(dest, "hello", expected_version=0)

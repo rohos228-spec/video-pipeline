@@ -35,13 +35,17 @@ def _versioned_payload(payload: object) -> dict | None:
 
 
 def _stored_version(target: Path) -> int:
-    """Версия обёртки. Нет файла или старое тело без version — 0."""
+    """Версия обёртки. Нет файла или старое тело без version — 0.
+
+    Ошибка чтения и битый JSON не превращаются в версию 0.
+    """
     if not target.is_file():
         return 0
+    raw = target.read_text(encoding="utf-8")
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return 0
+        payload = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise VersionConflict("прежний файл без читаемой версии") from exc
     wrapped = _versioned_payload(payload)
     if wrapped is None:
         return 0

@@ -15,7 +15,10 @@ from app.orchestrator.node_store.atomic_write import (
 from app.settings import settings
 
 
-def test_legacy_override_reads_raw_and_migrates_from_zero(tmp_path: Path) -> None:
+def test_legacy_override_reads_raw_and_migrates_from_zero(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     dest = Path(settings.data_dir) / "node_overrides" / f"legacy-{tmp_path.name}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     raw = '{"role": "writer"}'

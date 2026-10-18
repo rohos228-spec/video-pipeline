@@ -12,7 +12,8 @@ from app.settings import settings
 from tests.actions.test_whitelist_no_exec import analyze_module_source
 
 
-def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path) -> None:
+def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     root = Path(settings.data_dir) / "node_overrides"
     root.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside"

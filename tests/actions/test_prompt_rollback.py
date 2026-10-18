@@ -25,6 +25,27 @@ def test_save_master_checks_expected_version() -> None:
     assert history.read("script", "a.md") == "v2"
 
 
+def test_rollback_master_prompt_bumps_version() -> None:
+    history = PromptHistory()
+    history.save_master(
+        step_code="script", name="a.md", content="v1", expected_version=0
+    )
+    snap = history.save_master(
+        step_code="script", name="a.md", content="v2", expected_version=1
+    )
+    history.rollback_master_prompt(snap["id"])
+    assert history.read("script", "a.md") == "v1"
+    assert history.versions[("script", "a.md")] == 3
+    with pytest.raises(VersionConflict):
+        history.save_master(
+            step_code="script", name="a.md", content="v3", expected_version=2
+        )
+    history.save_master(
+        step_code="script", name="a.md", content="v3", expected_version=3
+    )
+    assert history.read("script", "a.md") == "v3"
+
+
 def test_rollback_master_prompt_refuses_if_changed_since() -> None:
     history = PromptHistory()
     history.save_master(

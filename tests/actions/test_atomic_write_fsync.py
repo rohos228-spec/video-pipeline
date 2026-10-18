@@ -9,6 +9,7 @@ from app.settings import settings
 
 
 def test_atomic_write_fsyncs_file_and_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     calls: list[int] = []
     real_fsync = mod.os.fsync
 

@@ -18,7 +18,8 @@ def _cleanup(path: Path) -> None:
         lock.unlink()
 
 
-def test_atomic_write_rejects_outside_allowlist(tmp_path: Path) -> None:
+def test_atomic_write_rejects_outside_allowlist(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     outside = tmp_path / "x.json"
     with pytest.raises(ValueError, match="allowlist"):
         atomic_write_text(outside, "no", expected_version=0)

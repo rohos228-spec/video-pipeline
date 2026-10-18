@@ -9,7 +9,8 @@ from app.orchestrator.node_store import atomic_write as mod
 from app.settings import settings
 
 
-def test_atomic_write_race_one_conflict(tmp_path: Path) -> None:
+def test_atomic_write_race_one_conflict(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     dest = Path(settings.data_dir) / "node_overrides" / f"race-{tmp_path.name}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     for stale in (dest, dest.with_name(dest.name + ".lock")):
