@@ -36,14 +36,16 @@ def _make_old_junction(old: Path, outside: Path, monkeypatch, *, windows: bool) 
         _winapi.CreateJunction(str(outside), str(old))
         return
     old.mkdir()
-    original = os.path.isjunction
+    original = getattr(os.path, "isjunction", None)
 
     def fake(path) -> bool:
         if Path(path).name == "old":
             return True
+        if original is None:
+            return False
         return original(path)
 
-    monkeypatch.setattr(os.path, "isjunction", fake)
+    monkeypatch.setattr(os.path, "isjunction", fake, raising=False)
 
 
 def test_create_junction_args_are_target_then_link(tmp_path: Path, monkeypatch) -> None:
@@ -73,6 +75,19 @@ def test_create_junction_is_denied() -> None:
     hits = analyze_module_source(source, "node.set_config")
     assert [hit.kind for hit in hits] == ["_winapi.CreateJunction", "_winapi.CreateJunction"]
     assert all(hit.allowed is False for hit in hits)
+
+
+def test_isjunction_patch_tolerates_missing_attribute(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Python 3.11: os.path.isjunction может отсутствовать."""
+    if hasattr(os.path, "isjunction"):
+        monkeypatch.delattr(os.path, "isjunction")
+    old = tmp_path / "old"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _make_old_junction(old, outside, monkeypatch, windows=False)
+    assert os.path.isjunction(old) is True
 
 
 def test_dangling_old_junction_is_rejected(tmp_path: Path, monkeypatch) -> None:
