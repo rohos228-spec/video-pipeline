@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.orchestrator.node_store import atomic_write as mod
+from app.orchestrator.node_store.atomic_write import VersionConflict
 from app.settings import settings
 
 
@@ -40,3 +41,20 @@ def test_windows_lock_timeout_keeps_timeout_and_closes_fd(tmp_path: Path, monkey
         mod.atomic_write_text(dest, "x", expected_version=0, lock_timeout=0.05)
     assert closed
     assert not dest.exists()
+
+
+def test_cleanup_error_does_not_mask_version_conflict(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    def boom(_fd: int) -> None:
+        raise PermissionError("unlock failed")
+
+    monkeypatch.setattr(mod, "_release_lock", boom)
+    dest = tmp_path / "node_overrides" / "mask.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"version": 1, "text": "a"}', encoding="utf-8")
+    with pytest.raises(VersionConflict):
+        mod.atomic_write_text(dest, "next", expected_version=0)
+    assert dest.read_text(encoding="utf-8").startswith('{"version": 1')

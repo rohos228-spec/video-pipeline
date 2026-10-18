@@ -408,13 +408,26 @@ def _write_at(
                 pass
         raise
     finally:
+        pending = sys.exc_info()[1]
+        errors: list[BaseException] = []
         if old_fd is not None:
-            os.close(old_fd)
+            _run_cleanup(lambda: os.close(old_fd), pending, errors)
         if lock_fd is not None:
-            _release_lock(lock_fd)
-            os.close(lock_fd)
+            _run_cleanup(lambda: _release_lock(lock_fd), pending, errors)
+            _run_cleanup(lambda: os.close(lock_fd), pending, errors)
         for fd in opened:
-            os.close(fd)
+            _run_cleanup(lambda fd=fd: os.close(fd), pending, errors)
+        if errors and pending is None:
+            raise errors[0]
+
+
+def _run_cleanup(action, pending: BaseException | None, errors: list[BaseException]) -> None:
+    """Ошибка очистки не подменяет исключение, которое уже летит из try."""
+    try:
+        action()
+    except OSError as exc:
+        if pending is None:
+            errors.append(exc)
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -527,13 +540,15 @@ def _write_without_dir_fd(
         os.replace(tmp_path, target)
         tmp_path = None
     finally:
-        try:
-            if tmp_path is not None and tmp_path.exists():
-                tmp_path.unlink()
-            if locked:
-                _release_lock(lock_fd)
-        finally:
-            os.close(lock_fd)
+        pending = sys.exc_info()[1]
+        errors: list[BaseException] = []
+        if tmp_path is not None:
+            _run_cleanup(lambda: tmp_path.unlink(missing_ok=True), pending, errors)
+        if locked:
+            _run_cleanup(lambda: _release_lock(lock_fd), pending, errors)
+        _run_cleanup(lambda: os.close(lock_fd), pending, errors)
+        if errors and pending is None:
+            raise errors[0]
 
 
 def atomic_write_text(
