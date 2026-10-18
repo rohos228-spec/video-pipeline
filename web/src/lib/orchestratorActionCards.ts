@@ -518,7 +518,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
       return view;
     }
     if (!error) return null;
-    const view = blankView(`failed-${seq}`, QUIET, "error");
+    const view = blankView(`failed-${seq}`, null, "error");
     view.error = error;
     applyEnvelopeExtras(view, payload, null);
     return view;

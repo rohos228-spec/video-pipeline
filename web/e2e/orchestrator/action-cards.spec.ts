@@ -679,6 +679,17 @@ test("approval без needsApproval даёт invalid", () => {
   expect(view?.kind).toBe("invalid");
 });
 
+test("карточка сбоя не рисует риск", async ({ page }) => {
+  const view = readActionEnvelope(EXAMPLE_FAILED, 1);
+  expect(view?.kind).toBe("error");
+  expect(view?.metadata).toBeNull();
+  await openWithToken(page, "act-fail-quiet");
+  await emit(page, "act-fail-quiet", "step_finished", EXAMPLE_FAILED);
+  const failed = page.getByTestId("orch-action-card").filter({ hasText: "Ошибка" });
+  await expect(failed).toBeVisible();
+  await expect(failed).not.toContainText("риск");
+});
+
 test("snapshot_url с .. отвергается", () => {
   const payload = structuredClone(EXAMPLE_DELETE_OK);
   const result = payload.result as { snapshot_url?: string };
