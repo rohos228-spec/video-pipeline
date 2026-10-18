@@ -267,6 +267,9 @@ class Supervisor:
             raise LookupError(session_id)
         if self._status(task_id) is not TaskStatus.waiting_approval:
             raise InvalidTransition("grant_approval только из waiting_approval")
+        live = self._runs.get(task_id)
+        if live is not None and not live.done():
+            raise InvalidTransition("grant_approval живой задачи")
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
         data = self.checkpoints.load_latest(task_id)
