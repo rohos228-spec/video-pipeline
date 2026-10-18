@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.models import Base, Entity, Frame, FrameEdge, FrameText, Project
+from app.settings import settings
 from app.orchestrator.validators.preservation import (
     PreservationRejected,
     run_preservation_validators,
@@ -622,6 +623,82 @@ async def test_successful_apply_ops_rollback_discards_changes(tmp_path) -> None:
             assert frame.voiceover_text == "было"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rejected_script_text_does_not_touch_voiceover_file(
+    session: AsyncSession, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отказ сохранности не оставляет на диске отвергнутый voiceover.txt."""
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    project = Project(slug="vo-file", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="111111111111111111111111",
+        voiceover_text="а б",
+        attrs={"кадры": [{"id": "k1", "закадр": "а"}, {"id": "k2", "закадр": "б"}]},
+    )
+    session.add(frame)
+    await session.commit()
+    vo_path = project.data_dir / "voiceover.txt"
+    vo_path.parent.mkdir(parents=True, exist_ok=True)
+    vo_path.write_text("старый закадр", encoding="utf-8")
+    project.script_text = "старый закадр"
+
+    with pytest.raises(db_apply.ApplyOpsError):
+        await db_apply.apply_ops(
+            session,
+            project,
+            [
+                {"target": "project", "fields": {"script_text": "новый отвергнутый"}},
+                {
+                    "target": "frame",
+                    "frame_uuid": frame.uuid,
+                    "fields": {"кадры": [{"id": "k1", "закадр": "а"}]},
+                },
+            ],
+        )
+
+    assert vo_path.read_text(encoding="utf-8") == "старый закадр"
+
+
+@pytest.mark.asyncio
+async def test_accepted_script_text_writes_voiceover_file(
+    session: AsyncSession, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """После успешного savepoint зеркало voiceover.txt совпадает с script_text."""
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    project = Project(slug="vo-ok", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.commit()
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        [{"target": "project", "fields": {"script_text": "принятый закадр"}}],
+    )
+    assert (project.data_dir / "voiceover.txt").read_text(encoding="utf-8") == "принятый закадр"
+
+
+def test_already_counts_state_without_ops() -> None:
+    """Нарушение из самого op не считается «уже было» на before."""
+
+    project = {
+        "сцены": [
+            {
+                "id": "s1",
+                "кадры": [{"id": "dead", "активен": False, "закадр": ""}],
+            }
+        ]
+    }
+    ops = [{"op": "render", "shot_id": "dead"}]
+    with pytest.raises(db_apply.ApplyOpsError):
+        db_apply._raise_if_new_preservation(project, copy.deepcopy(project), ops)
 
 
 def test_preservation_view_frame_without_uuid_keeps_id() -> None:

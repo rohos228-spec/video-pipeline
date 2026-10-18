@@ -1426,7 +1426,7 @@ def _raise_if_new_preservation(before: Any, after: Any, ops: list[dict[str, Any]
     except PreservationRejected as exc:
         already = {
             (item.code, item.path, item.id)
-            for item in collect_violations(before, before, ops)
+            for item in collect_violations(before, before, None)
             if item.severity == "error"
         }
         fresh = [
@@ -1532,6 +1532,17 @@ async def _project_preservation_view(session: AsyncSession, project: Project) ->
     return _preservation_view(frames, texts, edges, characters)
 
 
+def _write_voiceover_mirror(project: Project, text: str) -> None:
+    """Зеркало ``voiceover.txt`` для audio/music. Ошибки диска не роняют запись в БД."""
+
+    try:
+        vo_path = project.data_dir / "voiceover.txt"
+        vo_path.parent.mkdir(parents=True, exist_ok=True)
+        vo_path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
 async def _ensure_sqlite_outer_transaction(session: AsyncSession) -> None:
     """Настоящий BEGIN до SAVEPOINT, не трогая общий engine.
 
@@ -1598,6 +1609,7 @@ async def apply_ops(
         else None
     )
     await _ensure_sqlite_outer_transaction(session)
+    pending_voiceover: str | None = None
     async with session.begin_nested():
         chars_n = 0
         scenes_n = 0
@@ -1810,13 +1822,9 @@ async def apply_ops(
                 project.general_plan = plan_val
             if "script_text" in fields:
                 project.script_text = str(fields["script_text"] or "")
-                # Файл voiceover.txt — артефакт для audio/music (зеркало DB).
-                try:
-                    vo_path = project.data_dir / "voiceover.txt"
-                    vo_path.parent.mkdir(parents=True, exist_ok=True)
-                    vo_path.write_text(project.script_text or "", encoding="utf-8")
-                except OSError:
-                    pass
+                # Файл пишем только после успешного выхода из savepoint:
+                # отказ откатывает БД, а зеркало на диске иначе остаётся.
+                pending_voiceover = project.script_text or ""
             project.meta = meta
             updated += 1
 
@@ -1858,7 +1866,7 @@ async def apply_ops(
                 ).scalars()
             )
             exported = export_project_xlsx(project, all_frames, entities=ents)
-        return {
+        result = {
             "ok": True,
             "updated": updated,
             "characters": chars_n,
@@ -1869,3 +1877,6 @@ async def apply_ops(
                 {"from": a, "to": b} for a, b in (number_repairs + uuid_repairs)
             ],
         }
+    if pending_voiceover is not None:
+        _write_voiceover_mirror(project, pending_voiceover)
+    return result
