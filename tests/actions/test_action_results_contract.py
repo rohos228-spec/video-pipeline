@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.3": "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c",
+    "ws2-r2.3": "76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123",
 }
 
 
@@ -55,7 +55,12 @@ def test_schema_export_sha256_is_pinned_to_version() -> None:
     text = _MD.read_text(encoding="utf-8")
     assert f"Версия: `{CONTRACT_VERSION}`" in text
     assert digest in text
+    assert "Изменения r2.0 → r2.1" in text
+    assert "Изменения r2.1 → r2.2" in text
     assert "Изменения r2.2 → r2.3" in text
+    assert b"\r" not in raw
+    attrs = (_REPO / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.schema.json eol=lf" in attrs
 
 
 def test_unknown_name_is_paid_and_destructive() -> None:
@@ -654,6 +659,87 @@ def test_schema_rejects_skipped_without_partial() -> None:
         bad["skipped"] = ["x"]
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(bad, schema)
+
+
+_ACTION_NAME_PATTERN = r"^[a-z0-9_]+(\.[a-z0-9_]+)*$"
+
+
+def _schema_string_field(schema: dict, key: str) -> dict:
+    props = schema.get("properties") or {}
+    if key in props:
+        return props[key]
+    for branch in schema.get("allOf") or ():
+        found = _schema_string_field(branch, key)
+        if found:
+            return found
+    return {}
+
+
+def test_schema_action_name_rejects_at_and_accepts_audit_ids() -> None:
+    import jsonschema
+
+    from app.orchestrator.action_contracts.contracts import (
+        AUDIT_ACTION_IDS,
+        export_action_result_schema,
+    )
+
+    models = export_action_result_schema()["models"]
+    targets = (
+        ("EditResult", "action"),
+        ("ApprovalRequired", "action"),
+        ("SoftDeleteResult", "action"),
+        ("SoftDeleteResult", "restore_action"),
+        ("ActionMetadata", "name"),
+        ("ReportResult", "edit_action"),
+    )
+    for model_name, field in targets:
+        field_schema = _schema_string_field(models[model_name], field)
+        assert field_schema.get("pattern") == _ACTION_NAME_PATTERN, (model_name, field)
+
+    edited = EditResult.model_validate(_edit_payload(before={"a": 1})).model_dump(mode="json")
+    edit_schema = models["EditResult"]
+    for name in AUDIT_ACTION_IDS:
+        jsonschema.validate(name, {"type": "string", "pattern": _ACTION_NAME_PATTERN})
+        payload = dict(edited)
+        payload["action"] = name
+        jsonschema.validate(payload, edit_schema)
+    bad = dict(edited)
+    bad["action"] = "create_node@new_group"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, edit_schema)
+
+    deleted = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        action="montage.delete_frame",
+        marked=True,
+        restore_action="frame.restore",
+        snapshot_id="snap-1",
+    ).model_dump(mode="json")
+    delete_schema = models["SoftDeleteResult"]
+    for name in AUDIT_ACTION_IDS:
+        payload = dict(deleted)
+        payload["restore_action"] = name
+        jsonschema.validate(payload, delete_schema)
+    bad_restore = dict(deleted)
+    bad_restore["restore_action"] = "create_node@new_group"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_restore, delete_schema)
+
+    meta = models["ActionMetadata"]
+    sample = {
+        "destructive": False,
+        "name": "change.list",
+        "paid": False,
+        "read_only": True,
+        "risk": "none",
+    }
+    for name in AUDIT_ACTION_IDS:
+        row = dict(sample)
+        row["name"] = name
+        jsonschema.validate(row, meta)
+    sample["name"] = "create_node@new_group"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(sample, meta)
 
 
 def test_audit_metadata_json_is_package_data() -> None:
