@@ -11,7 +11,7 @@
 Удаление сцен и кадров блокируется даже если имя попало в whitelist.
 ``montage.delete_frame`` и ``montage.delete_child_frame`` проходят только вместе:
 ``metadata_of(name).get("soft_delete") is True`` и одобрение ядра
-``context["approval"]`` с ``risk == "high"``, ``destructive is True``,
+``context["approval"]`` с ``risk == "high"`` (без strip и lower), ``destructive is True``,
 ``granted is True`` и ``action``, равным имени шага.
 Нет поля ``soft_delete`` — это false. Адаптера ``cursor/ws2-action-adapter``
 в origin ещё нет, поэтому ``metadata_of`` берётся у реестра.
@@ -260,8 +260,9 @@ def _core_approved_high_destructive(context: dict[str, Any], action: str) -> boo
     """Ядро выдало одобрение именно этому действию.
 
     ``context["approval"]`` — форма WS3: ``change_id``, ``action``, ``risk``,
-    ``destructive``, ``granted``, ``cc_change_id``. Обязательны ``risk == "high"``,
-    ``destructive is True``, ``granted is True`` и ``action``, равный имени шага.
+    ``destructive``, ``granted``, ``cc_change_id``. Обязательны ``risk == "high"``
+    без strip и lower, ``destructive is True``, ``granted is True`` и ``action``,
+    равный имени шага.
     """
 
     approval = context.get("approval")
@@ -278,7 +279,7 @@ def _core_approved_high_destructive(context: dict[str, Any], action: str) -> boo
     else:
         return False
     return (
-        str(risk or "").strip().lower() == "high"
+        risk == "high"
         and destructive is True
         and granted is True
         and approved_action == action

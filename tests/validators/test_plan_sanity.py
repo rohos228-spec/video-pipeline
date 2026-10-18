@@ -141,6 +141,27 @@ def test_montage_delete_blocked_when_approval_names_another_action(
     assert result.details["errors"][0]["reason"] == "deletion_forbidden"
 
 
+def test_montage_delete_blocked_when_risk_is_not_exactly_high(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """risk сравнивается как risk == \"high\": \"HIGH\" и \" high \" не проходят."""
+    action = "montage.delete_frame"
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    for risk in ("HIGH", " high "):
+        approval = _core_approval(action)
+        approval["risk"] = risk
+        result = run(
+            "plan_sanity",
+            1,
+            {
+                "plan": [{"action": action, "params": {"frame_id": "f1"}}],
+                "approval": approval,
+            },
+        )
+        assert result.blocking is True, risk
+        assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
 @pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
 def test_montage_delete_blocked_when_granted_is_false(
     action: str, monkeypatch: pytest.MonkeyPatch
