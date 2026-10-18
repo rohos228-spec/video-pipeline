@@ -2976,16 +2976,16 @@ def test_allowed_evil_is_not_under_allowed(tmp_path: Path) -> None:
 
 
 def _symlinks_available() -> bool:
-    """Windows без права на symlink даёт WinError 1314. Это не падение теста."""
-    if os.name == "nt":
-        return False
+    """Skip только при WinError 1314: нет привилегии на symlink."""
     probe = Path(os.environ.get("TMPDIR", "/tmp")) / f"vp-symlink-probe-{os.getpid()}"
     try:
         probe.mkdir(parents=True, exist_ok=True)
         os.symlink(str(probe / "target"), str(probe / "link"))
         return True
-    except OSError:
-        return False
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            return False
+        raise
     finally:
         import shutil
 
@@ -2998,7 +2998,7 @@ def test_plain_file_under_reports_stays_allowed(tmp_path: Path) -> None:
     assert paths_share_root(str(reports / "ok.txt"), str(reports))
 
 
-@pytest.mark.skipif(not _symlinks_available(), reason="symlink недоступен")
+@pytest.mark.skipif(not _symlinks_available(), reason="WinError 1314: нет привилегии на symlink")
 def test_symlink_inside_reports_pointing_outside_is_denied(tmp_path: Path) -> None:
     reports = tmp_path / "data" / "reports"
     outside = tmp_path / "outside"

@@ -12,6 +12,15 @@ from app.settings import settings
 from tests.actions.test_whitelist_no_exec import analyze_module_source
 
 
+def _symlink_or_skip(link: Path, target: Path, **kwargs) -> None:
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("WinError 1314: нет привилегии на symlink")
+        raise
+
+
 def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     root = Path(settings.data_dir) / "node_overrides"
@@ -28,7 +37,7 @@ def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path, monkeypatch) -> Non
         old.rename(saved)
     outside_old = outside / "via-old"
     outside_old.mkdir()
-    old.symlink_to(outside_old, target_is_directory=True)
+    _symlink_or_skip(old, outside_old, target_is_directory=True)
     try:
         with pytest.raises(ValueError, match="symlink|allowlist"):
             atomic_write_text(dest, "leaked", expected_version=0)
@@ -49,7 +58,7 @@ def test_old_and_lock_symlinks_cannot_escape(tmp_path: Path, monkeypatch) -> Non
     lock = fresh.with_name(fresh.name + ".lock")
     if lock.is_symlink() or lock.exists():
         lock.unlink()
-    lock.symlink_to(outside_lock)
+    _symlink_or_skip(lock, outside_lock)
     try:
         with pytest.raises(ValueError, match="symlink|allowlist"):
             atomic_write_text(fresh, "leaked", expected_version=0)

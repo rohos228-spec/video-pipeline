@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import secrets
+import stat
 import sys
 import time
 from pathlib import Path
@@ -369,6 +370,48 @@ def _write_at(
             os.close(fd)
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """Junction и другой reparse point. isjunction, иначе st_file_attributes."""
+    try:
+        if os.path.isjunction(path):
+            return True
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0) or 0
+    except OSError:
+        return False
+    flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attrs & flag)
+
+
+def _assert_realpath_inside(path: Path, root: Path) -> None:
+    real = Path(os.path.realpath(path))
+    real_root = Path(os.path.realpath(root))
+    try:
+        shared = os.path.commonpath([str(real), str(real_root)])
+    except ValueError as exc:
+        raise ValueError("путь вне allowlist reports/node_overrides") from exc
+    if shared != str(real_root):
+        raise ValueError("путь вне allowlist reports/node_overrides")
+
+
+def _reject_reparse(target: Path) -> None:
+    """После lock: каталог allowlist и old/ не должны быть junction."""
+    root, parts = _classify(target)
+    current = root
+    if _is_reparse_point(current):
+        raise ValueError("reparse point в каталоге allowlist")
+    for part in parts[:-1]:
+        current = current / part
+        if _is_reparse_point(current):
+            raise ValueError("reparse point в пути: отказ allowlist")
+    parent = root.joinpath(*parts[:-1]) if parts[:-1] else root
+    old = parent / "old"
+    if old.exists() and _is_reparse_point(old):
+        raise ValueError("junction old/: отказ allowlist")
+
+
 def _write_without_dir_fd(
     target: Path, text: str, expected_version: int, lock_timeout: float
 ) -> None:
@@ -379,7 +422,8 @@ def _write_without_dir_fd(
     tmp_path: Path | None = None
     try:
         _acquire_lock(lock_fd, lock_timeout)
-        _classify(target)
+        root, _parts = _classify(target)
+        _reject_reparse(target)
         current = _stored_version(target)
         if current != int(expected_version):
             raise VersionConflict(
@@ -387,6 +431,8 @@ def _write_without_dir_fd(
             )
         if target.is_file():
             backup_dir = target.parent / "old"
+            if backup_dir.exists() and _is_reparse_point(backup_dir):
+                raise ValueError("junction old/: отказ allowlist")
             backup_dir.mkdir(parents=True, exist_ok=True)
             backup = backup_dir / f"{target.name}.v{current}"
             if backup.exists():
@@ -394,6 +440,7 @@ def _write_without_dir_fd(
                 while (backup_dir / f"{target.name}.v{current}.{suffix}").exists():
                     suffix += 1
                 backup = backup_dir / f"{target.name}.v{current}.{suffix}"
+            _assert_realpath_inside(backup, root)
             backup.write_bytes(target.read_bytes())
         payload = json.dumps(
             {"version": current + 1, "text": text},
@@ -401,6 +448,7 @@ def _write_without_dir_fd(
         ).encode("utf-8")
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
         tmp_path.write_bytes(payload)
+        _assert_realpath_inside(tmp_path, root)
         os.replace(tmp_path, target)
         tmp_path = None
     finally:
