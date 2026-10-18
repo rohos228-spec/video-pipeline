@@ -208,6 +208,19 @@ def test_montage_delete_blocked_when_granted_is_false(
     assert result.details["errors"][0]["reason"] == "deletion_forbidden"
 
 
+def test_soft_delete_without_approval_key_is_deletion_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ключа approval нет — мягкое удаление запрещено."""
+    action = "montage.delete_frame"
+    _install_meta(monkeypatch, {action: {"soft_delete": True}})
+    context = {"plan": [{"action": action, "params": {"frame_id": "f1"}}]}
+    assert "approval" not in context
+    result = run("plan_sanity", 1, context)
+    assert result.blocking is True
+    assert result.details["errors"][0]["reason"] == "deletion_forbidden"
+
+
 @pytest.mark.parametrize("action", ["montage.delete_frame", "montage.delete_child_frame"])
 def test_montage_delete_blocked_with_soft_delete_without_approval(
     action: str, monkeypatch: pytest.MonkeyPatch
