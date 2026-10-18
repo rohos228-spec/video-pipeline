@@ -63,6 +63,7 @@ def clamp_max_calls(value: Any, default: int = DEFAULT_MAX_LLM_CALLS) -> int:
 class LlmBudget:
     max_calls: int
     used: int = 0
+    spent: int = 0
     log: list[dict[str, Any]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -82,6 +83,13 @@ class LlmBudget:
             self.used += 1
             self.log.append({"n": self.used, "label": label})
             return self.used
+
+    def note_spent(self, label: str = "") -> int:
+        """Трата уже совершённого платного вызова. Не проверяет лимит."""
+        with self._lock:
+            self.spent += 1
+            self.log.append({"spent": self.spent, "label": label})
+            return self.spent
 
     def snapshot(self) -> dict[str, Any]:
         return {"used": self.used, "limit": self.max_calls, "remaining": self.remaining}

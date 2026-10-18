@@ -341,9 +341,18 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
     import tempfile
 
     from app.services.api_tracker_hook import check_api_allowed
-    from app.services.spend_guard import guard_paid_spend
+    from app.services.spend_guard import (
+        active_spend_budget,
+        guard_paid_spend,
+        note_paid_spend,
+        pipeline_spend_budget,
+        use_spend_budget,
+    )
 
     check_api_allowed(provider="outsee", model="generate")
+    if active_spend_budget() is None:
+        with use_spend_budget(pipeline_spend_budget()):
+            return await _post_generate_via_curl(path, body)
     guard_paid_spend("outsee_generate_curl")
     curl = shutil.which("curl")
     if not curl:
@@ -419,6 +428,7 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
             data.get("id"),
             data.get("status"),
         )
+        note_paid_spend("outsee_generate_curl")
         return data
     except OutseeApiError:
         raise
