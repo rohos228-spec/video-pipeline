@@ -25,14 +25,26 @@ def _scene(rows, *, sid="s1", number=1, **extra):
     return {"сцены": [scene]}
 
 
-def _violation_codes(call) -> set[str]:
+def _violations(call) -> list:
     try:
         result = call()
     except PreservationRejected as exc:
-        return {item.code for item in exc.violations}
+        return list(exc.violations)
     if not isinstance(result, list):
-        return set()
-    return {getattr(item, "code", "") for item in result if getattr(item, "code", "")}
+        return []
+    return [item for item in result if getattr(item, "code", "")]
+
+
+def _has_scene_error(violations, *needles: str) -> bool:
+    """Есть error по сцене или её шоту. Лишние warn не мешают."""
+
+    for item in violations:
+        if getattr(item, "severity", "") != "error":
+            continue
+        blob = f"{getattr(item, 'id', '')} {getattr(item, 'path', '')}"
+        if any(needle and needle in blob for needle in needles):
+            return True
+    return False
 
 
 def test_signature_matches_379_entry_point() -> None:
@@ -476,27 +488,25 @@ def test_idless_shot_loss_is_error_and_same_text_passes() -> None:
 
 
 def test_non_list_kadry_is_error() -> None:
-    """Несписок — ``kadry_invalid`` или ``shot_dropped``, как у #379.
+    """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
-    Шим поднимает error ``kadry_invalid``. Модуль d59e1586 на строке даёт
-    error ``shot_dropped`` и warn ``kadry_invalid``; на dict — только warn,
-    без отказа.
+    Шим даёт error ``kadry_invalid``. Модуль #379 @ 9820d123 рядом кладёт
+    warn ``frames_no_data`` (и другие). Точный набор и число не фиксируем.
     """
 
     before = _scene([{"id": "k1", "закадр": "а"}])
     after = {"сцены": [{"id": "s1", "номер": 1, "кадры": "не список"}]}
     frozen = copy.deepcopy(after)
-    codes = _violation_codes(lambda: run_preservation_validators(before, after, mode="soft"))
-    assert codes & {"kadry_invalid", "shot_dropped"}
+    violations = _violations(lambda: run_preservation_validators(before, after, mode="soft"))
+    assert _has_scene_error(violations, "s1", "k1")
     assert after == frozen
 
     from app.pipeline.no_deletions_guard import keep_soft_kadry
 
-    dict_codes = _violation_codes(
+    dict_violations = _violations(
         lambda: keep_soft_kadry([{"id": "k1"}], {"id": "k1"}, scene_id="s1", number=1)
     )
-    if dict_codes:
-        assert dict_codes & {"kadry_invalid", "shot_dropped"}
+    assert _has_scene_error(dict_violations, "s1", "k1")
 
 
 def test_keep_soft_kadry_restore_needs_op() -> None:
