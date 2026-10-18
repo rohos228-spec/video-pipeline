@@ -23,7 +23,7 @@ from app.services.activity_flags_fallback import (
     QUARANTINE_MARK,
     flag_is_false,
     flag_is_true,
-    frame_is_active as _fallback_frame_attrs_is_active,
+    frame_is_active as _fallback_frame_is_active,
     shot_is_active as _fallback_shot_is_active,
 )
 
@@ -31,8 +31,8 @@ _KEY = "deleted_frame_numbers"
 REASON_MARK = "пометка"
 
 # Один предикат. Если модуль WS1 импортируется — это его функции.
-# Локальная матрица только при ImportError. Сигнатуры те же, что у blob
-# e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0: ``shot_is_active(shot)``,
+# Локальная матрица только при ImportError и совпадает с blob
+# f62a0e3054f6deeed298281e705bc8cfcea04900: ``shot_is_active(shot)``,
 # ``frame_is_active(attrs)``. Вызывающие передают словарь attrs, не кадр.
 
 
@@ -128,7 +128,7 @@ except ImportError:
     # Те же сигнатуры, что у WS1: shot — словарь шота, frame_is_active — attrs.
     # Обёртка над кадром читала бы dict.attrs как пусто и считала бы кадр живым.
     shot_is_active = _fallback_shot_is_active
-    frame_is_active = _fallback_frame_attrs_is_active
+    frame_is_active = _fallback_frame_is_active
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")

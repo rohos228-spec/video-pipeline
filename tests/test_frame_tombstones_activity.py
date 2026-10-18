@@ -1,9 +1,8 @@
 """Один предикат активности.
 
 Если ``activity_flags`` импортируется, ``frame_tombstones`` отдаёт те же
-объекты. Иначе локальная матрица. Она расходится с blob ``e8a3284a``
-только на правдивых строках «удалён» и «карантин»: список в
-``test_fallback_diverges_from_activity_flags_blob``.
+объекты. Иначе локальная матрица. Она совпадает с blob ``f62a0e30``
+на всей матрице: ``test_fallback_matches_activity_flags_blob``.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from app.services.frame_tombstones import (
 )
 
 # (kind, payload, живой, WARN на неизвестную строку «активен»)
+_NAN = float("nan")
 _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", None, False, False),
     ("shot", "не словарь", False, False),
@@ -44,7 +44,25 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {ACTIVE_MARK: " OFF "}, False, False),
     ("shot", {ACTIVE_MARK: True}, True, False),
     ("shot", {DELETED_MARK: True}, False, False),
-    ("shot", {DELETED_MARK: "да"}, True, False),
+    ("shot", {DELETED_MARK: "да"}, False, False),
+    ("shot", {DELETED_MARK: "Да"}, False, False),
+    ("shot", {DELETED_MARK: " да "}, False, False),
+    ("shot", {DELETED_MARK: "true"}, False, False),
+    ("shot", {DELETED_MARK: "True"}, False, False),
+    ("shot", {DELETED_MARK: "1"}, False, False),
+    ("shot", {DELETED_MARK: "yes"}, False, False),
+    ("shot", {DELETED_MARK: "on"}, False, False),
+    ("shot", {DELETED_MARK: "истина"}, False, False),
+    ("shot", {DELETED_MARK: "0.0"}, True, False),
+    ("shot", {DELETED_MARK: " 0,0 "}, True, False),
+    ("shot", {DELETED_MARK: "1.0"}, False, False),
+    ("shot", {ACTIVE_MARK: "0.0"}, False, False),
+    ("shot", {ACTIVE_MARK: " 0,0 "}, False, False),
+    ("shot", {ACTIVE_MARK: "1.0"}, True, False),
+    ("shot", {DELETED_MARK: "ложь"}, True, False),
+    ("shot", {DELETED_MARK: "ЛОЖЬ"}, True, False),
+    ("shot", {DELETED_MARK: _NAN}, True, False),
+    ("shot", {DELETED_MARK: "-"}, True, False),
     ("shot", {DELETED_MARK: 1}, False, False),
     ("shot", {DELETED_MARK: False}, True, False),
     ("shot", {DELETED_MARK: 0}, True, False),
@@ -55,7 +73,13 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {DELETED_MARK: "no"}, True, False),
     ("shot", {DELETED_MARK: "off"}, True, False),
     ("shot", {QUARANTINE_MARK: True}, False, False),
-    ("shot", {QUARANTINE_MARK: "да"}, True, False),
+    ("shot", {QUARANTINE_MARK: "да"}, False, False),
+    ("shot", {QUARANTINE_MARK: "0.0"}, True, False),
+    ("shot", {QUARANTINE_MARK: "ложь"}, True, False),
+    ("shot", {QUARANTINE_MARK: _NAN}, True, False),
+    ("shot", {QUARANTINE_MARK: "-"}, True, False),
+    ("shot", {ACTIVE_MARK: "ложь"}, False, False),
+    ("shot", {ACTIVE_MARK: "-"}, True, True),
     ("shot", {QUARANTINE_MARK: 1}, False, False),
     ("shot", {QUARANTINE_MARK: False}, True, False),
     ("shot", {QUARANTINE_MARK: 0}, True, False),
@@ -87,6 +111,20 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("frame", {QUARANTINE_MARK: ""}, True, False),
     ("frame", {DELETED_MARK: True, ACTIVE_MARK: True}, False, False),
     ("frame", {QUARANTINE_MARK: 1, ACTIVE_MARK: False}, False, False),
+    ("frame", {DELETED_MARK: "да"}, False, False),
+    ("frame", {DELETED_MARK: "true"}, False, False),
+    ("frame", {DELETED_MARK: "1"}, False, False),
+    ("frame", {DELETED_MARK: True}, False, False),
+    ("frame", {DELETED_MARK: "0.0"}, True, False),
+    ("frame", {DELETED_MARK: "1.0"}, False, False),
+    ("frame", {ACTIVE_MARK: "0.0"}, False, False),
+    ("frame", {ACTIVE_MARK: " 0,0 "}, False, False),
+    ("frame", {DELETED_MARK: "ложь"}, True, False),
+    ("frame", {DELETED_MARK: _NAN}, True, False),
+    ("frame", {DELETED_MARK: "-"}, True, False),
+    ("frame", {ACTIVE_MARK: "ложь"}, False, False),
+    ("frame", {ACTIVE_MARK: "-"}, True, True),
+    ("frame", {QUARANTINE_MARK: "истина"}, False, False),
 ]
 
 
@@ -167,6 +205,20 @@ def _fallback_core_cases() -> None:
     assert frame_is_active({QUARANTINE_MARK: True}) is False
 
 
+@pytest.fixture(scope="module")
+def ws1_flags_blob(tmp_path_factory):
+    """Blob ``f62a0e30``. Модуль WS1 в дерево не копируется."""
+
+    source = _activity_flags_blob_source()
+    if source is None:
+        pytest.skip("git или blob activity_flags недоступен")
+    return _load_activity_flags_blob(
+        tmp_path_factory.mktemp("flags56"),
+        source,
+        "activity_flags_blob_f62a0e30",
+    )
+
+
 @pytest.mark.parametrize(
     ("kind", "payload", "expected", "warns"),
     _CASES,
@@ -178,12 +230,21 @@ def test_shot_activity_matches_frame_tombstones_matrix(
     expected: bool,
     warns: bool,
     caplog: pytest.LogCaptureFixture,
+    ws1_flags_blob,
 ) -> None:
+    """Матрица ImportError-пути совпадает с blob f62a0e30."""
+
+    import app.services.activity_flags_fallback as fallback
+
+    fallback._WARNED_VALUES.clear()
+    ws1_flags_blob._WARNED_VALUES.clear()
     caplog.set_level(logging.WARNING)
-    if kind == "shot":
-        assert shot_is_active(payload) is expected
-    else:
-        assert frame_is_active(payload) is expected
+    local = fallback.shot_is_active if kind == "shot" else fallback.frame_is_active
+    remote = (
+        ws1_flags_blob.shot_is_active if kind == "shot" else ws1_flags_blob.frame_is_active
+    )
+    assert local(payload) is expected
+    assert remote(payload) is expected
     warned = any("активен" in record.getMessage() for record in caplog.records)
     assert warned is warns
     if kind == "shot" and payload == {}:
@@ -192,7 +253,7 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         assert shot_is_active({}) is True
 
 
-_FLAGS_BLOB = "e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0"
+_FLAGS_BLOB = "f62a0e3054f6deeed298281e705bc8cfcea04900"
 
 
 def _block_activity_flags_import():
@@ -235,7 +296,7 @@ def test_activity_fallback_simulates_import_error() -> None:
     tomb, restore = _block_activity_flags_import()
     try:
         assert tomb.shot_is_active is tomb._fallback_shot_is_active
-        assert tomb.frame_is_active is tomb._fallback_frame_attrs_is_active
+        assert tomb.frame_is_active is tomb._fallback_frame_is_active
         deleted = SimpleNamespace(number=2, attrs={DELETED_MARK: True, ACTIVE_MARK: False})
         inactive_shot = {ACTIVE_MARK: False, "id": "k"}
         assert tomb.frame_is_active(getattr(deleted, "attrs", None) or {}) is False
@@ -248,7 +309,7 @@ def test_activity_fallback_simulates_import_error() -> None:
 
 
 def _activity_flags_blob_source() -> bytes | None:
-    """Текст blob ``e8a3284a``. None — git или blob недоступны."""
+    """Текст blob ``f62a0e30``. None — git или blob недоступны."""
 
     import subprocess
     from pathlib import Path
@@ -306,7 +367,7 @@ def test_activity_predicates_reexport_when_importable(tmp_path) -> None:
 
 
 def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
-    """Сигнатуры fallback совпадают с blob e8a3284a: те же параметры и тип аргумента."""
+    """Сигнатуры fallback совпадают с blob f62a0e30: те же параметры и тип аргумента."""
     import inspect
 
     import app.services.activity_flags_fallback as fallback
@@ -333,34 +394,72 @@ def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
         restore()
 
 
-# Blob e8a3284a считает эти строки «флага нет» (кадр живой) и пишет WARN.
-# Fallback считает пометку поставленной: кадр неактивен. Просьба к WS1.
-_WS1_MARK_STRINGS_TREATED_AS_ABSENT = (
-    "ложь",
-    "ЛОЖЬ",
-    "0.0",
-    "да",
-    "да?",
-    "1",
-    "true",
-    "TRUE",
-    " true ",
-    "yes",
-    "YES",
-    " да ",
-)
-
-
-def test_fallback_diverges_from_activity_flags_blob(tmp_path) -> None:
-    """Расхождения с blob e8a3284a — явный список, не общее равенство."""
+def test_fallback_matches_activity_flags_blob(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Расхождений с blob f62a0e30 нет: один ответ на всей матрице."""
 
     import app.services.activity_flags_fallback as fallback
 
     source = _activity_flags_blob_source()
     if source is None:
         pytest.skip("git или blob activity_flags недоступен")
-    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_e8a3284a")
+    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_f62a0e30_eq")
     nan = float("nan")
+    hide_true = (
+        "да",
+        "Да",
+        " да ",
+        "true",
+        "True",
+        "1",
+        "yes",
+        "on",
+        "истина",
+        True,
+        1,
+    )
+    for value in hide_true:
+        assert fallback.flag_is_true(value) is True
+        assert remote.flag_is_true(value) is True
+        assert fallback.frame_is_active({DELETED_MARK: value}) is False
+        assert fallback.shot_is_active({QUARANTINE_MARK: value}) is False
+    for value in (nan, "0.0", " 0,0 ", "ложь", "ЛОЖЬ"):
+        assert fallback.flag_is_true(value) is False
+        assert remote.flag_is_true(value) is False
+        assert fallback.frame_is_active({DELETED_MARK: value}) is True
+        assert remote.shot_is_active({DELETED_MARK: value}) is True
+    for value in ("1.0", "1,0", " 1.0 "):
+        assert fallback.flag_is_true(value) is True
+        assert remote.flag_is_true(value) is True
+        assert fallback.frame_is_active({DELETED_MARK: value}) is False
+        assert fallback.shot_is_active({QUARANTINE_MARK: value}) is False
+    for value in ("0.0", " 0,0 ", "0"):
+        assert fallback.shot_is_active({ACTIVE_MARK: value}) is False
+        assert remote.frame_is_active({ACTIVE_MARK: value}) is False
+    assert fallback.shot_is_active({ACTIVE_MARK: "1.0"}) is True
+    assert fallback.shot_is_active({ACTIVE_MARK: "ложь"}) is False
+    assert remote.frame_is_active({ACTIVE_MARK: "ложь"}) is False
+
+    fallback._WARNED_VALUES.clear()
+    remote._WARNED_VALUES.clear()
+    caplog.set_level(logging.WARNING)
+    assert fallback.flag_is_true("-") is False
+    assert remote.flag_is_true("-") is False
+    assert fallback.frame_is_active({DELETED_MARK: "-"}) is True
+    assert remote.shot_is_active({DELETED_MARK: "-"}) is True
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.activity_flags_fallback"
+        and "неизвестное значение" in record.getMessage()
+    ]
+    assert warnings == ["неизвестное значение «удалён» '-' — считаем, что флага нет"]
+    assert fallback.flag_is_true("-") is False
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.activity_flags_fallback"
+    ] == warnings
+
     scalars = [
         None,
         True,
@@ -377,21 +476,33 @@ def test_fallback_diverges_from_activity_flags_blob(tmp_path) -> None:
         "no",
         " OFF ",
         "off",
-        *_WS1_MARK_STRINGS_TREATED_AS_ABSENT,
+        "ложь",
+        "ЛОЖЬ",
+        "0.0",
+        " 0,0 ",
+        "1.0",
+        "1,0",
+        "да",
+        "Да",
+        "да?",
+        "1",
+        "true",
+        "TRUE",
+        " true ",
+        "yes",
+        "YES",
+        " да ",
+        "on",
+        "истина",
+        "-",
         nan,
     ]
-    flag_diverged = [
-        value
-        for value in scalars
-        if fallback.flag_is_true(value) is not remote.flag_is_true(value)
-    ]
-    assert flag_diverged == list(_WS1_MARK_STRINGS_TREATED_AS_ABSENT)
-    for value in _WS1_MARK_STRINGS_TREATED_AS_ABSENT:
-        assert fallback.flag_is_true(value) is True
-        assert remote.flag_is_true(value) is False
+    diverged: list[object] = []
     for value in scalars:
-        assert fallback.flag_is_false(value) is remote.flag_is_false(value)
-
+        if fallback.flag_is_true(value) is not remote.flag_is_true(value):
+            diverged.append(("flag_is_true", value))
+        if fallback.flag_is_false(value) is not remote.flag_is_false(value):
+            diverged.append(("flag_is_false", value))
     payloads: list[object] = [None, "не словарь", 1, [], {}]
     for value in scalars:
         payloads.append({ACTIVE_MARK: value})
@@ -406,26 +517,16 @@ def test_fallback_diverges_from_activity_flags_blob(tmp_path) -> None:
             {QUARANTINE_MARK: nan, ACTIVE_MARK: "0.0"},
             {QUARANTINE_MARK: 1, ACTIVE_MARK: False},
             {ACTIVE_MARK: "да?", DELETED_MARK: ""},
+            {DELETED_MARK: "-", ACTIVE_MARK: True},
+            {QUARANTINE_MARK: "истина", ACTIVE_MARK: True},
         ]
     )
-    expected_inactive = [
-        {mark: value}
-        for value in _WS1_MARK_STRINGS_TREATED_AS_ABSENT
-        for mark in (DELETED_MARK, QUARANTINE_MARK)
-    ]
-    expected_inactive.append({DELETED_MARK: "ложь", QUARANTINE_MARK: "да?"})
-    record_diverged = [
-        payload
-        for payload in payloads
-        if fallback.shot_is_active(payload) is not remote.shot_is_active(payload)
-        or fallback.frame_is_active(payload) is not remote.frame_is_active(payload)
-    ]
-    assert record_diverged == expected_inactive
-    for payload in expected_inactive:
-        assert fallback.shot_is_active(payload) is False
-        assert fallback.frame_is_active(payload) is False
-        assert remote.shot_is_active(payload) is True
-        assert remote.frame_is_active(payload) is True
+    for payload in payloads:
+        if fallback.shot_is_active(payload) is not remote.shot_is_active(payload):
+            diverged.append(("shot", payload))
+        if fallback.frame_is_active(payload) is not remote.frame_is_active(payload):
+            diverged.append(("frame", payload))
+    assert diverged == []
 
 
 def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
@@ -438,7 +539,7 @@ def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
     tomb, restore = _block_activity_flags_import()
     try:
         project = SimpleNamespace(id=1, meta={})
-        truthy = (True, 1, "1", "true", "да", "yes", "YES", " да ")
+        truthy = ("да", "true", "1", True, 1, "Да", " да ", "yes", "on", "истина")
         for value in truthy:
             frame = SimpleNamespace(number=4, id=9, attrs={DELETED_MARK: value})
             assert image_skip(frame, where="generate_images")
@@ -450,7 +551,7 @@ def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
         assert tomb.frame_is_active(quarantined.attrs) is False
         assert image_skip(quarantined, where="generate_images")
         assert video_skip(quarantined, where="generate_videos")
-        for value in (False, 0, "0", "false", "нет", "no", "off", None):
+        for value in (False, 0, "0", "false", "нет", "no", "off", None, "0.0", "ложь", "-"):
             attrs = {} if value is None else {DELETED_MARK: value}
             frame = SimpleNamespace(number=6, id=11, attrs=attrs)
             assert image_skip(frame, where="generate_images") is None
@@ -463,3 +564,27 @@ def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
         assert tomb.entity_is_marked(SimpleNamespace(attrs={"archived": "yes"})) is True
     finally:
         restore()
+
+
+def test_activity_parity_real_vs_fallback() -> None:
+    """Импортируемый activity_flags и именные фолбэки совпадают с таблицей 04ea5dfa.
+
+    Числовая строка равна числу: ``активен="0.0"`` неактивен, ``удалён="1.0"``
+    скрыт, ``удалён="0.0"`` и ``" 0,0 "`` живые. Тест не скипается.
+    """
+
+    from app.orchestrator.validators import activity_flags as real
+    from app.services.frame_tombstones import (
+        _fallback_frame_is_active,
+        _fallback_shot_is_active,
+    )
+    from tests.validators.test_activity_flags_parity import _payload, _rows
+
+    rows = _rows()
+    assert rows
+    for mark, value, expected in rows:
+        payload = _payload(mark, value)
+        assert real.shot_is_active(payload) is expected
+        assert real.frame_is_active(payload) is expected
+        assert _fallback_shot_is_active(payload) is expected
+        assert _fallback_frame_is_active(payload) is expected
