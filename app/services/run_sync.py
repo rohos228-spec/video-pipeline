@@ -448,7 +448,6 @@ async def sync_run_for_project(
                 NodeRunStatus.running,
                 NodeRunStatus.queued,
                 NodeRunStatus.waiting_hitl,
-                NodeRunStatus.waiting_approval,
             ):
                 old = nr.status.value
                 if complete_node(nr, project_id=project_id, initiator="worker"):
@@ -1124,7 +1123,6 @@ async def complete_active_node_for_step(
             NodeRunStatus.running,
             NodeRunStatus.queued,
             NodeRunStatus.waiting_hitl,
-            NodeRunStatus.waiting_approval,
         ):
             if complete_node(nr, project_id=project.id, initiator="worker"):
                 await session.flush()

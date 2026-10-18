@@ -176,6 +176,25 @@ async def test_waiting_approval_resumes_after_approval(mem, monkeypatch) -> None
         assert fresh.status is NodeRunStatus.running
 
 
+def test_complete_node_skips_parked_without_forbidden_log(monkeypatch) -> None:
+    from app.services.node_status_machine import complete_node
+
+    errors: list[tuple] = []
+    monkeypatch.setattr(
+        "app.services.node_status_machine.logger.error",
+        lambda *args, **kwargs: errors.append(args),
+    )
+    node = SimpleNamespace(
+        status=NodeRunStatus.waiting_approval,
+        node_type="plan",
+        node_key="n_plan",
+        error=None,
+    )
+    assert complete_node(node, project_id=1, initiator="worker") is False
+    assert node.status is NodeRunStatus.waiting_approval
+    assert errors == []
+
+
 def test_aggregate_waiting_approval_is_not_done() -> None:
     run = SimpleNamespace(
         node_runs=[

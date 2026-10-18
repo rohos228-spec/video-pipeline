@@ -412,6 +412,8 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
 
 
 def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "worker") -> bool:
+    if nr.status == NodeRunStatus.waiting_approval:
+        return False
     if initiator != "worker":
         logger.error(
             "complete_node: initiator={!r} запрещён для {}/{}",
