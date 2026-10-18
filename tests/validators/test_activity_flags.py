@@ -162,6 +162,59 @@ def test_numeric_string_matches_number(
     assert not caplog.records
 
 
+# Таблица паритета. WARN только у неизвестной строки «-».
+_TABLE_VALUES = (
+    True,
+    "true",
+    "True",
+    "да",
+    "Да",
+    1,
+    "1",
+    "1.0",
+    "yes",
+    "on",
+    "истина",
+    "нет",
+    0,
+    "0",
+    "false",
+    False,
+    "ложь",
+    "0.0",
+    " 0,0 ",
+    _NAN,
+    None,
+    "-",
+)
+_TABLE_MARKS = (ACTIVE_MARK, DELETED_MARK, QUARANTINE_MARK)
+
+
+@pytest.mark.parametrize("kind", ("shot", "frame"))
+@pytest.mark.parametrize("mark", _TABLE_MARKS)
+@pytest.mark.parametrize("value", _TABLE_VALUES, ids=lambda value: repr(value))
+def test_warn_only_for_unknown_strings(
+    kind: str,
+    mark: str,
+    value: object,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Известные значения, включая «да» у ``активен``, не пишут WARN."""
+
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr(activity_flags, "_WARNED_VALUES", set())
+    payload = {mark: value}
+    if kind == "shot":
+        shot_is_active(payload)
+    else:
+        frame_is_active(payload)
+    if isinstance(value, str) and value.strip() == "-":
+        assert len(caplog.records) == 1
+        return
+    assert not caplog.records
+
+
 def _unknown_tokens(payload: object) -> list[str]:
     if not isinstance(payload, dict):
         return []
