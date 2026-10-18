@@ -127,7 +127,9 @@ test("13 исход платного шага неизвестен", async ({ pa
   await page.getByTestId("orch-composer").fill("платный шаг оборвался");
   await page.getByTestId("orch-send").click();
   await expect(page.getByTestId("orch-paid-outcome")).toHaveText("Исход платного шага неизвестен");
-  await expect(page.getByTestId("orch-paid-retry")).toBeEnabled();
+  await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+  await expect(page.getByTestId("orch-retry")).toBeEnabled();
+  await expect(page.getByTestId("orch-reject")).toBeEnabled();
   await shot(page, "13-paid-outcome");
 });
 
