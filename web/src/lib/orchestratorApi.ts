@@ -315,6 +315,18 @@ export function getOrchPartialChanges(
   );
 }
 
+/** GET /api/orchestrator/chat/{session}/status. Совпадает с последним agent_status. */
+export interface OrchSessionStatus {
+  session: string;
+  task_id: number | null;
+  status: string;
+  resume_allowed: boolean;
+}
+
+export function getOrchSessionStatus(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchSessionStatus> {
+  return getJson(cfg, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/status`, signal);
+}
+
 export async function postOrchResume(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchResumeResult> {
   assertBearerTarget(cfg.apiBase);
   const res = await fetch(

@@ -12,6 +12,7 @@ import {
   postOrchActionMessage,
   postOrchMessage,
   getOrchPartialChanges,
+  getOrchSessionStatus,
   postOrchResume,
   readOrchProjectId,
   postOrchReject,
@@ -101,6 +102,7 @@ export function useOrchestratorChat() {
               if (seen.current.has(event.seq)) return;
               seen.current.add(event.seq);
               if (event.seq > lastSeq.current) lastSeq.current = event.seq;
+              snapshotSeen.current += 1;
               if (event.type === "ack" && sendStartedAt.current != null) {
                 setAckMs(performance.now() - sendStartedAt.current);
               }
@@ -135,6 +137,31 @@ export function useOrchestratorChat() {
       stopped = true;
       ac.abort();
     };
+  }, [blocked, cfg, ready, token]);
+
+  const snapshotSeen = useRef(0);
+  useEffect(() => {
+    if (!ready || !token || blocked) return;
+    const ac = new AbortController();
+    const started = snapshotSeen.current;
+    void getOrchSessionStatus(cfg, ac.signal)
+      .then((body) => {
+        if (snapshotSeen.current !== started) return;
+        const taskId = typeof body.task_id === "number" && Number.isInteger(body.task_id) ? String(body.task_id) : "";
+        const status = typeof body.status === "string" && (TASK_STATUSES as readonly string[]).includes(body.status)
+          ? (body.status as TaskStatus)
+          : null;
+        if (!taskId || !status || typeof body.resume_allowed !== "boolean") return;
+        dispatch({ type: "session-snapshot", taskId, status, resumeAllowed: body.resume_allowed });
+      })
+      .catch((error: unknown) => {
+        if (isAbortError(error)) return;
+        if (error instanceof OrchApiError && error.status === 401) {
+          setAuthError(error.message);
+          setBlocked(true);
+        }
+      });
+    return () => ac.abort();
   }, [blocked, cfg, ready, token]);
 
   const noteAuth = useCallback((error: unknown): boolean => {

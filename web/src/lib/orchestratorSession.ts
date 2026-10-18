@@ -276,6 +276,7 @@ export type OrchScreenAction =
     }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "task-status"; taskId: string; status: TaskStatus; resumeAllowed?: boolean }
+  | { type: "session-snapshot"; taskId: string; status: TaskStatus; resumeAllowed: boolean }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -604,6 +605,20 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const task = tasks.find((item) => item.id === action.taskId) ?? ensureTask(tasks, action.taskId);
     task.status = status;
     if (typeof action.resumeAllowed === "boolean") task.resumeAllowed = action.resumeAllowed;
+    return { ...state, tasks };
+  }
+  if (action.type === "session-snapshot") {
+    const tasks = state.tasks.map((task) => ({
+      ...task,
+      steps: task.steps.map((step) => ({ ...step, node: step.node ? { ...step.node } : null })),
+      checkpoints: task.checkpoints.map((checkpoint) => ({ ...checkpoint })),
+      validators: [...task.validators],
+      plan: task.plan.map((step) => ({ ...step })),
+    }));
+    const existing = tasks.find((item) => item.id === action.taskId);
+    const task = existing ?? ensureTask(tasks, action.taskId);
+    if (!existing) task.status = action.status;
+    if (task.resumeAllowed == null) task.resumeAllowed = action.resumeAllowed;
     return { ...state, tasks };
   }
   if (action.type === "user-message") {

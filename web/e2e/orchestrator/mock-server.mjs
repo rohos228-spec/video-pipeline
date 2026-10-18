@@ -45,6 +45,8 @@ function sessionOf(id) {
       approvalWait: null,
       reconnectDropped: false,
       partialByTask: new Map(),
+      snapshot: { task_id: null, status: "", resume_allowed: false },
+      unlisted: false,
     });
   }
   return sessions.get(id);
@@ -1126,6 +1128,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/status") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    const taskRaw = body.task_id;
+    const taskId = taskRaw == null || taskRaw === "" ? null : Number(taskRaw);
+    session.snapshot = {
+      task_id: Number.isInteger(taskId) ? taskId : null,
+      status: typeof body.status === "string" ? body.status : "",
+      resume_allowed: body.resume_allowed === true,
+    };
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/unlisted") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    session.unlisted = body.unlisted !== false;
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/orchestrator/test/partial-changes") {
     const body = await readBody(req);
     const session = sessionOf(String(body.session_id || "studio"));
@@ -1172,6 +1196,64 @@ const server = http.createServer(async (req, res) => {
       session: session.id,
       task_id: taskId,
       change_ids: known,
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "status") {
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const snap = session.snapshot || { task_id: null, status: "", resume_allowed: false };
+    sendJson(res, 200, {
+      session: session.id,
+      task_id: snap.task_id,
+      status: snap.status,
+      resume_allowed: snap.resume_allowed === true,
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "approve") {
+    const body = await readBody(req);
+    const allowed = new Set(["change_id", "decision", "retry_grant"]);
+    if (Object.keys(body).some((key) => !allowed.has(key))) {
+      sendJson(res, 422, { detail: "extra forbidden" });
+      return;
+    }
+    const decision = body.decision == null ? null : String(body.decision);
+    if (decision != null && decision !== "approve" && decision !== "retry_step" && decision !== "deny") {
+      sendJson(res, 422, { detail: "bad decision" });
+      return;
+    }
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const changeId = typeof body.change_id === "string" ? body.change_id : null;
+    if (session.unlisted) {
+      const taskId = session.snapshot?.task_id || session.currentTaskId || session.activeTaskId || 1;
+      session.snapshot = { task_id: taskId, status: "failed", resume_allowed: false };
+      emit(session, "agent_status", taskId, {
+        status: "failed",
+        agent: "supervisor",
+        task_id: taskId,
+        resume_allowed: false,
+      });
+      if (decision === "deny") {
+        sendJson(res, 200, {
+          executed: false,
+          decision: "deny",
+          reason: "not_in_whitelist",
+          retry_armed: false,
+          change_id: changeId,
+        });
+        return;
+      }
+      sendJson(res, 403, { detail: "not_in_whitelist" });
+      return;
+    }
+    sendJson(res, 200, {
+      executed: false,
+      decision,
+      reason: null,
+      retry_armed: false,
+      change_id: changeId,
     });
     return;
   }

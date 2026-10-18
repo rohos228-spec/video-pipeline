@@ -132,6 +132,34 @@ test("Продолжить слушает resume_allowed и прячется п�
   await expect(page.getByTestId("orch-resume")).toHaveCount(0);
 });
 
+test("снимок resume_allowed важнее чекпоинта", async ({ page }) => {
+  const session = "resume-snap";
+  const seeded = await page.request.post(`${MOCK}/api/orchestrator/test/status`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: session, task_id: 1, status: "waiting_approval", resume_allowed: false },
+  });
+  expect(seeded.ok()).toBeTruthy();
+  await openWithToken(page, session);
+  await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+
+  await emit(page, session, "checkpoint", {
+    checkpoint_id: "cp-snap",
+    plan: [],
+    position: 0,
+    change_ids: ["chg-snap"],
+    context: "",
+  });
+  await expect(page.getByTestId("orch-resume")).toHaveCount(0);
+
+  await emit(page, session, "agent_status", {
+    agent: "supervisor",
+    status: "waiting_approval",
+    resume_allowed: true,
+  });
+  await expect(page.getByTestId("orch-resume")).toBeEnabled();
+});
+
 test("partial_write показывает WARN и список GET partial-changes без отката", async ({ page }) => {
   const session = "partial-1";
   await openWithToken(page, session);
