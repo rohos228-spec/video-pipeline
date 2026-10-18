@@ -384,11 +384,19 @@ function applyTaskStatus(
 ): TaskView {
   const task = ensureTask(state.tasks, taskId);
   if (state.ownSession && !task.statusSession) task.statusSession = state.ownSession;
+  const shown = state.ownSession ? task.statusBySession[state.ownSession] : undefined;
   if (!sessionId) {
+    if (shown) {
+      if (task.status !== shown) task.status = shown;
+      return task;
+    }
     if (task.status !== status) task.status = status;
     return task;
   }
-  if (task.statusBySession[sessionId] === status) return task;
+  if (task.statusBySession[sessionId] === status) {
+    if (shown && task.status !== shown) task.status = shown;
+    return task;
+  }
   task.statusBySession[sessionId] = status;
   const ownsDisplay = task.statusSession == null || task.statusSession === sessionId;
   if (ownsDisplay) {

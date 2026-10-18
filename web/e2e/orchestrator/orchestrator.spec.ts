@@ -50,6 +50,32 @@ test("чужая сессия, пришедшая первой, не заним�
   expect(state.tasks[0]?.statusBySession.own).toBe("paused");
 });
 
+test("событие без сессии не оставляет экран на paused после своего executing", () => {
+  let seq = 0;
+  let state = initialOrchScreen("own");
+  const push = (session: string, status: string) => {
+    seq += 1;
+    state = reduceOrchScreen(state, {
+      type: "event",
+      event: {
+        type: "agent_status",
+        task_id: 1,
+        seq,
+        session_id: session,
+        payload: { agent: "supervisor", status: "running", task_status: status },
+      },
+    });
+  };
+  push("own", "executing");
+  expect(state.tasks[0]?.status).toBe("executing");
+  push("", "paused");
+  expect(state.tasks[0]?.status).toBe("executing");
+  expect(state.tasks[0]?.statusBySession.own).toBe("executing");
+  push("own", "executing");
+  expect(state.tasks[0]?.status).toBe("executing");
+  expect(state.tasks[0]?.statusSession).toBe("own");
+});
+
 test("чужая сессия не съедает переход статуса своей задачи", () => {
   let seq = 0;
   let state = initialOrchScreen();
