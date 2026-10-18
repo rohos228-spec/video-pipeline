@@ -20,6 +20,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import Frame, Project
 from app.orchestrator.validators.activity_flags import shot_is_active
@@ -353,17 +354,22 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
     return tuple(parts)
 
 
-_TOMBSTONE_MARKS = ("удалён", "пометка", "карантин", "активен")
+_TOMBSTONE_MARKS = ("удалён", "пометка", "карантин")
 _PAYLOAD_IGNORE = frozenset({"активен", "порядок", "номер"})
 
 
 def _stamp_tombstone_marks(old_shot: dict[str, Any], target: dict[str, Any]) -> None:
-    """Неживой старый шот не оживает: пометки переносятся на входящую копию."""
+    """Неживой старый шот не оживает: на копию ставим ``активен: False``.
+
+    Сырое значение ``активен`` (``0``, ``false``, ``нет``) не копируется.
+    Шот, неживой только из-за ``удалён`` или ``карантин``, тоже получает False.
+    """
     if shot_is_active(old_shot):
         return
     for key in _TOMBSTONE_MARKS:
         if key in old_shot:
             target[key] = old_shot[key]
+    target["активен"] = False
 
 
 def _shot_payload_key(shot: Any) -> tuple:
@@ -392,8 +398,8 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     Входящий ``активен: False`` не снимается. Старый неактивный шот не
     оживает: ни если его нет в новом списке, ни если новый пришёл без флага,
     ни если во входящем явно ``активен: True``. Совпадение по id или тексту
-    переносит ``удалён``, ``пометка``, ``карантин`` и ``активен`` на каждую
-    входящую копию с тем же id или текстом.
+    переносит ``удалён``, ``пометка`` и ``карантин`` и ставит ``активен: False``
+    на каждую входящую копию с тем же id или текстом. Сырой ``активен`` не копируется.
     ``{}``, не-JSON и прочий не-список — мусор: поле не меняется.
     ``null`` и пустая строка при непустом старом списке тоже не трогают поле.
     Скрыть все шоты можно только явным ``[]``.
@@ -1757,6 +1763,7 @@ async def apply_ops(
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
         fr.attrs = attrs
+        flag_modified(fr, "attrs")
         updated += 1
 
     for op in project_ops:

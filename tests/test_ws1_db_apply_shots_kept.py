@@ -689,6 +689,71 @@ async def test_identical_shots_without_text_kept_as_multiset(session: AsyncSessi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["id", "text", "payload"])
+@pytest.mark.parametrize("flag", [0, "false", "нет", "off"])
+async def test_xlsx_inactive_flag_does_not_revive(
+    session: AsyncSession, mode: str, flag: object
+) -> None:
+    """Старый «активен» из xlsx не оживает ни по id, ни по тексту, ни по payload."""
+    from app.orchestrator.validators.activity_flags import shot_is_active as flags_active
+
+    project = Project(slug=f"ws1-flag-{mode}", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    if mode == "id":
+        old = {"id": "a", "закадр": "альфа", "активен": flag}
+        new = {"id": "a", "закадр": "альфа новая", "активен": True}
+    elif mode == "text":
+        old = {"закадр": "альфа", "описание": "одно", "активен": flag}
+        new = {"закадр": "альфа", "описание": "одно"}
+    else:
+        old = {"план": "общий", "камера": "wide", "активен": flag}
+        new = {"план": "общий", "камера": "wide", "активен": True}
+    frame = await _frame_with_kadry(session, project, f"flag-{mode}-{flag}", [old], number=1)
+    await session.commit()
+    await apply_ops(
+        session,
+        project,
+        [{"frame_uuid": frame.uuid, "fields": {"кадры": [new]}}],
+        export_xlsx=False,
+    )
+    await session.refresh(frame)
+    shots = list(frame.attrs["кадры"])
+    assert len(shots) == 1, shots
+    assert shots[0]["активен"] is False
+    assert flags_active(shots[0]) is False
+
+
+@pytest.mark.asyncio
+async def test_deleted_net_stays_active(session: AsyncSession) -> None:
+    """``удалён: нет`` — не пометка удаления, шот остаётся живым."""
+    from app.orchestrator.validators.activity_flags import shot_is_active as flags_active
+
+    project = Project(slug="ws1-deleted-net", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    frame = await _frame_with_kadry(
+        session,
+        project,
+        "deleted-net",
+        [{"id": "a", "закадр": "альфа", "удалён": "нет"}],
+        number=1,
+    )
+    await session.commit()
+    await apply_ops(
+        session,
+        project,
+        [{"frame_uuid": frame.uuid, "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]}}],
+        export_xlsx=False,
+    )
+    await session.refresh(frame)
+    shots = list(frame.attrs["кадры"])
+    assert len(shots) == 1
+    assert shots[0].get("активен") is not False
+    assert flags_active(shots[0]) is True
+
+
+@pytest.mark.asyncio
 async def test_null_kadry_keeps_old_shots_active(
     session: AsyncSession, warn_log: list[str]
 ) -> None:
