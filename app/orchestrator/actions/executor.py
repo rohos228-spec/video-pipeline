@@ -132,17 +132,49 @@ def whitelist() -> list[str]:
     return sorted(spec.id for spec in registry.list())
 
 
+class SoftDeleteMetadata(ActionMetadata):
+    """Мягкое удаление для plan-sanity. Схема провода ActionMetadata не расширяется."""
+
+    soft_delete: bool = True
+    restore_action: str
+
+
+def _wire_metadata(meta: ActionMetadata) -> ActionMetadata:
+    """Пять полей контракта. soft_delete в карточку одобрения не входит."""
+
+    return ActionMetadata(
+        name=meta.name,
+        risk=meta.risk,
+        read_only=meta.read_only,
+        destructive=meta.destructive,
+        paid=meta.paid,
+    )
+
+
 def metadata_of(name: str) -> ActionMetadata:
     """Флаги из audit_metadata.json, не слабее пола яруса Никиты.
 
     create_node@new_group и prompt.create_master остаются destructive.
+    У мягкого удаления есть soft_delete и restore_action.
     """
 
     published = contract_metadata(str(name))
     spec = registry.find(str(name))
-    if spec is None:
-        return published
-    return _raise_to_floor(published, map_nikita_risk(spec.risk, name=published.name))
+    base = published if spec is None else _raise_to_floor(
+        published, map_nikita_risk(spec.risk, name=published.name)
+    )
+    restore = SOFT_DELETE_RESTORE.get(base.name)
+    if restore is None:
+        return base
+    return SoftDeleteMetadata(
+        name=base.name,
+        risk=base.risk,
+        read_only=base.read_only,
+        destructive=base.destructive,
+        paid=base.paid,
+        soft_delete=True,
+        restore_action=restore,
+    )
 
 
 def _approved(ctx: Any) -> bool:
@@ -210,7 +242,7 @@ async def _approval_required(spec: Any, params: dict, meta: ActionMetadata) -> A
     )
     body = ApprovalRequired(
         action=meta.name,
-        metadata=meta,
+        metadata=_wire_metadata(meta),
         reason="нужно подтверждение",
         preview=preview,
     )

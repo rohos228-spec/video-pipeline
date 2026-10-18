@@ -58,11 +58,38 @@ def test_metadata_of_covers_registry() -> None:
         assert isinstance(meta, ActionMetadata)
         assert meta.name == spec.id
         assert meta.risk in {"none", "low", "medium", "high"}
-        assert meta == contract_metadata(spec.id)
+        assert meta.model_dump(include={"name", "risk", "read_only", "destructive", "paid"}) == (
+            contract_metadata(spec.id).model_dump()
+        )
     raised = metadata_of("create_node@new_group")
     assert raised.risk == "high"
     assert raised.destructive is True
     assert raised.needs_approval is True
+
+
+def test_metadata_marks_soft_delete_with_restore() -> None:
+    """Мягкое удаление видно в metadata_of: soft_delete и restore_action."""
+
+    from app.orchestrator.action_contracts.contracts import SOFT_DELETE_RESTORE
+    from app.orchestrator.actions.executor import metadata_of
+
+    expected = {
+        "montage.delete_frame": "frame.restore",
+        "montage.delete_child_frame": "frame.restore",
+        "group.delete": "group.restore",
+        "prompt.delete_master": "prompt.restore_master",
+    }
+    assert expected == SOFT_DELETE_RESTORE
+    for action, restore in expected.items():
+        meta = metadata_of(action)
+        assert meta.soft_delete is True
+        assert meta.restore_action == restore
+        dumped = meta.model_dump()
+        assert dumped["soft_delete"] is True
+        assert dumped["restore_action"] == restore
+    plain = metadata_of("history.list_snapshots")
+    assert plain.model_dump().get("soft_delete") is not True
+    assert metadata_of("frame.restore").model_dump().get("soft_delete") is not True
 
 
 def test_registry_populated_on_import() -> None:
@@ -136,7 +163,9 @@ def test_risk_mapping_read_local_safe_paid_destructive() -> None:
     for spec in registry.list():
         floor = map_nikita_risk(spec.risk, name=spec.id)
         published = metadata_of(spec.id)
-        assert published == contract_metadata(spec.id)
+        assert published.model_dump(include={"name", "risk", "read_only", "destructive", "paid"}) == (
+            contract_metadata(spec.id).model_dump()
+        )
         assert rank[published.risk] >= rank[floor.risk]
         if floor.destructive:
             assert published.destructive is True
