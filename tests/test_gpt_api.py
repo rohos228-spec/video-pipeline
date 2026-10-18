@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import socket
 from pathlib import Path
 
 import httpx
@@ -82,6 +84,110 @@ async def test_chat_success(monkeypatch) -> None:
     assert res.text == "привет из API"
     assert res.finish_reason == "stop"
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_vibecode_empty_stream_falls_back_to_nostream(monkeypatch) -> None:
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "text_llm_provider", "vibecode")
+    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
+    monkeypatch.setattr(settings, "gpt_api_mode", "chat")
+    modes: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        streamed = bool(body.get("stream"))
+        modes.append(streamed)
+        if streamed:
+            return httpx.Response(
+                200,
+                content=b"",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_completion("salvaged prompt"))
+
+    _mock_httpx(monkeypatch, handler)
+    res = await chat(prompt="x", auto_pack=False)
+    assert res.text == "salvaged prompt"
+    assert modes == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_vibecode_upstream_error_stream_falls_back_to_nostream(
+    monkeypatch,
+) -> None:
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "text_llm_provider", "vibecode")
+    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
+    monkeypatch.setattr(settings, "gpt_api_mode", "chat")
+    modes: list[bool] = []
+    sse = (
+        'data: {"id":"resp-1","object":"chat.completion.chunk",'
+        '"choices":[{"delta":{"role":"assistant"},"index":0}]}\n'
+        'data: {"error":{"message":"upstream error","type":"upstream_error"}}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        streamed = bool(body.get("stream"))
+        modes.append(streamed)
+        if streamed:
+            return httpx.Response(
+                200,
+                content=sse.encode("utf-8"),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_completion("nostream ok"))
+
+    _mock_httpx(monkeypatch, handler)
+    res = await chat(prompt="x", auto_pack=False, max_retries=0)
+    assert res.text == "nostream ok"
+    assert modes == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_stream_cancelled_error_is_not_retryable(monkeypatch) -> None:
+    """⏹ / ▶ другой ноды: CancelledError нельзя превращать в retryable GptApiError."""
+
+    class _BoomStream:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def aiter_lines(self):
+            if False:
+                yield ""
+            raise asyncio.CancelledError()
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        def stream(self, *_a, **_k):
+            return _BoomStream()
+
+    monkeypatch.setattr(gpt_api, "_async_client", lambda **_k: _Client())
+    with pytest.raises(asyncio.CancelledError):
+        await gpt_api._chat_completions_stream(
+            url="http://x",
+            headers={},
+            body={},
+            timeout=10,
+            use_model="gpt",
+        )
 
 
 @pytest.mark.asyncio
@@ -356,6 +462,14 @@ def test_sse_wall_clock_uses_call_timeout_not_idle_read() -> None:
     assert _sse_deadline_s(280.0) == 280.0
     assert _sse_deadline_s(10.0) == 30.0
     assert _sse_deadline_s(0.0) >= 30.0
+    # Studio-чат ставит 1800с. Потолок 1500с обрывал ещё живой ответ.
+    assert _sse_deadline_s(1800.0) == 1800.0
+
+
+def test_kie_route_follows_the_node_not_a_hardcoded_switch() -> None:
+    """Без ноды kie запрос не уезжает на Responses. Иначе сокет рвётся о чужой хост."""
+    assert gpt_api._node_kie_override() is False
+    assert gpt_api._node_vibecode_override() is False
 
 
 def test_responses_retrieve_urls_include_post_path_and_jobs() -> None:
@@ -467,6 +581,30 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
     assert res.finish_reason == "stream_continued"
     assert '{"ops"' in res.text
     assert looks_truncated_llm_text(res.text) is False
+
+
+def test_skip_cf_continue_when_salvage_has_complete_ops() -> None:
+    from app.services.gpt_api import skip_cf_continue_for_salvaged_ops
+
+    closed = (
+        '{"ops":['
+        '{"frame_uuid":"aaa","fields":{"место":"лес"}},'
+        '{"frame_uuid":"bbb","fields":{"место":"город"}}'
+        "]}"
+    )
+    truncated = (
+        '{"ops":['
+        '{"frame_uuid":"aaa","fields":{"место":"лес"}},'
+        '{"frame_uuid":"bbb","fields":{"место":"город"}},'
+        '{"frame_uuid":"ccc","fields":{"место":"обрез'
+    )
+    assert skip_cf_continue_for_salvaged_ops(closed, "apply_ops") is True
+    # apply-ops: обрубок не дописываем «с хвоста» (модель без задания
+    # выдумывает незакрытую операцию) — целые ops пишутся, недостающие
+    # ячейки добирает пачка.
+    assert skip_cf_continue_for_salvaged_ops(truncated, "apply_ops") is True
+    assert skip_cf_continue_for_salvaged_ops(closed, "tsv") is False
+    assert skip_cf_continue_for_salvaged_ops('{"ops":[{"a":1', "apply_ops") is True
 
 
 @pytest.mark.asyncio
@@ -1142,6 +1280,7 @@ def test_headers_include_relay_token(monkeypatch) -> None:
     monkeypatch.setattr(settings, "text_llm_provider", "kie")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://relay.example.com")
     h = gpt_api._headers()
     assert h["Authorization"] == "Bearer test-key"
     assert h["X-VP-Relay-Token"] == "relay-secret"
@@ -1186,6 +1325,93 @@ def test_gpt_proxy_url_empty(monkeypatch) -> None:
     assert gpt_api._gpt_proxy_url() is None
     monkeypatch.setattr(settings, "gpt_proxy_url", "  ")
     assert gpt_api._gpt_proxy_url() is None
+
+
+def test_async_client_disables_trust_env_without_proxy(monkeypatch) -> None:
+    from app.settings import settings
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert captured.get("trust_env") is False
+
+
+def test_gpt_retry_backoff_dns_is_short() -> None:
+    err = httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+    assert gpt_api._is_fast_retry_network_error(err) is True
+    assert gpt_api._gpt_retry_backoff_s(1, err) == 0.4
+    assert gpt_api._gpt_retry_backoff_s(2, err) == 0.8
+    wrapped = gpt_api.GptApiError(
+        "GPT сетевая ошибка: ConnectError: errno=11001",
+        context={"error_kind": "network", "retryable": True},
+    )
+    assert gpt_api._is_fast_retry_network_error(wrapped) is True
+    timeout = gpt_api.GptApiError(
+        "GPT timeout 600s",
+        context={"error_kind": "timeout", "retryable": True},
+    )
+    assert gpt_api._is_fast_retry_network_error(timeout) is False
+    assert gpt_api._gpt_retry_backoff_s(1, timeout) == 2.0
+
+
+def test_connect_error_skips_nostream_salvage() -> None:
+    assert gpt_api._stream_should_salvage_nostream(None) is True
+    assert gpt_api._stream_should_salvage_nostream(httpx.ConnectError("getaddrinfo")) is False
+    assert gpt_api._stream_should_salvage_nostream(httpx.ReadError("peer")) is True
+
+
+def test_httpx_error_detail_includes_errno() -> None:
+    err = OSError(11001, "getaddrinfo failed")
+    wrapped = httpx.ConnectError("")
+    wrapped.__cause__ = err
+    detail = gpt_api._httpx_error_detail(wrapped)
+    assert "11001" in detail or "getaddrinfo" in detail
+
+
+def test_parse_dns_a_records_extracts_ipv4() -> None:
+    import struct
+    import socket as _sock
+
+    def enc(host: str) -> bytes:
+        out = b""
+        for lab in host.split("."):
+            raw = lab.encode()
+            out += bytes([len(raw)]) + raw
+        return out + b"\x00"
+
+    name = enc("example.com")
+    header = struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0)
+    question = name + struct.pack("!HH", 1, 1)
+    answer = name + struct.pack("!HHIH", 1, 1, 60, 4) + _sock.inet_aton("1.2.3.4")
+    assert gpt_api._parse_dns_a_records(header + question + answer, 0x1234) == [
+        "1.2.3.4"
+    ]
+    assert gpt_api._parse_dns_a_records(header + question + answer, 0x0001) == []
+
+
+def test_remember_host_ipv4_answers_getaddrinfo() -> None:
+    gpt_api._HOST_IPV4.pop("gpt-dns-test.invalid", None)
+    gpt_api._remember_host_ipv4("gpt-dns-test.invalid", "185.178.208.164")
+    try:
+        infos = socket.getaddrinfo(
+            "gpt-dns-test.invalid", 443, socket.AF_INET, socket.SOCK_STREAM
+        )
+        assert infos[0][4][0] == "185.178.208.164"
+    finally:
+        gpt_api._HOST_IPV4.pop("gpt-dns-test.invalid", None)
+
+
 @pytest.mark.asyncio
 async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:
     """Страница HTML, сохранённая как .xlsx, переименовывается в .html."""

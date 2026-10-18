@@ -1,0 +1,47 @@
+{
+  "step_code": "split",
+  "compose_step_id": "03_razbivka",
+  "label": "Разбивка",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "split_role": "voiceover_segmenter",
+        "split_rules": "microthought_cells",
+        "forbidden_phrases": "ai_cliches_ru",
+        "split_output_contract": "xlsx_row49",
+        "split_self_check": "no_broken_words_gate"
+      },
+      "extra_blocks": {
+        "split_source_full": "default_full"
+      }
+    },
+    "norm": {
+      "label": "norm",
+      "aliases": [
+        "norm",
+        "reworked_norm_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта norm.md",
+      "blocks": {
+        "split_role": "voiceover_segmenter",
+        "split_rules": "microthought_cells",
+        "forbidden_phrases": "ai_cliches_ru",
+        "split_output_contract": "xlsx_row49",
+        "split_self_check": "no_broken_words_gate"
+      },
+      "extra_blocks": {
+        "split_source_full": "norm_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default",
+    "norm"
+  ]
+}

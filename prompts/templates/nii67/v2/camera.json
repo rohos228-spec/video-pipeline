@@ -1,0 +1,12 @@
+{
+  "version": "2",
+  "cameras": ["far", "mid", "close", "side", "POV"],
+  "feels": ["handheld_soft", "handheld_action", "handheld_intimate"],
+  "rules": [
+    "всегда лёгкая ручная камера",
+    "нельзя два close подряд",
+    "общий и спокойный кадр — handheld_soft",
+    "пик и резкое действие — handheld_action",
+    "крупный план — handheld_intimate"
+  ]
+}

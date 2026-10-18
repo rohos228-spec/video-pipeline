@@ -4236,7 +4236,7 @@ async def on_test_critique(cb: CallbackQuery) -> None:
     await cb.message.answer(
         f"✏ Пришли критику/комментарий для тестового проекта #{tid} "
         f"одним сообщением. ChatGPT перепишет txt-промт с учётом "
-        f"критики, и outsee сгенерит новую картинку."
+        f"критики, и генератор сделает новую картинку."
     )
 
 
@@ -6996,6 +6996,12 @@ async def build_bot() -> tuple[Bot, Dispatcher]:
             )
     else:
         bot = Bot(settings.telegram_bot_token)
+    try:
+        from app.brand import BrandScrubMiddleware
+        if BrandScrubMiddleware is not None:
+            bot.session.middleware(BrandScrubMiddleware())
+    except Exception:
+        pass
     return bot, dp
 
 

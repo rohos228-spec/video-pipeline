@@ -21,12 +21,24 @@ from app.services.volume_batches import (
 _FRAMES_PER_BATCH = 30
 _T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
+
+
+def strip_img_pr_master_preamble(text: str) -> str:
+    """Мастер из чата часто начинается с «окей, давай агента» — это не инструкция."""
+    raw = text or ""
+    lines = raw.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            body = "\n".join(lines[i:]).strip()
+            return body + ("\n" if raw.endswith("\n") else "")
+    return raw
 _GPT_ATTEMPTS = 3
 
 _BATCH_FOOTER = """
 # BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
 Верни ТОЛЬКО валидный JSON (без markdown, без прозы):
-{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","персонажи":"c01"}}}}]}}
+{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…СТАРТ или процесс…","промт_картинки_2":"…КОНЕЦ или опусти…","персонажи":"c01"}}}}]}}
 
 ЖЁСТКО:
 - `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
@@ -44,20 +56,50 @@ lock / Negative из мастера. Оркестратор НИЧЕГО не д
 === ФОН / ПЛАН / РЕФ / ТЕКСТ (КРИТИЧНО) ===
 - Фон = подробно из shot01_bg (священно); план/ракурс = scene_feature + shot01_description.
 - При укорачивании до 4877 НЕ выкидывай фон, план/ракурс и STYLE LOCK.
-- Один cXX = один референс = одно тело; запрет клонов/идентичных лиц.
+- Один cXX = один референс = одно тело.
+- Два+ cXX = столько же РАЗНЫХ лиц; запрещено копировать лицо с одного рефа на оба тела.
+- «Клоны/близнецы» = два тела с одним лицом, не «в кадре два человека».
 - Без читаемого текста, если надпись не задана во входе (никакой каши/латиницы).
 
+=== РАСКЛАДКА (план площадки) ===
+- Есть `раскладка` у кадра.
+- Если блок «ДЕЙСТВИЕ (процесс в одном кадре)» — картинка = этот процесс
+  в разгаре (один кадр). Не выдумывай пару старт/конец.
+- Если блоки СТАРТ / КОНЕЦ — ДВА промта на один uuid:
+  `промт_картинки` = СТАРТ (первый кадр ДО жеста, точка ЭТОЙ камеры);
+  `промт_картинки_2` = КОНЕЦ (последний кадр действия, тот же сет / лица /
+  камера). Оба полные: сцена + STYLE LOCK / Negative. Не середина жеста.
+  Каждый предмет на указанном месте; двери как в соответствующем блоке.
+- Если блок «ДЕЙСТВИЕ (процесс)» — только `промт_картинки`, поле
+  `промт_картинки_2` не пиши.
+- «В референсе» / «Смена»: как было на предыдущем кадре (PNG родителя) и
+  как должно измениться. Смена плана = угол камеры ≥30° (другая точка или
+  другой ракурс). Лево/право не переворачивай.
+- Другая `зона` чем у родителя (внутри дома vs улица) — фон этой зоны, не фасад родителя.
+
 === ДЕЙСТВИЕ / АНТИ-TWIN (КРИТИЧНО) ===
-- Action = mid-motion freeze (тело/рука/предмет В ДВИЖЕНИИ), не поза.
-- БРАК: стоит/сидит/смотрит/замер/posed/standing looking без глагола движения.
+- Action = из раскладки: процесс в разгаре ИЛИ СТАРТ до жеста. Не «замер без глагола».
+- БРАК: стоит/сидит/смотрит/замер/posed/standing looking без указания, какой жест сейчас в кадре.
+- БРАК: «жест завершён», «листы видны» без того, ЧТО на листах и КАКОЙ жест.
 - Один place на соседних кадрах = ЦЕПЬ фаз (не 4 одинаковых постера).
-- Соседи отличаются ≥2 из: фаза действия, поза тела, состояние пропа, камера/accent.
-- Визуальный twin (тот же силуэт+prop+дистанция) = брак — перепиши Action/камеру.
+- Соседи отличаются ≥2 из: фаза, поза тела, состояние пропа, камера/accent.
+- Визуальный twin (тот же силуэт+prop+дистанция+тот же угол) = брак — перепиши Action/камеру (≥30°).
+
+=== COVERAGE K2/K3 (КРИТИЧНО) ===
+Если у кадра есть coverage_parent — это НЕ новая сцена, а следующий ракурс той же.
+Первый абзац промта:
+Image 1 is the previous coverage still of the SAME scene (layout / cast-count / prop-identity lock).
+Preserve: [place, shot01_bg, lighting, персонажи — то же число тел, key props = тот же экземпляр].
+Change: camera + действие ЭТОГО шота (shot01_description / shot01_action).
+Запрещено: новая локация; второй человек, которого не было в master;
+крупный план другой картины/документа (нужен punch-in той же).
+Фон/мебель/стены/люди/предметы бери из coverage_parent.
 """.strip()
 
 _FOLLOWUP_MSG = """
 Следующий батч. Те же правила. Полный промт: сцена + STYLE LOCK / Negative.
-Фон и план священны; ≤4877; 1 cXX = 1 тело; mid-motion; анти-twin.
+Фон и план священны; ≤4877; 1 cXX = 1 тело; 2 cXX = 2 разных лица; СТАРТ до жеста; анти-клон.
+K2/K3 с coverage_parent: Preserve/Change, тот же сет/состав/предметы что у родителя, только камера.
 Мастер-промт и db_frames.json во вложении — только кадры этого батча.
 {footer}
 """.strip()
@@ -193,13 +235,51 @@ def repartition_remaining(
     )
 
 
-_PROMPT_FIELD_KEYS = (
+_SHOT1_PROMPT_KEYS = (
     "промт_картинки",
     "image_prompt",
     "промпт_картинки",
+)
+_SHOT2_PROMPT_KEYS = (
     "промт_картинки_2",
     "image_prompt_shot2",
 )
+_PROMPT_FIELD_KEYS = _SHOT1_PROMPT_KEYS + _SHOT2_PROMPT_KEYS
+
+
+_FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
+_PLACEHOLDER_PROMPT = frozenset({"", "…", "...", "—", "-"})
+# Запись в DB: короче — заглушка (портрет 1 строка / «…»), не сцена+STYLE.
+IMG_PR_MIN_WRITE_CHARS = 200
+
+
+def _is_real_frame_uuid(value: Any) -> bool:
+    return bool(_FRAME_UUID_RE.fullmatch(str(value or "").strip()))
+
+
+def _field_prompt(fields: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        text = str(fields.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _shot1_prompt_of(fields: dict[str, Any]) -> str:
+    return _field_prompt(fields, _SHOT1_PROMPT_KEYS)
+
+
+def _shot2_prompt_of(fields: dict[str, Any]) -> str:
+    return _field_prompt(fields, _SHOT2_PROMPT_KEYS)
+
+
+def _prompt_text_of(fields: dict[str, Any]) -> str:
+    return _shot1_prompt_of(fields) or _shot2_prompt_of(fields)
+
+
+def _prompt_slot_ok(text: str) -> bool:
+    body = (text or "").strip()
+    return bool(body) and body not in _PLACEHOLDER_PROMPT and len(body) >= 12
 
 
 def filter_prompt_ops(ops: list[Any]) -> list[dict]:
@@ -227,9 +307,66 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
                     fields[k] = op.get(k)
         if not any(k in fields for k in _PROMPT_FIELD_KEYS):
             continue
+        uid = str(op.get("frame_uuid") or op.get("uuid") or "").strip()
+        if not _is_real_frame_uuid(uid):
+            continue
+        shot1 = _shot1_prompt_of(fields)
+        shot2 = _shot2_prompt_of(fields)
+        if not _prompt_slot_ok(shot1) and not _prompt_slot_ok(shot2):
+            continue
         out = {**op, "fields": fields}
+        if uid and not str(out.get("frame_uuid") or "").strip():
+            out["frame_uuid"] = uid
         clean.append(out)
     return clean
+
+
+def merge_img_pr_checkpoint(
+    raw_ops: list[Any],
+    applied: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """applied + ещё не применённые writeable + rejected.
+
+    ``_apply_img_pr_ops_now`` может вернуть ``[]`` (сессия не в ту БД).
+    Короткие опы не должны вытеснить из чекпоинта полные промты.
+    """
+    writeable, rejected = partition_img_pr_checkpoint(raw_ops)
+    applied_ids = {uuid_of_op(op) for op in applied if uuid_of_op(op)}
+    pending = [op for op in writeable if uuid_of_op(op) not in applied_ids]
+    stored = list(applied) + pending + list(rejected)
+    if not stored:
+        stored = [op for op in raw_ops if isinstance(op, dict)]
+    done = [uuid_of_op(op) for op in applied if uuid_of_op(op)]
+    return stored, done
+
+
+def partition_img_pr_checkpoint(ops: list[Any]) -> tuple[list[dict], list[dict]]:
+    """Пишемые опы и отброшенные. Чекпоинт хранит оба списка, не только фильтр."""
+    raw = [op for op in ops if isinstance(op, dict)]
+    writeable = writeable_img_pr_ops(raw)
+    writeable_ids = {uuid_of_op(op) for op in writeable if uuid_of_op(op)}
+    rejected = [
+        op
+        for op in raw
+        if not uuid_of_op(op) or uuid_of_op(op) not in writeable_ids
+    ]
+    return writeable, rejected
+
+
+def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
+    """Ops, которые можно писать в DB: реальный uuid + полный промт."""
+    kept: list[dict] = []
+    for op in filter_prompt_ops(ops):
+        fields = op.get("fields") or {}
+        shot1 = _shot1_prompt_of(fields)
+        shot2 = _shot2_prompt_of(fields)
+        if (
+            len(shot1) < IMG_PR_MIN_WRITE_CHARS
+            and len(shot2) < IMG_PR_MIN_WRITE_CHARS
+        ):
+            continue
+        kept.append(op)
+    return kept
 
 
 def _read_json_string(text: str, start: int) -> tuple[str, int] | None:

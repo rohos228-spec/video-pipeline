@@ -4,12 +4,18 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
+import type { Nii67Card } from "./nii67";
+import type { Nii67Frame } from "@/components/canvas/nii67-frame-menu";
 import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
   MontageBoardDTO,
+  MontageBoardFrame,
   MontageBoardMeta,
+  MontageBoardParentRef,
+  MontageImproveReport,
+  MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -133,6 +139,210 @@ export interface BlockActivityEntry {
   created_at: string;
 }
 
+// ── Style agent DTO ─────────────────────────────────────────────────
+export interface StyleAgentSettings {
+  max_llm_calls: number;
+  min_support: number;
+  iqr_threshold: number;
+  max_sheets_per_video: number;
+  hook_seconds?: number;
+  language: string;
+  style_id: string;
+  label: string;
+  skip_llm: boolean;
+  skip_asr: boolean;
+  skip_ocr: boolean;
+  frames_per_min: number;
+  agents: string[];
+}
+
+export interface StyleAgentJob {
+  status: "idle" | "running" | "done" | "failed" | "stopped";
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  stage?: string;
+  progress?: Record<string, unknown>;
+  error?: string | null;
+  llm?: { used: number; limit: number; remaining?: number };
+  videos?: string[];
+}
+
+export interface StyleAgentVideo {
+  name: string;
+  size: number;
+  uploaded: boolean;
+  analyzed: boolean;
+  sheets: string[];
+}
+
+export interface StyleAgentSnapshot {
+  settings: StyleAgentSettings;
+  job: StyleAgentJob;
+  videos: StyleAgentVideo[];
+  passport: {
+    hasDraft: boolean;
+    hasApproved: boolean;
+    draftAt?: string | null;
+    approvedAt?: string | null;
+    style_id: string;
+    label: string;
+    problems: string[];
+  };
+  report: string;
+  apply: Record<string, unknown>;
+}
+
+export interface StyleAgentEstimate {
+  settings: StyleAgentSettings;
+  videos: string[];
+  plan: {
+    n_videos: number;
+    sheets_per_video: number;
+    sheets_by_agent?: Record<string, number>;
+    images_per_call?: number;
+    frames?: { video: string; duration_s: number; frames: number; motion_frames: number; grid: string; sheets_overview: number; sheets_motion: number }[];
+    max_calls: number;
+    agents: string[];
+    global_agents?: string[];
+    with_synth: boolean;
+    with_blueprint?: boolean;
+    per_video: Record<string, number>;
+    videos_covered: number;
+    minimal_total: number;
+    ideal_total: number;
+    planned_total: number;
+    fits: boolean;
+    hint: string;
+    skip_plan: string[];
+  };
+  cost: {
+    model_id: string;
+    usd_per_m_in: number;
+    usd_per_m_out: number;
+    tokens_in: number;
+    tokens_out: number;
+    usd: number;
+    usd_hi: number;
+    calls: number;
+  };
+  model: { id?: string | null; label?: string | null };
+}
+
+export interface StylePassportField {
+  value: unknown;
+  confidence: "high" | "medium" | "low";
+  support: string;
+  note?: string;
+  p10?: number;
+  p90?: number;
+}
+
+export interface StylePassportShot {
+  i: number;
+  start: number;
+  end: number;
+  len: number;
+  transition_in?: string;
+  uncertain?: boolean;
+  what?: string | null;
+  framing?: string | null;
+  camera?: string | null;
+  subject_anim?: string | null;
+  start_state?: string | null;
+  change?: string | null;
+  end_state?: string | null;
+  transition_out?: string | null;
+  transition_note?: string | null;
+  illustrates?: string | null;
+  vfx?: string | null;
+  vo_text?: string;
+}
+
+export interface StylePassportVideo {
+  video: string;
+  duration_s?: number | null;
+  transcript_source?: string | null;
+  shots: StylePassportShot[];
+  subtitles?: { start: number; end: number; text: string }[];
+  sentences?: { i: number; start: number; end: number; text: string; words: number }[];
+  linkage?: Record<string, unknown>;
+  script?: Record<string, unknown>;
+  problems?: Record<string, unknown>;
+}
+
+export interface StylePassportPattern {
+  name: string;
+  kind?: string;
+  description?: string;
+  how_to_reproduce?: string;
+  signature?: boolean;
+  support?: string;
+  confidence?: string;
+  frequency?: Record<string, string>;
+  examples?: { video: string; tc: string }[];
+}
+
+export interface StyleBlueprintNode {
+  node_type: string;
+  label?: string;
+  new?: boolean;
+  inputs?: string[];
+  outputs?: string[];
+  params?: Record<string, unknown>;
+  prompt_template?: string;
+  prompt_hint?: string;
+  fallback_existing?: string;
+}
+
+export interface StyleBlueprint {
+  chain: StyleBlueprintNode[];
+  prompt_templates: Record<string, string>;
+  new_nodes_needed: string[];
+  notes: string[];
+  source?: string;
+}
+
+export interface StylePassport {
+  $schema: string;
+  style_id: string;
+  label: string;
+  created_at?: string;
+  approved_at?: string;
+  sources?: { count: number; videos: string[] };
+  format?: Record<string, StylePassportField>;
+  visual?: Record<string, StylePassportField>;
+  voice?: Record<string, StylePassportField>;
+  music?: Record<string, StylePassportField>;
+  sfx?: Record<string, StylePassportField>;
+  motion?: Record<string, StylePassportField>;
+  narrative?: Record<string, StylePassportField>;
+  linkage?: Record<string, StylePassportField>;
+  script?: Record<string, StylePassportField>;
+  mapping?: Record<string, unknown>;
+  videos?: StylePassportVideo[];
+  patterns?: StylePassportPattern[];
+  peculiarities?: string[];
+  blueprint?: StyleBlueprint;
+  variance_notes?: string[];
+  llm?: { calls_used: number; calls_limit: number; model: string };
+  errors?: Record<string, unknown>;
+}
+
+export interface StyleApplyReport {
+  style_id: string;
+  materialized?: boolean;
+  blocks?: string[];
+  preset?: string;
+  frame_style?: string;
+  written?: string[];
+  backed_up?: string[];
+  skipped?: string[];
+  prompt_overrides_patch?: Record<string, unknown>;
+  node_step_params_patch?: Record<string, unknown>;
+  next_steps?: string[];
+  at?: string;
+}
+
 export interface LibraryConfigDTO {
   id: number;
   name: string;
@@ -215,11 +425,204 @@ export interface MontagePendingOp {
     | "image_ai_change"
     | "video_regen"
     | "video_regen_prompt"
-    | "video_ai_change";
+    | "video_ai_change"
+    | "coverage_plan"
+    | "coverage_action"
+    | "coverage_kind"
+    | "coverage_delete"
+    | "coverage_template"
+    | "coverage_anchors"
+    | "coverage_vo_span"
+    | "coverage_angle"
+    | "coverage_move"
+    | "coverage_stitch"
+    | "coverage_light"
+    | "coverage_set"
+    | "coverage_sense"
+    | "coverage_visual_type"
+    | "coverage_place"
+    | "coverage_characters"
+    | "coverage_props"
+    | "coverage_bg"
+    | "coverage_accent"
+    | "coverage_feature"
+    | "coverage_scene_action";
   frame_number: number;
   shot: 1 | 2;
+  /** Общий план: отдельный still, не shot1. */
+  slot?: "parent";
   prompt?: string;
   correction?: string;
+  /** Заметка оператора для ИИзменения — агент img_pr пишет по ней новый промт. */
+  instruction?: string;
+  plan?: string;
+  action?: string;
+  angle?: string;
+  move?: string;
+  stitch?: string;
+  light?: string;
+  set?: string;
+  sense?: string;
+  visual_type?: string;
+  place?: string;
+  characters?: string;
+  props?: string;
+  bg?: string;
+  accent?: string;
+  feature?: string;
+  kind?: "parent" | "child";
+  parent_number?: number;
+  /** Формат сцены: шаблон T0…T10 / X1 / X2 из каталога. */
+  template?: string;
+  /** Якоря закадра ячейки — точки нарезки VO по кадрам. */
+  anchors?: SceneAnchorRow[];
+  /** Выделение закадра: start/end в полном тексте ячейки. */
+  start?: number;
+  end?: number;
+  text?: string;
+  full?: string;
+  vo_cell_full?: string;
+  vo_span?: { start: number; end: number; text: string } | null;
+  clear?: boolean;
+}
+
+export interface SceneAnchorRow {
+  "порядок"?: number;
+  "якорь": string;
+  "изменение"?: string;
+  "главный"?: boolean;
+  offset?: number;
+  found?: boolean;
+  cell_index?: number;
+  frame_number?: number | null;
+  derived?: boolean;
+}
+
+export interface SceneTemplateChoice {
+  id: string;
+  name: string;
+  when: string;
+  axis: string;
+  ladder: string;
+  example: string;
+  shots: number;
+  required: number;
+  plans: string[];
+  roles: string[];
+}
+
+export interface SceneTemplateLadderRow {
+  shot_id: string;
+  n: number;
+  plan: string;
+  angle: string;
+  role: string;
+  action: string;
+  required: number;
+}
+
+export interface SceneShotRow {
+  id: string;
+  "порядок": number;
+  parent_id: string;
+  "шаблон": string;
+  "план": string;
+  "ракурс": string;
+  "движение"?: string;
+  "место": string;
+  "действие": string;
+  "закадр": string;
+  "якорь"?: string;
+  frame_number: number | null;
+}
+
+/** Состояние редактора кадра на доске монтажа (GET .../scene-editor). */
+export interface SceneEditorState {
+  frame: {
+    frame_id: number;
+    number: number;
+    uuid: string;
+    role: "parent" | "child";
+    shot_id: string;
+    shot_index: number | null;
+    shots_in_beat: number | null;
+    place: string;
+    angle?: string;
+    move?: string;
+    set?: string;
+    meaning?: string;
+    duration?: number | null;
+  };
+  parent: { number: number; frame_id: number; shot_id: string };
+  parent_choices: Array<{ number: number; role: string; vo: string }>;
+  group: number[];
+  vo: { frame_text: string; cell_full: string };
+  plan: { current: string; choices: string[] };
+  angle: { current: string; choices: string[] };
+  move: { current: string; choices: string[] };
+  stitch: {
+    current: string;
+    label?: string;
+    choices: Array<{ id: string; label: string }>;
+  };
+  light: { current: string; choices: string[] };
+  set: { current: string };
+  action: { current: string };
+  scene_action: {
+    current: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+  };
+  template: {
+    current: string;
+    auto: string;
+    ladder: SceneTemplateLadderRow[];
+    choices: SceneTemplateChoice[];
+    group_len: number;
+  };
+  anchors: {
+    text: string;
+    bits: SceneAnchorRow[];
+    preview: string[];
+    covers_text: boolean;
+    can_add?: boolean;
+  };
+  scene: {
+    id_scene: string;
+    scene_no?: string;
+    place: string;
+    places: string[];
+    set?: string;
+    characters: string;
+    lighting: string;
+    props: string;
+    accent: string;
+    sense: string;
+    visual_type: string;
+    bg: string;
+    feature: string;
+    action: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+    anchors: {
+      text: string;
+      bits: SceneAnchorRow[];
+      preview: string[];
+      covers_text: boolean;
+    };
+  };
+  shots: SceneShotRow[];
+}
+
+export type SceneVariantKind = "action" | "template" | "anchors";
+
+export interface SceneVariant {
+  "действие"?: string;
+  "план"?: string;
+  "шаблон"?: string;
+  "лестница"?: string;
+  "биты"?: SceneAnchorRow[];
+  preview?: string[];
+  dropped?: number;
+  "почему"?: string;
 }
 
 export interface XlsxPreview {
@@ -663,6 +1066,8 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
+  getProjectRun: (projectId: number) =>
+    http<WorkflowRunDetail>(`/api/projects/${projectId}/run`),
   createProject: (body: {
     title: string;
     topic?: string;
@@ -677,6 +1082,47 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(body) },
       90_000,
     ),
+  getNii67: (id: number) => http<{ card: Nii67Card; frames?: Nii67Frame[] }>(`/api/projects/${id}/nii67`),
+  putNii67: (id: number, card: Nii67Card, mode: "draft" | "save") =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67?mode=${mode}`, {
+      method: "PUT",
+      body: JSON.stringify({ card }),
+    }),
+  previewNii67: (id: number, card: Nii67Card) =>
+    http<{ text: string }>(`/api/projects/${id}/nii67/preview`, {
+      method: "POST",
+      body: JSON.stringify({ card }),
+    }),
+  planNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card }>(
+      `/api/projects/${id}/nii67/plan`,
+      { method: "POST", body: JSON.stringify({ card }) },
+      300_000,
+    ),
+  storyboardNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(
+      `/api/projects/${id}/nii67/storyboard`,
+      {
+        method: "POST",
+        body: JSON.stringify({ card }),
+      },
+      420_000,
+    ),
+  putNii67Frames: (id: number, frames: Nii67Frame[]) =>
+    http<{ frames: Nii67Frame[] }>(`/api/projects/${id}/nii67/frames`, {
+      method: "PUT",
+      body: JSON.stringify({ frames }),
+    }),
+  uploadNii67: (id: number, slot: "intro_video" | "portal_image" | "portal_video", file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return http<{ slot: string; name: string; path: string; size: number }>(
+      `/api/projects/${id}/nii67/upload?slot=${slot}`,
+      { method: "POST", body: form },
+    );
+  },
+  resetNii67: (id: number) =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67/reset`, { method: "POST" }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
   createChildProject: (parentId: number) =>
@@ -762,7 +1208,7 @@ export const api = {
     const params = new URLSearchParams();
     if (opts?.dryRun) params.set("dry_run", "true");
     if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
-    if (opts?.mode) params.set("mode", opts.mode);
+    params.set("mode", opts?.mode ?? "resume");
     if (opts?.forceWipe != null) params.set("force_wipe", String(opts.forceWipe));
     const q = params.toString() ? `?${params.toString()}` : "";
     return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
@@ -993,6 +1439,65 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  // ── Style agent (ноды «Разбор стиля» / «Проверка стиля») ─────────
+  getStyleAgent: (projectId: number, nodeKey?: string | null) =>
+    http<StyleAgentSnapshot>(
+      `/api/projects/${projectId}/style-agent${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+    ),
+  patchStyleAgentSettings: (projectId: number, patch: Partial<StyleAgentSettings>) =>
+    http<{ settings: StyleAgentSettings }>(`/api/projects/${projectId}/style-agent`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  estimateStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<StyleAgentEstimate>(
+      `/api/projects/${projectId}/style-agent/estimate${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  runStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<{ started: boolean; estimate: StyleAgentEstimate }>(
+      `/api/projects/${projectId}/style-agent/run${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  stopStyleAgent: (projectId: number) =>
+    http<{ stopped: boolean }>(`/api/projects/${projectId}/style-agent/stop`, { method: "POST" }),
+  uploadStyleRef: (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{ name: string; size: number; videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/upload`,
+      { method: "POST", body: fd },
+      600_000,
+    );
+  },
+  deleteStyleRef: (projectId: number, name: string) =>
+    http<{ videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/refs/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getStylePassport: (projectId: number, approved = false) =>
+    http<{ passport: StylePassport; problems: string[] }>(
+      `/api/projects/${projectId}/style-agent/passport${approved ? "?approved=true" : ""}`,
+    ),
+  putStylePassport: (projectId: number, passport: StylePassport) =>
+    http<{ ok: boolean; problems: string[] }>(`/api/projects/${projectId}/style-agent/passport`, {
+      method: "PUT",
+      body: JSON.stringify({ passport }),
+    }),
+  approveStylePassport: (projectId: number, passport?: StylePassport | null, materialize = true) =>
+    http<{ report: StyleApplyReport; snapshot: StyleAgentSnapshot }>(
+      `/api/projects/${projectId}/style-agent/approve`,
+      { method: "POST", body: JSON.stringify({ passport: passport ?? undefined, materialize }) },
+      120_000,
+    ),
+  getStyleAgentReport: (projectId: number) =>
+    http<{ report: string; variance_report: string; apply_report: StyleApplyReport | null }>(
+      `/api/projects/${projectId}/style-agent/report`,
+    ),
+  styleReportMdUrl: (projectId: number) => `/api/projects/${projectId}/style-agent/report?fmt=md`,
+  styleSheetUrl: (projectId: number, video: string, name: string) =>
+    `/api/projects/${projectId}/style-agent/sheet?video=${encodeURIComponent(video)}&name=${encodeURIComponent(name)}`,
+
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>
     http<FrameDTO[]>(`/api/projects/${projectId}/frames`),
@@ -1014,11 +1519,208 @@ export const api = {
       120_000,
     ),
 
+  mergeMontageScenes: (
+    projectId: number,
+    leftFrameId: number,
+    rightFrameId: number,
+  ) =>
+    http<{
+      ok: boolean;
+      parent_id: number;
+      parent_number: number;
+      merged_frames: number;
+      vo_scene_size: number;
+    }>(`/api/projects/${projectId}/montage-board/scenes/merge`, {
+      method: "POST",
+      body: JSON.stringify({
+        left_frame_id: leftFrameId,
+        right_frame_id: rightFrameId,
+      }),
+    }),
+
+  splitMontageScene: (
+    projectId: number,
+    frameId: number,
+    explode = false,
+    frameIds?: number[],
+  ) =>
+    http<{
+      ok: boolean;
+      scenes?: number;
+      parent_number?: number;
+      left_number?: number;
+      right_number?: number;
+      left_size?: number;
+      right_size?: number;
+    }>(`/api/projects/${projectId}/montage-board/scenes/split`, {
+      method: "POST",
+      body: JSON.stringify({
+        frame_id: frameId,
+        all: explode,
+        ...(frameIds?.length ? { frame_ids: frameIds } : {}),
+      }),
+    }),
+
+  insertMontageFrame: (
+    projectId: number,
+    afterFrameId: number | null,
+    voiceover = "",
+    kind: "parent" | "child" = "parent",
+  ) =>
+    http<{
+      ok: boolean;
+      id: number;
+      uuid: string;
+      number: number;
+      sort_key: number | null;
+      voiceover_text: string;
+    }>(`/api/projects/${projectId}/montage-board/frames/insert`, {
+      method: "POST",
+      body: JSON.stringify({ after_frame_id: afterFrameId, voiceover, kind }),
+    }),
+
+  setMontageVoiceover: (projectId: number, frameId: number, text: string) =>
+    http<{ ok: boolean; id: number; number: number; voiceover_text: string }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/voiceover`,
+      { method: "PATCH", body: JSON.stringify({ text }) },
+    ),
+
+  getSceneEditor: (projectId: number, frameId: number) =>
+    http<SceneEditorState>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-editor`,
+      {},
+      60_000,
+    ),
+
+  getSceneVariants: (
+    projectId: number,
+    frameId: number,
+    body: { kind: SceneVariantKind; desc?: string; count?: number },
+  ) =>
+    http<{ ok: boolean; kind: SceneVariantKind; variants: SceneVariant[] }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-variants`,
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
+    ),
+
+  generateSceneAction: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      replace_ns?: number[];
+      passport?: Record<string, string>;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      frame_id: number;
+      frame_number: number;
+      replace_ns: number[];
+      chain: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      frame_numbers?: number[];
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-action-generate`,
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
+    ),
+
+  generateSceneWithImages: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      passport?: Record<string, string>;
+      frame_ids?: number[];
+      mode?: string;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      frame_id?: number;
+      frame_number?: number;
+      chain?: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      images?: number;
+      fallback?: boolean;
+      generate_error?: string;
+      message?: string;
+      mode?: string;
+      job?: { status?: string; total_ops?: number };
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-generate-with-images`,
+      { method: "POST", body: JSON.stringify(body) },
+      300_000,
+    ),
+
+  improveScene: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      passport?: Record<string, string>;
+      frame_ids?: number[];
+      /** Якоря с доски. В 3-нодный прогон не входят. */
+      anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      frame_id?: number;
+      frame_number?: number;
+      chain?: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      images?: number;
+      fallback?: boolean;
+      generate_error?: string;
+      message?: string;
+      mode?: string;
+      job?: { status?: string; total_ops?: number };
+      improve_report?: MontageImproveReport;
+      image_ops?: MontagePendingOp[];
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-improve`,
+      { method: "POST", body: JSON.stringify(body) },
+      900_000,
+    ),
+
+  deleteMontageFrame: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; number: number; deleted: number }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}`,
+      { method: "DELETE" },
+    ),
+
+  applyMontageCoverage: (projectId: number, body: MontagePendingOp) =>
+    http<{
+      ok: boolean;
+      highlight?: string | null;
+      shot_kind?: "parent" | "child" | "";
+      shot_parent_number?: number | null;
+      ref_parent?: MontageBoardParentRef | null;
+      frame?: MontageBoardFrame | null;
+    }>(`/api/projects/${projectId}/montage-board/coverage`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   saveMontageQueue: (
     projectId: number,
     body: {
       pending_ops: MontagePendingOp[];
       video_trims?: Record<string, { start: number; end: number }>;
+      /** Пустая очередь иначе не затирает серверную (should_accept_queue_save). */
+      force_clear?: boolean;
     },
   ) =>
     http<{
@@ -1035,6 +1737,8 @@ export const api = {
     body: {
       video_trims: Record<string, { start: number; end: number }>;
       pending_ops: MontagePendingOp[];
+      /** Только эти кадры; остальные правки остаются в очереди. */
+      frame_numbers?: number[];
     },
   ) =>
     http<{
@@ -1202,6 +1906,8 @@ export const api = {
     fromShot: 1 | 2,
     toFrame: number,
     toShot: 1 | 2,
+    fromSlot?: "parent" | "",
+    toSlot?: "parent" | "",
   ) =>
     http<{
       ok: boolean;
@@ -1213,13 +1919,21 @@ export const api = {
     }>(
       `/api/projects/${projectId}/montage-board/move-image` +
         `?from_frame=${fromFrame}&from_shot=${fromShot}` +
-        `&to_frame=${toFrame}&to_shot=${toShot}`,
+        `&to_frame=${toFrame}&to_shot=${toShot}` +
+        `${fromSlot ? `&from_slot=${fromSlot}` : ""}` +
+        `${toSlot ? `&to_slot=${toSlot}` : ""}`,
       { method: "POST" },
     ),
 
-  deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+  deleteMontageImage: (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    slot?: "parent" | "",
+  ) =>
     http<{ ok: boolean }>(
-      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST" },
     ),
 
@@ -1229,16 +1943,78 @@ export const api = {
       { method: "POST" },
     ),
 
-  uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+  uploadMontageImage: async (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    file: File,
+    slot?: "parent" | "",
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch(
-      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST", body: fd },
     );
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json() as Promise<{ ok: boolean; preview_url: string }>;
   },
+
+  montageRefAssets: (projectId: number) =>
+    http<{ assets: MontageRefAsset[] }>(
+      `/api/projects/${projectId}/montage-board/ref-assets`,
+    ),
+
+  linkMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    payload: { file: string; kind?: string; name?: string },
+  ) => {
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      file: payload.file,
+      kind: payload.kind ?? "",
+      name: payload.name ?? "",
+    });
+    return http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/link-ref?${q}`,
+      { method: "POST" },
+    );
+  },
+
+  addMontageFrameRef: async (
+    projectId: number,
+    frameNumber: number,
+    payload: { kind: string; name: string; file: File },
+  ) => {
+    const fd = new FormData();
+    fd.append("file", payload.file);
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      kind: payload.kind,
+      name: payload.name,
+    });
+    const res = await fetch(`/api/projects/${projectId}/montage-board/refs?${q}`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  deleteMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    refId: string,
+    kind = "manual",
+  ) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-ref` +
+        `?frame_number=${frameNumber}&ref_id=${encodeURIComponent(refId)}` +
+        `&kind=${encodeURIComponent(kind)}`,
+      { method: "POST" },
+    ),
 
   uploadMontageVideo: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
     const fd = new FormData();
@@ -1906,6 +2682,8 @@ export const api = {
       : "";
     return `/api/projects/${projectId}/xlsx${q}`;
   },
+  projectShotsReportUrl: (projectId: number) =>
+    `/api/projects/${projectId}/shots-report`,
   reloadProjectXlsx: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
   uploadProjectXlsx: async (
@@ -2243,6 +3021,9 @@ export const api = {
       }
       throw err;
     }
+    if (!doneReceived && !signal?.aborted) {
+      callbacks?.onError?.("Стрим оборвался без ответа от модели");
+    }
   },
   gptSaveToProject: (
     sessionId: string,
@@ -2376,6 +3157,8 @@ export interface PromptFileInfo {
   size: number;
   modified: number | null;
   is_default: boolean;
+  title?: string | null;
+  description?: string | null;
 }
 
 export interface PromptFileContent {

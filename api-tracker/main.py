@@ -16,10 +16,12 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-# Добавляем корень api-tracker в sys.path
+# Добавляем корень api-tracker в sys.path ПЕРВЫМ.
+# Иначе `pip install -e .` подсовывает video-pipeline/app вместо api-tracker/app.
 BASE_DIR = Path(__file__).resolve().parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+_repo_root = str(BASE_DIR.parent)
+sys.path = [p for p in sys.path if Path(p).resolve() != BASE_DIR and p != _repo_root]
+sys.path.insert(0, str(BASE_DIR))
 
 import uvicorn
 import uvicorn.lifespan.on

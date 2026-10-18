@@ -1,0 +1,25 @@
+[
+    {
+        "key":  "generator",
+        "label":  "Видеогенератор",
+        "value":  "Veo 3.1 Fast",
+        "type":  "select",
+        "options":  [
+                        "Veo 3.1 Fast",
+                        "Veo 3.1",
+                        "Kling 3.0 Pro",
+                        "Seedance 2.5"
+                    ]
+    },
+    {
+        "key":  "aspect",
+        "label":  "Формат кадра",
+        "value":  "9:16",
+        "type":  "select",
+        "options":  [
+                        "9:16",
+                        "16:9",
+                        "1:1"
+                    ]
+    }
+]

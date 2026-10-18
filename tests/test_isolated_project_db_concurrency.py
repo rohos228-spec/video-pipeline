@@ -24,6 +24,28 @@ from app.project_db import (
 
 
 @pytest.mark.asyncio
+async def test_init_project_db_without_row_is_empty(tmp_path: Path):
+    """Баг кнопки «Создать»: схема есть, строки Project нет → PATCH 404."""
+    await init_project_db(tmp_path)
+    sm = await get_project_sessionmaker(tmp_path)
+    async with sm() as session:
+        assert await session.get(Project, 1) is None
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_init_project_db_writes_project_row(tmp_path: Path):
+    p = Project(id=7, slug="new-proj", title="Новый", topic="", status=ProjectStatus.new)
+    await init_project_db(tmp_path, project=p)
+    sm = await get_project_sessionmaker(tmp_path)
+    async with sm() as session:
+        got = await session.get(Project, 7)
+        assert got is not None
+        assert got.title == "Новый"
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_project_db_writes(tmp_path: Path):
     dir_p1 = tmp_path / "proj_1"
     dir_p2 = tmp_path / "proj_2"

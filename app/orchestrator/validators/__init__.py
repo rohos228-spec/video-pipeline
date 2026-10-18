@@ -1,8 +1,7 @@
-"""Вход plan_sanity без остального стека R0a.
+"""Программные валидаторы оркестратора. R0a: vo_length — единый источник длин закадра.
 
-``run(name, project_id, context)`` здесь регистрирует только ``plan_sanity``.
-``no_deletions``, ``preservation``, ``spend_guard`` и прочие проверки в main
-ещё не влиты и в этот модуль не импортируются.
+``run(name, project_id, context)`` регистрирует ``plan_sanity``.
+Остальные проверки стека импортируются своими модулями.
 """
 
 from __future__ import annotations

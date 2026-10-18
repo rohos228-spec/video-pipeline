@@ -11,11 +11,9 @@
   1. Берёт следующий кадр в статусе image_prompt_ready.
   2. Генерит картинку в outsee, сохраняет ``frame_NNN_<uuid>.png``.
 
-  Фаза B — вторые кадры (shot_02, строка 46), только где enrich заполнил
-  блок 16–29 / есть промт:
-  3. После завершения фазы A — для каждой сцены с shot_02 генерит
-     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
-     (у дочернего кадра покрытия — PNG родителя).
+  Если кадры уже разрезаны по кускам закадра (дети покрытия / группа
+  script_frames_qc) — фазы shot_02 нет: один кадр = один кусок VO = одна
+  картинка. Иначе (старый лист: два ракурса в одной колонке) — фаза B.
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -66,11 +64,13 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_STATUS_ATTR,
     disk_has_shot2_image,
+    find_shot1_image,
     find_shot2_reference_image,
     read_shot2_columns,
 )
 from app.services.scan_frames import (
     disk_has_valid_frame_image,
+    frame_image_prompt_text,
     frame_needs_shot1_image,
     is_valid_scene_image,
     newest_frame_image_path,
@@ -148,8 +148,19 @@ _XLSX_SHEET_PLAN = "план"
 _XLSX_ROWS_PERSONS = (8, 23, 38)   # «персонажи» — id c01..c05
 _XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id i01 / predmet1
 _OUTSEE_MAX_REFS = 2  # лимит Outsee на одну генерацию картинки
+_REF_ONE_PERSON_LOCK = (
+    "ты обязан указать с каждого референса по 1 персонажу, "
+    "клоны, близнецы запрещены"
+)
 
 _REF_ID_RE = re.compile(r"^(c\d+|i\d+|predmet\d+)$", re.IGNORECASE)
+
+
+def _with_ref_one_person_lock(prompt: str) -> str:
+    raw = (prompt or "").strip()
+    if not raw or _REF_ONE_PERSON_LOCK in raw:
+        return raw
+    return _REF_ONE_PERSON_LOCK + "\n\n" + raw
 
 
 def normalize_ref_id(token: str) -> str | None:
@@ -197,6 +208,30 @@ def _parse_ref_ids(cell_value: object) -> list[str]:
         if norm:
             out.append(norm)
     return out
+
+
+_SHOT1_CHAR_KEYS = ("characters", "персонажи", "persons")
+
+
+def _person_ids_from_frame(frame: Any) -> list[str]:
+    """Id персонажей кадра из attrs (DB), не из Excel."""
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return []
+    for key in _SHOT1_CHAR_KEYS:
+        ids = _parse_ref_ids(attrs.get(key))
+        if ids:
+            return ids
+    return []
+
+
+def _character_sheet_ids_for_image(frame: Any) -> list[str]:
+    """Листы cNN только у VO-родителя. K2/K3 — still родителя, не герои."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(frame):
+        return []
+    return _person_ids_from_frame(frame)
 
 
 def _resolve_plan_sheet(wb):  # noqa: ANN001
@@ -501,6 +536,43 @@ async def _load_refs_for_frame(
     return refs[:_OUTSEE_MAX_REFS]
 
 
+def frame_hidden_from_paid_generation(fr: Frame) -> bool:
+    """Скрытый кадр не ставим в платную очередь."""
+    from app.orchestrator.validators.activity_flags import frame_is_active
+
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return not frame_is_active(attrs)
+
+
+def requeue_failed_frames_without_png(
+    frames: list[Frame],
+    out_dir: Path,
+    *,
+    project_id: int | None = None,
+) -> int:
+    """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
+    n = 0
+    for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
+        if fr.status is FrameStatus.failed and not disk_has_valid_frame_image(
+            out_dir, fr.number
+        ):
+            logger.warning(
+                "[#{}] frame {}: failed без PNG — обратно в очередь",
+                project_id if project_id is not None else "?",
+                fr.number,
+            )
+            fr.status = FrameStatus.image_prompt_ready
+            attrs = dict(fr.attrs or {})
+            attrs.pop("fail_reason", None)
+            fr.attrs = attrs
+            n += 1
+    return n
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
         return
@@ -546,10 +618,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "(кнопка Import / excel_io.import_project_xlsx)."
         )
 
+    from app.services.vo_shot_expand import is_shot_child
+
     missing_prompts = [
         fr.number
         for fr in frames
-        if is_skippable_empty_prompt(fr.image_prompt or "")
+        if not is_shot_child(fr)
+        and is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
     ]
 
     if missing_prompts:
@@ -585,7 +660,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Иначе image_generated без файла / без outsee → шаг «завершён», кадры
     # так и не генерировались.
     queued = 0
+    requeue_failed_frames_without_png(frames, out_dir, project_id=project.id)
     for fr in frames:
+        if frame_hidden_from_paid_generation(fr):
+            continue
         if disk_has_valid_frame_image(out_dir, fr.number):
             if fr.status not in (
                 FrameStatus.image_approved,
@@ -603,7 +681,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 bad.name,
                 bad.stat().st_size,
             )
-        if not frame_needs_shot1_image(fr, out_dir):
+        if not frame_needs_shot1_image(fr, out_dir, frames):
             continue
         fr.status = FrameStatus.image_prompt_ready
         queued += 1
@@ -620,7 +698,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         with_prompt = sum(
             1
             for fr in frames
-            if not is_skippable_empty_prompt(fr.image_prompt or "")
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
         )
         missing = await scan_missing_frames(session, project)
         on_disk = sum(
@@ -671,7 +749,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         missing_png = [
             fr.number
             for fr in frames
-            if not is_skippable_empty_prompt(fr.image_prompt or "")
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
             and not disk_has_valid_frame_image(out_dir, fr.number)
             and fr.status is not FrameStatus.failed
         ]
@@ -769,6 +847,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                     project.id,
                                 )
                                 break
+                            if _skip_legacy_shot2(project, frames):
+                                logger.info(
+                                    "[#{}] generate_images: shot_02 пропущен — "
+                                    "каждый кадр = свой кусок закадра",
+                                    project.id,
+                                )
+                                break
                             xlsx_path = project.data_dir / "project.xlsx"
                             shot2_queued = await _init_shot2_queue(
                                 session, project, frames, out_dir, xlsx_path
@@ -816,8 +901,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 project.id,
                                 pending[:8],
                             )
+                            if _skip_legacy_shot2(project, frames):
+                                break
                             phase = "shot2"
                             continue
+                    elif _skip_legacy_shot2(project, frames):
+                        logger.info(
+                            "[#{}] generate_images: shot1 пуст, shot_02 нет — завершаю",
+                            project.id,
+                        )
+                        break
 
                     # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
@@ -999,7 +1092,7 @@ async def _pending_shot1_numbers(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-        if frame_needs_shot1_image(fr, out_dir):
+        if frame_needs_shot1_image(fr, out_dir, frames):
             out.append(fr.number)
     return out
 
@@ -1032,8 +1125,18 @@ async def _claim_shot1_batch(
     project: Project | None = None,
     limit: int = 1,
 ) -> list[Frame]:
-    """Забрать до ``limit`` кадров под генерацию (lease через attrs)."""
+    """Забрать до ``limit`` кадров под генерацию (lease через attrs).
+
+    С группой script_frames_qc: сначала K1 ячеек; K2/K3 — когда PNG
+    родителя уже на диске.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vision_check_loop import scene_regen_allows
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_shot_child,
+        uses_parent_still,
+    )
 
     if limit < 1:
         return []
@@ -1044,24 +1147,41 @@ async def _claim_shot1_batch(
             .order_by(Frame.number)
         )
     ).scalars().all()
+    group_lock = bool(project is not None and canvas_has_script_frames_qc(project))
     claimed: list[Frame] = []
-    for fr in frames:
-        if project is not None:
-            allow = scene_regen_allows(project, fr.number, 1)
-            if allow is False:
-                continue
-        if not frame_needs_shot1_image(fr, out_dir):
-            continue
-        attrs = dict(fr.attrs or {})
-        if attrs.get(INFLIGHT_ATTR):
-            continue
-        attrs[INFLIGHT_ATTR] = True
-        fr.attrs = attrs
-        if fr.status is not FrameStatus.image_prompt_ready:
-            fr.status = FrameStatus.image_prompt_ready
-        claimed.append(fr)
+    prefer_passes = (False, True) if group_lock else (False,)
+    for prefer_child in prefer_passes:
         if len(claimed) >= limit:
             break
+        for fr in frames:
+            if fr in claimed:
+                continue
+            if project is not None:
+                allow = scene_regen_allows(project, fr.number, 1)
+                if allow is False:
+                    continue
+            if not frame_needs_shot1_image(fr, out_dir, frames):
+                continue
+            if group_lock:
+                child = is_shot_child(fr)
+                if child != prefer_child:
+                    continue
+                if uses_parent_still(fr):
+                    parent = find_coverage_parent_frame(list(frames), fr)
+                    if parent is not None and not disk_has_valid_frame_image(
+                        out_dir, int(parent.number)
+                    ):
+                        continue
+            attrs = dict(fr.attrs or {})
+            if attrs.get(INFLIGHT_ATTR):
+                continue
+            attrs[INFLIGHT_ATTR] = True
+            fr.attrs = attrs
+            if fr.status is not FrameStatus.image_prompt_ready:
+                fr.status = FrameStatus.image_prompt_ready
+            claimed.append(fr)
+            if len(claimed) >= limit:
+                break
     if claimed:
         await session.flush()
     return claimed
@@ -1080,9 +1200,19 @@ async def _resolve_shot2_reference(
     project_id: int,
     out_dir: Path,
     frame: Frame,
+    *,
+    project: Project | None = None,
 ) -> Path | None:
-    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя."""
+    """Реф shot2.
+
+    Глобально: свой shot1, у ребёнка покрытия — PNG родителя.
+    С группой script_frames_qc: shot2 = PNG shot1 ЭТОГО кадра.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vo_shot_expand import is_shot_child
+
+    if project is not None and canvas_has_script_frames_qc(project):
+        return find_shot1_image(out_dir, frame.number)
 
     parent_no: int | None = None
     if is_shot_child(frame):
@@ -1101,6 +1231,43 @@ async def _resolve_shot2_reference(
     return find_shot2_reference_image(
         out_dir, frame.number, parent_frame_number=parent_no
     )
+
+
+async def _coverage_parent_png(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+) -> Path | None:
+    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3 группы."""
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        uses_parent_still,
+    )
+
+    if not uses_parent_still(frame):
+        return None
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    parent = find_coverage_parent_frame(list(frames), frame)
+    if parent is None or int(parent.number) == int(frame.number):
+        return None
+    scenes = project.data_dir / "scenes"
+    from app.services.plan_shot2 import resolve_coverage_parent_png
+
+    path = resolve_coverage_parent_png(scenes, int(parent.number))
+    if path is None:
+        logger.warning(
+            "[#{}] frame {}: coverage child без PNG родителя #{}",
+            project.id,
+            frame.number,
+            parent.number,
+        )
+    return path
 
 
 async def _claim_shot2_batch(
@@ -1157,17 +1324,23 @@ async def _generate_frame_job(
     session_maker: Any = None,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker
-
-        p_dir = out_dir.parent
-        session_maker = await get_project_sessionmaker(p_dir)
+    from app.project_db import project_db_session_scope
 
     async with acquire_image_slot():
-        async with session_maker() as session:
+        if session_maker is not None:
+            session_cm = session_maker()
+        else:
+            session_cm = project_db_session_scope(project_id)
+        async with session_cm as session:
             project = await session.get(Project, project_id)
             frame = await session.get(Frame, frame_id)
             if project is None or frame is None:
+                logger.error(
+                    "[#{}] generate_images: job session miss project={} frame_id={}",
+                    project_id,
+                    project is not None,
+                    frame_id,
+                )
                 return
             try:
                 await _generate_and_send(
@@ -1214,7 +1387,7 @@ async def _run_claimed_batch(
         try:
             ref = (
                 await _resolve_shot2_reference(
-                    session, project.id, out_dir, fr
+                    session, project.id, out_dir, fr, project=project
                 )
                 if shot == 2
                 else None
@@ -1261,7 +1434,9 @@ async def _run_claimed_batch(
     jobs = []
     for fr in claimed:
         ref = (
-            await _resolve_shot2_reference(session, project.id, out_dir, fr)
+            await _resolve_shot2_reference(
+                session, project.id, out_dir, fr, project=project
+            )
             if shot == 2
             else None
         )
@@ -1324,7 +1499,7 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-            if is_skippable_empty_prompt(fr.image_prompt or ""):
+            if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
                 continue
             if fr.status is FrameStatus.failed:
                 continue
@@ -1345,7 +1520,7 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-        if is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         if fr.status is FrameStatus.failed:
             continue
@@ -1355,6 +1530,20 @@ async def _all_frames_have_image_or_failed(
             continue
         return False
     return True
+
+
+def _skip_legacy_shot2(project: Project | None, frames: list[Frame]) -> bool:
+    """True — не генерить legacy shot2-колонку: каждый кадр уже свой кусок закадра.
+
+    Freeze СТАРТ/КОНЕЦ всё равно ставит в очередь конечный still (см.
+    ``_queue_freeze_end_stills``).
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.vo_shot_expand import is_shot_child
+
+    if project is not None and canvas_has_script_frames_qc(project):
+        return True
+    return any(is_shot_child(fr) for fr in frames)
 
 
 async def _init_shot2_queue(
@@ -1367,6 +1556,8 @@ async def _init_shot2_queue(
     """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
     from app.services.vo_shot_expand import is_shot_child
 
+    if _skip_legacy_shot2(project, frames):
+        return await _queue_freeze_end_stills(session, frames, out_dir)
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
@@ -1399,6 +1590,36 @@ async def _init_shot2_queue(
             attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
             queued += 1
         fr.attrs = attrs
+    await session.flush()
+    return queued
+
+
+async def _queue_freeze_end_stills(
+    session: AsyncSession,
+    frames: list[Frame],
+    out_dir: Path,
+) -> int:
+    """При skip_legacy: конечный still раскладки СТАРТ/КОНЕЦ всё равно в очередь."""
+    from app.services.freeze_stills import frame_needs_end_still, seed_end_still_prompt
+
+    queued = 0
+    for fr in frames:
+        seed_end_still_prompt(fr)
+        if not frame_needs_end_still(fr):
+            continue
+        attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        prompt = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        if is_skippable_empty_prompt(prompt):
+            continue
+        if disk_has_shot2_image(out_dir, fr.number):
+            attrs[SHOT2_STATUS_ATTR] = "image_generated"
+            fr.attrs = attrs
+            continue
+        attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        fr.attrs = attrs
+        queued += 1
     await session.flush()
     return queued
 
@@ -1523,6 +1744,13 @@ async def _generate_and_send(
         prompt_text = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
     else:
         prompt_text = (frame.image_prompt or "").strip()
+        if is_skippable_empty_prompt(prompt_text):
+            siblings = (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars().all()
+            prompt_text = frame_image_prompt_text(frame, list(siblings))
     if is_skippable_empty_prompt(prompt_text):
         logger.warning(
             "[#{}] frame {} shot_{}: пустой промт — skip",
@@ -1535,6 +1763,21 @@ async def _generate_and_send(
             frame.attrs = attrs
         await session.flush()
         return
+    if not is_shot2:
+        from app.services.img_pr_style import ensure_style_lock
+        from app.services.vo_shot_expand import uses_parent_still
+
+        if not uses_parent_still(frame):
+            siblings = list(
+                (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                ).scalars().all()
+            )
+            prompt_text = ensure_style_lock(prompt_text, siblings, frame)
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
@@ -1615,12 +1858,51 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр —
-    # PNG родителя; shot_01 родителя — персонажи/предметы.
+    # Референсы: shot_02 — PNG shot_01 той же колонки.
+    # K2/K3: только still родителя. Листы персонажей — только у VO-родителя.
+    from app.services.image_ref_lock import prepare_refs_and_prompt
+
+    crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
+        if refs:
+            prompt_text, refs = prepare_refs_and_prompt(
+                prompt_text, refs, child=True
+            )
     else:
-        refs = await _load_refs_for_frame(session, project, frame.number)
+        from app.services.node_groups import canvas_has_script_frames_qc
+        from app.services.vo_shot_expand import (
+            is_shot_child,
+            merge_parent_scene_refs,
+        )
+
+        if is_shot_child(frame):
+            parent_png = await _coverage_parent_png(session, project, frame)
+            refs = [parent_png] if parent_png is not None else []
+            if refs:
+                prompt_text, refs = prepare_refs_and_prompt(
+                    prompt_text, refs, child=True
+                )
+        else:
+            db_ids = _character_sheet_ids_for_image(frame)
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame.number,
+                persons_override=db_ids or None,
+            )
+            if canvas_has_script_frames_qc(project):
+                parent_png = await _coverage_parent_png(session, project, frame)
+                refs = merge_parent_scene_refs(
+                    parent_png, refs, max_refs=_OUTSEE_MAX_REFS
+                )
+            if refs:
+                prompt_text, refs = prepare_refs_and_prompt(
+                    prompt_text,
+                    refs,
+                    sheet_ids=db_ids,
+                    cache_dir=crop_dir,
+                )
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

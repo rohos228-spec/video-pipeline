@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact
 from app.settings import settings
-from app.web.deps import get_session
+from app.web.deps import get_project_session, get_session
 from app.web.schemas import ArtifactDTO
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -105,3 +105,35 @@ async def download_artifact(
         raise HTTPException(status_code=410, detail="file gone from disk")
     mime, _ = mimetypes.guess_type(str(path))
     return FileResponse(path, media_type=mime or "application/octet-stream")
+
+@router.get("/project-cover/{project_id}")
+async def project_cover(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> FileResponse:
+    """Обложка проекта для сайдбара: последний кадр, иначе референс персонажа."""
+    from app.models import ArtifactKind
+
+    for kinds in (
+        [ArtifactKind.scene_image],
+        [ArtifactKind.hero_reference, ArtifactKind.item_reference],
+    ):
+        rows = (
+            await session.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id, Artifact.kind.in_(kinds))
+                .order_by(Artifact.id.desc())
+                .limit(20)
+            )
+        ).scalars().all()
+        for a in rows:
+            if a.path and Path(a.path).is_file():
+                mime, _ = mimetypes.guess_type(str(a.path))
+                return FileResponse(
+                    a.path,
+                    media_type=mime or "image/png",
+                    headers={"Cache-Control": "private, max-age=120"},
+                )
+    # нет обложки: 204 без тела — <img> уходит в onError-фолбэк без 404 в консоли
+    from fastapi import Response
+
+    return Response(status_code=204, headers={"Cache-Control": "private, max-age=120"})  # type: ignore[return-value]

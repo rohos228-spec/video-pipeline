@@ -7,7 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from sqlalchemy import select
 
-from app.models import Frame, FrameStatus
+from app.models import Frame, FrameStatus, Project
 from app.orchestrator.steps.generate_images import _all_frames_have_image_or_failed
 from app.services.scan_frames import frame_needs_shot1_image
 from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8, SHOT2_PROMPT_ATTR, SHOT2_STATUS_ATTR
@@ -456,4 +456,110 @@ async def test_bootstrap_applies_shot2_from_r46(tmp_path: Path, monkeypatch) -> 
         ).scalar_one()
         assert fr.attrs[SHOT2_PROMPT_ATTR] == "tight reaction close-up"
         assert fr.attrs[SHOT2_STATUS_ATTR] == "image_prompt_ready"
+    await engine.dispose()
+
+
+def test_skip_legacy_shot2_when_vo_children() -> None:
+    from app.orchestrator.steps.generate_images import _skip_legacy_shot2
+
+    parent = Frame(
+        project_id=1,
+        number=1,
+        voiceover_text="v",
+        image_prompt="p",
+        attrs={"camera_subdivide": {"role": "vo_parent"}},
+    )
+    child = Frame(
+        project_id=1,
+        number=2,
+        voiceover_text="v2",
+        image_prompt="p2",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "x"}},
+    )
+    project = Project(slug="t", topic="t")
+    assert _skip_legacy_shot2(project, [parent]) is False
+    assert _skip_legacy_shot2(project, [parent, child]) is True
+
+
+def test_skip_legacy_shot2_when_script_frames_qc() -> None:
+    from app.orchestrator.steps.generate_images import _skip_legacy_shot2
+
+    project = Project(
+        slug="qc",
+        topic="t",
+        meta={
+            "canvas_graph": {
+                "nodes": [
+                    {
+                        "id": "n_excel_gpt_fw_frames",
+                        "data": {"groupId": "script_frames_qc"},
+                    }
+                ],
+                "edges": [],
+            }
+        },
+    )
+    parent = Frame(
+        project_id=1,
+        number=1,
+        voiceover_text="v",
+        image_prompt="p",
+        attrs={"camera_subdivide": {"role": "vo_parent"}},
+    )
+    assert _skip_legacy_shot2(project, [parent]) is True
+
+
+async def test_skip_legacy_still_queues_freeze_end_still(tmp_path: Path) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base
+    from app.orchestrator.steps.generate_images import _init_shot2_queue
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(
+            slug="qc-freeze",
+            topic="t",
+            meta={
+                "canvas_graph": {
+                    "nodes": [
+                        {
+                            "id": "n_excel_gpt_fw_frames",
+                            "data": {"groupId": "script_frames_qc"},
+                        }
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        session.add(project)
+        await session.flush()
+        fr = Frame(
+            project_id=project.id,
+            number=1,
+            voiceover_text="v",
+            image_prompt="p" * 20,
+            attrs={
+                "раскладка": (
+                    "СТАРТ (первый кадр, до действия): рука над стопкой. "
+                    "План СРЕДНИЙ. КОНЕЦ (последний кадр действия): ладонь на стопке."
+                ),
+                "camera_subdivide": {"role": "vo_parent"},
+                SHOT2_STATUS_ATTR: "skipped",
+            },
+        )
+        session.add(fr)
+        await session.flush()
+        out_dir = tmp_path / "scenes"
+        out_dir.mkdir()
+        xlsx = tmp_path / "project.xlsx"
+        xlsx.write_bytes(b"")
+        n = await _init_shot2_queue(session, project, [fr], out_dir, xlsx)
+        assert n == 1
+        await session.refresh(fr)
+        assert (fr.attrs or {}).get(SHOT2_STATUS_ATTR) == "image_prompt_ready"
+        assert "ладонь на стопке" in str((fr.attrs or {}).get(SHOT2_PROMPT_ATTR) or "")
     await engine.dispose()

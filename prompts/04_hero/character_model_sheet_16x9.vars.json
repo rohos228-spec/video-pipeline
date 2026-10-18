@@ -1,0 +1,19 @@
+[
+  {
+    "key": "aspect",
+    "label": "Соотношение сторон",
+    "value": "16/9",
+    "type": "select",
+    "options": [
+      "16/9",
+      "9/16",
+      "1/1"
+    ]
+  },
+  {
+    "key": "background",
+    "label": "Фон листа",
+    "value": "pure white background (#FFFFFF)",
+    "type": "text"
+  }
+]

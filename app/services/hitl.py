@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import html as _html
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup

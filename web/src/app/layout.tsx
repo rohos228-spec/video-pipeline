@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { BrandScrub } from "@/components/brand-scrub";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -37,6 +38,7 @@ export default function RootLayout({
     <html lang="ru" suppressHydrationWarning className="dark">
       <body className={`${inter.variable} ${jetbrainsMono.variable} antialiased font-sans`}>
         <Providers>{children}</Providers>
+        <BrandScrub />
       </body>
     </html>
   );

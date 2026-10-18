@@ -419,11 +419,12 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       } else {
         toast.error(errorMessageFromUnknown(e));
       }
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
+    } finally {
       setOptimisticUserMessage(null);
       setStreamingText(null);
       setStreamingPhase(null);
       setIsStreaming(false);
-      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
     }
   };
 

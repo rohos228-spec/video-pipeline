@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import selectinload
 from sqlalchemy.pool import NullPool
 
 from app.models import (
@@ -38,7 +40,9 @@ from app.models import (
     FrameText,
     HITLRequest,
     NodeRun,
+    NodeRunStatus,
     Project,
+    ProjectStatus,
     PromptVersion,
     Scene,
     SceneDesignCell,
@@ -607,6 +611,422 @@ async def sync_project_row_to_project_db(
         await commit_with_retry(p_sess)
 
 
+_RUNTIME_META_KEYS = (
+    "active_excel_gpt_node_key",
+    "excel_gpt_ui_force_full",
+    "excel_gpt_force_full_rerun",
+    "enrich_auto_chain_to",
+    "enrich_completed_slots",
+    "excel_gpt_completed_keys",
+    "excel_gpt_nodes",
+    "canvas_graph",
+    "user_stop",
+    "mass_lane_user_stop",
+    "auto_await_manual_start",
+    "step_failure",
+    "paused_from_status",
+)
+_CLEAR_WHEN_MASTER_RUNNING = (
+    "user_stop",
+    "mass_lane_user_stop",
+    "auto_await_manual_start",
+)
+# Ключи-ворота: если в src их уже нет (▶ снял), dest не должен хранить True.
+_CLEAR_WHEN_SRC_ABSENT = _CLEAR_WHEN_MASTER_RUNNING + (
+    "excel_gpt_ui_force_full",
+    "excel_gpt_force_full_rerun",
+)
+
+
+def _bind_url(session: AsyncSession) -> str:
+    bind = session.get_bind()
+    return str(getattr(bind, "url", "") or "").replace("\\", "/")
+
+
+def master_park_overrides_running(master: Project, project: Project) -> bool:
+    """Master paused/failed/⏹ — не крутить leftover running на канвасе."""
+    from app.services.project_state import is_running_status
+
+    if is_running_status(master.status):
+        return False
+    if not is_running_status(project.status):
+        return False
+    meta = master.meta if isinstance(master.meta, dict) else {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        return True
+    if meta.get("auto_await_manual_start"):
+        return True
+    if master.status not in (ProjectStatus.paused, ProjectStatus.failed):
+        return False
+    if meta.get("paused_from_status"):
+        return True
+    fs = meta.get("step_failure") if isinstance(meta.get("step_failure"), dict) else {}
+    return bool(fs.get("sleep_until") or fs.get("abandoned_at"))
+
+
+async def run_on_replica_project(session: AsyncSession, project: Project, fn) -> None:
+    """Выполнить fn(replica_session, replica_project) на другой БД и закоммитить."""
+    from app.db import commit_with_retry, session_scope
+
+    if "project.db" in _bind_url(session):
+        async with session_scope() as master:
+            row = await master.get(Project, int(project.id))
+            if row is None:
+                return
+            await fn(master, row)
+            await commit_with_retry(master)
+        return
+    dir_path = Path(project.data_dir)
+    if not dir_path.exists():
+        found = await get_project_data_dir(int(project.id))
+        if found is None:
+            return
+        dir_path = found
+    sm = await get_project_sessionmaker(dir_path)
+    async with sm() as p_sess:
+        row = await p_sess.get(Project, int(project.id))
+        if row is None:
+            return
+        await fn(p_sess, row)
+        await commit_with_retry(p_sess)
+
+
+def _apply_runtime_fields(src: Project, dest: Project) -> None:
+    """Скопировать статус / auto_mode / runtime-meta (не весь контент проекта)."""
+    from app.services.project_state import is_running_status
+
+    dest.status = src.status
+    if src.auto_mode is not None:
+        dest.auto_mode = src.auto_mode
+    dest.updated_at = src.updated_at or datetime.utcnow()
+    d_meta = dict(dest.meta) if isinstance(dest.meta, dict) else {}
+    s_meta = dict(src.meta) if isinstance(src.meta, dict) else {}
+    for key in _RUNTIME_META_KEYS:
+        if key in s_meta:
+            d_meta[key] = s_meta[key]
+        elif key in _CLEAR_WHEN_SRC_ABSENT:
+            d_meta.pop(key, None)
+        elif (
+            is_running_status(src.status)
+            and key in _CLEAR_WHEN_MASTER_RUNNING
+        ):
+            d_meta.pop(key, None)
+    dest.meta = d_meta
+
+
+async def push_runtime_to_project_db(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """После ▶/⏹ на master: статус + runtime meta + NodeRuns → project.db.
+
+    Иначе воркер видит running в state.db, а advance открывает project.db
+    со старым *_ready и сразу выходит — нода «не продвигается».
+    Не копируем всю строку Project: в project.db контент может быть новее.
+    """
+    from app.db import commit_with_retry
+
+    if "project.db" in _bind_url(session):
+        return
+    try:
+        dir_path = Path(project.data_dir)
+        if not dir_path.exists():
+            found = await get_project_data_dir(int(project.id))
+            if found is None:
+                logger.warning(
+                    "push_runtime_to_project_db: #{} no data_dir",
+                    project.id,
+                )
+                return
+            dir_path = found
+        sm = await get_project_sessionmaker(dir_path)
+        async with sm() as probe:
+            missing = await probe.get(Project, project.id) is None
+        if missing:
+            await sync_project_row_to_project_db(project, data_dir=dir_path)
+        async with sm() as p_sess:
+            existing = await p_sess.get(Project, project.id)
+            if existing is None:
+                logger.warning(
+                    "push_runtime_to_project_db: #{} row missing in project.db",
+                    project.id,
+                )
+                return
+            _apply_runtime_fields(project, existing)
+            try:
+                await _copy_noderuns_between_sessions(
+                    session, p_sess, int(project.id)
+                )
+            except Exception as nexc:  # noqa: BLE001
+                logger.warning(
+                    "push_runtime_to_project_db: #{} NodeRuns skipped: {}",
+                    project.id,
+                    nexc,
+                )
+            await commit_with_retry(p_sess)
+        logger.info(
+            "push_runtime_to_project_db: #{} status={} → project.db",
+            project.id,
+            getattr(project.status, "value", project.status),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "push_runtime_to_project_db: #{} failed: {}",
+            project.id,
+            exc,
+        )
+
+
+async def pull_master_runtime_into_project(
+    session: AsyncSession,
+    project: Project,
+    *,
+    copy_noderuns: bool = False,
+) -> bool:
+    """Перед advance/GET: running с master, либо parked pause (сон / ⏹).
+
+    NodeRuns с master по умолчанию НЕ копируем: fw_* живут в project.db,
+    а state.db часто держит вчерашний failed — GET/advance тогда красят
+    живую ноду в «ошибка», пока воркер всё ещё пишет.
+    """
+    from app.db import session_scope
+    from app.services.project_state import is_running_status
+
+    changed = False
+    async with session_scope() as master:
+        m = await master.get(Project, int(project.id))
+        if m is None:
+            return False
+        if m.status != project.status:
+            take_master_status = is_running_status(m.status) and not is_running_status(
+                project.status
+            )
+            if not take_master_status:
+                take_master_status = master_park_overrides_running(m, project)
+            if take_master_status:
+                logger.warning(
+                    "pull_master_runtime: #{} project.db={} master={} — берём master",
+                    project.id,
+                    getattr(project.status, "value", project.status),
+                    getattr(m.status, "value", m.status),
+                )
+                project.status = m.status
+                changed = True
+            else:
+                logger.warning(
+                    "pull_master_runtime: #{} skip stale master {} (project.db={})",
+                    project.id,
+                    getattr(m.status, "value", m.status),
+                    getattr(project.status, "value", project.status),
+                )
+        if m.auto_mode is not None and m.auto_mode != project.auto_mode:
+            project.auto_mode = m.auto_mode
+            changed = True
+        m_meta = m.meta if isinstance(m.meta, dict) else {}
+        p_meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+        for key in _RUNTIME_META_KEYS:
+            if key in m_meta:
+                if p_meta.get(key) != m_meta.get(key):
+                    p_meta[key] = m_meta[key]
+                    changed = True
+            elif key in _CLEAR_WHEN_SRC_ABSENT and key in p_meta:
+                p_meta.pop(key, None)
+                changed = True
+            elif key in _CLEAR_WHEN_MASTER_RUNNING and key in p_meta and is_running_status(m.status):
+                p_meta.pop(key, None)
+                changed = True
+        if changed:
+            project.meta = p_meta
+        if copy_noderuns:
+            n = await _copy_noderuns_between_sessions(
+                master, session, int(project.id)
+            )
+            if n:
+                changed = True
+    if changed:
+        await session.flush()
+    return changed
+
+
+async def push_runtime_to_master(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """После работы в project.db: статус + runtime meta + NodeRuns → state.db.
+
+    UI и воркер выбирают проекты по master; без этого копии нода остаётся
+    running на канвасе после успешного шага / рестарта.
+    """
+    from app.db import commit_with_retry, session_scope
+
+    if "project.db" not in _bind_url(session):
+        return
+    try:
+        async with session_scope() as master:
+            existing = await master.get(Project, int(project.id))
+            if existing is None:
+                return
+            _apply_runtime_fields(project, existing)
+            try:
+                await _copy_noderuns_between_sessions(
+                    session, master, int(project.id)
+                )
+            except Exception as nexc:  # noqa: BLE001
+                logger.warning(
+                    "push_runtime_to_master: #{} NodeRuns skipped: {}",
+                    project.id,
+                    nexc,
+                )
+            await commit_with_retry(master)
+        logger.debug(
+            "push_runtime_to_master: #{} status={} → state.db",
+            project.id,
+            getattr(project.status, "value", project.status),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "push_runtime_to_master: #{} failed: {}",
+            project.id,
+            exc,
+        )
+
+
+async def sync_runtime_both_ways(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """После ▶/⏹: дописать runtime в ту БД, которой текущая сессия не является."""
+    await push_runtime_to_project_db(session, project)
+    await push_runtime_to_master(session, project)
+
+
+def _merge_run_snapshot(
+    dest_items: list | None, src_items: list | None
+) -> tuple[list, bool]:
+    """Добавить в dest элементы src, которых нет по id (ноды группы на канвасе)."""
+    dest = [x for x in (dest_items or []) if isinstance(x, dict)]
+    ids = {str(n.get("id") or "") for n in dest}
+    added = False
+    for item in src_items or []:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("id") or "")
+        if not nid or nid in ids:
+            continue
+        dest.append(item)
+        ids.add(nid)
+        added = True
+    return dest, added
+
+
+def _noderun_copy_should_apply(dest: NodeRun, src: NodeRun) -> bool:
+    """Не затирать живую/готовую ноду вчерашним failed с другой БД."""
+    live = {
+        NodeRunStatus.running,
+        NodeRunStatus.queued,
+        NodeRunStatus.waiting_hitl,
+    }
+    if dest.status in live and src.status in (
+        NodeRunStatus.failed,
+        NodeRunStatus.pending,
+    ):
+        return False
+    if dest.status == NodeRunStatus.done and src.status == NodeRunStatus.failed:
+        return False
+    return True
+
+
+def _apply_noderun_fields(dest: NodeRun, src: NodeRun) -> bool:
+    if (
+        dest.status == src.status
+        and dest.progress == src.progress
+        and (dest.error or None) == (src.error or None)
+        and dest.progress_text == src.progress_text
+        and dest.attempts == src.attempts
+    ):
+        return False
+    from app.services.node_status_machine import allow_replica_status_write
+
+    with allow_replica_status_write():
+        dest.status = src.status
+    dest.progress = src.progress
+    dest.progress_text = src.progress_text
+    dest.error = src.error
+    dest.started_at = src.started_at
+    dest.finished_at = src.finished_at
+    dest.attempts = src.attempts
+    dest.updated_at = src.updated_at
+    if src.meta:
+        dest.meta = dict(src.meta)
+    return True
+
+
+async def _copy_noderuns_between_sessions(
+    src_session: AsyncSession,
+    dest_session: AsyncSession,
+    project_id: int,
+) -> int:
+    src_run = (
+        await src_session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    dest_run = (
+        await dest_session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    if src_run is None or dest_run is None:
+        return 0
+    updated = 0
+    merged_nodes, nodes_added = _merge_run_snapshot(
+        dest_run.nodes_snapshot, src_run.nodes_snapshot
+    )
+    merged_edges, edges_added = _merge_run_snapshot(
+        dest_run.edges_snapshot, src_run.edges_snapshot
+    )
+    if nodes_added:
+        dest_run.nodes_snapshot = merged_nodes
+        updated += 1
+    if edges_added:
+        dest_run.edges_snapshot = merged_edges
+        updated += 1
+    dest_by_key = {str(nr.node_key or ""): nr for nr in dest_run.node_runs}
+    for src in src_run.node_runs:
+        key = str(src.node_key or "")
+        dest = dest_by_key.get(key)
+        if dest is None:
+            dest = NodeRun(
+                workflow_run_id=dest_run.id,
+                node_key=src.node_key,
+                node_type=src.node_type,
+            )
+            dest_session.add(dest)
+            dest_by_key[key] = dest
+            _apply_noderun_fields(dest, src)
+            updated += 1
+            continue
+        if not _noderun_copy_should_apply(dest, src):
+            continue
+        if _apply_noderun_fields(dest, src):
+            updated += 1
+    return updated
+
+
+async def _copy_noderuns_from_master_into_session(
+    src_session: AsyncSession,
+    dest_session: AsyncSession,
+    project_id: int,
+) -> int:
+    return await _copy_noderuns_between_sessions(
+        src_session, dest_session, project_id
+    )
+
+
 async def sync_project_row_to_master_db(project: Project) -> None:
     """Синхронизирует мета/статус и текстовые поля Project из project.db обратно в мастер state.db."""
     from app.db import commit_with_retry, session_scope
@@ -633,10 +1053,14 @@ async def init_project_db(
     """Инициализировать схему таблиц в project.db проекта (create_all) и синхронизировать проект."""
     eng = await get_project_engine(project_data_dir)
     async with eng.begin() as conn:
+        from app.services.scene_space import models as _scene_space_models  # noqa: F401
+
         await conn.run_sync(Base.metadata.create_all)
         from app.services.db_v2 import migrate_db_v2_schema
+        from app.services.scene_space.migrate import migrate_scene_space_schema
 
         await migrate_db_v2_schema(conn)
+        await migrate_scene_space_schema(conn)
 
     if project is not None:
         try:
@@ -710,6 +1134,17 @@ async def get_project_db_session(project_id: int) -> AsyncIterator[AsyncSession]
     sm = await get_project_sessionmaker(data_dir)
     session = sm()
     try:
+        row = await session.get(Project, project_id)
+        if row is None:
+            await session.rollback()
+            await session.close()
+            from app.db import SessionLocal
+
+            async with SessionLocal() as master:
+                src = await master.get(Project, project_id)
+                if src is not None:
+                    await sync_project_row_to_project_db(src, data_dir=data_dir)
+            session = sm()
         yield session
     except Exception:
         await session.rollback()

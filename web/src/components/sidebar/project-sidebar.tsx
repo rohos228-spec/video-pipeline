@@ -1,5 +1,6 @@
 "use client";
 
+import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,9 +14,9 @@ import {
   PanelLeft,
   ChevronDown,
   ChevronRight,
-  ListVideo,
   GripVertical,
   Pencil,
+  ListOrdered,
 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -23,8 +24,13 @@ import { api } from "@/lib/api";
 import type { GenQueueIdleInfo, ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
 import { projectDisplayName } from "@/lib/project-display";
@@ -63,6 +69,9 @@ function parseDragPayload(raw: string): DragPayload | null {
   }
 }
 
+const SLIDE_MS = 350;
+const SLIDE_EASE = "cubic-bezier(0.65, 0, 0.35, 1)";
+
 export function ProjectSidebar({
   selectedProjectId,
   onSelect,
@@ -74,6 +83,17 @@ export function ProjectSidebar({
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }) {
+  const [slideAnimating, setSlideAnimating] = useState(false);
+  const firstCollapsedRef = useRef(true);
+  useEffect(() => {
+    if (firstCollapsedRef.current) {
+      firstCollapsedRef.current = false;
+      return;
+    }
+    setSlideAnimating(true);
+    const t = window.setTimeout(() => setSlideAnimating(false), SLIDE_MS + 50);
+    return () => window.clearTimeout(t);
+  }, [collapsed]);
   const [filter, setFilter] = useState("");
   // Свёрнутые папки / mass — в localStorage, не сбрасывать на F5 и refetch.
   const [expanded, setExpanded] = usePersistedState<Record<string, boolean>>(
@@ -377,7 +397,7 @@ export function ProjectSidebar({
           className={cn(
             "flex items-stretch gap-0.5",
             dragOverKey === `project-slot:${p.sidebar_folder_id ?? "root"}:${p.id}` &&
-              "rounded-xl ring-1 ring-primary/25",
+              "ring-1 ring-white/30",
           )}
           onDragOver={(e) => {
             if (!opts?.draggable) return;
@@ -413,6 +433,7 @@ export function ProjectSidebar({
             <span className="w-5 shrink-0" />
           )}
           <div className="min-w-0 flex-1">
+            <StackWrap on={isFactory}>
             <ProjectRow
               project={p}
               selected={p.id === selectedProjectId}
@@ -430,10 +451,11 @@ export function ProjectSidebar({
               onCreateChild={() => createChildMutation.mutate(p.id)}
               onRename={(title) => renameMutation.mutate({ id: p.id, title })}
             />
+            </StackWrap>
           </div>
         </div>
         {isFactory && isOpen && children.length > 0 && (
-          <div className="ml-4 space-y-1 border-l border-violet-400/15 pl-2">
+          <div className="ml-3 mt-px space-y-px pl-2">
             {children.map((c) =>
               matchProject(c) || matchProject(p) ? (
                 <ProjectRow
@@ -458,30 +480,6 @@ export function ProjectSidebar({
     );
   };
 
-  if (collapsed) {
-    return (
-      <aside className="flex w-11 shrink-0 flex-col items-center border-r border-white/[0.06] bg-gradient-to-b from-card/40 to-card/10 py-2 font-light backdrop-blur-xl">
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8"
-          title="Показать проекты"
-          onClick={onToggleCollapsed}
-        >
-          <PanelLeft className="h-4 w-4" />
-        </Button>
-        <NewProjectWizard
-          trigger={
-            <Button size="icon" variant="ghost" className="mt-2 h-8 w-8" title="Новый проект">
-              <Plus className="h-4 w-4" />
-            </Button>
-          }
-          onCreated={(p) => onSelect(p.id)}
-        />
-      </aside>
-    );
-  }
 
   const visibleFolders = folders.filter(
     (f) =>
@@ -492,9 +490,21 @@ export function ProjectSidebar({
   const visibleRootProjects = rootProjects.filter(matchProject);
 
   return (
+    <div
+      aria-hidden={collapsed}
+      className="relative flex min-h-0 shrink-0 overflow-hidden"
+      style={{
+        width: collapsed ? 0 : sidebarWidth,
+        transition: slideAnimating ? `width ${SLIDE_MS}ms ${SLIDE_EASE}` : undefined,
+      }}
+    >
     <aside
-      style={{ width: sidebarWidth }}
-      className="relative flex min-h-0 shrink-0 flex-col border-r border-white/[0.06] bg-gradient-to-b from-card/50 via-card/25 to-background/80 font-light shadow-[inset_-1px_0_0_rgba(255,255,255,0.04)] backdrop-blur-xl"
+      style={{
+        width: sidebarWidth,
+        transform: collapsed ? "translateX(-100%)" : "translateX(0)",
+        transition: slideAnimating ? `transform ${SLIDE_MS}ms ${SLIDE_EASE}` : undefined,
+      }}
+      className="relative flex h-full min-h-0 shrink-0 flex-col border-r border-[#232327] bg-[#111114] font-normal"
     >
       <SidebarResizeHandle
         width={sidebarWidth}
@@ -502,28 +512,44 @@ export function ProjectSidebar({
         minWidth={minWidth}
         maxWidth={maxWidth}
       />
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3.5 py-3.5">
+      <div className="flex items-center justify-between gap-2 px-3.5 py-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-zinc-700/60 bg-zinc-800/60 shadow-sm">
+          <div className="flex h-8 w-8 items-center justify-center rounded-none bg-[#1a1a1e]">
             <FolderOpen className="h-4 w-4 text-zinc-300" strokeWidth={1.75} />
           </div>
           <div className="min-w-0">
-            <span className="block text-xs font-bold tracking-wider text-zinc-200 uppercase">
+            <span className="block text-[13px] font-bold tracking-wider text-zinc-200 uppercase">
               Проекты
             </span>
             {projects.data && (
-              <span className="text-xs text-zinc-400 font-medium">
+              <span className="text-[13px] text-zinc-400 font-medium">
                 {roots.length} {roots.length === 1 ? "проект" : roots.length > 1 && roots.length < 5 ? "проекта" : "проектов"}
               </span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-1">
+          <NewProjectWizard
+            folderId={activeFolderId}
+            onCreated={(p) => onSelect(p.id)}
+            trigger={
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 rounded-none bg-transparent text-zinc-400 hover:bg-[#1a1a1e] hover:text-white"
+                title="Новый проект"
+                aria-label="Новый проект"
+              >
+                <Plus className="h-4 w-4" strokeWidth={1.75} />
+              </Button>
+            }
+          />
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="h-8 w-8 rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60 shadow-sm"
+            className="h-8 w-8 rounded-none bg-transparent text-zinc-400 hover:bg-[#1a1a1e] hover:text-white"
             title="Новая папка"
             onClick={() => setNewFolderOpen(true)}
           >
@@ -533,26 +559,12 @@ export function ProjectSidebar({
             type="button"
             size="icon"
             variant="ghost"
-            className="h-8 w-8 rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60 shadow-sm"
+            className="h-8 w-8 rounded-none bg-transparent text-zinc-400 hover:bg-[#1a1a1e] hover:text-white"
             title="Скрыть панель"
             onClick={onToggleCollapsed}
           >
             <PanelLeftClose className="h-4 w-4" strokeWidth={1.75} />
           </Button>
-          <NewProjectWizard
-            folderId={activeFolderId}
-            trigger={
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8 rounded-lg bg-emerald-600/90 text-white hover:bg-emerald-500 border border-emerald-400/50 shadow-sm shadow-emerald-500/20"
-                title="Новый проект"
-              >
-                <Plus className="h-4 w-4" strokeWidth={2} />
-              </Button>
-            }
-            onCreated={(p) => onSelect(p.id)}
-          />
         </div>
       </div>
 
@@ -563,7 +575,7 @@ export function ProjectSidebar({
             placeholder="Название папки…"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
-            className="h-8.5 border-zinc-700 bg-zinc-950/80 text-xs font-medium text-zinc-100 placeholder:text-zinc-500"
+            className="h-8.5 border-zinc-700 bg-zinc-950/80 text-[13px] font-medium text-zinc-100 placeholder:text-zinc-500"
             onKeyDown={(e) => {
               if (e.key === "Enter" && newFolderName.trim()) {
                 createFolderMutation.mutate(newFolderName.trim());
@@ -573,7 +585,7 @@ export function ProjectSidebar({
           />
           <Button
             size="sm"
-            className="h-8.5 shrink-0 px-3 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
+            className="h-8.5 shrink-0 px-3 text-[13px] font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
             disabled={!newFolderName.trim() || createFolderMutation.isPending}
             onClick={() => createFolderMutation.mutate(newFolderName.trim())}
           >
@@ -582,7 +594,7 @@ export function ProjectSidebar({
         </div>
       )}
 
-      <div className="border-b border-white/[0.06] px-3 py-2.5">
+      <div className="px-3 pb-2.5">
         <div className="relative">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400"
@@ -592,14 +604,14 @@ export function ProjectSidebar({
             placeholder="Поиск проектов…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="h-9.5 rounded-xl border-zinc-800 bg-zinc-950/70 pl-9.5 text-xs font-medium text-zinc-100 placeholder:text-zinc-400 focus-visible:ring-1 focus-visible:ring-zinc-600"
+            className="h-9 rounded-none border-0 bg-[#18181c] pl-9.5 text-[13px] font-medium text-zinc-100 placeholder:text-zinc-400 focus-visible:ring-1 focus-visible:ring-zinc-600"
           />
         </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
         <div
-          className="flex flex-col gap-0.5 px-2.5 py-2"
+          className="flex flex-col gap-[3px] px-2.5 py-2"
           onDragOver={(e) => e.preventDefault()}
         >
           {projects.isLoading && (
@@ -609,7 +621,7 @@ export function ProjectSidebar({
           )}
 
           {!projects.isLoading && visibleFolders.length === 0 && visibleRootProjects.length === 0 && (
-            <div className="px-3 py-10 text-center text-xs font-light text-muted-foreground/60">
+            <div className="px-3 py-10 text-center text-[13px] font-light text-muted-foreground/60">
               {filter ? "Ничего не найдено." : "Пока ни одного проекта."}
             </div>
           )}
@@ -632,14 +644,22 @@ export function ProjectSidebar({
             const isOpen = expanded[fKey] ?? true;
             const folderProjects = (projectsByFolder.get(folder.id) ?? []).filter(matchProject);
             const isActiveFolder = activeFolderId === folder.id;
+            const coverIds: number[] = [];
+            const walk = (list: ProjectSummary[]) => {
+              for (const fp of list) {
+                coverIds.push(fp.id);
+                walk(childrenByParent.get(fp.id) ?? []);
+              }
+            };
+            walk(projectsByFolder.get(folder.id) ?? []);
             return (
               <Fragment key={folder.id}>
               <div
                 className={cn(
-                  "group mb-0.5 overflow-hidden rounded-xl border transition-all duration-200",
+                  "group mb-0.5 overflow-hidden rounded-none border-0 transition-colors",
                   isActiveFolder
-                    ? "border-amber-400/20 bg-amber-500/[0.04] shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-                    : "border-white/[0.05] bg-white/[0.02]",
+                    ? "bg-[#1a1a1e]"
+                    : "bg-[#151518]",
                   dragOverKey === `folder:${folder.id}` &&
                     "border-primary/30 bg-primary/[0.04] ring-1 ring-primary/20",
                 )}
@@ -660,7 +680,11 @@ export function ProjectSidebar({
                   }
                 }}
               >
-                <div className="flex items-center gap-1 px-2 py-2">
+                <StackWrap on>
+                <div className="relative overflow-hidden border border-[#2a2a30] bg-[#151518]">
+                  <FolderCover ids={coverIds.slice(0, 12)} />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/45 to-black/10" />
+                <div className="relative flex aspect-[16/9] w-full items-end gap-1 px-2 pb-2 text-white">
                   <span
                     draggable
                     onDragStart={(e) => {
@@ -689,7 +713,7 @@ export function ProjectSidebar({
                   <button
                     type="button"
                     className={cn(
-                      "group flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+                      "group flex min-w-0 flex-1 items-center gap-2 rounded-none px-2 py-1.5 text-left transition-colors",
                       isActiveFolder
                         ? "bg-amber-500/[0.08] text-foreground/90"
                         : "hover:bg-white/[0.04] text-foreground/80",
@@ -707,10 +731,10 @@ export function ProjectSidebar({
                       )}
                       strokeWidth={1.5}
                     />
-                    <span className="break-words text-[12px] font-normal leading-snug tracking-[0.01em]">
+                    <span className="break-words text-[14px] font-normal leading-snug tracking-[0.01em]">
                       {folder.name}
                     </span>
-                    <span className="ml-auto rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal tabular-nums text-muted-foreground/70">
+                    <span className="ml-auto rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[13px] font-normal tabular-nums text-muted-foreground/70">
                       {folderProjects.length}
                     </span>
                   </button>
@@ -737,11 +761,13 @@ export function ProjectSidebar({
                     <Trash2 className="h-3 w-3" strokeWidth={1.5} />
                   </button>
                 </div>
+                </div>
+                </StackWrap>
                 {isOpen && (
-                  <div className="space-y-1 border-t border-white/[0.05] px-1.5 py-1.5">
+                  <div className="space-y-0.5 border-t border-white/[0.05] px-1.5 py-1.5">
                     {folderProjects.map((p) => renderProject(p, { draggable: true }))}
                     {folderProjects.length === 0 && (
-                      <div className="px-3 py-3 text-center text-[10px] font-light text-muted-foreground/45">
+                      <div className="px-3 py-3 text-center text-[13px] font-light text-muted-foreground/45">
                         Перетащите проект сюда
                       </div>
                     )}
@@ -818,6 +844,35 @@ export function ProjectSidebar({
         project={queueDialogProject}
       />
     </aside>
+    </div>
+  );
+}
+
+function FolderCover({ ids }: { ids: number[] }) {
+  const [idx, setIdx] = useState(0);
+  const key = ids.join(",");
+  useEffect(() => setIdx(0), [key]);
+  if (idx >= ids.length) return null;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={ids[idx]}
+      src={`/api/artifacts/project-cover/${ids[idx]}`}
+      alt=""
+      loading="lazy"
+      onError={() => setIdx((i) => i + 1)}
+      className="absolute inset-0 h-full w-full object-cover"
+    />
+  );
+}
+
+function StackWrap({ on, children }: { on: boolean; children: React.ReactNode }) {
+  if (!on) return <>{children}</>;
+  return (
+    <div className="relative mt-1.5 ml-1.5">
+      <div className="pointer-events-none absolute -top-1.5 -left-1.5 h-full w-full border border-[#2a2a30] bg-[#18181c]" />
+      <div className="relative">{children}</div>
+    </div>
   );
 }
 
@@ -840,7 +895,7 @@ function DropZone({
   return (
     <div
       className={cn(
-        "shrink-0 rounded-lg transition-all duration-150",
+        "shrink-0 rounded-none transition-all duration-150",
         active ? "my-0.5 min-h-7 bg-primary/10 ring-1 ring-primary/25" : "min-h-3",
         className,
       )}
@@ -913,62 +968,124 @@ function ProjectRow({
     onRename?.(next);
   };
 
+  const [coverOk, setCoverOk] = useState(true);
+  const coverSrc = `/api/artifacts/project-cover/${project.id}?v=${encodeURIComponent(String(project.updated_at))}`;
+  const showCover = !compact && coverOk;
+
+  const titleNode = editing ? (
+    <Input
+      value={draftTitle}
+      onChange={(e) => setDraftTitle(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitRename();
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setDraftTitle(displayName);
+          setEditing(false);
+        }
+      }}
+      onBlur={commitRename}
+      className="h-7 min-w-0 flex-1 rounded-none border-0 bg-black/60 px-2 py-0 text-[14px]"
+      autoFocus
+    />
+  ) : (
+    <span
+      className={cn(
+        "min-w-0 flex-1 break-words leading-snug tracking-[0.01em]",
+        compact ? "line-clamp-2 text-[13px] text-zinc-300" : "line-clamp-2 text-[15px] font-medium text-zinc-100",
+        showCover && "text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.9)]",
+      )}
+    >
+      {displayName}
+    </span>
+  );
+
+  const fmtDate = (v: string | null | undefined) => {
+    if (!v) return "—";
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "short" }).replace(".", "");
+  };
+  const stepChip = (
+    <span
+      className={cn(
+        "inline-flex max-w-full items-center gap-1.5 px-1.5 py-0.5 text-[13px]",
+        showCover ? "bg-black/65 text-zinc-200" : "bg-[#1d1d22] text-zinc-300",
+      )}
+      title="Текущий шаг"
+    >
+      <span className={cn("h-1.5 w-1.5 shrink-0", statusDot(project.status))} />
+      <span className="truncate">{formatProjectStatus(project.status)}</span>
+    </span>
+  );
+  const menu = (
+    <div className="absolute top-1.5 right-1.5 z-20" onClick={(e) => e.stopPropagation()}>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex h-6 items-center gap-1 rounded-none bg-black/65 px-2 text-[13px] text-zinc-200 hover:bg-black/85 hover:text-white",
+              "opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100",
+              queuePosition && "opacity-100",
+            )}
+            title="Действия с проектом"
+          >
+            {queuePosition ? `Очередь ${queuePosition}${queueIdleShort ? ` · ${queueIdleShort}` : ""}` : "Действия"}
+            <ChevronDown className="h-3 w-3" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[200px] rounded-none border-[#2a2a30] bg-[#151518] p-0 text-[14px]">
+          {onRename ? (
+            <DropdownMenuItem
+              className="rounded-none px-3 py-2"
+              onSelect={() => {
+                setDraftTitle(displayName);
+                setEditing(true);
+              }}
+            >
+              <Pencil className="mr-2 h-3.5 w-3.5" /> Переименовать
+            </DropdownMenuItem>
+          ) : null}
+          {canCreateChild && onCreateChild ? (
+            <DropdownMenuItem className="rounded-none px-3 py-2" disabled={creatingChild} onSelect={() => onCreateChild()}>
+              <Plus className="mr-2 h-3.5 w-3.5" /> Дочерний проект
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem className="rounded-none px-3 py-2" onSelect={() => onToggleQueue?.()}>
+            <ListOrdered className="mr-2 h-3.5 w-3.5" />
+            {queuePosition
+              ? `Снять из очереди (${queuePosition}${queueIdleDetail ? ` — ${queueIdleDetail}` : ""})`
+              : "Добавить в очередь генерации"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="rounded-none px-3 py-2 text-red-300 focus:text-red-200"
+            onSelect={() => {
+              if (confirm(`Удалить проект «${displayName}»?`)) onDelete();
+            }}
+          >
+            <Trash2 className="mr-2 h-3.5 w-3.5" /> Удалить
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
   return (
     <div
       role="button"
       tabIndex={0}
       data-project-id={project.id}
       onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      className={cn(
-        "group relative cursor-pointer rounded-xl border text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/15",
-        compact ? "px-2.5 py-2" : "px-3 py-2.5",
-        selected
-          ? "border-white/[0.12] bg-gradient-to-br from-white/[0.08] to-white/[0.03] shadow-[0_1px_0_rgba(255,255,255,0.06),inset_0_1px_0_rgba(255,255,255,0.04)]"
-          : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.03]",
-      )}
-    >
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleQueue?.();
-        }}
-        className={cn(
-          "absolute top-1.5 right-1.5 z-10 flex h-[18px] min-w-[18px] max-w-[72px] items-center justify-center gap-0.5 rounded-full border px-1 text-[9px] font-normal tabular-nums leading-none transition-all",
-          queuePosition
-            ? queueIdleShort
-              ? "border-amber-300/40 bg-amber-400/15 text-amber-100/95 shadow-[0_0_12px_rgba(251,191,36,0.12)]"
-              : "border-sky-300/35 bg-sky-400/15 text-sky-100/95 shadow-[0_0_12px_rgba(56,189,248,0.15)]"
-            : "border-white/[0.08] bg-white/[0.02] text-transparent opacity-0 hover:border-sky-300/30 hover:text-muted-foreground/50 group-hover:opacity-100",
-          queuePosition && "opacity-100",
-        )}
-        title={
-          queuePosition
-            ? `Очередь генерации: ${queuePosition}${
-                queueIdleDetail ? ` — ${queueIdleDetail}` : ""
-              }. Нажмите, чтобы снять.`
-            : "Добавить в очередь генерации"
-        }
-      >
-        <span>{queuePosition ?? "·"}</span>
-        {queuePosition && queueIdleShort ? (
-          <span className="max-w-[40px] truncate text-[7px] font-normal normal-case opacity-90">
-            {queueIdleShort}
-          </span>
-        ) : null}
-      </button>
-
-      <div className="flex items-start gap-1.5 pr-7">
-        {draggable && (
-          <span
-            draggable
-            onDragStart={(e) => {
+      draggable={draggable && !editing}
+      onDragStart={
+        draggable
+          ? (e) => {
               e.stopPropagation();
               e.dataTransfer.setData(
                 "application/x-sidebar-item",
@@ -979,117 +1096,55 @@ function ProjectRow({
                 }),
               );
               e.dataTransfer.effectAllowed = "move";
-            }}
-            onClick={(e) => e.stopPropagation()}
-            className="mt-0.5 cursor-grab rounded p-0.5 text-muted-foreground/30 opacity-0 transition-opacity hover:text-muted-foreground/65 active:cursor-grabbing group-hover:opacity-100"
-            title="Перетащить"
-          >
-            <GripVertical className="h-3 w-3" strokeWidth={1.5} />
-          </span>
+            }
+          : undefined
+      }
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={cn(
+        "group relative cursor-pointer rounded-none border text-left transition-colors focus-visible:outline-none",
+        selected
+          ? "border-white/60 bg-[#1d1d22]"
+          : "border-[#2a2a30] bg-[#151518] hover:border-[#3a3a42] hover:bg-[#1a1a1e]",
+      )}
+    >
+      {menu}
+      <div
+        className={cn(
+          "relative w-full overflow-hidden",
+          compact ? "min-h-[108px]" : "aspect-[16/9]",
+          showCover ? "bg-[#101013]" : "bg-[#151518]",
         )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-start gap-1">
-            {editing ? (
-              <Input
-                value={draftTitle}
-                onChange={(e) => setDraftTitle(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitRename();
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setDraftTitle(displayName);
-                    setEditing(false);
-                  }
-                }}
-                onBlur={commitRename}
-                className={cn(
-                  "h-7 min-w-0 flex-1 border-white/10 bg-white/[0.04] px-2 py-0",
-                  compact ? "text-[11px]" : "text-[13px]",
-                )}
-                autoFocus
-              />
-            ) : (
-              <span
-                className={cn(
-                  "min-w-0 flex-1 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
-                  compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
-                )}
-              >
-                {compact && (
-                  <ListVideo
-                    className="mr-1 inline h-3 w-3 translate-y-[-1px] text-violet-300/70"
-                    strokeWidth={1.5}
-                  />
-                )}
-                {displayName}
-              </span>
-            )}
-            {!editing && onRename ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDraftTitle(displayName);
-                  setEditing(true);
-                }}
-                className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-white/[0.06] hover:text-foreground/80 group-hover:visible"
-                aria-label="Переименовать проект"
-                title="Переименовать"
-              >
-                <Pencil className="h-3 w-3" strokeWidth={1.5} />
-              </button>
-            ) : null}
+      >
+        {showCover ? (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={coverSrc}
+              alt=""
+              loading="lazy"
+              onError={() => setCoverOk(false)}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
+          </>
+        ) : null}
+        <div className="absolute top-1.5 left-1.5 z-[1] max-w-[calc(100%-100px)]">{stepChip}</div>
+        <div className="absolute inset-x-0 bottom-0 z-[1] flex items-end justify-between gap-2 px-2.5 pb-2.5">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-end gap-1">{titleNode}</div>
+            {badge ? <div className="mt-0.5 truncate text-[13px] text-zinc-400">{badge}</div> : null}
           </div>
-          <div className="flex shrink-0 flex-col items-center gap-0.5">
-              {canCreateChild && onCreateChild ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCreateChild();
-                  }}
-                  disabled={creatingChild}
-                  className="invisible h-5 w-5 rounded-md text-muted-foreground/50 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400/90 group-hover:visible disabled:opacity-50"
-                  aria-label="Создать дочерний проект"
-                  title="Дочерний проект (настройки, промты и текст для GPT — без закадрового, Excel и результатов)"
-                >
-                  {creatingChild ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Plus className="h-3 w-3" strokeWidth={1.5} />
-                  )}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (confirm(`Удалить проект «${displayName}»?`)) onDelete();
-                }}
-                className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
-                aria-label="Удалить"
-              >
-                <Trash2 className="h-3 w-3" strokeWidth={1.5} />
-              </button>
-            </div>
-          </div>
-          <div className="mt-2.5 flex items-center justify-between gap-2">
-            <div className="flex shrink-0 items-center gap-1.5 overflow-visible">
-              <StatusPill status={project.status} />
-              {badge && (
-                <span className="shrink-0 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-                  {badge}
-                </span>
-              )}
-            </div>
-            <span className="shrink-0 text-xs font-medium text-zinc-400 tabular-nums">
-              {formatRelativeTime(project.updated_at)}
+          <div className="mb-0.5 grid shrink-0 grid-cols-[auto_auto] gap-x-1.5 text-right text-[13px] leading-[1.4] tabular-nums [text-shadow:0_1px_2px_rgba(0,0,0,0.9)]">
+            <span className="text-zinc-400">Создан</span>
+            <span className="text-zinc-200">{fmtDate(project.created_at)}</span>
+            <span className="text-zinc-400">Использован</span>
+            <span className="text-zinc-200" title={formatRelativeTime(project.updated_at)}>
+              {fmtDate(project.updated_at)}
             </span>
           </div>
         </div>
@@ -1098,24 +1153,10 @@ function ProjectRow({
   );
 }
 
-function StatusPill({ status }: { status: ProjectStatus }) {
-  const variant = statusVariant(status);
-  return (
-    <Badge
-      variant={variant}
-      className="inline-flex shrink-0 whitespace-nowrap h-auto py-0.5 px-2.5 border-white/10 text-xs font-semibold tracking-normal normal-case shadow-none"
-    >
-      {formatProjectStatus(status)}
-    </Badge>
-  );
-}
-
-function statusVariant(
-  s: ProjectStatus,
-): "default" | "success" | "warning" | "destructive" | "info" | "muted" {
-  if (s === "new") return "muted";
-  if (s === "paused" || s === "failed") return "destructive";
-  if (s === "published" || s === "assembled") return "success";
-  if (s.endsWith("_ready") || s === "audio_ready" || s === "videos_ready") return "info";
-  return "default";
+function statusDot(s: ProjectStatus): string {
+  if (s === "paused" || s === "failed") return "bg-amber-400";
+  if (s === "published" || s === "assembled") return "bg-emerald-400";
+  if (s === "new") return "bg-zinc-600";
+  if (s.endsWith("_ready")) return "bg-zinc-300";
+  return "bg-sky-400";
 }

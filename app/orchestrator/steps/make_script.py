@@ -36,7 +36,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         if (fr.voiceover_text or "").strip()
     )
     ready = existing_vo.strip() or (project.script_text or "").strip()
-    if len(ready) >= 200:
+    from app.services.nii67_card import skip_existing_voiceover_for_script
+
+    if skip_existing_voiceover_for_script(project, len(ready)):
         logger.warning(
             "[#{}] make_script: закадр уже есть ({} симв) — GPT не вызываем",
             project.id,
@@ -55,6 +57,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if len(voiceover_text) < 200:
         raise RuntimeError("GPT вернул пустой/слишком короткий закадр")
 
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(project, "meta")
     project.script_text = voiceover_text
     await session.flush()
 

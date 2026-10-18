@@ -189,6 +189,17 @@ def diagnose_apply_ops_text(text: str) -> tuple[str, dict[str, Any] | None]:
     raw = text or ""
     if not raw.strip():
         return "empty_body", None
+    stripped = raw.strip()
+    has_payload_key = (
+        '"scenes"' in stripped or '"characters"' in stripped or '"ops"' in stripped
+    )
+    # close_truncated_json дописывает скобки, и extract вернёт dict.
+    # Для грамматики сцен незакрытый ответ — обрыв, не «ok».
+    if has_payload_key and (
+        stripped.count("{") > stripped.count("}")
+        or stripped.count("[") > stripped.count("]")
+    ):
+        return "json_truncated", None
     data = extract_apply_ops_json(raw)
     if data is None:
         has_scenes_key = '"scenes"' in raw or '"characters"' in raw or '"ops"' in raw
