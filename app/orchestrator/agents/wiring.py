@@ -22,6 +22,7 @@ _RAG = "app.orchestrator.rag"
 _VALIDATORS = "app.orchestrator.validators"
 _ACTIONS = "app.orchestrator.actions"
 _APPROVAL_CHANGE_ID = re.compile(r"^orch-appr-\d+-\d+$")
+_ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required"})
 
 
 def load_module(name: str) -> Any | None:
@@ -238,13 +239,35 @@ class ActionsBridge:
         raw = meta.get("risk") if isinstance(meta, dict) else getattr(meta, "risk", Risk.high)
         return coerce_risk(raw)
 
-    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> Any:
         result = self.inner.execute(name, params, task_ctx)
         if inspect.isawaitable(result):
             result = await result
+        if isinstance(result, dict) and result.get("status") in _ENVELOPE_STATUSES:
+            return _strip_envelope(result)
         if not isinstance(result, ActionResult):
             result = ActionResult.model_validate(result)
         change_id = result.change_id
         if isinstance(change_id, str) and _APPROVAL_CHANGE_ID.match(change_id):
             return result.model_copy(update={"change_id": None})
         return result
+
+
+def _strip_approval_id(value: Any) -> Any:
+    if isinstance(value, str) and _APPROVAL_CHANGE_ID.match(value):
+        return None
+    return value
+
+
+def _strip_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Конверт r2.2 проходит как есть. ``orch-appr-*`` срезается и в теле ``result``."""
+    body = dict(payload)
+    if "change_id" in body:
+        body["change_id"] = _strip_approval_id(body.get("change_id"))
+    inner = body.get("result")
+    if isinstance(inner, dict):
+        inner = dict(inner)
+        if "change_id" in inner:
+            inner["change_id"] = _strip_approval_id(inner.get("change_id"))
+        body["result"] = inner
+    return body
