@@ -158,6 +158,22 @@ async def wait(plan_id: str) -> None:
         await asyncio.shield(task)
 
 
+async def drain_background() -> None:
+    """Отменить планы и сторожей сирот и дождаться их, пока сессия ещё жива."""
+    pending: list[asyncio.Task] = []
+    for task in list(_TASKS.values()):
+        if not task.done():
+            task.cancel()
+            pending.append(task)
+    for info in list(_ORPHANS.values()):
+        task = info.get("task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            pending.append(task)
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+
+
 async def _finish(plan_id: str, status: str, *, error: str = "", reason: str = "") -> None:
     async with store.sessions()() as s:
         plan = await s.get(store.ActionPlan, plan_id)
