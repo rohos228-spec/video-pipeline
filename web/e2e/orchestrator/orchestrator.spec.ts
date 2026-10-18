@@ -41,6 +41,32 @@ async function saveShot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
 
+test("legacy-токен не дописывается в пузырь выше реплики с message_id", () => {
+  const older = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: { type: "token", task_id: 1, seq: 1, session_id: "s", payload: { text: "старое" } },
+  });
+  const bounded = reduceOrchScreen(older, {
+    type: "event",
+    event: {
+      type: "message_start",
+      task_id: 1,
+      seq: 2,
+      session_id: "s",
+      payload: { message_id: 7, role: "assistant" },
+    },
+  });
+  const legacy = reduceOrchScreen(bounded, {
+    type: "event",
+    event: { type: "token", task_id: 1, seq: 3, session_id: "s", payload: { text: "новое" } },
+  });
+  expect(legacy.messages[0]?.text).toBe("старое");
+  expect(legacy.messages[1]?.messageId).toBe(7);
+  expect(legacy.messages[1]?.text).toBe("");
+  expect(legacy.messages[2]?.text).toBe("новое");
+  expect(legacy.messages[2]?.messageId).toBeUndefined();
+});
+
 test("ws3-r3.3 и ws3-r3.3.1 принимаются без предупреждения", () => {
   expect(acceptsOrchContractVersion("ws3-r3.3")).toBe(true);
   expect(acceptsOrchContractVersion("ws3-r3.3.1")).toBe(true);

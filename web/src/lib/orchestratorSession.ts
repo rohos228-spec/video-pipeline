@@ -566,21 +566,18 @@ function messageRole(payload: Record<string, unknown>): "user" | "assistant" {
   return str(payload.role) === "user" ? "user" : "assistant";
 }
 
-/** Пузырь r3.3: без message_id, последняя реплика ассистента той же задачи. */
+/** Пузырь r3.3: без message_id. Если свежая реплика той же задачи уже с id, пишем новый пузырь. */
 function appendToken(state: OrchScreenState, taskId: string | null, text: string): void {
   if (!text) return;
   const messages = state.messages;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (
-      message &&
-      message.role === "assistant" &&
-      message.taskId === taskId &&
-      (message.messageId == null)
-    ) {
+    if (!message || message.role !== "assistant" || message.taskId !== taskId) continue;
+    if (message.messageId == null) {
       message.text += text;
       return;
     }
+    break;
   }
   messages.push({
     id: `asst-${taskId ?? "none"}-${messages.length}`,
