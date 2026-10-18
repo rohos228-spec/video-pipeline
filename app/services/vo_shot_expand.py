@@ -1084,7 +1084,7 @@ def _write_frame_shot_id(
     planned = planned_shots_from_attrs(frame)
     if not planned:
         return
-    from app.services.frame_tombstones import merge_kadry_keep_missing, shot_is_active
+    from app.services.frame_tombstones import merge_kadry_keep_missing
 
     old_rows = (
         [dict(item) if isinstance(item, dict) else item for item in raw]
@@ -1122,13 +1122,13 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
     У VO-родителя без явной роли child сбрасывает leftover coverage_parent_id.
     """
     changed = 0
-    from app.services.frame_tombstones import frame_is_active
 
     for members in _group_by_parent(frames).values():
         live = [
             m
             for m in members
-            if not is_coverage_leftover(m) and frame_is_active(m)
+            if not is_coverage_leftover(m)
+            and frame_is_active(getattr(m, "attrs", None) or {})
         ]
         if not live:
             continue
@@ -1161,7 +1161,6 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
         keep_x1 = str(_cs(parent).get("coverage_kind") or "").strip().lower() == "child"
         planned = planned_shots_from_attrs(parent)
         old_planned = [dict(shot) for shot in planned]
-        from app.services.frame_tombstones import shot_is_active
 
         inactive_ids = {
             str(shot.get("id"))

@@ -1774,7 +1774,7 @@ def merge_trivial_shots(shots):
     реплики, POV после «заметил», установочный перед диалогом. Закадр не теряется."""
     if not isinstance(shots, list) or len(shots) < 2:
         return []
-    from app.services.frame_tombstones import shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
 
     inactive_ids = {
         str(shot.get("id"))

@@ -173,7 +173,7 @@ async def _frame_by_number(
 async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str) -> bool:
     """Помеченный кадр не уходит в API. Нет строки в БД — не блокируем чужой вызов."""
     try:
-        from app.services.frame_tombstones import log_paid_frame_skip
+        from app.orchestrator.validators.activity_flags import frame_is_active
         from app.services.montage_board_apply import session_scope
 
         async with session_scope(project_id) as session:
@@ -182,7 +182,14 @@ async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str)
         return False
     if fr is None:
         return False
-    return log_paid_frame_skip(fr, where=where) is not None
+    if frame_is_active(getattr(fr, "attrs", None) or {}):
+        return False
+    logger.warning(
+        "WARN {}: кадр #{} неактивен — платная генерация пропущена",
+        where,
+        fr.number,
+    )
+    return True
 
 
 async def _active_prompt_text(
@@ -412,9 +419,14 @@ async def prepare_image_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
-    from app.services.frame_tombstones import PaidFrameSkipped, log_paid_frame_skip
+    from app.orchestrator.validators.activity_flags import frame_is_active
+    from app.services.frame_tombstones import PaidFrameSkipped
 
-    if log_paid_frame_skip(fr, where="prepare_image_regen"):
+    if not frame_is_active(getattr(fr, "attrs", None) or {}):
+        logger.warning(
+            "WARN prepare_image_regen: кадр #{} неактивен — платная генерация пропущена",
+            frame_number,
+        )
         raise PaidFrameSkipped(
             f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
         )
@@ -680,9 +692,14 @@ async def prepare_video_regen(
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
-    from app.services.frame_tombstones import PaidFrameSkipped, log_paid_frame_skip
+    from app.orchestrator.validators.activity_flags import frame_is_active
+    from app.services.frame_tombstones import PaidFrameSkipped
 
-    if log_paid_frame_skip(fr, where="prepare_video_regen"):
+    if not frame_is_active(getattr(fr, "attrs", None) or {}):
+        logger.warning(
+            "WARN prepare_video_regen: кадр #{} неактивен — платная генерация пропущена",
+            frame_number,
+        )
         raise PaidFrameSkipped(
             f"кадр #{frame_number} помечен «удалён» — платная генерация пропущена"
         )

@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.models import Frame, Project, SceneDesignCell
+from app.orchestrator.validators.activity_flags import shot_is_active
 from app.services.scene_design.context_builder import frame_seconds
 
 
@@ -124,7 +125,7 @@ def _append_missing_kadry(previous: list[Any], current: list[Any]) -> None:
             continue
         ident = _kadry_identity(item)
         if ident and all(token in present for token in ident):
-            if item.get("активен") is False:
+            if not shot_is_active(item):
                 for kid in current:
                     if isinstance(kid, dict) and set(_kadry_identity(kid)) & set(ident):
                         kid["активен"] = False
@@ -190,11 +191,7 @@ def assign_frames_to_scenes(
         row = sp["row"]
         scene_frames = row["кадры"]
         _append_missing_kadry(previous_kadry.get(id(row), []), scene_frames)
-        live_frames = [
-            f
-            for f in scene_frames
-            if not (isinstance(f, dict) and f.get("активен") is False)
-        ]
+        live_frames = [f for f in scene_frames if shot_is_active(f)]
         if live_frames:
             # Хронометраж сцены = сумма времён её кадров (из БД или оценка);
             # точнее декларации агента action, поэтому перезаписывает её.

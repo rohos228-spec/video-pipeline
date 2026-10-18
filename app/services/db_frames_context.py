@@ -573,7 +573,7 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
 
 def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
     """img_pr: действие/раскладка кадра, без 73 битов и всей площадки проекта."""
-    from app.services.frame_tombstones import shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
 
     row.pop("биты", None)
     shot_id = str(row.get("shot_id") or "").strip()

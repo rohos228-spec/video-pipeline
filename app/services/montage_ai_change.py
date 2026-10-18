@@ -209,10 +209,8 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
         kadry = row.get("кадры")
         if not isinstance(kadry, list) or not kadry:
             continue
-        from app.services.frame_tombstones import (
-            merge_kadry_keep_missing,
-            shot_is_active,
-        )
+        from app.orchestrator.validators.activity_flags import shot_is_active
+        from app.services.frame_tombstones import merge_kadry_keep_missing
 
         live = [
             item

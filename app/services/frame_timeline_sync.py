@@ -50,11 +50,11 @@ def timeline_frames_and_cells(
     Помеченный кадр не озвучивается. Текст остаётся на строке.
     """
     del project  # Excel больше не SoT
-    from app.services.frame_tombstones import frame_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active
 
     active: list[Frame] = []
     for fr in frames:
-        if frame_is_active(fr):
+        if frame_is_active(getattr(fr, "attrs", None) or {}):
             active.append(fr)
             continue
         if (fr.voiceover_text or "").strip():

@@ -611,9 +611,13 @@ async def _shot1_job(
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
                 return False
-            from app.services.frame_tombstones import log_paid_frame_skip
+            from app.orchestrator.validators.activity_flags import frame_is_active
 
-            if log_paid_frame_skip(fr, where="generate_videos"):
+            if not frame_is_active(getattr(fr, "attrs", None) or {}):
+                logger.warning(
+                    "WARN generate_videos: кадр #{} неактивен — платная генерация пропущена",
+                    fr.number,
+                )
                 return False
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")

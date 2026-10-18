@@ -84,10 +84,14 @@ def filter_assembly_input_for_frames(
     include_characters: bool,
 ) -> dict[str, Any]:
     """Срез assembly_input под чанк: только пересекающиеся сцены/шоты."""
-    from app.services.frame_tombstones import frame_is_active, shot_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
 
     # Неактивный кадр чанка не расширяет окно и не тащит свои шоты в LLM.
-    live_chunk = [fr for fr in chunk_frames if frame_is_active(fr)]
+    live_chunk = [
+        fr
+        for fr in chunk_frames
+        if frame_is_active(getattr(fr, "attrs", None) or {})
+    ]
     offsets = frame_offsets(all_frames, full_vo)
     span = _frame_span(live_chunk, offsets) if live_chunk else None
     vo_norm = _norm(full_vo)

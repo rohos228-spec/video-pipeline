@@ -28,12 +28,12 @@ def build_assembly_clip_specs(
 
     Если shot_01 нет — нормально: весь слот кадра закрывает shot_02.
     """
-    from app.services.frame_tombstones import frame_is_active
+    from app.orchestrator.validators.activity_flags import frame_is_active
 
     trims = video_trims or {}
     clips: list[ClipSpec] = []
     for fr in frames:
-        if not frame_is_active(fr):
+        if not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         total = duration_by_frame.get(fr.number)
         if total is None:

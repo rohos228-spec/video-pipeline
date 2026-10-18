@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.project_root import find_project_root
 from app.services.db_v2 import insert_frame_after
-from app.services.frame_tombstones import frame_is_active
+from app.orchestrator.validators.activity_flags import frame_is_active
 from app.services.scene_design.chronology import _norm, frame_offsets
 from app.services.scene_design.context_builder import frame_seconds
 
@@ -334,7 +334,7 @@ def _is_shot_child(fr: Frame) -> bool:
 
 def _archive_parent_shot(frames: list[Frame], child: Frame) -> None:
     """Шот ребёнка в кадры родителя остаётся, но не живым."""
-    from app.services.frame_tombstones import shot_is_active
+    from app.orchestrator.validators.activity_flags import shot_is_active
 
     meta = _subdivide_attr(child)
     shot_id = str(meta.get("shot_id") or "").strip()
@@ -373,7 +373,7 @@ def already_subdivided(frames: list[Frame]) -> bool:
     Помеченный ``удалён`` ребёнок строку не занимает в живой дроблёнке:
     повторный camera_subdivide не должен пропускаться из-за архива.
     """
-    return any(_is_shot_child(f) and frame_is_active(f) for f in frames)
+    return any(_is_shot_child(f) and frame_is_active(getattr(f, "attrs", None) or {}) for f in frames)
 
 
 async def collapse_shot_children(
@@ -406,14 +406,14 @@ async def collapse_shot_children(
         ).scalars()
     )
     child_ids = [
-        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(fr)
+        fr.id for fr in frames if _is_shot_child(fr) and frame_is_active(getattr(fr, "attrs", None) or {})
     ]
     # Восстановить полный текст ячейки на родителе ДО пометки детей:
     # после дроби родитель несёт только свой фрагмент — склеиваем группу.
     # Уже помеченные дети в склейку не входят, чтобы не задвоить текст.
     by_parent: dict[str, list[Frame]] = {}
     for fr in frames:
-        if _is_shot_child(fr) and not frame_is_active(fr):
+        if _is_shot_child(fr) and not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         meta = _subdivide_attr(fr)
         pu = str(meta.get("parent_uuid") or "").strip()
@@ -879,7 +879,7 @@ def _group_frames_into_scenes(
     # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
     if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
         frames_sorted = [
-            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(f)
+            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(getattr(f, "attrs", None) or {})
         ]
         by_scene: dict[str, list[Frame]] = {}
         scene_order: list[str] = []
@@ -910,7 +910,7 @@ def _group_frames_into_scenes(
     by_parent: dict[str, list[Frame]] = {}
     singles: list[Frame] = []
     for fr in frames:
-        if not fr.uuid or not frame_is_active(fr):
+        if not fr.uuid or not frame_is_active(getattr(fr, "attrs", None) or {}):
             continue
         meta = _subdivide_attr(fr)
         parent_u = str(meta.get("parent_uuid") or "").strip()
@@ -952,7 +952,7 @@ def _group_frames_into_scenes(
     # Если групп нет — fallback: каждый кадр = сцена.
     if not groups:
         for fr in sorted(frames, key=_sort_key):
-            if fr.uuid and frame_is_active(fr):
+            if fr.uuid and frame_is_active(getattr(fr, "attrs", None) or {}):
                 groups.append(([fr], {}, 1))
     return groups
 
