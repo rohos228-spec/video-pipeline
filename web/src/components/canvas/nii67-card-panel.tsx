@@ -769,8 +769,13 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   });
 
   const saveFrames = useMutation({
-    mutationFn: (list: Nii67Frame[]) => api.putNii67Frames(projectId, list),
-    onSuccess: (res) => {
+    mutationFn: async (list: Nii67Frame[]) => {
+      const pid = projectId;
+      const res = await api.putNii67Frames(pid, list);
+      return { res, pid };
+    },
+    onSuccess: ({ res, pid }) => {
+      if (pid !== projectRef.current) return;
       setFrames(res.frames);
       toast.success("Кадры сохранены");
     },
