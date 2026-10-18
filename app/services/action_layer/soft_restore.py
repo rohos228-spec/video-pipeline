@@ -266,12 +266,58 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
         }
 
 
+async def _snapshot_live(
+    ctx: ActionContext,
+    *,
+    action_id: str,
+    project_id: int,
+    kind: str,
+    target: dict,
+    before: Any,
+) -> str:
+    """Снимок того, что сейчас на диске. Ошибка записи — отказ, без POST/PUT."""
+    sid = await store.save_snapshot(
+        plan_id=ctx.plan_id or "",
+        step_index=ctx.step_index,
+        action_id=action_id,
+        project_id=project_id,
+        kind=kind,
+        target=target,
+        before=before,
+        after={"restore_pending": True},
+        restorable=True,
+        note="снимок текущего значения перед восстановлением",
+        actor=ctx.operator or "",
+    )
+    return str(sid)
+
+
+async def _group_live(ctx: ActionContext, group_id: str) -> dict:
+    try:
+        detail = await ctx.call("GET", f"/node-groups/{group_id}")
+    except ActionCallError as exc:
+        if exc.status == 404:
+            return {"group_id": group_id, "absent": True}
+        raise
+    if isinstance(detail, dict):
+        return detail
+    return {"group_id": group_id, "absent": True}
+
+
 async def group_restore(ctx: ActionContext, params: dict) -> dict:
     snapshot_id, before = await _load_before(params)
     if not isinstance(before, dict) or not before.get("group_id"):
         raise ActionCallError(422, "снимок группы пуст")
-    await ctx.call("POST", "/node-groups", json=before)
     gid = str(before["group_id"])
+    await _snapshot_live(
+        ctx,
+        action_id="group.restore",
+        project_id=int(params.get("project_id") or 1),
+        kind="group",
+        target={"group_id": gid},
+        before=await _group_live(ctx, gid),
+    )
+    await ctx.call("POST", "/node-groups", json=before)
     return _edit_result(
         action="group.restore",
         project_id=int(params.get("project_id") or 1),
@@ -286,13 +332,26 @@ async def group_restore(ctx: ActionContext, params: dict) -> dict:
 
 
 async def prompt_restore_master(ctx: ActionContext, params: dict) -> dict:
-    from app.services.action_layer.builtin_wave3 import _prompt_path
+    from app.services.action_layer.builtin_wave3 import _prompt_path, _read_prompt
 
     snapshot_id, before = await _load_before(params)
     if not isinstance(before, dict) or "content" not in before:
         raise ActionCallError(422, "снимок мастер-промта пуст")
     step = str(before.get("step_code") or "")
     name = str(before.get("name") or "")
+    current = await _read_prompt(ctx, {"step_code": step, "name": name})
+    if current is None:
+        live = {"step_code": step, "name": name, "absent": True}
+    else:
+        live = {"step_code": step, "name": name, "content": str(current.get("content") or "")}
+    await _snapshot_live(
+        ctx,
+        action_id="prompt.restore_master",
+        project_id=int(params.get("project_id") or 1),
+        kind="master_prompt",
+        target={"step_code": step, "name": name},
+        before=live,
+    )
     await ctx.call("PUT", _prompt_path({"step_code": step, "name": name}), json={"content": before["content"]})
     return _edit_result(
         action="prompt.restore_master",

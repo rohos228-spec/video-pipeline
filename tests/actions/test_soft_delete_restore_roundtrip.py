@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from app.models import Frame, Scene
 from app.orchestrator.actions.contracts import SOFT_DELETE_RESTORE, ActionResult
 from app.services import node_groups as ng
-from app.services.action_layer import executor
+from app.services.action_layer import executor, store
 from app.services.action_layer.soft_restore import capture_frame, remember_soft_delete
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.services.frame_tombstones import deleted_numbers
@@ -321,3 +321,57 @@ async def test_frame_restore_occupied_number_does_not_overwrite(env) -> None:
         row = await session.get(Frame, ids[1])
         assert row.voiceover_text == "живой текст"
         assert row.attrs["кадры"] == live_shots
+
+
+async def test_group_and_prompt_restore_skip_write_when_snapshot_fails(
+    env, prompts_root, monkeypatch
+) -> None:
+    monkeypatch.setattr(ng, "custom_groups_dir", lambda: env.tmp_path / "node_groups")
+    spec = {
+        "group_id": "n4keep",
+        "title": "сейчас",
+        "category": "planning",
+        "nodes": [{"local_key": "hero", "label": "Герой", "node_type": "excel_gpt"}],
+    }
+    save_custom_group(spec)
+    archived = dict(spec)
+    archived["title"] = "из снимка"
+    group_snap = await remember_soft_delete(
+        _snap_ctx(),
+        action_id="group.delete",
+        project_id=None,
+        kind="group",
+        target={"group_id": "n4keep"},
+        before=archived,
+    )
+    created = await _run(env, [{
+        "action_id": "prompt.create_master",
+        "params": {"step_code": "plan", "name": "keep", "content": "сейчас"},
+    }])
+    assert created["status"] == "succeeded", created
+    prompt_path = prompts_root / "01_plan" / "keep.md"
+    prompt_snap = await remember_soft_delete(
+        _snap_ctx(),
+        action_id="prompt.delete_master",
+        project_id=None,
+        kind="master_prompt",
+        target={"step_code": "plan", "name": "keep"},
+        before={"step_code": "plan", "name": "keep", "content": "из снимка"},
+    )
+
+    async def _refuse_snapshot(*_args, **_kwargs):
+        raise RuntimeError("снимок перед восстановлением не записан")
+
+    monkeypatch.setattr(store, "save_snapshot", _refuse_snapshot)
+    group_back = await _run(env, [{
+        "action_id": "group.restore",
+        "params": {"snapshot_id": group_snap},
+    }])
+    assert group_back["steps"][0]["status"] == "failed", group_back
+    assert get_node_group("n4keep").title == "сейчас"
+    prompt_back = await _run(env, [{
+        "action_id": "prompt.restore_master",
+        "params": {"snapshot_id": prompt_snap},
+    }])
+    assert prompt_back["steps"][0]["status"] == "failed", prompt_back
+    assert prompt_path.read_text(encoding="utf-8") == "сейчас"
