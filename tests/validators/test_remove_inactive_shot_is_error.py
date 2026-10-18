@@ -108,3 +108,20 @@ def test_edit_text_of_marked_idless_shot_passes(mode: str, flag: str, value: obj
         ]
     )
     assert run_preservation_validators(before, after, mode=mode) == []
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_drop_first_of_two_marked_idless_shots_is_error(mode: str) -> None:
+    """Удаление первого из двух помеченных безымянных шотов со сдвигом — потеря.
+
+    Второй шот встаёт на индекс первого, но помеченных стало меньше.
+    """
+
+    before = _scene(
+        [
+            {"активен": False, "закадр": "x"},
+            {"активен": False, "закадр": "y"},
+        ]
+    )
+    after = _scene([{"активен": False, "закадр": "y"}])
+    _assert_removed(before, after, mode, "x")

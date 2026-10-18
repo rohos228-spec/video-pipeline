@@ -72,6 +72,9 @@ def check_marked_shot_removed(before: Any, after: Any, ops: Any = None) -> list[
         shots = cell.get("кадры")
         if not isinstance(shots, list):
             continue
+        # «То же место» засчитывается, только если помеченных безымянных шотов
+        # в кадре не стало меньше: иначе сдвиг прячет удаление.
+        slot_ok = _marked_idless_count(after_list) >= _marked_idless_count(shots)
         for shot_index, shot in enumerate(shots):
             if not isinstance(shot, dict) or shot_is_active(shot):
                 continue
@@ -82,7 +85,7 @@ def check_marked_shot_removed(before: Any, after: Any, ops: Any = None) -> list[
                 seen.add(fid)
                 token = fid
             else:
-                if _same_slot_still_marked(after_list, shot_index):
+                if slot_ok and _same_slot_still_marked(after_list, shot_index):
                     continue
                 token = _anon_text(shot)
                 if not token or token in after_anon or token in seen:
@@ -132,6 +135,14 @@ def _cell_key(cell: dict[str, Any], index: int) -> tuple[str, str | int]:
     if number not in (None, ""):
         return ("num", str(number))
     return ("idx", index)
+
+
+def _marked_idless_count(shots: list[Any]) -> int:
+    return sum(
+        1
+        for shot in shots
+        if isinstance(shot, dict) and frame_id(shot) is None and not shot_is_active(shot)
+    )
 
 
 def _same_slot_still_marked(after_shots: list[Any], shot_index: int) -> bool:
