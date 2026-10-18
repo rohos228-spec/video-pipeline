@@ -780,11 +780,11 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
             f"Платный вызов {provider} заблокирован аварийным рубильником. Запрос не отправлялся.",
             provider=provider, what=what) from exc
     _disk_verdict(provider, what)
-    # Уже внутри paid_call: вложенный seam не открывает второй резерв.
-    # Потолок всё равно сверяется с уже удержанной суммой. Если её срезали
-    # ниже резерва, следующий HTTP того же вызова не уходит.
-    nested = bool(_seam.get())
-    usd = 0.0 if nested else _default_estimate(estimate_usd)
+    # Тот же провайдер уже внутри paid_call: второй резерв не открывается.
+    # Другой провайдер считается отдельно и может упереться в потолок.
+    if _seam.get() == provider:
+        return PaidTicket(None, 0.0)
+    usd = _default_estimate(estimate_usd)
     c = caps()
     run_id = (run_id or "")[:80]
     windows = (("spend_cap_run", "run", bool(run_id)),
@@ -807,8 +807,8 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
                     f"и оценками, этот вызов {usd:.2f} USD). Запрос не отправлялся.",
                     provider=provider, what=what,
                     detail={"spent": round(spent, 6), "cap": cap, "estimate": usd, "source": what})
-        if nested or not register:
-            return PaidTicket(None, 0.0)
+        if not register:
+            return PaidTicket(None, usd)
         entry = _InFlight(usd, pid, run_id, _today(), provider, what)
         _inflight.append(entry)
         return PaidTicket(entry, usd)

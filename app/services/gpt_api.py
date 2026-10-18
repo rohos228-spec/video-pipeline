@@ -2689,7 +2689,7 @@ async def _chat_completions_nostream(
 
 
 @spend_guard.paid_seam(
-    "gpt",
+    "vibecode",
     "chat completions stream",
     estimate=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
 )
