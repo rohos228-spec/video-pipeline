@@ -466,8 +466,9 @@ export function OrchestratorPanel({ projectId }: Props) {
 
   return (
     <div
+      data-testid="orch-float-panel"
       className={cn(
-        "absolute z-40 flex flex-col border border-border bg-card shadow-2xl backdrop-blur transition-all duration-200",
+        "absolute z-40 flex flex-col border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all duration-200",
         open && expanded
           ? "inset-x-0 bottom-0 top-[158px] rounded-t-xl border-x-0 border-b-0"
           : open
@@ -475,11 +476,16 @@ export function OrchestratorPanel({ projectId }: Props) {
             : "inset-x-0 bottom-0 h-10 rounded-none border-x-0 border-b-0",
       )}
     >
-      <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border px-2">
+      <div
+        className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2"
+        data-testid="orch-float-hairline"
+      >
         <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[11px] text-muted-foreground">
           <Bot className="h-4 w-4 shrink-0 text-primary" />
-          <span className="shrink-0 font-semibold text-foreground/90">Оркестратор</span>
-          <span className="truncate text-muted-foreground/70">
+          <span className="shrink-0 font-semibold text-white/85" data-testid="orch-float-title">
+            Оркестратор
+          </span>
+          <span className="truncate text-white/35" data-testid="orch-float-muted">
             {projectId == null
               ? "открой проект"
               : busy
