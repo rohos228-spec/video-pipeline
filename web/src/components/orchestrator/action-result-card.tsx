@@ -116,8 +116,8 @@ function Extras({ result }: { result: ActionResultView }) {
       ) : null}
       {result.warnings.length ? (
         <ul className="mt-2 space-y-1 text-[11px] text-warning" data-testid="orch-action-warnings">
-          {result.warnings.map((item) => (
-            <li key={item}>{item}</li>
+          {result.warnings.map((item, index) => (
+            <li key={`${index}:${item}`}>{item}</li>
           ))}
         </ul>
       ) : null}
@@ -126,8 +126,8 @@ function Extras({ result }: { result: ActionResultView }) {
           {result.partial ? <p className="text-[11px] text-white/55">Частично · пропущено</p> : null}
           {result.skipped.length ? (
             <ul className="mt-1 space-y-1 text-[11px] text-white/55" data-testid="orch-action-skipped">
-              {result.skipped.map((item) => (
-                <li key={item}>{`пропущено ${item}`}</li>
+              {result.skipped.map((item, index) => (
+                <li key={`${index}:${item}`}>{`пропущено ${item}`}</li>
               ))}
             </ul>
           ) : null}

@@ -468,6 +468,18 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   });
 });
 
+test("повторы предупреждений не делят один key", () => {
+  const source = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/components/orchestrator/action-result-card.tsx"),
+    "utf8",
+  );
+  expect(source).not.toMatch(/key=\{item\}/);
+  const payload = structuredClone(EXAMPLE_PARTIAL_EDIT);
+  payload.warnings = ["тот же", "тот же"];
+  const view = readActionEnvelope(payload, 1);
+  expect(view?.warnings).toEqual(["тот же", "тот же"]);
+});
+
 test("ссылка снимка только внутри /api/orchestrator", () => {
   const payload = structuredClone(EXAMPLE_DELETE_OK);
   const result = payload.result as { snapshot_url?: string };
