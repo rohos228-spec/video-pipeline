@@ -137,7 +137,6 @@ _DELETE_KINDS = frozenset(
         "http.delete",
         "http.unknown",
         "orm.delete",
-        "atomic_private",
         "os.symlink",
         "os.link",
         "Path.symlink_to",
@@ -1584,7 +1583,7 @@ def _private_import_hits(node: ast.ImportFrom, function: str) -> list[WriteHit]:
                 function,
                 source=None,
                 allowed=False,
-                snapshot_delete=True,
+                snapshot_delete=False,
             )
         )
     return hits
@@ -1832,6 +1831,15 @@ def _write_hit(
     source = _sketch(src, env) if src is not None else None
     norm_sketch = _norm_sketch(sketch)
     norm_source = _norm_sketch(source)
+    if kind == "atomic_private":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=False,
+            snapshot_delete=False,
+        )
     if kind == "atomic_write_text":
         return WriteHit(
             kind,

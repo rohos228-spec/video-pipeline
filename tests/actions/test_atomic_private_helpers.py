@@ -44,3 +44,18 @@ def test_private_atomic_helpers_are_denied() -> None:
             "from app.orchestrator.node_store.atomic_write import _INTERNAL",
             {},
         )
+
+
+def test_atomic_private_is_not_snapshot_delete() -> None:
+    source = (
+        "from app.orchestrator.node_store.atomic_write import _copy_nofollow as cf\n"
+        "def save(fd):\n"
+        "    cf(fd, 'a', fd, 'b')\n"
+        "    f = cf\n"
+    )
+    hits = analyze_module_source(source, "node.set_config")
+    assert len(hits) >= 2
+    assert all(
+        hit.kind == "atomic_private" and hit.allowed is False and hit.snapshot_delete is False
+        for hit in hits
+    )
