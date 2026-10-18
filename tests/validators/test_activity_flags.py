@@ -129,6 +129,39 @@ def test_hide_mark_affirmative_is_inactive(kind: str, mark: str, value: object) 
     assert active is False
 
 
+# Числовая строка равна числу: «0.0» и 0.0, «1.0» и 1, « 0,0 » и 0.
+_NUMERIC_STRING_CASES = (
+    (ACTIVE_MARK, "0.0", False),
+    (ACTIVE_MARK, "1.0", True),
+    (ACTIVE_MARK, " 0,0 ", False),
+    (ACTIVE_MARK, 0.0, False),
+    (DELETED_MARK, "0.0", True),
+    (DELETED_MARK, "1.0", False),
+    (DELETED_MARK, " 0,0 ", True),
+    (QUARANTINE_MARK, "0.0", True),
+    (QUARANTINE_MARK, "1.0", False),
+    (QUARANTINE_MARK, " 0,0 ", True),
+)
+
+
+@pytest.mark.parametrize("kind", ("shot", "frame"))
+@pytest.mark.parametrize(("mark", "value", "expected"), _NUMERIC_STRING_CASES)
+def test_numeric_string_matches_number(
+    kind: str,
+    mark: str,
+    value: object,
+    expected: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """«0.0» и «1.0» во всех полях ведут себя как числа, без WARN."""
+
+    caplog.set_level(logging.WARNING)
+    payload = {mark: value}
+    active = shot_is_active(payload) if kind == "shot" else frame_is_active(payload)
+    assert active is expected
+    assert not caplog.records
+
+
 def _unknown_tokens(payload: object) -> list[str]:
     if not isinstance(payload, dict):
         return []
