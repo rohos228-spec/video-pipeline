@@ -400,13 +400,18 @@ class Supervisor:
         if grant_forbidden(self._block_reason.get(task_id)):
             raise InvalidTransition("grant запрещён: терминальный отказ")
         pending = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
-        if (
-            pending is not None
-            and int(pending.position) < len(pending.plan)
-            and not_in_whitelist(pending.plan[int(pending.position)].action, self.actions)
-        ):
-            raise ApprovalGrantError(403, "not_in_whitelist")
         decided = _coerce_decision(decision)
+        if pending is not None and any(
+            not_in_whitelist(step.action, self.actions) for step in pending.plan[int(pending.position) :]
+        ):
+            await self._fail_unlisted(task_id, session_id)
+            if decided is ApprovalDecision.deny:
+                return {
+                    "executed": False,
+                    "decision": ApprovalDecision.deny.value,
+                    "reason": "not_in_whitelist",
+                }
+            raise ApprovalGrantError(403, "not_in_whitelist")
         reason = self._block_reason.get(task_id)
         if retry_grant:
             return await self._consume_paid_retry_grant(task_id, session_id)
@@ -462,6 +467,18 @@ class Supervisor:
             self._execute_plan(task_id, session_id, plan, position, goal),
             name=f"orch-approve-{task_id}",
         )
+
+    async def _fail_unlisted(self, task_id: int, session_id: str) -> None:
+        """Отказ белого списка завершает задачу. Карточка больше не открыта."""
+        self._block_reason[task_id] = "not_in_whitelist"
+        self._appr_open[_appr_key(task_id)] = None
+        if self._status(task_id) not in TERMINAL_STATUSES:
+            await self._set_status(
+                task_id,
+                TaskStatus.failed,
+                session_id=session_id,
+                error="not_in_whitelist",
+            )
 
     async def _replan_from_grant(self, task_id: int, session_id: str) -> None:
         """Эскалация случилась до approve: цикл planner → critic заново, с позиции 0."""

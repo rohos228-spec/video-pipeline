@@ -955,7 +955,9 @@ def block_status(reason: str) -> TaskStatus:
 
 
 def grant_forbidden(reason: str | None) -> bool:
-    """Терминальная причина из таблицы: grant этот план не исполняет."""
+    """Терминальная причина: grant этот план не исполняет."""
+    if reason == "not_in_whitelist":
+        return True
     if reason is None or reason not in BLOCK_OUTCOMES:
         return False
     return BLOCK_OUTCOMES[reason] in TERMINAL_STATUSES

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.orchestrator.agents.runtime import build_runtime, set_runtime
-from app.orchestrator.agents.supervisor import ApprovalGrantError
+from app.orchestrator.agents.supervisor import ApprovalGrantError, InvalidTransition
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.contracts import (
     ACTION_DENYLIST,
@@ -126,7 +126,14 @@ async def test_grant_refuses_forbidden_action(token: str, action: str) -> None:
         assert caught.value.status_code == 403
         assert caught.value.detail == "not_in_whitelist"
         assert actions.calls == []
-        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert runtime.tasks.get(task_id)["error"] == "not_in_whitelist"
+        assert runtime.supervisor.resume_allowed(task_id) is False
+        assert runtime.supervisor.session_snapshot(session)["resume_allowed"] is False
+        with pytest.raises(InvalidTransition):
+            await runtime.supervisor.resume(task_id)
+        assert actions.calls == []
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
     finally:
         set_runtime(None)
 
@@ -189,6 +196,20 @@ async def test_http_forbidden_action_rejected_at_approve_and_run(token: str, act
             )
             assert denied.status_code == 403
             assert denied.json()["detail"] == "not_in_whitelist"
+            assert runtime.tasks.get(held)["status"] == TaskStatus.failed.value
+            assert actions.calls == []
+            resumed = await client.post(
+                f"/api/orchestrator/chat/{grant_session}/resume",
+                headers=_headers(),
+            )
+            listed = await client.get(
+                f"/api/orchestrator/chat/{grant_session}/status",
+                headers=_headers(),
+            )
+            assert resumed.status_code == 409
+            assert listed.status_code == 200
+            assert listed.json()["resume_allowed"] is False
+            assert listed.json()["status"] == TaskStatus.failed.value
             assert actions.calls == []
     finally:
         set_runtime(None)
