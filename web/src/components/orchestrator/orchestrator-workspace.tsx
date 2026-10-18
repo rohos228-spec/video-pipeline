@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
+  approvalButtons,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -183,7 +184,11 @@ export function OrchestratorWorkspace() {
             size="sm"
             className="h-9 gap-1.5 px-3 text-xs font-semibold"
             data-testid="orch-kill"
-            disabled={chat.needsToken}
+            disabled={
+              chat.needsToken ||
+              chat.state.killNotice?.phase === "stopping" ||
+              chat.state.killNotice?.phase === "stopped"
+            }
             onClick={() => setKillOpen(true)}
             title="Остановить неплатные шаги. Платный шаг остановится на границе."
           >
@@ -274,6 +279,8 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onRetry={() => void chat.decide(approval.id, approval.taskId, "retry_step")}
+                  onBindProject={(projectId) => void chat.bindProject(approval.id, projectId)}
                   onClose={() => chat.dismissBlock(approval.id)}
                 />
               ))}
@@ -337,10 +344,15 @@ export function OrchestratorWorkspace() {
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      send();
-                    }
+                    if (
+                      event.key !== "Enter" ||
+                      event.shiftKey ||
+                      event.nativeEvent.isComposing ||
+                      event.nativeEvent.keyCode === 229
+                    )
+                      return;
+                    event.preventDefault();
+                    send();
                   }}
                   placeholder="Пиши и во время задачи — interrupt, steer или append"
                   className="min-h-[44px] flex-1 resize-none py-2 text-xs"
@@ -367,7 +379,13 @@ export function OrchestratorWorkspace() {
           <aside className="flex w-[340px] shrink-0 flex-col bg-black/30" data-testid="orch-task-panel">
             <div className="border-b border-white/[0.06] px-4 py-3">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Агенты</div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <div
+                className="mt-2 grid grid-cols-2 gap-2"
+                role="status"
+                aria-live="polite"
+                aria-atomic="false"
+                aria-label="Статусы агентов"
+              >
                 {chat.state.agents.map((agent) => (
                   <div
                     key={agent.role}
@@ -610,6 +628,8 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onRetry,
+  onBindProject,
   onClose,
 }: {
   approval: ApprovalView;
@@ -617,12 +637,17 @@ function ApprovalCard({
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
+  onBindProject: (projectId: number) => void;
   onClose: () => void;
 }) {
+  const [projectDraft, setProjectDraft] = useState("");
   const copy = BLOCK_COPY[approval.reason];
   const terminal = isTerminalBlock(approval.reason);
+  const buttons = approvalButtons(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
+  const projectId = Number(projectDraft);
   return (
     <div
       data-testid="orch-approval"
@@ -645,18 +670,47 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.serverId ? (
+        ) : approval.reason === MISSING_PROJECT ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (Number.isInteger(projectId) && projectId >= 1) onBindProject(projectId);
+            }}
+          >
+            <Input
+              value={projectDraft}
+              inputMode="numeric"
+              data-testid="orch-project-id"
+              className="h-8 w-24"
+              placeholder="project"
+              onChange={(event) => setProjectDraft(event.target.value)}
+            />
+            <Button type="submit" size="sm" data-testid="orch-bind-project" disabled={pending}>
+              Привязать проект
+            </Button>
+          </form>
+        ) : approval.changeId && buttons.length > 0 ? (
           <>
-            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-              Approve
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-              Reject
-            </Button>
+            {buttons.includes("approve") ? (
+              <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+                Approve
+              </Button>
+            ) : null}
+            {buttons.includes("retry_step") ? (
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+                Перезапустить шаг
+              </Button>
+            ) : null}
+            {buttons.includes("deny") ? (
+              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+                Reject
+              </Button>
+            ) : null}
           </>
         ) : (
           <p className="text-[11px] text-white/55" data-testid="orch-approval-noid">
-            Нет approval_id от сервера — подтвердить нельзя.
+            Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
           </p>
         )}
       </div>
