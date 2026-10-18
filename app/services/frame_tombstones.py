@@ -30,10 +30,9 @@ from app.services.activity_flags_fallback import (
 _KEY = "deleted_frame_numbers"
 REASON_MARK = "пометка"
 
-# ``activity_flags_fallback`` — байт-в-байт копия
-# ``app/orchestrator/validators/activity_flags.py`` @ d984a52d (#371).
-# Сам файл #371 в это дерево не входит. Вызывающие по-прежнему передают
-# кадр в ``frame_is_active``; матрица WS1 смотрит на ``attrs``.
+# Один предикат. Если модуль WS1 импортируется — это его функции.
+# Локальная матрица только при ImportError. Вызывающие передают кадр;
+# матрица читает ``attrs``. NaN, ``"0.0"`` и «ложь» задаёт модуль WS1.
 
 
 def _activity_flags():

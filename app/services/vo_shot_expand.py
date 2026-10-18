@@ -43,18 +43,10 @@ def is_shot_child(frame: Any) -> bool:
 
 
 def shot_is_active(shot: Any) -> bool:
-    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
+    """Живой элемент ``кадры[]``. Тот же предикат, что у ``frame_tombstones``."""
+    from app.services.frame_tombstones import shot_is_active as predicate
 
-    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
-    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
-    """
-    if not isinstance(shot, dict):
-        return False
-    if shot.get("удалён") or shot.get("карантин"):
-        return False
-    if shot.get("активен") is False:
-        return False
-    return True
+    return predicate(shot)
 
 
 def parent_still_suppressed(frame: Any) -> bool:
