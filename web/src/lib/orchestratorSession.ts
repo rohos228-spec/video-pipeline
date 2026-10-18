@@ -168,7 +168,7 @@ export interface ApprovalView {
   id: string;
   /** id пришёл в payload сервера. Выдуманный ключ карточку не закрывает. */
   serverId: boolean;
-  /** ApprovalEvent.change_id. Событие закрывает карточку только этим значением. */
+  /** Серверный `change_id` карточки, формат `orch-appr-<задача>-<n>`. `step_change_id` сюда не попадает. */
   changeId: string | null;
   /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
   sessionId: string | null;
@@ -331,34 +331,43 @@ export function serverApprovalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Серверный id карточки approval. `step_change_id` — id шага, не карточки. */
+const APPROVAL_CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
+
+export function approvalChangeId(value: unknown): string | null {
+  const id = serverApprovalId(value);
+  return id && APPROVAL_CHANGE_ID.test(id) ? id : null;
+}
+
 /**
- * Id решения из шины ws3-r3.3: `ApprovalEvent.change_id`.
- * Явный `approval_id` оставлен для моков, у которых это поле уже есть.
- * Вложенный `payload` — тот же объект, если событие завернуло ApprovalEvent.
+ * Id карточки из шины: `approval_id`, иначе серверный `change_id`.
+ * `step_change_id` карточку не открывает и в /approve не уходит.
  */
 export function approvalServerKey(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.approval_id) ?? serverApprovalId(body.change_id);
+  const direct = serverApprovalId(body.approval_id) ?? approvalChangeId(body.change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
   const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.approval_id) ?? serverApprovalId(inner.change_id);
+  return serverApprovalId(inner.approval_id) ?? approvalChangeId(inner.change_id);
+}
+
+/**
+ * `change_id` для `ApproveIn`: только `^orch-appr-[0-9]+-[0-9]+$` с карточки.
+ * `step_change_id` не подставляется, даже если другого id нет.
+ */
+export function approvalWireChangeId(body: Record<string, unknown>): string | null {
+  const direct = approvalChangeId(body.change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return approvalChangeId((nested as Record<string, unknown>).change_id);
 }
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
   if (value === "approved" || value === "approve") return "approved";
   if (value === "rejected" || value === "reject") return "rejected";
   return null;
-}
-
-/** change_id решения. Чужой или пустой id карточку не закрывает. */
-function approvalChangeId(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.change_id) ?? serverApprovalId(body.step_change_id);
-  if (direct) return direct;
-  const nested = body.payload;
-  if (!nested || typeof nested !== "object") return null;
-  const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.change_id) ?? serverApprovalId(inner.step_change_id);
 }
 
 function approvalLegacyId(body: Record<string, unknown>): string | null {
@@ -380,7 +389,7 @@ function approvalLegacyId(body: Record<string, unknown>): string | null {
  * проверяет. События #342 могли прийти только с `approval_id`.
  */
 function approvalDecisionKey(body: Record<string, unknown>): string | null {
-  return approvalChangeId(body) ?? approvalLegacyId(body);
+  return approvalWireChangeId(body) ?? approvalLegacyId(body);
 }
 
 function approvalDecidedResolution(
@@ -401,7 +410,7 @@ function closeServerApproval(
   body: Record<string, unknown>,
   decision: "approved" | "rejected" | "closed",
 ): void {
-  const changeId = approvalChangeId(body);
+  const changeId = approvalWireChangeId(body);
   const legacyId = approvalLegacyId(body);
   const item = state.approvals.find((entry) => {
     if (!entry.serverId || entry.resolved) return false;
@@ -545,7 +554,7 @@ function absorbLlmSignal(
     state.approvals.push({
       id,
       serverId: fromServer != null,
-      changeId: approvalChangeId(body),
+      changeId: approvalWireChangeId(body),
       sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
@@ -808,7 +817,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     const incoming = {
       id,
       serverId: fromServer != null,
-      changeId: approvalChangeId(body),
+      changeId: approvalWireChangeId(body),
       sessionId,
       taskId,
       title: str(body.title, "Нужно подтверждение"),

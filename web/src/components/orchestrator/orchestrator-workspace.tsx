@@ -704,66 +704,49 @@ function ApprovalCard({
         {approval.risk ? ` · ${approval.risk}` : ""}
         {showCost ? ` · ~$${approval.costEstimate}` : ""}
       </div>
-      {paidOutcome ? (
-        approval.changeId ? (
-          <PaidOutcomeActions
-            pending={pending}
-            restartOffered={approval.restartOffered}
-            retryOpen={panelOpen}
-            forecast={shownForecast}
-            retryReady={shownReady}
-            confirmHidden={confirmHidden}
-            onDone={() => {
-              void onPaidDecision(PAID_OUTCOME_DECISION.approve).catch(() => {
-                /* ошибка уже на карточке */
-              });
-            }}
-            onRetry={startRetry}
-            onDeny={() => {
-              void onPaidDecision(PAID_OUTCOME_DECISION.deny).catch(() => {
-                /* ошибка уже на карточке */
-              });
-            }}
-            onConfirm={() => {
-              if (!shownReady) return;
-              void onPaidGrant()
-                .then((result) => {
-                  if (!result || result.retryArmed) return;
-                  setRetryReady(false);
-                  setConfirmHidden(true);
-                  if (result.reason === "retry_grant_required") {
-                    setRetryOpen(false);
-                    setConfirmHidden(false);
-                  }
-                })
-                .catch(() => {
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {terminal ? (
+          <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
+            Закрыть
+          </Button>
+        ) : approval.changeId ? (
+          paidOutcome ? (
+            <PaidOutcomeActions
+              pending={pending}
+              restartOffered={approval.restartOffered}
+              retryOpen={panelOpen}
+              forecast={shownForecast}
+              retryReady={shownReady}
+              confirmHidden={confirmHidden}
+              onDone={() => {
+                void onPaidDecision(PAID_OUTCOME_DECISION.approve).catch(() => {
                   /* ошибка уже на карточке */
                 });
-            }}
-          />
-        ) : (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" data-testid="orch-paid-done" disabled>
-              {PAID_OUTCOME_COPY.done}
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-retry" disabled>
-              {PAID_OUTCOME_COPY.retry}
-            </Button>
-            <Button type="button" size="sm" variant="outline" data-testid="orch-paid-deny" disabled>
-              {PAID_OUTCOME_COPY.deny}
-            </Button>
-            <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
-              Решение недоступно: сервер не передал id
-            </p>
-          </div>
-        )
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {terminal ? (
-            <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
-              Закрыть
-            </Button>
-          ) : approval.serverId ? (
+              }}
+              onRetry={startRetry}
+              onDeny={() => {
+                void onPaidDecision(PAID_OUTCOME_DECISION.deny).catch(() => {
+                  /* ошибка уже на карточке */
+                });
+              }}
+              onConfirm={() => {
+                if (!shownReady) return;
+                void onPaidGrant()
+                  .then((result) => {
+                    if (!result || result.retryArmed) return;
+                    setRetryReady(false);
+                    setConfirmHidden(true);
+                    if (result.reason === "retry_grant_required") {
+                      setRetryOpen(false);
+                      setConfirmHidden(false);
+                    }
+                  })
+                  .catch(() => {
+                    /* ошибка уже на карточке */
+                  });
+              }}
+            />
+          ) : (
             <>
               <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
                 Approve
@@ -772,21 +755,13 @@ function ApprovalCard({
                 Reject
               </Button>
             </>
-          ) : (
-            <>
-              <Button type="button" size="sm" data-testid="orch-approve" disabled>
-                Approve
-              </Button>
-              <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled>
-                Reject
-              </Button>
-              <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
-                Решение недоступно: сервер не передал id
-              </p>
-            </>
-          )}
-        </div>
-      )}
+          )
+        ) : (
+          <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
+            Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.
+          </p>
+        )}
+      </div>
       {error ? (
         <p data-testid="orch-approval-error" className="mt-2 text-[11px] text-destructive">
           {error}

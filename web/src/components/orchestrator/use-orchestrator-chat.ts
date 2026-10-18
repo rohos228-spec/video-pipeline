@@ -221,8 +221,8 @@ export function useOrchestratorChat() {
     async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.changeId) {
-        setDecisionError({ id: approvalId, message: "нет change_id от сервера" });
+      if (!card?.changeId || !/^orch-appr-[0-9]+-[0-9]+$/.test(card.changeId)) {
+        setDecisionError({ id: approvalId, message: "нет change_id формата orch-appr" });
         return;
       }
       decisionLock.current = true;
