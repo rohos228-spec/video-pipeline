@@ -41,12 +41,18 @@ def _restore(previous: dict | None) -> None:
 
 
 def test_preservation_pin_cites_ws1_head() -> None:
-    from app.orchestrator.agents.wiring import _preservation_symbols
+    """Пин WS1 #379 — HEAD 76198ecd, mode keyword-only и по умолчанию reject."""
+    import inspect
+
+    from app.orchestrator.agents.wiring import FunctionValidators, _preservation_symbols
 
     text = _preservation_symbols.__doc__ or ""
-    assert "9820d123" in text
+    assert "76198ecd" in text
+    assert "9820d123" not in text
     assert "run_preservation_validators(before, after, ops=None, *, mode)" in text
+    assert 'mode="reject"' in text
     assert "PreservationRejected" in text
+    assert 'mode="reject"' in inspect.getsource(FunctionValidators.run)
 
 
 def test_preservation_rejected_is_blocking_and_does_not_touch_data() -> None:
