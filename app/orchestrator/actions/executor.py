@@ -25,7 +25,7 @@ from app.orchestrator.action_contracts.contracts import escalated_metadata as co
 from app.services.action_layer import store
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from app.services.frame_tombstones import mark_frame_deleted
+from app.services.frame_tombstones import forget_deleted, mark_frame_deleted
 from app.services.redact import redact_text
 
 _CORE_CHANGE_ID = re.compile(r"^orch-appr-[0-9]+-[0-9]+$")
@@ -319,7 +319,7 @@ def _marked_shot(shots: list, number: int) -> list:
 
 
 async def _soft_delete_frame(spec: Any, params: dict, ctx: Any, approval: dict | None) -> ActionResult:
-    """Пометить кадр. Строку, сцену и файлы адаптер не удаляет. frame.restore не реализован."""
+    """Пометить кадр. Строку, сцену и файлы адаптер не удаляет. Снимает пометку frame.restore."""
 
     change_id = str((approval or {}).get("change_id") or "")
     if _CORE_CHANGE_ID.fullmatch(change_id) is None:
@@ -359,7 +359,7 @@ async def _soft_delete_frame(spec: Any, params: dict, ctx: Any, approval: dict |
         action_id=spec.id,
         project_id=project_id,
         kind="soft_delete",
-        target={"frame_id": frame_id, "number": number},
+        target={"frame_id": frame_id, "number": number, "change_id": change_id},
         before={"кадры": before},
         after={"кадры": merged},
         restorable=True,
@@ -376,11 +376,133 @@ async def _soft_delete_frame(spec: Any, params: dict, ctx: Any, approval: dict |
     return _attach_cc(ActionResult(status="ok", result=body, error=None, warnings=[]), approval)
 
 
+def _restore_lookup(params: dict) -> tuple[str | None, str | None, str | None]:
+    """snapshot_id и change_id мягкого удаления. Пусто — текст отказа."""
+
+    snapshot_id = params.get("snapshot_id")
+    change_id = params.get("change_id")
+    snapshot_text = str(snapshot_id).strip() if snapshot_id not in (None, "") else ""
+    change_text = str(change_id).strip() if isinstance(change_id, str) else ""
+    if not snapshot_text and not change_text:
+        return None, None, "нет snapshot_id и change_id"
+    return snapshot_text or None, change_text or None, None
+
+
+async def _find_soft_delete_snapshot(project_id: int, snapshot_id: str | None, change_id: str | None) -> dict | str:
+    """Снимок кадра или текст отказа. Поля скопированы до закрытия сессии."""
+
+    from sqlalchemy import select
+
+    factory = store.sessions()
+    async with factory() as session:
+        row = None
+        if snapshot_id is not None:
+            try:
+                sid = int(snapshot_id)
+            except (TypeError, ValueError):
+                return "снимок не найден"
+            row = await session.get(store.ActionSnapshot, sid)
+        else:
+            rows = list((await session.scalars(
+                select(store.ActionSnapshot).where(
+                    store.ActionSnapshot.project_id == project_id,
+                    store.ActionSnapshot.kind == "soft_delete",
+                )
+            )).all())
+            matches = [
+                item for item in rows
+                if str((item.target or {}).get("change_id") or "") == change_id
+            ]
+            if len(matches) != 1:
+                return "снимок не найден"
+            row = matches[0]
+        if row is None:
+            return "снимок не найден"
+        target = dict(row.target or {})
+        if change_id and str(target.get("change_id") or "") != change_id:
+            return "снимок не найден"
+        if row.kind != "soft_delete" or row.action_id not in _SOFT_FRAME_DELETE:
+            return "снимок не кадр"
+        if row.project_id != project_id:
+            return "снимок не найден"
+        if row.restored_at is not None:
+            return "снимок уже восстановлен"
+        if not row.restorable:
+            return "снимок нельзя откатить"
+        before = row.before if isinstance(row.before, dict) else {}
+        return {"id": int(row.id), "target": target, "before": before}
+
+
+async def _frame_restore(params: dict, ctx: Any) -> ActionResult:
+    """Снять пометку кадра по snapshot_id или change_id мягкого удаления."""
+
+    try:
+        meta = metadata_of("frame.restore")
+    except ValueError as exc:
+        return _failed(str(exc))
+    approval = _core_approval("frame.restore", ctx)
+    if (meta.risk == "high" or meta.destructive) and approval is None:
+        body = ApprovalRequired(
+            action="frame.restore",
+            metadata=_wire_metadata(meta),
+            reason="нужно подтверждение",
+            preview=ApprovalPreview(change="снять пометку кадра по снимку", estimate=None),
+        )
+        return ActionResult(status="approval_required", result=body, error=None, warnings=[])
+    change_id = str((approval or {}).get("change_id") or "")
+    if _CORE_CHANGE_ID.fullmatch(change_id) is None:
+        return _failed("ядро не передало change_id")
+    try:
+        project_id = int(params["project_id"])
+    except (KeyError, TypeError, ValueError):
+        return _failed("проект не найден")
+    snapshot_id, prior_change, lookup_error = _restore_lookup(params)
+    if lookup_error:
+        return _failed(lookup_error)
+    found = await _find_soft_delete_snapshot(project_id, snapshot_id, prior_change)
+    if isinstance(found, str):
+        return _failed(found)
+    number = int(found["target"]["number"])
+    frame_id = int(found["target"]["frame_id"])
+    before = found["before"].get("кадры") or []
+    factory = store.sessions()
+    async with factory() as session:
+        project = await session.get(Project, project_id)
+        frame = await session.get(Frame, frame_id)
+        if project is None or frame is None or frame.project_id != project_id:
+            return _failed("кадр не найден")
+        attrs = dict(frame.attrs or {})
+        attrs["кадры"] = [dict(shot) if isinstance(shot, dict) else shot for shot in before]
+        frame.attrs = attrs
+        flag_modified(frame, "attrs")
+        forget_deleted(project, number)
+        await session.commit()
+    await store.mark_snapshot_restored(
+        found["id"],
+        str(ctx.get("operator") or "system") if isinstance(ctx, dict) else "system",
+        plan_id=str(ctx.get("plan_id") or "") if isinstance(ctx, dict) else "",
+    )
+    result = BoundResult(
+        status="ok",
+        result={
+            "action": "frame.restore",
+            "change_id": change_id,
+            "snapshot_id": str(found["id"]),
+            "restored": True,
+        },
+        error=None,
+        warnings=[],
+    )
+    return _attach_cc(result, approval)
+
+
 async def execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     """Один ActionSpec. Исключения и отказы — status=failed."""
 
     ensure_builtin_actions()
     params = dict(params or {})
+    if str(name) == "frame.restore":
+        return await _frame_restore(params, ctx)
     spec = registry.find(str(name))
     if spec is None:
         return _failed(f"неизвестное действие {name}")

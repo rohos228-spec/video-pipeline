@@ -413,8 +413,110 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
             assert by_id[kept]["текст"] == ("второй" if kept == "s2" else "первый")
 
     assert list(env.tmp_path.rglob("deleted-*")) == []
-    restore = await execute("frame.restore", {"project_id": pid, "frame_id": ids[1]}, bare)
-    assert restore.status == "failed"
+    bare_restore = await execute("frame.restore", {"project_id": pid, "snapshot_id": deleted.result.snapshot_id}, bare)
+    assert bare_restore.status == "approval_required"
+    assert bare_restore.result.action == "frame.restore"
+
+
+async def test_delete_frame_then_frame_restore_roundtrip(env) -> None:
+    """delete_frame помечает кадр, frame.restore снимает пометку по снимку и по change_id."""
+
+    from sqlalchemy import select
+
+    from app.models import Frame, Project
+    from app.orchestrator.actions.executor import execute
+    from app.services.frame_tombstones import deleted_numbers
+
+    pid = await env.add_project(frames=2)
+    ids = await env.frame_ids(pid)
+    shots = [
+        {"id": "s1", "номер": 1, "активен": True, "текст": "первый"},
+        {"id": "s2", "номер": 2, "активен": True, "текст": "второй"},
+    ]
+    async with env.factory() as session:
+        for fid in ids.values():
+            frame = await session.get(Frame, fid)
+            frame.attrs = {"кадры": [dict(shot) for shot in shots]}
+        await session.commit()
+
+    def grant(action: str, change_id: str) -> dict:
+        return {
+            "app": env.app,
+            "operator": "adapter-test",
+            "approval": {
+                "change_id": change_id,
+                "action": action,
+                "risk": "high",
+                "destructive": True,
+                "granted": True,
+                "cc_change_id": "cc-restore-1",
+            },
+        }
+
+    deleted = await execute(
+        "montage.delete_frame",
+        {"project_id": pid, "frame_id": ids[1]},
+        grant("montage.delete_frame", "orch-appr-7-1"),
+    )
+    assert deleted.status == "ok"
+    snapshot_id = deleted.result.snapshot_id
+
+    held = await execute(
+        "frame.restore",
+        {"project_id": pid, "snapshot_id": snapshot_id},
+        {"app": env.app, "operator": "adapter-test"},
+    )
+    assert held.status == "approval_required"
+
+    restored = await execute(
+        "frame.restore",
+        {"project_id": pid, "snapshot_id": snapshot_id},
+        grant("frame.restore", "orch-appr-8-1"),
+    )
+    assert restored.status == "ok"
+    assert restored.result["action"] == "frame.restore"
+    assert restored.result["change_id"] == "orch-appr-8-1"
+    assert restored.result["snapshot_id"] == snapshot_id
+    assert restored.result["restored"] is True
+    assert restored.cc_change_id == "cc-restore-1"
+
+    async with env.factory() as session:
+        frame = await session.get(Frame, ids[1])
+        by_id = {shot["id"]: shot for shot in frame.attrs["кадры"]}
+        assert by_id["s1"]["активен"] is True
+        assert by_id["s2"]["активен"] is True
+        project_row = await session.get(Project, pid)
+        assert 1 not in deleted_numbers(project_row)
+        assert frame.id == ids[1]
+
+    again = await execute(
+        "frame.restore",
+        {"project_id": pid, "snapshot_id": snapshot_id},
+        grant("frame.restore", "orch-appr-8-2"),
+    )
+    assert again.status == "failed"
+
+    child = await execute(
+        "montage.delete_child_frame",
+        {"project_id": pid, "frame_number": 2},
+        grant("montage.delete_child_frame", "orch-appr-7-2"),
+    )
+    assert child.status == "ok"
+    by_change = await execute(
+        "frame.restore",
+        {"project_id": pid, "change_id": "orch-appr-7-2"},
+        grant("frame.restore", "orch-appr-8-3"),
+    )
+    assert by_change.status == "ok"
+    assert by_change.result["restored"] is True
+    async with env.factory() as session:
+        project_row = await session.get(Project, pid)
+        assert deleted_numbers(project_row) == set()
+        frame = await session.get(Frame, ids[2])
+        marked = [shot for shot in frame.attrs["кадры"] if shot["номер"] == 2]
+        assert marked[0]["активен"] is True
+        rows = list((await session.scalars(select(Frame).where(Frame.project_id == pid))).all())
+        assert {row.id for row in rows} == set(ids.values())
 
 
 def _action_names(node, key=None):
