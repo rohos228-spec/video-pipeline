@@ -285,6 +285,11 @@ async function runStreamHold(session, taskId) {
     await sleep(50);
   }
   if (session.killed || session.interrupted) return;
+  await new Promise((resolve) => {
+    session.releaseStream = resolve;
+  });
+  session.releaseStream = null;
+  if (session.killed || session.interrupted) return;
   emit(session, "token", taskId, { text: "КОНЕЦ-ПОТОКА" });
 }
 
@@ -1164,6 +1169,16 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     sendJson(res, 401, { detail: "unauthorized" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/orchestrator/test/release-stream") {
+    const body = await readBody(req);
+    const session = sessionOf(String(body.session_id || "studio"));
+    const release = session.releaseStream;
+    session.releaseStream = null;
+    if (typeof release === "function") release();
+    sendJson(res, 200, { ok: true });
     return;
   }
 

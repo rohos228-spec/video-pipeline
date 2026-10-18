@@ -67,6 +67,7 @@ test("клавиатура: Enter во время стрима шлёт одно
   await expect(composer).toHaveValue("");
   const assistant = page.getByTestId("orch-assistant");
   await expect(assistant).toContainText("ДЕРЖУ-ПОТОК");
+  await expect(assistant).not.toContainText("КОНЕЦ-ПОТОКА");
   const mid = (await assistant.innerText()).length;
 
   await composer.focus();
@@ -75,6 +76,12 @@ test("клавиатура: Enter во время стрима шлёт одно
   await expect(composer).toHaveValue("");
   await expect.poll(() => posts.length).toBe(2);
   expect(posts[1]?.text).toBe("добавка посреди");
+  await expect(assistant).not.toContainText("КОНЕЦ-ПОТОКА");
+  const released = await page.request.post(`${MOCK}/api/orchestrator/test/release-stream`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    data: { session_id: "kbd-stream" },
+  });
+  expect(released.ok()).toBeTruthy();
   await expect(assistant).toContainText("КОНЕЦ-ПОТОКА");
   expect((await assistant.innerText()).length).toBeGreaterThan(mid);
   expect(posts).toHaveLength(2);
