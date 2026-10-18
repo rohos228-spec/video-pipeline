@@ -448,6 +448,19 @@ test("поля r2.1: предупреждения, пропуск, конфли�
   });
 });
 
+test("ссылка снимка только внутри /api/orchestrator", () => {
+  const payload = structuredClone(EXAMPLE_DELETE_OK);
+  const result = payload.result as { snapshot_url?: string };
+  result.snapshot_url = "javascript:alert(1)";
+  expect(readActionEnvelope(payload, 1)?.snapshotUrl).toBeNull();
+  result.snapshot_url = "https://evil.example/api/orchestrator/x";
+  expect(readActionEnvelope(payload, 2)?.snapshotUrl).toBeNull();
+  result.snapshot_url = "//evil.example/api/orchestrator/x";
+  expect(readActionEnvelope(payload, 3)?.snapshotUrl).toBeNull();
+  result.snapshot_url = "/api/orchestrator/snapshots/snap-13-6";
+  expect(readActionEnvelope(payload, 4)?.snapshotUrl).toBe("/api/orchestrator/snapshots/snap-13-6");
+});
+
 test("отчёт без edit_action принимается как update_report", () => {
   const payload = structuredClone(EXAMPLE_REPORT);
   const result = payload.result as { edit_action?: string; report_id?: number };

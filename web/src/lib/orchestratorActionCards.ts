@@ -344,6 +344,14 @@ function blankRef(value: unknown): boolean {
   return typeof value === "string" && value.trim() === "";
 }
 
+/** snapshot_url нет в схеме r2.2. Ссылка только на свой API, без схемы и javascript:. */
+function snapshotUrlOf(value: unknown): string | null {
+  const url = str(value).trim();
+  if (!url.startsWith("/api/orchestrator/")) return null;
+  if (url.includes("\\") || url.includes("://")) return null;
+  return url;
+}
+
 function invalidView(seq: number, message = INVALID_ACTION_TEXT): ActionResultView {
   const view = blankView(`invalid-${seq}`, QUIET, "invalid");
   view.error = message;
@@ -393,7 +401,7 @@ function applyEnvelopeExtras(view: ActionResultView, payload: Record<string, unk
   const source = result ?? {};
   view.snapshotId = str(source.snapshot_id).trim() || str(payload.snapshot_id).trim() || null;
   view.archiveRef = str(source.archive_ref).trim() || str(payload.archive_ref).trim() || null;
-  view.snapshotUrl = str(source.snapshot_url).trim() || str(payload.snapshot_url).trim() || null;
+  view.snapshotUrl = snapshotUrlOf(source.snapshot_url) ?? snapshotUrlOf(payload.snapshot_url);
   view.version = intGe1(source.version) ?? intGe1(payload.version);
   view.baseVersion = intGe1(source.base_version) ?? intGe1(payload.base_version);
   const statusCode = num(payload.status_code);
