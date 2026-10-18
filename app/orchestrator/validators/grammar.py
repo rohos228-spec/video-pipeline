@@ -189,20 +189,18 @@ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
 
 
 def _reserved_order(value: Any) -> int | None:
-    """``порядок`` из xlsx: целое, ``2.0``, ``\"2\"`` и ``\"  2 \"`` — один номер."""
+    """``порядок`` из xlsx: целое, ``2.0``, ``numpy.int64``, ``\"2\"``, ``\"2,0\"``."""
 
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
-            return None
         if value.is_integer():
             return int(value)
         return None
     if isinstance(value, str):
-        text = value.strip()
+        text = value.strip().replace(",", ".")
         if not text:
             return None
         try:
@@ -211,6 +209,12 @@ def _reserved_order(value: Any) -> int | None:
             return None
         if number.is_integer():
             return int(number)
+        return None
+    if type(value).__module__ == "numpy":
+        try:
+            return _reserved_order(value.item())
+        except Exception:
+            return None
     return None
 
 

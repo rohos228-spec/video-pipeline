@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import copy
 
+import numpy as np
 import pytest
 
 from app.orchestrator.validators import run
@@ -139,18 +140,14 @@ def test_xlsx_false_and_zero_are_inactive() -> None:
 
     import app.orchestrator.validators.grammar as grammar
 
-    grammar._SHOT_IS_ACTIVE = None
-    try:
-        assert grammar.shot_counts_as_active({"активен": "false"}) is False
-        assert grammar.shot_counts_as_active({"активен": "FALSE"}) is False
-        assert grammar.shot_counts_as_active({"активен": 0}) is False
-        assert grammar.shot_counts_as_active({"активен": "0"}) is False
-        assert grammar.shot_counts_as_active({"активен": "нет"}) is False
-        assert grammar.shot_counts_as_active({"активен": False}) is False
-        assert grammar.shot_counts_as_active({"активен": True}) is True
-        assert grammar.shot_counts_as_active({"id": "a"}) is True
-    finally:
-        grammar._SHOT_IS_ACTIVE = grammar._re
+    assert grammar.shot_counts_as_active({"активен": "false"}) is False
+    assert grammar.shot_counts_as_active({"активен": "FALSE"}) is False
+    assert grammar.shot_counts_as_active({"активен": 0}) is False
+    assert grammar.shot_counts_as_active({"активен": "0"}) is False
+    assert grammar.shot_counts_as_active({"активен": "нет"}) is False
+    assert grammar.shot_counts_as_active({"активен": False}) is False
+    assert grammar.shot_counts_as_active({"активен": True}) is True
+    assert grammar.shot_counts_as_active({"id": "a"}) is True
 
 
 def test_merge_skips_order_held_by_middle_inactive() -> None:
@@ -207,7 +204,7 @@ def test_wide_insert_skips_numbers_held_by_middle_inactive() -> None:
     assert len(orders) == len(set(orders)), orders
 
 
-@pytest.mark.parametrize("order", [2, 2.0, "2", "  2 "])
+@pytest.mark.parametrize("order", [2, 2.0, "2", "  2 ", np.int64(2), "2,0"])
 def test_reserved_order_accepts_xlsx_numbers(order: object) -> None:
     """Порядок из xlsx резервируется и склейкой, и вставкой общего плана."""
 

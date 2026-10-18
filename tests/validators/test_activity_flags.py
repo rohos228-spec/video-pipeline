@@ -146,8 +146,6 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", tracking)
-    if hasattr(grammar, "_SHOT_IS_ACTIVE"):
-        monkeypatch.setattr(grammar, "_SHOT_IS_ACTIVE", grammar._re)
     assert grammar.shot_counts_as_active(payload) is expected
     assert imported == [], imported
 
