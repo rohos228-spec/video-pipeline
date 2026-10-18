@@ -221,7 +221,10 @@ def check_frames(before: Any, after: Any, ops: Any = None) -> list[Violation]:
                     id=fid,
                 ),
             )
-        for text in sorted(_anonymous_texts(frames) - _anonymous_texts(after_frames)):
+        # «После» не пропускает неактивные: шот на месте с активен:False
+        # присутствует, как при удалён. Настоящий уход текста всё ещё виден.
+        gone = _anonymous_texts(frames) - _anonymous_texts(after_frames, skip_exempt=False)
+        for text in sorted(gone):
             _append(
                 violations,
                 seen,
@@ -302,12 +305,18 @@ def _match_scene(
     return None
 
 
-def _anonymous_texts(frames: list[Any]) -> set[str]:
-    """Уникальный текст кадров без id. Число копий одного текста не важно."""
+def _anonymous_texts(frames: list[Any], *, skip_exempt: bool = True) -> set[str]:
+    """Уникальный текст кадров без id. Число копий одного текста не важно.
+
+    ``skip_exempt`` — для «до»: уже неактивный шот может уйти.
+    На «после» шот без id, оставшийся в списке, считается присутствующим.
+    """
 
     found: set[str] = set()
     for frame in frames:
-        if frame_id(frame) is not None or frame_is_exempt(frame):
+        if frame_id(frame) is not None:
+            continue
+        if skip_exempt and frame_is_exempt(frame):
             continue
         found.add(_anonymous_text(frame))
     return found

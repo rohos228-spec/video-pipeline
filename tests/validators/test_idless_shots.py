@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.orchestrator.validators.no_deletions import check_frames
+from app.orchestrator.validators.preservation import run_preservation_validators
 
 
 def _scene(frames: list[dict]) -> dict:
@@ -32,3 +35,35 @@ def test_no_deletions_idless_shots_compared_by_content() -> None:
         ]
     )
     assert check_frames(inactive, _scene([{"закадр": "живой"}])) == []
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_soft_delete_idless_via_active_false_passes(mode: str) -> None:
+    """Шот без id с ``активен: False`` остаётся в списке — это не ``frame_deleted``."""
+
+    before = _scene([{"закадр": "x"}, {"закадр": "y"}])
+    after = _scene([{"закадр": "x", "активен": False}, {"закадр": "y"}])
+    assert run_preservation_validators(before, after, mode=mode) == []
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_soft_delete_idless_via_quarantine_passes(mode: str) -> None:
+    """Тот же мягкий уход через ``карантин``: шот на месте, нарушений нет."""
+
+    before = _scene([{"закадр": "x"}, {"закадр": "y"}])
+    after = _scene([{"закадр": "x", "карантин": True}, {"закадр": "y"}])
+    assert run_preservation_validators(before, after, mode=mode) == []
+
+
+@pytest.mark.parametrize("mode", ["reject", "soft"])
+def test_only_remaining_shot_has_id_passes(mode: str) -> None:
+    """После мягкого удаления без id единственный живой шот кадра имеет id."""
+
+    before = _scene([{"закадр": "x"}, {"id": "k", "закадр": "y"}])
+    after = _scene(
+        [
+            {"закадр": "x", "активен": False},
+            {"id": "k", "закадр": "y"},
+        ]
+    )
+    assert run_preservation_validators(before, after, mode=mode) == []
