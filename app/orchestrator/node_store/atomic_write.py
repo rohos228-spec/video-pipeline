@@ -441,12 +441,27 @@ def _reject_reparse(target: Path) -> None:
         raise ValueError("junction old/: отказ allowlist")
 
 
-def _fsync_file(path: Path) -> None:
-    """Сброс файла на диск. Каталог здесь не трогаем: это только POSIX."""
-    fd = os.open(str(path), os.O_RDONLY)
+def _write_exclusive(path: Path, payload: bytes) -> None:
+    """Создать файл, записать и fsync на том же writable fd. До replace.
+
+    Повторное открытие O_RDONLY и os.fsync на Windows даёт EBADF.
+    """
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(os.fspath(path), flags, 0o644)
     try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
         os.fsync(fd)
-    finally:
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(os.fspath(path))
+        except OSError:
+            pass
+        raise
+    else:
         os.close(fd)
 
 
@@ -482,15 +497,13 @@ def _write_without_dir_fd(
                     suffix += 1
                 backup = backup_dir / f"{target.name}.v{current}.{suffix}"
             _assert_realpath_inside(backup, root)
-            backup.write_bytes(target.read_bytes())
-            _fsync_file(backup)
+            _write_exclusive(backup, target.read_bytes())
         payload = json.dumps(
             {"version": current + 1, "text": text},
             ensure_ascii=False,
         ).encode("utf-8")
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
-        tmp_path.write_bytes(payload)
-        _fsync_file(tmp_path)
+        _write_exclusive(tmp_path, payload)
         _assert_realpath_inside(tmp_path, root)
         os.replace(tmp_path, target)
         tmp_path = None
