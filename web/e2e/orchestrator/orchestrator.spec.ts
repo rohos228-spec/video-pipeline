@@ -14,6 +14,7 @@ import {
   orchContractIsR34,
   parseOrchProjectId,
   parseOrchTaskId,
+  isForeignTaskBindError,
   projectBindWireBody,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
@@ -41,6 +42,12 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("чужая задача узнаётся и по detail, и по коду", () => {
+  expect(isForeignTaskBindError("not the active task")).toBe(true);
+  expect(isForeignTaskBindError('conflict not_the_active_task')).toBe(true);
+  expect(isForeignTaskBindError("задача уже не ждёт проект")).toBe(false);
+});
 
 test("task_id вне безопасного целого не уходит в bind", () => {
   expect(parseOrchTaskId("12")).toBe(12);

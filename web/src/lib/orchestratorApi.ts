@@ -163,6 +163,12 @@ export const PROJECT_BIND_INVALID = "Нужен целый project_id от 1";
 export const PROJECT_BIND_VALIDATION = "Ошибка валидации project_id";
 export const PROJECT_BIND_CONFLICT = "задача уже не ждёт проект/чужая";
 export const PROJECT_BIND_FOREIGN = "Это не активная задача";
+/** Текст detail, которым WS3 отличает чужую задачу. Код `not_the_active_task` тоже подходит. */
+export const NOT_ACTIVE_TASK_DETAIL = "not the active task";
+
+export function isForeignTaskBindError(message: string): boolean {
+  return message === NOT_ACTIVE_TASK_DETAIL || message.includes("not_the_active_task");
+}
 
 function readProjectBind(value: unknown): OrchProjectBindResult {
   if (!value || typeof value !== "object") {

@@ -14,6 +14,7 @@ import {
   postOrchProject,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
+  isForeignTaskBindError,
   PROJECT_BIND_INVALID,
   PROJECT_BIND_VALIDATION,
   OrchApiError,
@@ -405,7 +406,7 @@ export function useOrchestratorChat() {
         setSendError("");
       } catch (error) {
         if (error instanceof OrchApiError && error.status === 409) {
-          const foreign = error.message === "not the active task";
+          const foreign = isForeignTaskBindError(error.message);
           setDecisionError({
             id: approvalId,
             message: foreign ? PROJECT_BIND_FOREIGN : PROJECT_BIND_CONFLICT,
