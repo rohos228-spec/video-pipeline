@@ -7,6 +7,7 @@
  * GET `.../stream` — SSE `event`/`id`=seq/`data`=OrchEvent JSON, Bearer, 401,
  * replay по Last-Event-ID (seq строго больше).
  * Решение: POST `.../chat/{session}/approve`, тело `{change_id, decision}`.
+ * Успех — 200 и JSON. 204 пустым телом успехом не считается.
  * Куда уходит Bearer: тот же origin, относительный `/api/...` или
  * `NEXT_PUBLIC_ORCH_API`. Адрес из `?orchApi=` не используется
  * (исключение — same-origin путь `/api/...` при `NEXT_PUBLIC_ORCH_QUERY_API`).
@@ -226,18 +227,48 @@ export interface OrchApproveIn {
   decision: "approve" | "retry_step" | "deny";
 }
 
-/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. */
-export function postOrchDecision(
+/** Успешный `POST .../approve`: 200 и JSON, не 204. */
+export interface OrchApproveResult {
+  executed?: boolean;
+  reason?: string | null;
+  forecast_usd?: number | null;
+  retry_armed?: boolean;
+  change_id?: string | null;
+  decision?: string | null;
+  ok?: boolean;
+  matched?: boolean;
+  approval_id?: string;
+}
+
+const APPROVE_NOT_JSON = "ответ approve — не JSON 200";
+
+/** Все решения: `POST /api/orchestrator/chat/{session}/approve`. 204 — отказ. */
+export async function postOrchDecision(
   cfg: OrchClientConfig,
   body: OrchApproveIn,
   signal?: AbortSignal,
-): Promise<{ ok?: boolean; matched?: boolean; approval_id?: string; change_id?: string; decision?: string | null }> {
-  return postJson(
-    cfg,
-    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`,
-    { change_id: body.change_id, decision: body.decision },
+): Promise<OrchApproveResult> {
+  assertBearerTarget(cfg.apiBase);
+  const headers = orchAuthHeaders(cfg);
+  headers.set("Content-Type", "application/json");
+  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`), {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ change_id: body.change_id, decision: body.decision }),
     signal,
-  );
+  });
+  if (res.status === 204) throw new OrchApiError(204, APPROVE_NOT_JSON);
+  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  if (res.status !== 200) throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new OrchApiError(res.status, APPROVE_NOT_JSON);
+  }
+  if (!json || typeof json !== "object") throw new OrchApiError(200, APPROVE_NOT_JSON);
+  return json as OrchApproveResult;
 }
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
