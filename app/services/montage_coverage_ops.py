@@ -1214,8 +1214,10 @@ def _shot_address(shot: Any) -> str:
     return ""
 
 
-def _restore_ops_for_revived(before_rows: list[Any], after_rows: Any) -> list[dict[str, str]]:
-    """Явный restore по shot_id для шотов, которые merge вернул в живые."""
+def _restore_ops_for_revived(
+    before_rows: list[Any], after_rows: Any, *, frame_uuid: str
+) -> list[dict[str, str]]:
+    """Явный restore парой (frame_uuid, shot_id) для шотов, которые merge вернул в живые."""
     from app.services.frame_tombstones import shot_is_active
 
     inactive: set[str] = set()
@@ -1235,7 +1237,7 @@ def _restore_ops_for_revived(before_rows: list[Any], after_rows: Any) -> list[di
         if not fid or fid not in inactive or fid in seen:
             continue
         seen.add(fid)
-        ops.append({"op": "restore", "shot_id": fid})
+        ops.append({"op": "restore", "shot_id": fid, "frame_uuid": frame_uuid})
     return ops
 
 
@@ -1322,7 +1324,8 @@ async def apply_coverage_scene_action(
         for shot in old_kadry
     ] if isinstance(old_kadry, list) else []
     kadry = merge_kadry_keep_missing(old_kadry, kadry)
-    restore_ops = _restore_ops_for_revived(before_rows, kadry)
+    frame_uuid = str(getattr(parent, "uuid", "") or "") or str(getattr(parent, "id", "") or "cell")
+    restore_ops = _restore_ops_for_revived(before_rows, kadry, frame_uuid=frame_uuid)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
     layout = live_kadry
     if not layout:

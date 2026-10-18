@@ -1743,17 +1743,50 @@ def qc_reasons(
 
 
 def _keep_qc_kadry(parent: Any, shots: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Перед подменой списка QC: живой кадр не выпадает, закадр остаётся на месте."""
+    """Перед подменой списка QC: живой кадр не выпадает, закадр остаётся на месте.
+
+    QC не возвращает шот, который вызывающий уже пометил неактивным.
+    Намеренного restore здесь нет: такой шот остаётся с ``активен: False``.
+    """
     from app.pipeline.no_deletions_guard import keep_soft_kadry
+    from app.services.frame_tombstones import shot_is_active
 
     before = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
+    rows = [dict(shot) if isinstance(shot, dict) else shot for shot in candidate]
+    inactive = {
+        fid: shot
+        for shot in before
+        if isinstance(shot, dict) and (fid := _shot_id(shot)) and not shot_is_active(shot)
+    }
+    held: list[str] = []
+    for shot in rows:
+        if not isinstance(shot, dict):
+            continue
+        fid = _shot_id(shot)
+        if not fid or fid not in inactive or not shot_is_active(shot):
+            continue
+        shot["активен"] = False
+        held.append(fid)
+    if held:
+        logger.warning(
+            "WARN _keep_qc_kadry: шоты остаются неактивными, restore не запрошен ({})",
+            ", ".join(held),
+        )
     kept = keep_soft_kadry(
         before,
-        candidate,
+        rows,
         scene_id=getattr(parent, "uuid", "") or "qc",
         number=getattr(parent, "number", 0),
     )
-    return kept if isinstance(kept, list) else candidate
+    return kept if isinstance(kept, list) else rows
+
+
+def _shot_id(shot: dict[str, Any]) -> str:
+    for key in ("id", "shot_id", "id_shot"):
+        value = shot.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def build_improve_qc_prompt(

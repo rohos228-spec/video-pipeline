@@ -6,10 +6,13 @@
 ``Violation`` / ``PreservationRejected``.
 
 Возврат неактивного шота в живые без явной операции ``restore`` /
-``activate`` (или ``активен: True``) с адресом ``shot_id`` / ``frame_id``
-/ ``id`` / ``target`` — error ``inactive_shot_revived``. Индекс шота
-адрес не заменяет. Закадр при пометке не переносится. Потеря FrameText
-/ FrameEdge, кадра без id (сверка по тексту) и несписковые ``кадры``
+``activate`` (или ``активен: True``) — error ``inactive_shot_revived``.
+Адрес — пара ``(frame_uuid, shot_id)``, как в #379 ``c48e186b``. Без
+кадра ``shot_id`` проходит только если такой id в before один.
+``target`` и индекс адрес не заменяют. Сцена с закадром и без живых
+шотов — error ``vo_on_inactive``; soft его не гасит, id там сцены.
+Закадр при пометке не переносится. Потеря FrameText / FrameEdge,
+кадра без id (сверка по тексту) и несписковые ``кадры``
 (``kadry_invalid``) — error.
 """
 
@@ -108,10 +111,10 @@ else:
         ``mode="reject"`` — любой error поднимает ``PreservationRejected``,
         ``after`` не меняется. ``mode="soft"`` — пропавший живой кадр
         с id дописывается в ``кадры[]`` с ``активен: False`` и warn
-        ``kept_inactive``. ``inactive_shot_revived`` soft не поглощает:
-        неактивный шот, ставший живым без адресованной операции, — отказ.
-        Закадр остаётся на кадре. Сцена, персонаж, текст, ребро, кадр без
-        id и несписковые ``кадры`` по-прежнему отказ.
+        ``kept_inactive``. ``inactive_shot_revived`` soft не поглощает.
+        ``vo_on_inactive`` с id сцены тоже: закадр сцены без живых шотов
+        — отказ. Закадр остаётся на кадре. Сцена, персонаж, текст, ребро,
+        кадр без id и несписковые ``кадры`` по-прежнему отказ.
         """
 
         if mode not in {"reject", "soft"}:
@@ -150,6 +153,7 @@ else:
         found.extend(_check_scenes(before, after))
         found.extend(_check_frames(before, after))
         found.extend(_check_revived(before, after, ops))
+        found.extend(_check_vo_on_inactive(after))
         found.extend(_check_characters(before, after))
         found.extend(_check_frame_links(before, after))
         found.extend(_check_kadry_invalid(before, after))
@@ -158,15 +162,15 @@ else:
     _ACTIVATE_VERBS = {"activate", "set_active", "restore", "восстановить"}
 
     def _check_revived(before: Any, after: Any, ops: Any) -> list[Violation]:
-        """Неактивный шот в ``after`` живой только с адресованной операцией."""
+        """Неактивный шот в ``after`` живой только с парой кадр и shot_id."""
 
         from app.services.frame_tombstones import shot_is_active
 
         operations = [op for op in list(ops or []) if isinstance(op, dict)]
-        activated = {fid for op in operations if (fid := _activated_shot_id(op))}
-        before_inactive = _inactive_shot_ids(before)
+        before_inactive = _inactive_pairs(before)
+        activated = _activated_pairs(operations, before_inactive)
         found: list[Violation] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for scene in _scenes(after):
             status, frames = _kadry(scene)
             if status != "list" or not isinstance(frames, list):
@@ -176,9 +180,10 @@ else:
                 if not isinstance(shot, dict) or not shot_is_active(shot):
                     continue
                 fid = _frame_id(shot)
-                if not fid or fid not in before_inactive or fid in activated or fid in seen:
+                pair = (entity, fid or "")
+                if not fid or pair not in before_inactive or pair in activated or pair in seen:
                     continue
-                seen.add(fid)
+                seen.add(pair)
                 found.append(
                     Violation(
                         code="inactive_shot_revived",
@@ -189,26 +194,88 @@ else:
                 )
         return found
 
-    def _inactive_shot_ids(side: Any) -> set[str]:
+    def _check_vo_on_inactive(after: Any) -> list[Violation]:
+        """Сцена с закадром и без единого живого шота — ``vo_on_inactive``."""
+
         from app.services.frame_tombstones import shot_is_active
 
-        found: set[str] = set()
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for scene in _scenes(after):
+            text = " ".join(
+                str(
+                    scene.get("закадр")
+                    or scene.get("voiceover")
+                    or scene.get("vo")
+                    or scene.get("vo_cell_full")
+                    or ""
+                ).split()
+            )
+            if not text:
+                continue
+            status, frames = _kadry(scene)
+            if status != "list" or not isinstance(frames, list):
+                continue
+            if any(isinstance(shot, dict) and shot_is_active(shot) for shot in frames):
+                continue
+            entity = _scene_id(scene) or _scene_number(scene) or ""
+            if entity in seen:
+                continue
+            seen.add(entity)
+            found.append(
+                Violation(
+                    code="vo_on_inactive",
+                    severity="error",
+                    path=f"scenes/{entity}/закадр" if entity else "закадр",
+                    id=entity,
+                )
+            )
+        return found
+
+    def _inactive_pairs(side: Any) -> set[tuple[str, str]]:
+        from app.services.frame_tombstones import shot_is_active
+
+        found: set[tuple[str, str]] = set()
         for scene in _scenes(side):
             status, frames = _kadry(scene)
             if status != "list" or not isinstance(frames, list):
                 continue
+            entity = _scene_id(scene) or _scene_number(scene) or ""
             for shot in frames:
                 if not isinstance(shot, dict) or shot_is_active(shot):
                     continue
                 fid = _frame_id(shot)
                 if fid:
-                    found.add(fid)
+                    found.add((entity, fid))
         return found
 
-    def _activated_shot_id(op: dict[str, Any]) -> str:
-        if not _op_activates(op):
-            return ""
-        for key in ("shot_id", "frame_id", "id", "target"):
+    def _activated_pairs(
+        ops: list[dict[str, Any]], before_inactive: set[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """Restore по ``(frame_uuid, shot_id)``. Без кадра — один такой id."""
+
+        counts: dict[str, int] = {}
+        for _owner, fid in before_inactive:
+            counts[fid] = counts.get(fid, 0) + 1
+        allowed: set[tuple[str, str]] = set()
+        for op in ops:
+            if not _op_activates(op):
+                continue
+            fid = _op_shot_id(op)
+            if not fid:
+                continue
+            frame_ref = str(op.get("frame_uuid") or op.get("frame_id") or "")
+            if frame_ref:
+                allowed.add((frame_ref, fid))
+                continue
+            if counts.get(fid, 0) == 1:
+                for owner, shot in before_inactive:
+                    if shot == fid:
+                        allowed.add((owner, shot))
+        return allowed
+
+    def _op_shot_id(op: dict[str, Any]) -> str:
+        for key in ("shot_id", "frame_id", "id"):
             value = op.get(key)
             if value not in (None, ""):
                 return str(value)

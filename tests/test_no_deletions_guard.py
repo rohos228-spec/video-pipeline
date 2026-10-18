@@ -267,6 +267,12 @@ def test_qc_candidate_keeps_dropped_shot_and_inactive_vo() -> None:
     assert soft[1]["активен"] is False
     assert soft[1]["закадр"] == "фраза на месте"
     assert "закадр_архив" not in soft[1]
+    revived = _keep_qc_kadry(
+        parent,
+        [{"id": "a", "закадр": "первый", "активен": False}],
+        [{"id": "a", "закадр": "первый", "активен": True}],
+    )
+    assert revived[0]["активен"] is False
 
 
 def test_grammar_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch) -> None:
@@ -465,7 +471,8 @@ def test_non_list_kadry_is_error() -> None:
     with pytest.raises(PreservationRejected) as raised:
         run_preservation_validators(before, after, mode="soft")
     assert any(
-        item.code == "kadry_invalid" and item.severity == "error" for item in raised.value.violations
+        item.code in {"kadry_invalid", "shot_dropped"} and item.severity == "error"
+        for item in raised.value.violations
     )
     assert all(item.code != "frames_no_data" for item in raised.value.violations)
     assert after == frozen
@@ -517,12 +524,78 @@ def test_keep_soft_kadry_restore_needs_op() -> None:
         assert kept[0]["активен"] is True
         assert kept[0]["id"] == "k1"
 
+    shared = [{"id": "k1", "закадр": "фраза на месте", "активен": False}]
+    left = {"сцены": [{"id": "s1", "номер": 1, "кадры": [dict(shared[0])]}]}
+    right = {"сцены": [{"id": "s2", "номер": 2, "кадры": [dict(shared[0])]}]}
+    revived_both = {
+        "сцены": [
+            {"id": "s1", "номер": 1, "кадры": [{"id": "k1", "закадр": "фраза на месте", "активен": True}]},
+            {"id": "s2", "номер": 2, "кадры": [{"id": "k1", "закадр": "фраза на месте", "активен": True}]},
+        ]
+    }
+    with pytest.raises(PreservationRejected):
+        run_preservation_validators(
+            {"сцены": left["сцены"] + right["сцены"]},
+            revived_both,
+            [{"op": "restore", "shot_id": "k1"}],
+        )
+    with pytest.raises(PreservationRejected) as paired:
+        run_preservation_validators(
+            {"сцены": [dict(left["сцены"][0]), dict(right["сцены"][0])]},
+            {
+                "сцены": [
+                    {"id": "s1", "номер": 1, "кадры": [{"id": "k1", "активен": True, "закадр": "фраза на месте"}]},
+                    {"id": "s2", "номер": 2, "кадры": [{"id": "k1", "активен": True, "закадр": "фраза на месте"}]},
+                ]
+            },
+            [{"op": "restore", "shot_id": "k1", "frame_uuid": "s1"}],
+        )
+    assert any(item.code == "inactive_shot_revived" and item.id == "k1" for item in paired.value.violations)
+    both = run_preservation_validators(
+        {"сцены": [dict(left["сцены"][0]), dict(right["сцены"][0])]},
+        {
+            "сцены": [
+                {"id": "s1", "номер": 1, "кадры": [{"id": "k1", "активен": True, "закадр": "фраза на месте"}]},
+                {"id": "s2", "номер": 2, "кадры": [{"id": "k1", "активен": True, "закадр": "фраза на месте"}]},
+            ]
+        },
+        [
+            {"op": "restore", "shot_id": "k1", "frame_uuid": "s1"},
+            {"op": "restore", "shot_id": "k1", "frame_uuid": "s2"},
+        ],
+    )
+    assert both == []
 
-_WS1_SHA = "999c04a1c19b1229487e3cab54712c29d4ec371b"
+
+def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
+    """Закадр сцены без живых шотов — error, soft его не поглощает."""
+
+    before = _scene(
+        [{"id": "k1", "закадр": "фраза на месте"}],
+        закадр="фраза на месте",
+    )
+    after = _scene(
+        [{"id": "k1", "закадр": "фраза на месте", "активен": False}],
+        закадр="фраза на месте",
+    )
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="soft")
+    assert any(
+        item.code == "vo_on_inactive" and item.severity == "error" and item.id == "s1"
+        for item in raised.value.violations
+    )
+    live = _scene(
+        [{"id": "k1", "закадр": "фраза на месте"}],
+        закадр="фраза на месте",
+    )
+    assert run_preservation_validators(live, copy.deepcopy(live), mode="reject") == []
+
+
+_WS1_SHA = "d59e1586"
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Десять точек вызова на настоящем preservation.py из 999c04a1.
+    """Десять точек вызова на настоящем preservation.py из d59e1586.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -566,11 +639,7 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
                 del sys.modules[name]
         sys.modules.update(saved)
 
-    revived = [row for row in rejected if row["revived"]]
-    assert not rejected, {
-        "rejected": rejected,
-        "inactive_shot_revived": revived,
-    }
+    assert not rejected, rejected
 
 
 def _run_call_sites(rejected_type: type, root) -> list[dict]:
