@@ -1,16 +1,14 @@
 # Контракт результатов действий R2 (моки WS4)
 
 Версия: `ws2-r2.3` (`CONTRACT_VERSION` в `app/orchestrator/action_contracts/contracts.py`).
-sha256 схемы: `d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10`.
+sha256 схемы: `a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c`.
 
 ## Изменения r2.2 → r2.3
 
-- Схемы живут в `app/orchestrator/action_contracts`, не в пакете реестра. Приёмка больше не пропускает реестр по `CONTRACT_VERSION`.
-- Флаги 102 зафиксированы в `audit_metadata.json`. Markdown при импорте не читается.
-- `partial=false` вместе с непустым `skipped` — ошибка, а не тихий `partial=true`.
-- `reject_stale_edit`: и `base_version` из будущего, и устаревшая база дают `failed` / `conflict`.
-- `create_node@new_group` — риск `high` и `destructive`. Метаданные можно только ужесточить.
-- Проверка html — детектор `_SCRIPT_DETECTOR`, не санитайзер.
+- Непустой `skipped` требует `partial: true`. Это и ошибка модели, и ветка JSON Schema `if`/`then`.
+- `ApprovalRequired.metadata` можно только ужесточить относительно реестра: риск не ниже, `destructive` и `paid` нельзя снять.
+- Новая группа у `create_node` повышает риск политикой `RISK_ESCALATIONS` (`when=group_is_new`: risk `high`, `destructive`). Поле `action` остаётся `create_node`. Знак `@` в `action` запрещён: ядро имя вроде `create_node@new_group` не исполнит.
+- 16 записей метаданных вместо 11 имён плана §6: 11 действий плана, `revert_node_to_git`, три restore и политика повышения риска. Это метаданные, не исполнители.
 
 ## Изменения r2.1 → r2.2
 
@@ -112,7 +110,7 @@ DOM отчёта на месте не правится.
 
 Риск `medium` сам по себе этот статус не включает.
 `create_node` в уже существующую группу и `create_report` не платные и не деструктивные: конверт сразу `ok`.
-`create_node@new_group` — риск `high`, `destructive`: сначала подтверждение.
+Новая группа не меняет `action`: `RISK_ESCALATIONS` поднимает риск `create_node` до `high` и `destructive`, сначала подтверждение.
 `edit_node_prompt`, `edit_node_params`, `update_report`, `revert_node_to_git`
 деструктивные: сначала `approval_required`.
 
@@ -177,7 +175,6 @@ DOM отчёта на месте не правится.
 | `stop_node` | medium | false | false | false |
 | `resume_node` | high | false | true | true |
 | `create_node` | medium | false | false | false |
-| `create_node@new_group` | high | false | true | false |
 | `edit_node_prompt` | medium | false | true | false |
 | `edit_node_params` | medium | false | true | false |
 | `create_report` | low | false | false | false |

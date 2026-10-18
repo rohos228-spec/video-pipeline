@@ -379,21 +379,31 @@ def _registry_module_absent(exc: ModuleNotFoundError, module: str) -> bool:
     return bool(missing) and (missing == module or module.startswith(missing + "."))
 
 
-def _module_exposes_registry(module) -> bool:
-    """Реестр — это API исполнителей, не пакет одних схем."""
+def _registry_list(module) -> list:
+    """Непустой ``registry.list()`` — единственный признак живого реестра."""
 
     ensure = getattr(module, "ensure_builtin_actions", None)
     registry = getattr(module, "registry", None)
-    if callable(ensure) and registry is not None and hasattr(registry, "list"):
-        return True
+    if callable(ensure):
+        ensure()
+    if registry is not None and hasattr(registry, "list") and not callable(registry):
+        return list(registry.list())
     if callable(registry):
-        return True
-    names = getattr(module, "ACTION_IDS", None)
-    return isinstance(names, Iterable) and not isinstance(names, (str, bytes))
+        produced = registry()
+        if hasattr(produced, "list"):
+            return list(produced.list())
+    return []
+
+
+def _module_exposes_registry(module) -> bool:
+    """Реестр — непустой список исполнителей, не пакет схем и не ACTION_IDS."""
+
+    return len(_registry_list(module)) > 0
 
 
 def _load_registry_module():
     errors: list[str] = []
+    imported = False
     for name in _REGISTRY_MODULES:
         try:
             module = importlib.import_module(name)
@@ -409,11 +419,14 @@ def _load_registry_module():
             pytest.fail(
                 f"ошибка импорта реестра {name}: {type(exc).__name__}: {exc}"
             )
+        imported = True
         if _module_exposes_registry(module):
             return module
+        errors.append(f"{name}: импортирован, но не отдал реестр")
+    if imported:
         pytest.fail(
-            f"{name} импортирован, но не отдаёт реестр "
-            "(ensure_builtin_actions+registry.list, registry() или ACTION_IDS)"
+            "ни один модуль не отдал реестр "
+            "(нужен непустой registry.list()): " + "; ".join(errors)
         )
     pytest.skip(
         "Реестр Action Layer в этом дереве отсутствует "
@@ -2270,7 +2283,42 @@ def test_schema_version_does_not_skip_registry(monkeypatch: pytest.MonkeyPatch) 
         raise ModuleNotFoundError(f"No module named {name!r}", name=name)
 
     monkeypatch.setattr(importlib, "import_module", load)
-    with pytest.raises(pytest.fail.Exception, match="не отдаёт реестр"):
+    with pytest.raises(pytest.fail.Exception, match="не отдал реестр"):
+        _load_registry_module()
+
+
+def test_registry_sign_is_nonempty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пустой list и одни ACTION_IDS — не реестр. Непустой list любого модуля — реестр."""
+
+    class Empty:
+        class registry:
+            @staticmethod
+            def list() -> list[str]:
+                return []
+
+        ACTION_IDS = ("project.stop",)
+
+    class Full:
+        class registry:
+            @staticmethod
+            def list() -> list[str]:
+                return ["project.stop"]
+
+    def load_second(name: str):
+        if name == "app.orchestrator.actions":
+            return Empty()
+        if name == "app.services.action_layer.spec":
+            return Full()
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(importlib, "import_module", load_second)
+    assert _load_registry_module().registry.list() == ["project.stop"]
+
+    def load_ids_only(name: str):
+        return Empty()
+
+    monkeypatch.setattr(importlib, "import_module", load_ids_only)
+    with pytest.raises(pytest.fail.Exception, match="не отдал реестр"):
         _load_registry_module()
 
 

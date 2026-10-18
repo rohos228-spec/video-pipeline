@@ -44,6 +44,7 @@ nvidia = [
   "huggingface_hub>=0.23,<1",
 ]
 dev = [
+  "jsonschema>=4.23,<5",
   "pytest>=8",
   "pytest-asyncio>=0.24",
   "ruff>=0.7",
@@ -57,6 +58,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.orchestrator.action_contracts" = ["audit_metadata.json"]
 
 [tool.ruff]
 line-length = 110
