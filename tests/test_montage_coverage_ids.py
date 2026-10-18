@@ -90,6 +90,43 @@ def test_sync_rewrites_stale_shot_id_to_live_parent_number() -> None:
     assert child.attrs["кадры"][0]["parent_id"] == "13-S3-K1"
 
 
+def test_sync_live_coverage_ids_keeps_old_shot_ids_inactive() -> None:
+    """Старые 12-S3-K1 и 12-S3-K2 остаются в хвосте с активен: False."""
+    pu = "p" * 24
+    parent = _fr(
+        13,
+        uuid=pu,
+        role="vo_parent",
+        shot_id="12-S3-K1",
+        coverage_parent_id="1-S1-K1",
+        shot_index=1,
+        kadry=[
+            {"id": "12-S3-K1", "parent_id": None, "действие": "сидит"},
+            {"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "встал"},
+        ],
+    )
+    child = _fr(
+        14,
+        uuid="c" * 24,
+        role="shot",
+        shot_id="12-S3-K2",
+        parent_uuid=pu,
+        coverage_parent_id="12-S3-K1",
+        shot_index=2,
+        kadry=[{"id": "12-S3-K2", "parent_id": "12-S3-K1", "действие": "встал"}],
+    )
+    sync_live_coverage_ids([parent, child])
+    parent_ids = {row["id"]: row for row in parent.attrs["кадры"]}
+    child_ids = {row["id"]: row for row in child.attrs["кадры"]}
+    assert parent_ids["13-S3-K1"].get("активен") is not False
+    assert parent_ids["13-S3-K2"].get("активен") is not False
+    assert parent_ids["12-S3-K1"]["активен"] is False
+    assert parent_ids["12-S3-K2"]["активен"] is False
+    assert parent_ids["12-S3-K1"]["действие"] == "сидит"
+    assert child_ids["13-S3-K2"].get("активен") is not False
+    assert child_ids["12-S3-K2"]["активен"] is False
+
+
 def test_vo_parent_leftover_id_is_not_still_parent() -> None:
     k1 = _fr(1, uuid="a" * 24, role="vo_parent", shot_id="1-S1-K1")
     later = _fr(

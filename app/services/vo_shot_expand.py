@@ -1229,6 +1229,7 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
         parent_sid = f"{pno}-S{int(scene)}-K1"
         keep_x1 = str(_cs(parent).get("coverage_kind") or "").strip().lower() == "child"
         planned = planned_shots_from_attrs(parent)
+        old_planned = [dict(shot) for shot in planned]
         for i, fr in enumerate(ordered, start=1):
             sid = f"{pno}-S{int(scene)}-K{i}"
             if i == 1:
@@ -1263,8 +1264,10 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
             if before != after:
                 changed += 1
         if planned:
+            from app.services.frame_tombstones import merge_kadry_keep_missing
+
             attrs = dict(getattr(parent, "attrs", None) or {})
-            attrs["кадры"] = planned
+            attrs["кадры"] = merge_kadry_keep_missing(old_planned, planned)
             parent.attrs = attrs
             _flag_attrs(parent)
     return changed
