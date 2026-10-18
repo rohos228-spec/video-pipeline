@@ -379,14 +379,13 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
   return null;
 }
 
-/** change_id решения. Чужой или пустой id карточку не закрывает. */
-function approvalChangeId(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.change_id) ?? serverApprovalId(body.step_change_id);
+/** `change_id` события. `step_change_id` не подставляется. */
+function approvalEventChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
-  const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.change_id) ?? serverApprovalId(inner.step_change_id);
+  return serverApprovalId((nested as Record<string, unknown>).change_id);
 }
 
 function approvalLegacyId(body: Record<string, unknown>): string | null {
@@ -408,7 +407,7 @@ function approvalLegacyId(body: Record<string, unknown>): string | null {
  * проверяет. События #342 могли прийти только с `approval_id`.
  */
 function approvalDecisionKey(body: Record<string, unknown>): string | null {
-  return approvalChangeId(body) ?? approvalLegacyId(body);
+  return approvalEventChangeId(body) ?? approvalLegacyId(body);
 }
 
 function closeServerApproval(state: OrchScreenState, key: string, decision: "approved" | "rejected"): void {
@@ -567,7 +566,7 @@ function absorbLlmSignal(
     state.approvals.push({
       id,
       serverId: fromServer != null,
-      changeId: approvalChangeId(body),
+      changeId: approvalEventChangeId(body),
       sessionId,
       taskId: taskKey(body.task_id) || taskId,
       title: str(body.title, "Нужно подтверждение"),
@@ -839,7 +838,7 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       next.approvals.push({
         id,
         serverId: fromServer != null,
-        changeId: approvalChangeId(body),
+        changeId: approvalEventChangeId(body),
         sessionId,
         taskId,
         title: str(body.title, "Нужно подтверждение"),
