@@ -45,8 +45,12 @@ def test_hidden_shot_is_not_a_voiceover_slot() -> None:
     ids = [row["id"] for row in parent.attrs["кадры"]]
     assert ids == ["1-K1", "1-K2", "1-K3"]
     assert hidden.voiceover_text == ""
-    blob = f"{parent.voiceover_text} {child.voiceover_text}"
-    assert "Первая" in blob and "Третья" in blob
-    assert "Вторая" not in blob
+    blob = " ".join(
+        piece
+        for piece in (parent.voiceover_text, child.voiceover_text)
+        if str(piece or "").strip()
+    )
+    assert blob == full
+    assert "Первая" in blob and "Третья" in blob and "Вторая" in blob
     hidden_shot = next(row for row in parent.attrs["кадры"] if row["id"] == "1-K2")
     assert "Вторая" in hidden_shot["закадр"]

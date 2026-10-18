@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.validators.activity_flags import flag_is_false, flag_is_true
 from app.services import db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -342,12 +343,12 @@ def _shot_row_id(row: Any) -> str:
 def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
     """Пометки скрытия старой строки переживают входящее обновление."""
     marks: dict[str, Any] = {}
-    if row.get("активен") is False:
-        marks["активен"] = False
+    if flag_is_false(row.get("активен")):
+        marks["активен"] = row.get("активен")
     for key in ("удалён", "удален"):
-        if row.get(key) not in (None, "", False):
+        if flag_is_true(row.get(key), mark=key):
             marks[key] = row[key]
-    if row.get("карантин") not in (None, "", False):
+    if flag_is_true(row.get("карантин"), mark="карантин"):
         marks["карантин"] = row["карантин"]
     note = row.get("пометка")
     if str(note or "").strip():
