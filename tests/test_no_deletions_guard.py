@@ -491,7 +491,7 @@ def test_non_list_kadry_is_error() -> None:
     """Несписок — хотя бы один error по сцене. Лишние warn допустимы.
 
     Шим даёт error ``kadry_invalid`` и, для живого id, error ``shot_dropped``.
-    Модуль #379 @ 76198ecd рядом кладёт warn ``frames_no_data``.
+    Модуль #379 @ 1ef07735 рядом кладёт warn ``frames_no_data``.
     Точный набор и число не фиксируем: нужен error по сцене или шоту.
     """
 
@@ -619,7 +619,7 @@ def test_scene_voiceover_without_live_shots_is_vo_on_inactive() -> None:
 
 
 def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
-    """Поведение шима как у #379 @ 76198ecd: F1b, F1c, пустой закадр, ``кадры: None``."""
+    """Поведение шима как у #379 @ 1ef07735: F1b, F1c, пустой закадр, ``кадры: None``."""
 
     before = {
         "сцены": [
@@ -723,11 +723,104 @@ def test_idless_name_and_missing_vo_do_not_hide_shots() -> None:
     assert all(item.code != "shot_dropped" for item in char_exc.value.violations)
 
 
-_WS1_SHA = "76198ecdf1e81c8f55a2d08d00f15be97da11d2a"
+_WS1_SHA = "1ef07735d94fb2bd7133fad65c0d651c5f008103"
+
+
+def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
+    """Копия неактивного шота в другой кадр без restore — ``inactive_shot_revived``."""
+
+    before = {
+        "сцены": [
+            {"id": "frame-a", "номер": 1, "кадры": [{"id": "k", "активен": False, "закадр": ""}]},
+            {"id": "frame-b", "номер": 2, "кадры": [{"id": "b", "закадр": "живой"}]},
+        ]
+    }
+    after = {
+        "сцены": [
+            {"id": "frame-a", "номер": 1, "кадры": [{"id": "k", "активен": False, "закадр": ""}]},
+            {
+                "id": "frame-b",
+                "номер": 2,
+                "кадры": [{"id": "b", "закадр": "живой"}, {"id": "k", "закадр": ""}],
+            },
+        ]
+    }
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="reject")
+    assert any(item.code == "inactive_shot_revived" and item.id == "k" for item in raised.value.violations)
+
+    stayed = copy.deepcopy(after)
+    stayed["сцены"][1]["кадры"][1]["активен"] = False
+    assert run_preservation_validators(before, stayed, mode="reject") == []
+
+    allowed = run_preservation_validators(
+        before,
+        after,
+        [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-b"}],
+        mode="reject",
+    )
+    assert allowed == []
+
+    with pytest.raises(PreservationRejected) as scoped:
+        run_preservation_validators(
+            before,
+            after,
+            [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-a"}],
+            mode="reject",
+        )
+    assert any(item.code == "inactive_shot_revived" and item.id == "k" for item in scoped.value.violations)
+
+
+def test_idless_loss_and_named_description_match_1ef07735() -> None:
+    """Пустой id даёт ``frames_cleared``, ``описание`` и ``attrs.кадры`` не прячут шот."""
+
+    kept = {"id": "k1", "закадр": "а"}
+    lost = {"id": "", "parent_id": "9-K1", "закадр": "кусок"}
+    before = {"frames": [{"id": "u1", "attrs": {"кадры": [kept, lost]}}]}
+    after = {"frames": [{"id": "u1", "attrs": {"кадры": [kept]}}]}
+    with pytest.raises(PreservationRejected) as cleared:
+        run_preservation_validators(before, after, mode="reject")
+    assert any(item.code == "frames_cleared" and item.id == "кусок" for item in cleared.value.violations)
+
+    named_before = {
+        "cells": [
+            {
+                "id": "c",
+                "сцена": "1",
+                "кадры": [
+                    {"id": "k1", "имя": "Анна", "описание": "стоит у окна"},
+                    {"id": "k2", "закадр": "б"},
+                ],
+            }
+        ]
+    }
+    named_after = {
+        "cells": [
+            {
+                "id": "c",
+                "сцена": "1",
+                "кадры": [{"id": "k9", "закадр": "а"}, {"id": "k2", "закадр": "б"}],
+            }
+        ]
+    }
+    with pytest.raises(PreservationRejected) as named:
+        run_preservation_validators(named_before, named_after, mode="reject")
+    assert any(item.code == "shot_dropped" and item.id == "k1" for item in named.value.violations)
+
+    def wrapped(shots: list[dict]) -> dict:
+        return {"frames": [{"id": "cell1", "сцена": 1, "attrs": {"кадры": shots}}]}
+
+    with pytest.raises(PreservationRejected) as wrapper:
+        run_preservation_validators(
+            wrapped([{"id": "k1", "закадр": "а"}, {"id": "k2", "закадр": "б"}]),
+            wrapped([{"id": "k1", "закадр": "а"}, {"id": "k9", "закадр": "б"}]),
+            mode="reject",
+        )
+    assert any(item.code == "shot_dropped" and item.id == "k2" for item in wrapper.value.violations)
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Двенадцать точек вызова на настоящем preservation.py из 76198ecd.
+    """Двенадцать точек вызова на настоящем preservation.py из 1ef07735.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
@@ -746,7 +839,7 @@ def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
         tar.extractall(extracted, filter="data")
     module_dir = extracted / "app" / "orchestrator" / "validators"
     assert (module_dir / "preservation.py").is_file()
-    # #379 @ 76198ecd не содержит activity_flags: его читает наш код, не preservation.
+    # #379 @ 1ef07735 не содержит activity_flags: его читает наш код, не preservation.
     flags = module_dir / "activity_flags.py"
     if not flags.is_file():
         flags.write_bytes((repo / "app" / "orchestrator" / "validators" / "activity_flags.py").read_bytes())

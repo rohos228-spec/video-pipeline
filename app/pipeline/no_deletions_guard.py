@@ -7,6 +7,8 @@
 
 Возврат неактивного шота в живые без явной операции ``restore`` /
 ``activate`` (или ``активен: True``) — error ``inactive_shot_revived``.
+Id, который был неактивен в любом кадре, остаётся неактивным и в копии
+в другом кадре, пока restore не разрешил именно пару ``(frame_uuid, shot_id)``.
 Адрес — пара ``(frame_uuid, shot_id)``, как в #379 ``c48e186b``. Без
 кадра ``shot_id`` проходит только если такой id в before один.
 ``target`` и индекс адрес не заменяют. Сцена с закадром и без живых
@@ -154,6 +156,7 @@ else:
         found: list[Violation] = []
         found.extend(_check_scenes(before, after))
         found.extend(_check_frames(before, after))
+        found.extend(_check_frames_cleared(before, after))
         found.extend(_check_revived(before, after, ops))
         found.extend(_check_vo_on_inactive(after))
         found.extend(_check_characters(before, after))
@@ -171,6 +174,7 @@ else:
 
         operations = [op for op in list(ops or []) if isinstance(op, dict)]
         before_inactive = _inactive_pairs(before)
+        inactive_ids = {shot_id for _owner, shot_id in before_inactive}
         activated = _activated_pairs(operations, before_inactive)
         found: list[Violation] = []
         seen: set[tuple[str, str]] = set()
@@ -184,7 +188,9 @@ else:
                     continue
                 fid = _frame_id(shot)
                 pair = (entity, fid or "")
-                if not fid or pair not in before_inactive or pair in activated or pair in seen:
+                # Id был неактивен в любом кадре. Копия в другом кадре — тоже revived,
+                # пока restore не разрешил именно эту пару (кадр, shot_id).
+                if not fid or fid not in inactive_ids or pair in activated or pair in seen:
                     continue
                 seen.add(pair)
                 found.append(
@@ -435,6 +441,150 @@ else:
                 )
         return found
 
+    _IDLESS_TEXT_KEYS = ("закадр", "voiceover", "vo", "действие", "текст", "text", "описание")
+
+    def _check_frames_cleared(before: Any, after: Any) -> list[Violation]:
+        """Список ``кадры`` стал короче, и токен шота не уехал в ту же сцену.
+
+        Токен — id, иначе текст, иначе ``parent:<id>``. Пустой id — не id.
+        Неактивный шот может уйти. Несписковые ``кадры`` — не этот код.
+        """
+
+        if before is None or after is None:
+            return []
+        before_cells = [cell for cell in _collect_cells(before) if isinstance(cell.get("кадры"), list)]
+        after_cells = _collect_cells(after)
+        after_by_id: dict[str, dict[str, Any]] = {}
+        present: dict[str, set[str]] = {}
+        for cell in after_cells:
+            cid = _cell_id(cell)
+            if cid and cid not in after_by_id:
+                after_by_id[cid] = cell
+            bucket = present.setdefault(_cell_scene_key(cell), set())
+            shots = cell.get("кадры")
+            if not isinstance(shots, list):
+                continue
+            for shot in shots:
+                token = _shot_token(shot)
+                if token:
+                    bucket.add(token)
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for cell in before_cells:
+            shots = cell.get("кадры")
+            if not isinstance(shots, list):
+                continue
+            cid = _cell_id(cell)
+            after_cell = after_by_id.get(cid) if cid else None
+            if after_cell is None:
+                after_shots: list[Any] = []
+            else:
+                raw = after_cell.get("кадры")
+                if not isinstance(raw, list):
+                    continue
+                after_shots = raw
+            if len(after_shots) >= len(shots):
+                continue
+            scene = _cell_scene_key(cell)
+            kept = present.get(scene, set())
+            for shot in shots:
+                if _frames_cleared_exempt(shot):
+                    continue
+                token = _shot_token(shot)
+                if not token or token in kept or token in seen:
+                    continue
+                seen.add(token)
+                path = f"scenes/{scene}/кадры/{token}" if scene else f"кадры/{token}"
+                found.append(
+                    Violation(code="frames_cleared", severity="error", path=path, id=token)
+                )
+        return found
+
+    def _shot_token(shot: Any) -> str | None:
+        fid = _frame_id(shot)
+        if fid:
+            return fid
+        if not isinstance(shot, dict):
+            return None
+        for key in _IDLESS_TEXT_KEYS:
+            text = _plain(shot.get(key))
+            if text:
+                return text
+        parent = shot.get("parent_id")
+        if parent not in (None, ""):
+            return f"parent:{parent}"
+        return None
+
+    def _frames_cleared_exempt(shot: Any) -> bool:
+        if _exempt(shot):
+            return True
+        if not isinstance(shot, dict):
+            return False
+        if shot.get("archived") is True or shot.get("архив") is True:
+            return True
+        status = str(shot.get("status") or shot.get("статус") or "").casefold()
+        return status in {"archived", "archive", "архив"}
+
+    def _cell_id(cell: dict[str, Any]) -> str:
+        fid = _frame_id(cell)
+        if fid:
+            return fid
+        raw = cell.get("uuid")
+        return "" if raw in (None, "") else str(raw)
+
+    def _cell_scene_key(cell: dict[str, Any]) -> str:
+        for key in ("сцена", "scene", "scene_id"):
+            value = cell.get(key)
+            if value not in (None, ""):
+                return str(value)
+        shots = cell.get("кадры")
+        if isinstance(shots, list):
+            numbers = {
+                str(shot.get("сцена"))
+                for shot in shots
+                if isinstance(shot, dict) and shot.get("сцена") not in (None, "")
+            }
+            if len(numbers) == 1:
+                return next(iter(numbers))
+        return str(cell.get("id") or cell.get("uuid") or "")
+
+    def _collect_cells(side: Any) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        _walk_cells(side, found, 0)
+        return found
+
+    def _walk_cells(node: Any, found: list[dict[str, Any]], depth: int) -> None:
+        if depth > 8:
+            return
+        if isinstance(node, dict):
+            if "кадры" in node:
+                found.append(node)
+            attrs = node.get("attrs")
+            if isinstance(attrs, dict) and "кадры" in attrs:
+                sub = node.get("camera_subdivide")
+                parent = None
+                if isinstance(sub, dict):
+                    parent = sub.get("parent_uuid")
+                found.append(
+                    {
+                        "id": node.get("id") or node.get("uuid"),
+                        "сцена": node.get("сцена", node.get("scene")),
+                        "parent_id": node.get("parent_id") or parent,
+                        "кадры": attrs.get("кадры"),
+                    }
+                )
+            for key in ("cells", "ячейки", "frames", "scenes", "сцены", "archive", "архив"):
+                if key in node:
+                    _walk_cells(node[key], found, depth + 1)
+            for key in ("scene", "сцена"):
+                value = node.get(key)
+                if isinstance(value, dict):
+                    _walk_cells(value, found, depth + 1)
+            return
+        if isinstance(node, list):
+            for item in node:
+                _walk_cells(item, found, depth + 1)
+
     def _check_characters(before: Any, after: Any) -> list[Violation]:
         if not isinstance(before, dict) or not isinstance(after, dict):
             return []
@@ -597,7 +747,9 @@ else:
         """Шот с id. Нет ключа «закадр» — пустой закадр, как ``""``.
 
         Ключи шота раньше ``имя`` и op: реальный шот с именем остаётся видимым.
-        Сосед без id не прячет список. Обёртка ``{id, attrs}`` сама не шот.
+        ``описание`` тоже ключ шота: ``{id, имя, описание}`` не теряется.
+        Сосед без id не прячет список. Обёртка ``{id, attrs}`` и обёртка
+        с ``attrs.кадры`` сами не шоты.
         """
 
         if not isinstance(item, dict):
@@ -605,8 +757,12 @@ else:
         if any(key in item for key in ("кадры", "cells", "ячейки", "shots")):
             return False
         has_shot_key = any(
-            key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план")
+            key in item
+            for key in ("место", "действие", "сцена", "закадр", "активен", "план", "описание")
         )
+        attrs = item.get("attrs")
+        if isinstance(attrs, dict) and "кадры" in attrs:
+            return False
         if "attrs" in item and not has_shot_key:
             return False
         if _frame_id(item) is None:
