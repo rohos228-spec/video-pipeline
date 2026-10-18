@@ -6,11 +6,10 @@ import {
   isAbortError,
   orchTaskModeEnabled,
   OrchApiError,
-  postOrchApprove,
+  postOrchDecision,
   postOrchKill,
   postOrchMessage,
   readOrchProjectId,
-  postOrchReject,
   probeOrchAuth,
   readOrchBoot,
   readOrchToken,
@@ -204,25 +203,22 @@ export function useOrchestratorChat() {
   );
 
   const decide = useCallback(
-    async (approvalId: string, taskId: string | null, decision: "approved" | "rejected") => {
+    async (approvalId: string, _taskId: string | null, decision: "approved" | "rejected") => {
       if (decisionLock.current) return;
       const card = state.approvals.find((item) => item.id === approvalId);
-      if (!card?.serverId) {
-        setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
+      if (!card?.changeId) {
+        setDecisionError({ id: approvalId, message: "нет change_id от сервера" });
         return;
       }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
       try {
-      // Путь /approvals/{id}: change_id, если сервер его прислал, иначе id карточки (approval_id).
-      const pathId = card.changeId ?? approvalId;
-      const body = { approval_id: pathId, task_id: taskId };
-      const result =
-        decision === "approved"
-          ? await postOrchApprove(cfg, body)
-          : await postOrchReject(cfg, { ...body, reason: "отклонено в чате" });
-      if (!approvalPostAccepted(result, pathId)) {
+        const result = await postOrchDecision(cfg, {
+          change_id: card.changeId,
+          decision: decision === "approved" ? "approve" : "deny",
+        });
+        if (!approvalPostAccepted(result, card.changeId)) {
           setDecisionError({ id: approvalId, message: "сервер не подтвердил это решение" });
           return;
         }

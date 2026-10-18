@@ -168,9 +168,8 @@ export interface ApprovalView {
    */
   serverId: boolean;
   /**
-   * ApprovalEvent.change_id.
+   * ApprovalEvent.change_id, иначе step_change_id. В ApproveIn уходит только это поле.
    * Если поля нет, карточка старая и закрывается по approval_id.
-   * Событие с change_id закрывает карточку только этим значением.
    */
   changeId: string | null;
   /** Сессия события, которое открыло карточку. Без change_id закрытие сверяет и её. */
@@ -339,12 +338,32 @@ export function serverApprovalId(value: unknown): string | null {
  * Вложенный `payload` — тот же объект, если событие завернуло ApprovalEvent.
  */
 export function approvalServerKey(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.approval_id) ?? serverApprovalId(body.change_id);
+  const direct =
+    serverApprovalId(body.approval_id) ??
+    serverApprovalId(body.change_id) ??
+    serverApprovalId(body.step_change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
   const inner = nested as Record<string, unknown>;
-  return serverApprovalId(inner.approval_id) ?? serverApprovalId(inner.change_id);
+  return (
+    serverApprovalId(inner.approval_id) ??
+    serverApprovalId(inner.change_id) ??
+    serverApprovalId(inner.step_change_id)
+  );
+}
+
+/**
+ * `change_id` для `ApproveIn`. С карточки берётся `change_id`, иначе `step_change_id`.
+ * `approval_id` в тело не подставляется.
+ */
+export function approvalWireChangeId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.change_id) ?? serverApprovalId(body.step_change_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  const inner = nested as Record<string, unknown>;
+  return serverApprovalId(inner.change_id) ?? serverApprovalId(inner.step_change_id);
 }
 
 function approvalDecision(value: unknown): "approved" | "rejected" | null {
@@ -355,11 +374,12 @@ function approvalDecision(value: unknown): "approved" | "rejected" | null {
 
 /** change_id решения. Чужой или пустой id карточку не закрывает. */
 function approvalChangeId(body: Record<string, unknown>): string | null {
-  const direct = serverApprovalId(body.change_id);
+  const direct = serverApprovalId(body.change_id) ?? serverApprovalId(body.step_change_id);
   if (direct) return direct;
   const nested = body.payload;
   if (!nested || typeof nested !== "object") return null;
-  return serverApprovalId((nested as Record<string, unknown>).change_id);
+  const inner = nested as Record<string, unknown>;
+  return serverApprovalId(inner.change_id) ?? serverApprovalId(inner.step_change_id);
 }
 
 function approvalLegacyId(body: Record<string, unknown>): string | null {
