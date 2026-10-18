@@ -249,6 +249,7 @@ class Supervisor:
         self._cc_change_id: dict[tuple[int, str], str] = {}
         self._partial_llm_cost: dict[int, float] = {}
         self._grant_locks: dict[int, asyncio.Lock] = {}
+        self._inflight_write: dict[int, asyncio.Task[Any]] = {}
         self._mutating_result: dict[int, str] = {}
         self._partial_announced: set[tuple[int, int]] = set()
         self._stop_holders: dict[int, set[int]] = {}
@@ -1069,7 +1070,18 @@ class Supervisor:
         return stamped
 
     async def _accept_partial_write(self, task_id: int, session_id: str) -> None:
-        """Принять partial: строка done с тем же change_id, execute этого шага нет."""
+        """Принять partial: строка done с тем же change_id, execute этого шага нет.
+
+        Пока inner write ещё идёт, продолжение плана ждёт его конца.
+        """
+        inflight = self._inflight_write.get(int(task_id))
+        if inflight is not None and not inflight.done():
+            try:
+                await inflight
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("orch partial accept: запись задачи {} завершилась ошибкой", task_id)
         data, step = await self._checkpoint_step(task_id)
         row = self._open_partial_row(task_id, step, list(data.plan), int(data.position))
         if row is not None:
@@ -2096,6 +2108,7 @@ class Supervisor:
 
         if step.paid or step.mutating:
             inner: asyncio.Task[Any] = asyncio.create_task(_call())
+            self._remember_inflight_write(task_id, inner)
             if step.paid:
                 self._paid_open.add(task_id)
                 inner.add_done_callback(
@@ -2132,6 +2145,17 @@ class Supervisor:
                 else:
                     self._mutating_open.pop(task_id, None)
         return await self._cancellable(session_id, _call())
+
+    def _remember_inflight_write(self, task_id: int, inner: asyncio.Task[Any]) -> None:
+        """Держать inner, пока approve partial не дождётся конца записи."""
+        key = int(task_id)
+        self._inflight_write[key] = inner
+
+        def _drop(done: asyncio.Task[Any], stored: int = key, job: asyncio.Task[Any] = inner) -> None:
+            if self._inflight_write.get(stored) is job and done.done():
+                self._inflight_write.pop(stored, None)
+
+        inner.add_done_callback(_drop)
 
     def _on_shield_done(
         self,
