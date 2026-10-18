@@ -1154,19 +1154,33 @@ def _norm_vo_key(text: str) -> str:
 def _write_frame_shot_id(
     frame: Any, sid: str, *, parent_sid: str | None
 ) -> None:
-    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым."""
+    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым.
+
+    Прежний id не переписывается: живой шот получает новый id, старый
+    остаётся в хвосте с активен: False.
+    """
     extra: dict[str, Any] = {"shot_id": sid}
     if parent_sid is not None:
         extra["coverage_parent_id"] = parent_sid
     _set_cs(frame, **extra)
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    raw = attrs.get("кадры")
     planned = planned_shots_from_attrs(frame)
     if not planned:
         return
-    planned[0]["id"] = sid
+    from app.services.frame_tombstones import merge_kadry_keep_missing
+
+    old_rows = (
+        [dict(item) if isinstance(item, dict) else item for item in raw]
+        if isinstance(raw, list)
+        else [dict(shot) for shot in planned]
+    )
+    live = dict(planned[0])
+    live["id"] = sid
     if parent_sid is not None:
-        planned[0]["parent_id"] = parent_sid or None
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs["кадры"] = planned
+        live["parent_id"] = parent_sid or None
+    rest = [dict(shot) for shot in planned[1:]]
+    attrs["кадры"] = merge_kadry_keep_missing(old_rows, [live, *rest])
     frame.attrs = attrs
     _flag_attrs(frame)
 

@@ -242,6 +242,34 @@ def test_strip_non_scene_kadry_keeps_b01_and_b02_inactive() -> None:
     assert archived == ["B01-K1", "B02-K1"]
 
 
+def test_write_frame_shot_id_keeps_previous_id_inactive() -> None:
+    """Перепись id не стирает прежний шот: он остаётся в хвосте с активен: False."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import _write_frame_shot_id
+
+    frame = SimpleNamespace(
+        attrs={
+            "camera_subdivide": {},
+            "кадры": [
+                {"id": "1-K1", "действие": "сидит", "parent_id": None},
+                {"id": "1-K2", "действие": "встал", "parent_id": "1-K1"},
+            ],
+        }
+    )
+    _write_frame_shot_id(frame, "1-S1-K9", parent_sid="1-S1-K1")
+    rows = frame.attrs["кадры"]
+    by_id = {row["id"]: row for row in rows}
+    assert rows[0]["id"] == "1-S1-K9"
+    assert rows[0]["parent_id"] == "1-S1-K1"
+    assert rows[0].get("активен") is not False
+    assert "1-K1" in by_id
+    assert by_id["1-K1"]["активен"] is False
+    assert by_id["1-K1"]["действие"] == "сидит"
+    assert by_id["1-K2"].get("активен") is not False
+    assert by_id["1-K2"]["id"] == "1-K2"
+
+
 def test_collect_bits_for_reseed_merges_one_per_cell() -> None:
     from types import SimpleNamespace
 
