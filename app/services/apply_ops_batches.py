@@ -3502,6 +3502,22 @@ async def run_apply_ops_batched(
             _log_pack_errors(list(results))
         else:
             for wave_start in range(0, len(packs), wave_n):
+                if wave_start:
+                    from app.services.step_cancel import (
+                        is_stop_requested,
+                        node_stop_marked,
+                    )
+
+                    if node_stop_marked(project_id, node_key) or (
+                        project_id is not None and is_stop_requested(int(project_id))
+                    ):
+                        logger.warning(
+                            "WARN [#{}] apply_ops node={!r}: стоп между волнами, "
+                            "хвост пачек не отправляем",
+                            project_id,
+                            node_key,
+                        )
+                        break
                 wave = packs[wave_start : wave_start + wave_n]
                 logger.info(
                     "[#{}] apply_ops node={!r}: wave {}–{} / {} "

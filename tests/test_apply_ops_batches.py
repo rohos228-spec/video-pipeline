@@ -638,6 +638,89 @@ async def test_run_apply_ops_splits_2_to_4_on_second_error(
 
 
 @pytest.mark.asyncio
+async def test_kill_sets_node_stop_key_and_apply_ops_stops_between_waves(
+    tmp_path, monkeypatch
+) -> None:
+    """⏹ пишет node_stop_key. Следующая волна apply_ops не стартует."""
+    import json
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base, Project, ProjectStatus
+    from app.services.gpt_operator_client import OperatorApiResult
+    from app.services.project_control import stop_project_running
+    from app.services.step_cancel import clear_node_stop, clear_stop
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(
+            slug="wave-stop",
+            topic="t",
+            status=ProjectStatus.enriching_2,
+            meta={"active_excel_gpt_node_key": "n_vo"},
+        )
+        session.add(project)
+        await session.flush()
+        await stop_project_running(session, project)
+        assert project.meta["node_stop_key"] == "n_vo"
+        project_id = int(project.id)
+    await engine.dispose()
+    clear_stop(project_id)
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        from app.services.step_cancel import mark_node_stop
+
+        mark_node_stop(project_id, "n_vo")
+        ops = [
+            {"frame_uuid": fr["uuid"], "fields": {"main_action": "x"}}
+            for fr in frames
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    try:
+        frames = [_frame(i) for i in range(3)]
+        ctx = tmp_path / "db_frames.json"
+        ctx.write_text("{}", encoding="utf-8")
+        res = await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_vo",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=project_id,
+            dense=False,
+            chunk_size=1,
+            parallel_max=1,
+            stagger_sec=0,
+        )
+        assert calls == [1]
+        assert len(res.apply_ops["ops"]) == 1
+    finally:
+        clear_node_stop(project_id)
+        from app.services.sidebar_layout import clear_gen_queue_halted
+
+        clear_gen_queue_halted(reason="test")
+
+
+@pytest.mark.asyncio
 async def test_vo_chunk_size_9_packs(tmp_path, monkeypatch) -> None:
     """Сценарист: заранее пачки по 9 ячеек закадра, не все 66 разом."""
     import json
