@@ -195,6 +195,22 @@ class R6Actions:
     def risk_of(self, action_name: str) -> Risk:
         return registry_risk(action_name, self.risks)
 
+    def metadata_of(self, action_name: str) -> dict[str, object]:
+        """Карточка приёмки. Нет ключа — ``KeyError``, как закрытый реестр.
+
+        ``read_only`` истинно: шаги ничего не пишут. ``medium`` всё равно
+        ждёт approval через риск, это не ``deletion_blocked``.
+        """
+        if action_name not in self.risks:
+            raise KeyError(action_name)
+        return {
+            "name": action_name,
+            "risk": self.risks[action_name],
+            "read_only": True,
+            "destructive": False,
+            "paid": False,
+        }
+
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
         del params, task_ctx
         self.calls.append(name)

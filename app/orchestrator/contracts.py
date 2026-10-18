@@ -1175,15 +1175,35 @@ def canonical_action_name(action: str) -> str:
     return text
 
 
-def not_in_whitelist(action: str, registry: Any | None) -> bool:
-    """Имя нельзя ни одобрить, ни выполнить.
+# Имя действия на проводе. «@» сюда не входит и отказ идёт раньше.
+_ACTION_NAME = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+)*$")
 
-    Разрешено только явное metadata реестра. Нет ``metadata_of``, ``KeyError``
-    и ``@`` в имени — отказ. Denylist остаётся вторым слоем и бьёт даже
-    безопасную metadata. ``allow_unlisted=True`` — только явный тестовый флаг.
+
+def action_name_rejected(action: str) -> bool:
+    """Имя не по pattern ``^[a-z0-9_]+(\\.[a-z0-9_]+)*$`` или содержит ``@``.
+
+    Отказ ядра не зависит от JSON Schema. Удаление по маркеру в имени
+    остаётся ``deletion_blocked``, а не этим отказом.
     """
     raw = action or ""
     if "@" in raw:
+        return True
+    text = raw.strip()
+    if is_deletion_action(text):
+        return False
+    return _ACTION_NAME.fullmatch(text) is None
+
+
+def not_in_whitelist(action: str, registry: Any | None) -> bool:
+    """Имя нельзя ни одобрить, ни выполнить.
+
+    Разрешено только явное metadata реестра. Нет ``metadata_of``, ``KeyError``,
+    ``@`` и имя вне pattern — отказ. Denylist бьёт даже безопасную metadata.
+    ``allow_unlisted=True`` — только явный тестовый флаг; ``@`` и pattern
+    он не открывает.
+    """
+    raw = action or ""
+    if "@" in raw or action_name_rejected(raw):
         return True
     if canonical_action_name(raw) in ACTION_DENYLIST:
         return True

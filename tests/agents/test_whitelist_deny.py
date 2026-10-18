@@ -14,6 +14,7 @@ from app.orchestrator.contracts import (
     CheckpointData,
     PlanStep,
     TaskStatus,
+    action_name_rejected,
     canonical_action_name,
     not_in_whitelist,
 )
@@ -64,6 +65,10 @@ def test_denylist_normalizes_and_at_sign_is_refused() -> None:
     assert not_in_whitelist(" tools.Bash ", registry) is True
     assert not_in_whitelist("create_node@new_group", registry) is True
     assert not_in_whitelist("create_node", registry) is False
+    assert not_in_whitelist("Create-Node", registry) is True
+    assert not_in_whitelist("test.look", _ClosedRegistry(safe={"test.look"})) is False
+    assert action_name_rejected("scene.deleteAll") is False
+    assert not_in_whitelist("scene.deleteAll", MockActions()) is False
 
 
 def _registry_for(action: str) -> _ClosedRegistry:
