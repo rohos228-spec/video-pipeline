@@ -5,10 +5,12 @@
 Иначе остаётся шим с той же сигнатурой и теми же формами
 ``Violation`` / ``PreservationRejected``.
 
-Шим не ставит ``inactive_shot_revived`` за возврат неактивного шота
-без отдельной операции (P3 у WS1 ещё не закрыт). Закадр при пометке
-не переносится. Потеря FrameText / FrameEdge, кадра без id (сверка
-по тексту) и несписковые ``кадры`` (``kadry_invalid``) — error.
+Возврат неактивного шота в живые без явной операции ``restore`` /
+``activate`` (или ``активен: True``) с адресом ``shot_id`` / ``frame_id``
+/ ``id`` / ``target`` — error ``inactive_shot_revived``. Индекс шота
+адрес не заменяет. Закадр при пометке не переносится. Потеря FrameText
+/ FrameEdge, кадра без id (сверка по тексту) и несписковые ``кадры``
+(``kadry_invalid``) — error.
 """
 
 from __future__ import annotations
@@ -106,13 +108,15 @@ else:
         ``mode="reject"`` — любой error поднимает ``PreservationRejected``,
         ``after`` не меняется. ``mode="soft"`` — пропавший живой кадр
         с id дописывается в ``кадры[]`` с ``активен: False`` и warn
-        ``kept_inactive``. Закадр остаётся на кадре. Сцена, персонаж,
-        текст, ребро, кадр без id и несписковые ``кадры`` по-прежнему отказ.
+        ``kept_inactive``. ``inactive_shot_revived`` soft не поглощает:
+        неактивный шот, ставший живым без адресованной операции, — отказ.
+        Закадр остаётся на кадре. Сцена, персонаж, текст, ребро, кадр без
+        id и несписковые ``кадры`` по-прежнему отказ.
         """
 
         if mode not in {"reject", "soft"}:
             raise ValueError(f"mode должен быть reject или soft, не {mode!r}")
-        violations = _collect(before, after)
+        violations = _collect(before, after, ops)
         if mode == "soft":
             restored = _keep_missing_shots(before, after)
             if restored:
@@ -125,7 +129,7 @@ else:
                 }
                 violations = [
                     item
-                    for item in _collect(before, after)
+                    for item in _collect(before, after, ops)
                     if not (item.id in parked and item.code in absorbed)
                 ]
                 violations.extend(
@@ -141,14 +145,84 @@ else:
             raise PreservationRejected(violations)
         return violations
 
-    def _collect(before: Any, after: Any) -> list[Violation]:
+    def _collect(before: Any, after: Any, ops: Any = None) -> list[Violation]:
         found: list[Violation] = []
         found.extend(_check_scenes(before, after))
         found.extend(_check_frames(before, after))
+        found.extend(_check_revived(before, after, ops))
         found.extend(_check_characters(before, after))
         found.extend(_check_frame_links(before, after))
         found.extend(_check_kadry_invalid(before, after))
         return _sorted(found)
+
+    _ACTIVATE_VERBS = {"activate", "set_active", "restore", "восстановить"}
+
+    def _check_revived(before: Any, after: Any, ops: Any) -> list[Violation]:
+        """Неактивный шот в ``after`` живой только с адресованной операцией."""
+
+        from app.services.frame_tombstones import shot_is_active
+
+        operations = [op for op in list(ops or []) if isinstance(op, dict)]
+        activated = {fid for op in operations if (fid := _activated_shot_id(op))}
+        before_inactive = _inactive_shot_ids(before)
+        found: list[Violation] = []
+        seen: set[str] = set()
+        for scene in _scenes(after):
+            status, frames = _kadry(scene)
+            if status != "list" or not isinstance(frames, list):
+                continue
+            entity = _scene_id(scene) or _scene_number(scene) or ""
+            for shot in frames:
+                if not isinstance(shot, dict) or not shot_is_active(shot):
+                    continue
+                fid = _frame_id(shot)
+                if not fid or fid not in before_inactive or fid in activated or fid in seen:
+                    continue
+                seen.add(fid)
+                found.append(
+                    Violation(
+                        code="inactive_shot_revived",
+                        severity="error",
+                        path=f"scenes/{entity}/кадры/{fid}" if entity else f"кадры/{fid}",
+                        id=fid,
+                    )
+                )
+        return found
+
+    def _inactive_shot_ids(side: Any) -> set[str]:
+        from app.services.frame_tombstones import shot_is_active
+
+        found: set[str] = set()
+        for scene in _scenes(side):
+            status, frames = _kadry(scene)
+            if status != "list" or not isinstance(frames, list):
+                continue
+            for shot in frames:
+                if not isinstance(shot, dict) or shot_is_active(shot):
+                    continue
+                fid = _frame_id(shot)
+                if fid:
+                    found.add(fid)
+        return found
+
+    def _activated_shot_id(op: dict[str, Any]) -> str:
+        if not _op_activates(op):
+            return ""
+        for key in ("shot_id", "frame_id", "id", "target"):
+            value = op.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
+    def _op_activates(op: dict[str, Any]) -> bool:
+        for source in (op.get("fields"), op):
+            if isinstance(source, dict) and "активен" in source:
+                if source["активен"] is False:
+                    return False
+                if source["активен"] is True:
+                    return True
+        verb = str(op.get("op") or op.get("action") or op.get("type") or "").strip().casefold()
+        return verb in _ACTIVATE_VERBS
 
     def _keep_missing_shots(before: Any, after: Any) -> list[tuple[str, str]]:
         if not isinstance(after, dict):

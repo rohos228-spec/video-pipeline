@@ -1204,7 +1204,47 @@ def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]
         _patch_kadry_item(member, **{k: v for k, v in (("роль", role), ("объект", obj)) if v})
 
 
-def _preserve_parent_kadry(parent: Any, before_rows: list[Any], kadry: Any) -> Any:
+def _shot_address(shot: Any) -> str:
+    if not isinstance(shot, dict):
+        return ""
+    for key in ("id", "shot_id", "frame_id", "uuid"):
+        value = shot.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _restore_ops_for_revived(before_rows: list[Any], after_rows: Any) -> list[dict[str, str]]:
+    """Явный restore по shot_id для шотов, которые merge вернул в живые."""
+    from app.services.frame_tombstones import shot_is_active
+
+    inactive: set[str] = set()
+    for shot in before_rows:
+        if not isinstance(shot, dict) or shot_is_active(shot):
+            continue
+        fid = _shot_address(shot)
+        if fid:
+            inactive.add(fid)
+    ops: list[dict[str, str]] = []
+    seen: set[str] = set()
+    rows = after_rows if isinstance(after_rows, list) else []
+    for shot in rows:
+        if not isinstance(shot, dict) or not shot_is_active(shot):
+            continue
+        fid = _shot_address(shot)
+        if not fid or fid not in inactive or fid in seen:
+            continue
+        seen.add(fid)
+        ops.append({"op": "restore", "shot_id": fid})
+    return ops
+
+
+def _preserve_parent_kadry(
+    parent: Any,
+    before_rows: list[Any],
+    kadry: Any,
+    ops: list[dict[str, str]] | None = None,
+) -> Any:
     """Перед заменой зеркала кадры[]: пропавший живой кадр остаётся неактивным."""
     from app.pipeline.no_deletions_guard import run_preservation_validators
 
@@ -1217,7 +1257,7 @@ def _preserve_parent_kadry(parent: Any, before_rows: list[Any], kadry: Any) -> A
     run_preservation_validators(
         {"сцены": [{"id": uid, "номер": number, "кадры": before_rows}]},
         {"сцены": [{"id": uid, "номер": number, "кадры": kadry}]},
-        None,
+        ops,
         mode="soft",
     )
     return kadry
@@ -1282,6 +1322,7 @@ async def apply_coverage_scene_action(
         for shot in old_kadry
     ] if isinstance(old_kadry, list) else []
     kadry = merge_kadry_keep_missing(old_kadry, kadry)
+    restore_ops = _restore_ops_for_revived(before_rows, kadry)
     live_kadry = [shot for shot in kadry if shot_is_active(shot)]
     layout = live_kadry
     if not layout:
@@ -1292,7 +1333,7 @@ async def apply_coverage_scene_action(
             getattr(parent, "number", "?"),
         )
         attrs = dict(getattr(parent, "attrs", None) or {})
-        attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
+        attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry, restore_ops)
         parent.attrs = attrs
         _flag_attrs(parent)
         return {
@@ -1339,7 +1380,7 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry)
+    attrs["кадры"] = _preserve_parent_kadry(parent, before_rows, kadry, restore_ops)
     parent.attrs = attrs
     _flag_attrs(parent)
 

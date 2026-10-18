@@ -133,10 +133,13 @@ def test_remark_tail_park_and_restore_pass() -> None:
 
     before = _scene([{"id": "k1", "закадр": "фраза на месте", "активен": False}])
     after = _scene([{"id": "k1", "закадр": "фраза на месте", "активен": True}])
-    restored = run_preservation_validators(before, after, mode="reject")
-    assert restored == []
+    with pytest.raises(PreservationRejected) as restored:
+        run_preservation_validators(before, after, mode="reject")
+    assert any(
+        item.code == "inactive_shot_revived" and item.id == "k1"
+        for item in restored.value.violations
+    )
     assert after["сцены"][0]["кадры"][0]["активен"] is True
-    assert all(item.code != "inactive_shot_revived" for item in restored)
 
 
 def test_scene_and_character_still_reject_in_soft_mode() -> None:
@@ -473,11 +476,53 @@ def test_non_list_kadry_is_error() -> None:
         keep_soft_kadry([{"id": "k1"}], {"id": "k1"}, scene_id="s1", number=1)
 
 
-_WS1_SHA = "7eb55c28d753f678583d12fc63ce7879d688566c"
+def test_keep_soft_kadry_restore_needs_op() -> None:
+    """Неактивный → живой без адресованной операции — ``inactive_shot_revived``."""
+
+    from app.pipeline.no_deletions_guard import keep_soft_kadry
+
+    before = [{"id": "k1", "закадр": "фраза на месте", "активен": False}]
+    after = [{"id": "k1", "закадр": "фраза на месте", "активен": True}]
+
+    with pytest.raises(PreservationRejected) as bare_rows:
+        keep_soft_kadry(before, [dict(after[0])], scene_id="s1", number=1)
+    assert any(
+        item.code == "inactive_shot_revived" and item.id == "k1" and item.severity == "error"
+        for item in bare_rows.value.violations
+    )
+
+    with pytest.raises(PreservationRejected) as soft:
+        run_preservation_validators(
+            _scene(before),
+            _scene([dict(after[0])]),
+            mode="soft",
+        )
+    assert any(item.code == "inactive_shot_revived" and item.id == "k1" for item in soft.value.violations)
+
+    for ops in ({"op": "restore"}, {"op": "restore", "shot_index": 0}):
+        revived = [dict(after[0])]
+        with pytest.raises(PreservationRejected) as missing_id:
+            keep_soft_kadry(before, revived, scene_id="s1", number=1, ops=[ops])
+        assert any(item.code == "inactive_shot_revived" for item in missing_id.value.violations)
+        assert revived[0]["активен"] is True
+
+    for ops in (
+        {"op": "restore", "shot_id": "k1"},
+        {"op": "activate", "shot_id": "k1"},
+        {"op": "update", "id": "k1", "активен": True},
+        {"op": "update", "shot_id": "k1", "fields": {"активен": True}},
+    ):
+        revived = [dict(after[0])]
+        kept = keep_soft_kadry(before, revived, scene_id="s1", number=1, ops=[ops])
+        assert kept[0]["активен"] is True
+        assert kept[0]["id"] == "k1"
+
+
+_WS1_SHA = "999c04a1c19b1229487e3cab54712c29d4ec371b"
 
 
 def test_guard_call_sites_pass_with_ws1_impl(tmp_path, monkeypatch) -> None:
-    """Десять точек вызова на настоящем preservation.py из 7eb55c28.
+    """Десять точек вызова на настоящем preservation.py из 999c04a1.
 
     Файлы #379 лежат только во временном каталоге и в репозиторий не попадают.
     """
