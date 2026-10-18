@@ -1244,7 +1244,9 @@ async def apply_coverage_scene_action(
     _flag_attrs(parent)
 
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["кадры"] = kadry
+    from app.services.db_apply import merge_kadry_keep_missing
+
+    attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), kadry)
     parent.attrs = attrs
     _flag_attrs(parent)
 
