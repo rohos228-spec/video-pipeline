@@ -1,7 +1,7 @@
 """Один предикат активности.
 
 Если ``activity_flags`` импортируется, ``frame_tombstones`` отдаёт те же
-объекты. Иначе локальная матрица. Она совпадает с blob ``f62a0e30``
+объекты. Иначе локальная матрица. Она совпадает с blob ``27038927``
 на всей матрице: ``test_fallback_matches_activity_flags_blob``.
 """
 
@@ -59,6 +59,16 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("shot", {ACTIVE_MARK: "0.0"}, False, False),
     ("shot", {ACTIVE_MARK: " 0,0 "}, False, False),
     ("shot", {ACTIVE_MARK: "1.0"}, True, False),
+    ("shot", {ACTIVE_MARK: "да"}, True, False),
+    ("shot", {ACTIVE_MARK: "Да"}, True, False),
+    ("shot", {ACTIVE_MARK: " да "}, True, False),
+    ("shot", {ACTIVE_MARK: "true"}, True, False),
+    ("shot", {ACTIVE_MARK: "True"}, True, False),
+    ("shot", {ACTIVE_MARK: "1"}, True, False),
+    ("shot", {ACTIVE_MARK: "yes"}, True, False),
+    ("shot", {ACTIVE_MARK: "on"}, True, False),
+    ("shot", {ACTIVE_MARK: "истина"}, True, False),
+    ("shot", {ACTIVE_MARK: "да?"}, True, True),
     ("shot", {DELETED_MARK: "ложь"}, True, False),
     ("shot", {DELETED_MARK: "ЛОЖЬ"}, True, False),
     ("shot", {DELETED_MARK: _NAN}, True, False),
@@ -123,6 +133,13 @@ _CASES: list[tuple[str, object, bool, bool]] = [
     ("frame", {DELETED_MARK: _NAN}, True, False),
     ("frame", {DELETED_MARK: "-"}, True, False),
     ("frame", {ACTIVE_MARK: "ложь"}, False, False),
+    ("frame", {ACTIVE_MARK: "да"}, True, False),
+    ("frame", {ACTIVE_MARK: "true"}, True, False),
+    ("frame", {ACTIVE_MARK: "1"}, True, False),
+    ("frame", {ACTIVE_MARK: "yes"}, True, False),
+    ("frame", {ACTIVE_MARK: "on"}, True, False),
+    ("frame", {ACTIVE_MARK: "истина"}, True, False),
+    ("frame", {ACTIVE_MARK: "да?"}, True, True),
     ("frame", {ACTIVE_MARK: "-"}, True, True),
     ("frame", {QUARANTINE_MARK: "истина"}, False, False),
 ]
@@ -207,7 +224,7 @@ def _fallback_core_cases() -> None:
 
 @pytest.fixture(scope="module")
 def ws1_flags_blob(tmp_path_factory):
-    """Blob ``f62a0e30``. Модуль WS1 в дерево не копируется."""
+    """Blob ``27038927``. Модуль WS1 в дерево не копируется."""
 
     source = _activity_flags_blob_source()
     if source is None:
@@ -215,7 +232,7 @@ def ws1_flags_blob(tmp_path_factory):
     return _load_activity_flags_blob(
         tmp_path_factory.mktemp("flags56"),
         source,
-        "activity_flags_blob_f62a0e30",
+        "activity_flags_blob_27038927",
     )
 
 
@@ -232,7 +249,7 @@ def test_shot_activity_matches_frame_tombstones_matrix(
     caplog: pytest.LogCaptureFixture,
     ws1_flags_blob,
 ) -> None:
-    """Матрица ImportError-пути совпадает с blob f62a0e30."""
+    """Матрица ImportError-пути совпадает с blob 27038927."""
 
     import app.services.activity_flags_fallback as fallback
 
@@ -253,7 +270,7 @@ def test_shot_activity_matches_frame_tombstones_matrix(
         assert shot_is_active({}) is True
 
 
-_FLAGS_BLOB = "f62a0e3054f6deeed298281e705bc8cfcea04900"
+_FLAGS_BLOB = "2703892718c4aac79fb6d9be9699a8c9379919d8"
 
 
 def _block_activity_flags_import():
@@ -309,7 +326,7 @@ def test_activity_fallback_simulates_import_error() -> None:
 
 
 def _activity_flags_blob_source() -> bytes | None:
-    """Текст blob ``f62a0e30``. None — git или blob недоступны."""
+    """Текст blob ``27038927``. None — git или blob недоступны."""
 
     import subprocess
     from pathlib import Path
@@ -367,7 +384,7 @@ def test_activity_predicates_reexport_when_importable(tmp_path) -> None:
 
 
 def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
-    """Сигнатуры fallback совпадают с blob f62a0e30: те же параметры и тип аргумента."""
+    """Сигнатуры fallback совпадают с blob 27038927: те же параметры и тип аргумента."""
     import inspect
 
     import app.services.activity_flags_fallback as fallback
@@ -395,14 +412,14 @@ def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
 
 
 def test_fallback_matches_activity_flags_blob(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
-    """Расхождений с blob f62a0e30 нет: один ответ на всей матрице."""
+    """Расхождений с blob 27038927 нет: один ответ на всей матрице."""
 
     import app.services.activity_flags_fallback as fallback
 
     source = _activity_flags_blob_source()
     if source is None:
         pytest.skip("git или blob activity_flags недоступен")
-    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_f62a0e30_eq")
+    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_27038927_eq")
     nan = float("nan")
     hide_true = (
         "да",
@@ -438,6 +455,34 @@ def test_fallback_matches_activity_flags_blob(tmp_path, caplog: pytest.LogCaptur
     assert fallback.shot_is_active({ACTIVE_MARK: "1.0"}) is True
     assert fallback.shot_is_active({ACTIVE_MARK: "ложь"}) is False
     assert remote.frame_is_active({ACTIVE_MARK: "ложь"}) is False
+
+    for value in ("да", "Да", " да ", "true", "True", "1", "yes", "on", "истина", "1.0"):
+        fallback._WARNED_VALUES.clear()
+        remote._WARNED_VALUES.clear()
+        caplog.clear()
+        assert fallback.shot_is_active({ACTIVE_MARK: value}) is True
+        assert remote.frame_is_active({ACTIVE_MARK: value}) is True
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+    fallback._WARNED_VALUES.clear()
+    remote._WARNED_VALUES.clear()
+    caplog.clear()
+    assert fallback.shot_is_active({ACTIVE_MARK: "да?"}) is True
+    fallback_unknown = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ]
+    caplog.clear()
+    assert remote.shot_is_active({ACTIVE_MARK: "да?"}) is True
+    remote_unknown = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ]
+    assert fallback_unknown == remote_unknown == [
+        "неизвестное значение «активен» 'да?' — считаем, что флага нет"
+    ]
 
     fallback._WARNED_VALUES.clear()
     remote._WARNED_VALUES.clear()
@@ -566,25 +611,55 @@ def test_fallback_keeps_user_deleted_frame_out_of_paid_and_import() -> None:
         restore()
 
 
-def test_activity_parity_real_vs_fallback() -> None:
-    """Импортируемый activity_flags и именные фолбэки совпадают с таблицей 04ea5dfa.
+def test_activity_parity_real_vs_fallback(caplog: pytest.LogCaptureFixture) -> None:
+    """Импортируемый activity_flags и именные фолбэки совпадают с таблицей 1cdf4b83.
 
-    Числовая строка равна числу: ``активен="0.0"`` неактивен, ``удалён="1.0"``
-    скрыт, ``удалён="0.0"`` и ``" 0,0 "`` живые. Тест не скипается.
+    Числовая строка равна числу. Утвердительные значения ``активен``
+    (``да`` / ``true`` / ``1`` / ``yes`` / ``on`` / ``истина``) не пишут WARN.
+    WARN один раз только у неизвестной строки. Тест не скипается.
     """
 
     from app.orchestrator.validators import activity_flags as real
+    from app.services import activity_flags_fallback as fallback
     from app.services.frame_tombstones import (
         _fallback_frame_is_active,
         _fallback_shot_is_active,
     )
     from tests.validators.test_activity_flags_parity import _payload, _rows
 
+    def _warnings() -> list[str]:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+
     rows = _rows()
     assert rows
+    caplog.set_level(logging.WARNING)
+    differences: list[object] = []
+    callers = (
+        ("real.shot", real.shot_is_active, real),
+        ("real.frame", real.frame_is_active, real),
+        ("fallback.shot", _fallback_shot_is_active, fallback),
+        ("fallback.frame", _fallback_frame_is_active, fallback),
+    )
     for mark, value, expected in rows:
         payload = _payload(mark, value)
-        assert real.shot_is_active(payload) is expected
-        assert real.frame_is_active(payload) is expected
-        assert _fallback_shot_is_active(payload) is expected
-        assert _fallback_frame_is_active(payload) is expected
+        expect_warn = isinstance(value, str) and value.strip() == "-"
+        seen: dict[str, list[str]] = {}
+        for label, fn, module in callers:
+            module._WARNED_VALUES.clear()
+            caplog.clear()
+            got = fn(payload)
+            messages = _warnings()
+            seen[label] = messages
+            if got is not expected or bool(messages) is not expect_warn or (
+                expect_warn and len(messages) != 1
+            ):
+                differences.append((label, mark, value, got, expected, messages))
+        if seen["real.shot"] != seen["fallback.shot"] or seen["real.frame"] != seen[
+            "fallback.frame"
+        ]:
+            differences.append(("warn", mark, value, seen))
+    assert differences == []
