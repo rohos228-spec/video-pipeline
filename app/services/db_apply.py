@@ -1532,6 +1532,28 @@ async def _project_preservation_view(session: AsyncSession, project: Project) ->
     return _preservation_view(frames, texts, edges, characters)
 
 
+async def _ensure_sqlite_outer_transaction(session: AsyncSession) -> None:
+    """Настоящий BEGIN до SAVEPOINT, не трогая общий engine.
+
+    В ``app/db.py`` хук ``connect`` только ставит PRAGMA (строки 33–42).
+    Нет ``isolation_level=None`` и нет события ``begin``, которое шлёт BEGIN.
+    pysqlite тогда не открывает транзакцию перед SAVEPOINT, и RELEASE её
+    коммитит: ``rollback()`` вызывающего после успешного ``apply_ops`` пустой.
+    Если драйвер уже внутри транзакции, второй BEGIN не шлём.
+    """
+
+    def _ensure(sync_session: Any) -> None:
+        conn = sync_session.connection()
+        if conn.dialect.name != "sqlite":
+            return
+        dbapi = getattr(conn.connection, "driver_connection", None)
+        if dbapi is None or getattr(dbapi, "in_transaction", True):
+            return
+        conn.exec_driver_sql("BEGIN")
+
+    await session.run_sync(_ensure)
+
+
 async def apply_ops(
     session: AsyncSession,
     project: Project,
@@ -1575,6 +1597,7 @@ async def apply_ops(
         if touches_preservation
         else None
     )
+    await _ensure_sqlite_outer_transaction(session)
     async with session.begin_nested():
         chars_n = 0
         scenes_n = 0

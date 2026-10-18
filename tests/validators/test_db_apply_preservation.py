@@ -5,9 +5,9 @@ from __future__ import annotations
 import copy
 
 import pytest
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from sqlalchemy import select
+from sqlalchemy.pool import NullPool
 
 from app.models import Base, Entity, Frame, FrameEdge, FrameText, Project
 from app.orchestrator.validators.preservation import (
@@ -567,6 +567,61 @@ async def test_db_apply_restore_shot_via_kadry_edit_passes(session: AsyncSession
     await session.refresh(frame)
     assert frame.attrs["кадры"][1]["id"] == "1-K2"
     assert frame.attrs["кадры"][1]["активен"] is True
+
+
+@pytest.mark.asyncio
+async def test_successful_apply_ops_rollback_discards_changes(tmp_path) -> None:
+    """Успешный apply_ops не фиксирует транзакцию: rollback вызывающего стирает запись.
+
+    Engine как у приложения (``app/db.py``): NullPool и PRAGMA на connect,
+    без хука ``begin``. Иначе pysqlite не шлёт BEGIN, и RELEASE savepoint
+    коммитит изменения до rollback.
+    """
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'apply.db'}",
+        poolclass=NullPool,
+        connect_args={"timeout": 60},
+    )
+
+    def _configure(dbapi_connection, _record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=60000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
+    event.listens_for(engine.sync_engine, "connect")(_configure)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await db_v2.migrate_db_v2_schema(conn)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            project = Project(slug="rollback-ok", topic="тест", status=None)  # type: ignore[arg-type]
+            session.add(project)
+            await session.flush()
+            frame = Frame(
+                project_id=project.id,
+                number=1,
+                uuid="ffffffffffffffffffffffff",
+                voiceover_text="было",
+                attrs={"кадры": [{"id": "k1", "закадр": "было"}]},
+            )
+            session.add(frame)
+            await session.commit()
+
+            await db_apply.apply_ops(
+                session,
+                project,
+                [{"frame_uuid": frame.uuid, "fields": {"закадр": "стало"}}],
+            )
+            await session.rollback()
+            await session.refresh(frame)
+            assert frame.voiceover_text == "было"
+    finally:
+        await engine.dispose()
 
 
 def test_preservation_view_frame_without_uuid_keeps_id() -> None:
