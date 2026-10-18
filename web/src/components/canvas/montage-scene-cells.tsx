@@ -399,7 +399,7 @@ export function RoleCell({
         {kind === "child" ? (
           <button
             type="button"
-            title="Удалить дочерний кадр"
+            title="Скрыть дочерний кадр"
             disabled={disabled}
             onClick={onDeleteChild}
             className="rounded-md p-1 text-white/30 transition hover:bg-rose-500/15 hover:text-rose-200 disabled:opacity-40"

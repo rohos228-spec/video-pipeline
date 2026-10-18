@@ -539,6 +539,14 @@ async def _load_refs_for_frame(
     return refs[:_OUTSEE_MAX_REFS]
 
 
+def frame_hidden_from_paid_generation(fr: Frame) -> bool:
+    """Скрытый кадр не ставим в платную очередь."""
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+
+
 def requeue_failed_frames_without_png(
     frames: list[Frame],
     out_dir: Path,

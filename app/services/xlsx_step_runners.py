@@ -2101,6 +2101,11 @@ async def _load_img_pr_context(
             continue
         if not (fr.voiceover_text or "").strip():
             continue
+        fr_attrs = fr.attrs or {}
+        if isinstance(fr_attrs, dict) and (
+            fr_attrs.get("активен") is False or fr_attrs.get("удалён")
+        ):
+            continue
         if is_shot_child(fr):
             n_child += 1
             continue
@@ -2167,6 +2172,39 @@ async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
     return _write_img_pr_db_frames_for(
         project, tmp_dir, frames, cards, general_plan, all_frames=all_frames
     )
+
+
+def drop_unapplied_img_pr_uuids(
+    done_uuids: list[str],
+    done_set: set[str],
+    ops: list[dict],
+) -> bool:
+    """Снять uuid пачки, которую не удалось записать. False = шаг не done."""
+    from app.services import img_pr_batches as ipb
+
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        uid = ipb.uuid_of_op(op)
+        if not uid:
+            continue
+        done_set.discard(uid)
+        while uid in done_uuids:
+            done_uuids.remove(uid)
+    return False
+
+
+async def cancel_img_pr_in_flight(in_flight: dict) -> None:
+    """Остановить платные задачи, которые ещё не дождались ответа."""
+    import asyncio
+
+    tasks = list(in_flight)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    in_flight.clear()
 
 
 async def _apply_img_pr_ops_now(
@@ -2280,6 +2318,28 @@ async def _apply_img_pr_ops_now(
     return applied
 
 
+async def apply_img_pr_checkpoint(project: Project) -> tuple[list[dict], list[str]]:
+    """Применить опы из чекпоинта. Неприменённые полные и короткие остаются в файле."""
+    from app.services import img_pr_batches as ipb
+
+    ckpt = ipb.load_checkpoint(project.data_dir)
+    raw_ops = list(ckpt.get("ops") or [])
+    writeable, rejected = ipb.partition_img_pr_checkpoint(raw_ops)
+    if rejected:
+        logger.warning(
+            "img_pr_db: keep {} short/placeholder ops in checkpoint",
+            len(rejected),
+        )
+    if not writeable:
+        return [], list(ckpt.get("done_uuids") or [])
+    applied = await _apply_img_pr_ops_now(
+        project, writeable, export_xlsx=False, label="checkpoint"
+    )
+    stored, done_uuids = ipb.merge_img_pr_checkpoint(raw_ops, applied)
+    ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=stored)
+    return stored, done_uuids
+
+
 async def run_img_pr_xlsx(
     project: Project,
     *,
@@ -2315,21 +2375,12 @@ async def run_img_pr_xlsx(
     all_ops: list[dict] = list(ckpt.get("ops") or [])
     done_set = set(done_uuids)
 
-    writeable = ipb.writeable_img_pr_ops(all_ops)
-    dropped_short = len(all_ops) - len(writeable)
-    if dropped_short:
-        logger.warning(
-            "img_pr_db: drop {} short/placeholder ops from checkpoint",
-            dropped_short,
-        )
-    all_ops = writeable
     if all_ops:
-        all_ops = await _apply_img_pr_ops_now(
-            project, all_ops, export_xlsx=False, label="checkpoint"
-        )
-        done_uuids = [ipb.uuid_of_op(op) for op in all_ops if ipb.uuid_of_op(op)]
+        stored, done_uuids = await apply_img_pr_checkpoint(project)
         done_set = set(done_uuids)
-        ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=all_ops)
+        all_ops = list(stored)
+    else:
+        all_ops = []
 
     # После flush чекпоинта пустые кадры смотрим по DB, не по skip_uuids:
     # иначе промты живут только в JSON до конца всего прогона.
@@ -2523,8 +2574,10 @@ async def run_img_pr_xlsx(
                 )
         return batch_ops, last_reply or ""
 
+    apply_failed = False
+
     async def _run_batches() -> None:
-        nonlocal done_uuids, all_ops, done_set, api_batches
+        nonlocal done_uuids, all_ops, done_set, api_batches, apply_failed
         bi_seq = 0
         in_flight: dict[asyncio.Task, tuple[list, int, int]] = {}
         any_ok = False
@@ -2640,50 +2693,58 @@ async def run_img_pr_xlsx(
             len(work),
             live_n,
         )
-        while work or in_flight:
-            raise_if_cancelled(project.id)
-            _launch()
-            if not in_flight:
-                break
-            done, _pending = await asyncio.wait(
-                set(in_flight), return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                batch, level, bi = in_flight.pop(task)
-                exc = task.exception()
-                if exc is not None:
-                    logger.error(
-                        "img_pr_db: parallel batch L{} frames={} raised: {}",
-                        level,
-                        len(batch),
-                        exc,
-                    )
-                    nxt = next_split_level(level)
-                    if nxt is not None and len(batch) >= 2:
-                        for half in split_in_half(batch):
-                            work.append((half, nxt))
-                        continue
-                    if all_ops:
-                        continue
-                    raise exc
-                batch_ops, last_reply = task.result()
-                before = len(all_ops)
-                _ingest(bi, batch, level, batch_ops, last_reply or "")
-                added = all_ops[before:]
-                if added:
-                    try:
-                        await _apply_img_pr_ops_now(
-                            project,
-                            added,
-                            export_xlsx=False,
-                            label=f"batch-{bi}",
+        try:
+            while work or in_flight:
+                raise_if_cancelled(project.id)
+                _launch()
+                if not in_flight:
+                    break
+                done, _pending = await asyncio.wait(
+                    set(in_flight), return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    batch, level, bi = in_flight.pop(task)
+                    exc = task.exception()
+                    if exc is not None:
+                        logger.error(
+                            "img_pr_db: parallel batch L{} frames={} raised: {}",
+                            level,
+                            len(batch),
+                            exc,
                         )
-                    except Exception as apply_err:  # noqa: BLE001
-                        logger.warning(
-                            "img_pr_db: batch {} apply failed (ckpt keeps ops): {}",
-                            bi,
-                            apply_err,
-                        )
+                        nxt = next_split_level(level)
+                        if nxt is not None and len(batch) >= 2:
+                            for half in split_in_half(batch):
+                                work.append((half, nxt))
+                            continue
+                        if all_ops:
+                            continue
+                        raise exc
+                    batch_ops, last_reply = task.result()
+                    before = len(all_ops)
+                    _ingest(bi, batch, level, batch_ops, last_reply or "")
+                    added = all_ops[before:]
+                    if added:
+                        try:
+                            await _apply_img_pr_ops_now(
+                                project,
+                                added,
+                                export_xlsx=False,
+                                label=f"batch-{bi}",
+                            )
+                        except Exception as apply_err:  # noqa: BLE001
+                            apply_failed = True
+                            drop_unapplied_img_pr_uuids(done_uuids, done_set, added)
+                            ipb.save_checkpoint(
+                                project.data_dir, done_uuids=done_uuids, ops=all_ops
+                            )
+                            logger.warning(
+                                "img_pr_db: batch {} apply failed (ckpt keeps ops, шаг не done): {}",
+                                bi,
+                                apply_err,
+                            )
+        finally:
+            await cancel_img_pr_in_flight(in_flight)
 
         if not any_ok and not all_ops:
             raise RuntimeError(
@@ -2709,7 +2770,7 @@ async def run_img_pr_xlsx(
         project_xlsx=proj_xlsx,
         backup_path=None,
         apply_ops=all_ops,
-        ops_applied_inline=True,
+        ops_applied_inline=not apply_failed,
     )
 
 

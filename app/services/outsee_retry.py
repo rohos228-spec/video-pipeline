@@ -420,7 +420,13 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite."""
+    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite.
+
+    Неопределённый submit уже мог быть оплачен. Шаг, который ретраит по
+    этому предикату, не должен слать второй POST.
+    """
+    if _outsee_submit_uncertain(err):
+        return False
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
@@ -945,6 +951,12 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
     return f"{stripped} r{round_idx + 1}a{attempt}"
 
 
+def _outsee_submit_uncertain(err: BaseException) -> bool:
+    """POST генерации мог быть оплачен, повторять его нельзя."""
+    ctx = getattr(err, "context", None)
+    return isinstance(ctx, dict) and bool(ctx.get("submit_uncertain"))
+
+
 async def generate_image_with_retries(
     outsee: OutseeBot | None,
     gpt: Any | None,
@@ -1209,6 +1221,14 @@ async def generate_image_with_retries(
                 raise last_err or e
             except OutseeImageError as e:
                 last_err = e
+                if _outsee_submit_uncertain(e):
+                    logger.warning(
+                        "outsee.generate_image [{}]: исход отправки неизвестен, "
+                        "повторный POST не делаю: {}",
+                        round_label,
+                        e.reason,
+                    )
+                    raise
                 if _is_concurrency_limit_error(e):
                     concurrency_waits += 1
                     if concurrency_waits > _CONCURRENCY_MAX_WAITS:
@@ -1718,6 +1738,12 @@ async def generate_video_with_retries(
             classified = classify_video_error(e)
         except OutseeImageError as e:
             last_err = e
+            if _outsee_submit_uncertain(e):
+                logger.warning(
+                    "outsee video: исход отправки неизвестен, повторный POST не делаю: {}",
+                    e.reason,
+                )
+                raise
             classified = classify_video_error(e)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, VideoLadderExhaustedError):

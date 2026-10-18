@@ -1091,13 +1091,8 @@ function VoiceoverCell({
       </div>
       <button
         type="button"
-        className={cn(
-          "shrink-0 rounded-md p-1 opacity-0 group-hover/vo:opacity-100",
-          frame.удалён
-            ? "text-amber-200 hover:bg-amber-500/15"
-            : "text-white/30 hover:bg-rose-500/15 hover:text-rose-200",
-        )}
-        title={frame.удалён ? "Вернуть кадр в ленту" : "Пометить кадр"}
+        className="shrink-0 rounded-md p-1 text-white/30 opacity-0 hover:bg-rose-500/15 hover:text-rose-200 group-hover/vo:opacity-100"
+        title="Скрыть кадр"
         disabled={busy}
         onClick={onDelete}
       >
@@ -3183,7 +3178,7 @@ export function AssembleMontageBoard({
   const handleDeleteFrame = async (fr: MontageBoardFrame) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Пометить кадр #${fr.number}? Он останется в ленте, его можно вернуть.`,
+      `Скрыть кадр #${fr.number}? Остальные кадры сцены останутся.`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -3199,7 +3194,7 @@ export function AssembleMontageBoard({
       persistQueue(next, true);
       await api.deleteMontageFrame(projectId, fr.frame_id);
       refreshBoard();
-      toast.success(`Кадр #${fr.number} помечен. Его можно вернуть.`);
+      toast.success(`Кадр #${fr.number} скрыт`);
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -4564,11 +4559,7 @@ export function AssembleMontageBoard({
                                   </button>
                                   <button
                                     type="button"
-                                    title={
-                                      fr.удалён
-                                        ? `Вернуть кадр #${fr.number}`
-                                        : `Пометить кадр #${fr.number}`
-                                    }
+                                    title={`Скрыть кадр #${fr.number}`}
                                     disabled={frameEditBusy}
                                     onClick={() =>
                                       void (fr.удалён

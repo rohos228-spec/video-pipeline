@@ -666,6 +666,9 @@ async def generate_cell_scene_with_images(
             mode=mode,
         )
     except (RuntimeError, ValueError) as exc:
+        from app.services.api_tracker_hook import reraise_if_spend_blocked
+
+        reraise_if_spend_blocked(exc)
         gen_error = str(exc)
         logger.warning(
             "scene-generate-with-images GPT skip #{} frame={}: {}",

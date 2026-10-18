@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 
 import html
@@ -514,6 +515,15 @@ def build_shots_report_model(
     }
 
 
+def _safe_svg(raw: Any) -> str:
+    """SVG схемы — только data-URI в img, без разбора разметки в HTML отчёта."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return f'<img alt="" class="plan-svg" src="data:image/svg+xml;base64,{payload}">'
+
+
 def _plan_block(pl: dict[str, Any]) -> str:
     items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
     items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
@@ -525,7 +535,7 @@ def _plan_block(pl: dict[str, Any]) -> str:
     )
     return (
         f"<details class=plan><summary>Площадка · Ячейка {_esc(pl.get('cell'))}</summary>"
-        f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></details>"
+        f"{_safe_svg(pl.get('svg'))}<ul>{items}{extra}</ul></details>"
     )
 
 

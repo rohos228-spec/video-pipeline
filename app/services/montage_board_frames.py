@@ -234,6 +234,33 @@ def _apply_head_rollback(frames: list[Frame], frame: Frame) -> bool:
     return True
 
 
+def _merge_ladders_by_id(parent_rows: Any, child_rows: Any) -> list[dict[str, Any]]:
+    """Лестница головы плюс шоты ребёнка. Совпадающий id не дублируется."""
+    out: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+
+    def _take(raw: Any, *, child: bool) -> None:
+        if not isinstance(raw, list):
+            return
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or "").strip()
+            item = dict(row)
+            if sid and sid in index:
+                if child:
+                    merged = dict(out[index[sid]])
+                    merged.update(item)
+                    out[index[sid]] = merged
+                continue
+            index[sid or f"#{len(out)}"] = len(out)
+            out.append(item)
+
+    _take(parent_rows, child=False)
+    _take(child_rows, child=True)
+    return out
+
+
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
     if not kids:
@@ -242,9 +269,15 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
     head = ordered[0]
     src = dict(getattr(parent, "attrs", None) or {})
     dst = dict(getattr(head, "attrs", None) or {})
+    import copy
+
     for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
         if src.get(key) and not dst.get(key):
-            dst[key] = src[key]
+            val = src[key]
+            dst[key] = copy.deepcopy(val) if isinstance(val, (list, dict)) else val
+    for key in ("кадры", "shots"):
+        if src.get(key) or dst.get(key):
+            dst[key] = _merge_ladders_by_id(src.get(key), dst.get(key))
     head.attrs = dst
     _flag_attrs(head)
     _set_cs(
@@ -392,6 +425,18 @@ async def merge_montage_scenes(
                 coverage_parent_id="",
                 coverage_parent_number=None,
             )
+            chain_attrs = dict(getattr(member, "attrs", None) or {})
+            chain = str(
+                chain_attrs.get("главное_действие") or chain_attrs.get("main_action") or ""
+            ).strip()
+            if chain:
+                chain_attrs["главное_действие_архив"] = chain
+                member.attrs = chain_attrs
+                _flag_attrs(member)
+                logger.warning(
+                    "WARN merge_montage_scenes: цепь правой сцены #{} сохранена в архиве",
+                    member.number,
+                )
             _clear_child_scene_chain(member)
             attrs = dict(getattr(member, "attrs", None) or {})
             if "vo_cell_full" in attrs:

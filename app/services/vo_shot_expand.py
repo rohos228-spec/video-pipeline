@@ -42,6 +42,21 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def shot_is_active(shot: Any) -> bool:
+    """Живой элемент ``кадры[]``. Помеченный не ложится на кадр и не отдаёт закадр.
+
+    Те же пометки, что у ``frame_tombstones.shot_is_active`` на #354:
+    ``удалён``, ``карантин``, ``активен is False``. Сам шот из списка не выкидывается.
+    """
+    if not isinstance(shot, dict):
+        return False
+    if shot.get("удалён") or shot.get("карантин"):
+        return False
+    if shot.get("активен") is False:
+        return False
+    return True
+
+
 def parent_still_suppressed(frame: Any) -> bool:
     """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
     cs = _cs(frame)
@@ -200,6 +215,22 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def active_planned_shots(frame: Any) -> list[dict[str, Any]]:
+    """Живые шоты лестницы: активен False в раскладку закадра не входят."""
+    return [
+        shot
+        for shot in planned_shots_from_attrs(frame)
+        if shot.get("активен") is not False
+    ]
+
+
+def _frame_row_hidden(frame: Any) -> bool:
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return attrs.get("активен") is False or bool(attrs.get("удалён"))
+
+
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
     """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
     for item in planned or []:
@@ -268,15 +299,48 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
+    """Фейковые Bnn-K1 не сцена: снять с активной лестницы в архив.
+
+    Активный список очищается, чтобы шаг «Кадры» писал лестницу с нуля.
+    Архив идемпотентный: повторный вызов не плодит дубли по id.
+    """
     planned = planned_shots_from_attrs(frame)
-    if not planned or kadry_are_scene_shots(planned):
+    live = [shot for shot in planned if shot.get("активен") is not False]
+    if not live or kadry_are_scene_shots(live):
         return False
     attrs = dict(getattr(frame, "attrs", None) or {})
-    attrs.pop("кадры", None)
-    attrs.pop("shots", None)
+    archived = [
+        dict(row) if isinstance(row, dict) else {"value": row}
+        for row in (attrs.get("кадры_archived") or [])
+    ]
+    seen = {
+        str(row.get("id") or "").strip()
+        for row in archived
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+    added = 0
+    for shot in live:
+        row = dict(shot)
+        sid = str(row.get("id") or "").strip()
+        if sid and sid in seen:
+            continue
+        row["активен"] = False
+        row["карантин"] = True
+        row["пометка"] = "не сцена — в архиве"
+        archived.append(row)
+        if sid:
+            seen.add(sid)
+        added += 1
+    attrs["кадры"] = []
+    if "shots" in attrs:
+        attrs["shots"] = []
+    attrs["кадры_archived"] = archived
     frame.attrs = attrs
     _flag_attrs(frame)
+    logger.warning(
+        "WARN strip_non_scene_kadry: {} шотов в архиве, активная лестница пуста",
+        added,
+    )
     return True
 
 
@@ -631,7 +695,7 @@ def merge_flattened_coverage_members(
     parts: list[str] = []
     parent_sid = ""
     for i, fr in enumerate(members):
-        planned = planned_shots_from_attrs(fr)
+        planned = active_planned_shots(fr) or planned_shots_from_attrs(fr)
         shot = copy.deepcopy(planned[0]) if planned else {}
         if not isinstance(shot, dict):
             shot = {}
@@ -1251,25 +1315,14 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             for m in members
         ]
         nonempty = [k for k in keys if k]
-        hits = sum(1 for k in nonempty if k in earlier)
-        threshold = max(3, (len(members) + 3) // 4)
         parent_key = _norm_vo_key(str(getattr(parent, "voiceover_text", "") or ""))
+        # Реплика — только полный закадр родителя. Совпадение кусков
+        # (в том числе «huge»: ≥16 кадров и порог попаданий) не отцепляет
+        # живую ячейку и не обнуляет parent_uuid детей.
         same_opening = bool(
-            first_parent_key
-            and parent_key
-            and (
-                parent_key == first_parent_key
-                or (
-                    len(first_parent_key) >= 24
-                    and (
-                        parent_key.startswith(first_parent_key[:40])
-                        or first_parent_key.startswith(parent_key[:40])
-                    )
-                )
-            )
+            first_parent_key and parent_key and parent_key == first_parent_key
         )
-        huge = len(members) >= 16 and hits >= threshold
-        replica = bool(earlier) and (same_opening or huge)
+        replica = bool(earlier) and same_opening
         if replica:
             for m in members:
                 extra: dict[str, Any] = {"leftover": True}
@@ -1282,13 +1335,14 @@ def detach_duplicate_vo_replica_cells(frames: list[Any]) -> int:
             pattrs = dict(getattr(parent, "attrs", None) or {})
             planned = planned_shots_from_attrs(parent)
             if planned:
-                pattrs["кадры"] = planned[:1]
+                stored = [dict(s) for s in planned]
+                pattrs["кадры_archived"] = stored
+                pattrs["кадры"] = [dict(s) for s in stored]
             vo = str(getattr(parent, "voiceover_text", "") or "").strip()
             if vo:
                 pattrs["vo_cell_full"] = vo
             parent.attrs = pattrs
             _flag_attrs(parent)
-            _set_cs(parent, shots_in_beat=1, shot_index=1)
             continue
         if not first_parent_key:
             first_parent_key = parent_key
@@ -1866,7 +1920,7 @@ def relink_shot_roles_by_scene(
         shots: list[dict[str, Any]] = []
         master_id = ""
         for i, fr in enumerate(members):
-            planned = planned_shots_from_attrs(fr)
+            planned = active_planned_shots(fr) or planned_shots_from_attrs(fr)
             shot = copy.deepcopy(planned[0]) if planned else {}
             if not isinstance(shot, dict):
                 shot = {}
@@ -2048,8 +2102,24 @@ def _ladder_cell_key(frame: Any) -> str:
     return ""
 
 
+def _ladder_vo_text(items: list[tuple[int, list[Any]]]) -> str:
+    parts: list[str] = []
+    for _idx, members in items:
+        for fr in members:
+            vo = _norm_vo_key(str(getattr(fr, "voiceover_text", "") or ""))
+            if vo and vo not in parts:
+                parts.append(vo)
+    return " ".join(parts)
+
+
 def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
-    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
+    """Вторая лестница той же ячейки и той же сцены (``1-K7`` рядом с ``1-S3-K*``).
+
+    Ключ — префикс ячейки плюс номер сцены. Тот же локальный номер сцены
+    в другой ячейке leftover не становится. Безымянная K-лестница снимается
+    только если её закадр уже есть у S-лестницы этой сцены (старый хвост
+    после renumber, префикс уже другой).
+    """
     groups = _group_by_parent(frames)
     seen: set[int] = set()
     ladders: dict[tuple[str, int], list[tuple[int, list[Any]]]] = {}
@@ -2096,9 +2166,9 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             if item is keep:
                 continue
             _take(item[1])
-    # Старый ``1-K7`` после renumber живёт рядом с ``3-S2-K*``: префикс
-    # уже не совпадает, но это вторая лестница той же сцены. S-лестницу
-    # оставляем, безымянную K-лестницу снимаем.
+    # Префикс после renumber расходится (``1-K7`` рядом с ``3-S2-K*``).
+    # Снимаем только повтор того же закадра, не другую ячейку с тем же
+    # локальным номером сцены.
     by_scene: dict[int, list[list[tuple[int, list[Any]]]]] = {}
     for (_cell, sc), items in ladders.items():
         by_scene.setdefault(int(sc), []).append(items)
@@ -2114,7 +2184,13 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             (s_groups if has_s else plain).append(items)
         if not s_groups or not plain:
             continue
+        s_vos = [_ladder_vo_text(items) for items in s_groups]
         for items in plain:
+            plain_vo = _ladder_vo_text(items)
+            if len(plain_vo) < 24:
+                continue
+            if not any(s_vo and plain_vo == s_vo for s_vo in s_vos):
+                continue
             for _idx, members in items:
                 _take(members)
     return extra
@@ -2199,22 +2275,42 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         before_rows = _kadry_copies(
             raw_attrs.get("кадры") if isinstance(raw_attrs, dict) else None
         )
-        planned = planned_shots_from_attrs(parent)
-        parts = _vo_parts_without_empty(full, len(members))
+        stored = planned_shots_from_attrs(parent)
+        planned = active_planned_shots(parent)
+        live_members = [fr for fr in members if not _frame_row_hidden(fr)] or list(members)
+        ladder_parts: list[str] | None = None
+        if planned:
+            ladder_parts = kadry_vo_pieces(planned, full, main_action_text(parent))
+        parts = _vo_parts_without_empty(full, len(live_members))
+        if ladder_parts:
+            from app.services.scene_design.camera_expand import vo_chunk_is_dangling
+
+            usable = list(ladder_parts)
+            n_live = len(live_members)
+            if n_live and len(usable) > n_live:
+                tail = " ".join(
+                    piece for piece in usable[n_live - 1 :] if piece
+                ).strip()
+                usable = usable[: n_live - 1] + [tail]
+            elif n_live and len(usable) < n_live:
+                usable = usable + [""] * (n_live - len(usable))
+            head = [piece for piece in usable[:n_live] if piece]
+            if head and not any(vo_chunk_is_dangling(piece) for piece in head):
+                parts = usable[:n_live]
         attrs = dict(raw_attrs or {})
         attrs["vo_cell_full"] = full
-        if planned:
+        if planned and ladder_parts:
             for i, item in enumerate(planned):
-                piece = parts[i] if i < len(parts) else ""
+                piece = ladder_parts[i] if i < len(ladder_parts) else ""
                 if not piece:
                     continue
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = _keep_assigned_kadry(parent, before_rows, list(planned))
+            attrs["кадры"] = _keep_assigned_kadry(parent, before_rows, list(stored))
         parent.attrs = attrs
         _flag_attrs(parent)
-        for i, fr in enumerate(members):
+        for i, fr in enumerate(live_members):
             piece = parts[i] if i < len(parts) else ""
             if not piece:
                 continue
@@ -2272,7 +2368,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         full = _cell_full_text(parent, members)
         if not full:
             continue
-        planned = planned_shots_from_attrs(parent)
+        planned = active_planned_shots(parent)
         if planned:
             from app.services.scene_shot_grammar import fill_kadry_scene_numbers
 
@@ -2385,12 +2481,23 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 else:
                     # Дочерний шот сцены: свой кадр, свой кусок закадра.
                     # shot2-промт не трогаем — картинка из PNG родителя.
-                    # Старые шоты ребёнка остаются, шот без id тоже пишется.
-                    from app.services.frame_tombstones import merge_kadry_keep_missing
+                    # Пустой шот и шот без id не затирают уже лежащие кадры[].
+                    shot_id = ""
+                    if isinstance(shot, dict):
+                        shot_id = str(
+                            shot.get("id") or shot.get("id_shot") or shot.get("shot_id") or ""
+                        ).strip()
+                    if shot and shot_id:
+                        from app.services.frame_tombstones import merge_kadry_keep_missing
 
-                    attrs["кадры"] = merge_kadry_keep_missing(
-                        attrs.get("кадры"), [shot] if shot else []
-                    )
+                        attrs["кадры"] = merge_kadry_keep_missing(
+                            attrs.get("кадры"), [shot]
+                        )
+                    else:
+                        logger.warning(
+                            "WARN promote_shots_to_vo_cells: у кадра {} нет шота, кадры[] оставлены",
+                            uid[:8] or "?",
+                        )
                     attrs["vo_cell_full"] = piece
                     attrs.pop("биты", None)
                     attrs.pop("bits", None)
@@ -2759,26 +2866,40 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             members[0],
         )
-        planned = planned_for_parent_expand(
-            parent, planned_shots_from_attrs(parent)
-        )
-        if not planned:
+        full = [
+            dict(s)
+            for s in planned_shots_from_attrs(parent)
+            if isinstance(s, dict)
+        ]
+        source = planned_for_parent_expand(parent, full)
+        if not source:
             continue
-        planned = _repair_door_actions(parent, planned)
+        planned = _repair_door_actions(parent, source)
         ordered = list(members)
         ordered.sort(
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
-        # Ensure parent carries full ladder (QC SoT).
-        pattrs = dict(getattr(parent, "attrs", None) or {})
-        if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
-            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+        # Подмножество своей сцены идёт в meta кадров ячейки.
+        # На родителе остаётся полная лестница: шоты соседних сцен не стираем.
+        for src, shot in zip(source, planned):
+            if not isinstance(shot, dict):
+                continue
+            idx = next((i for i, item in enumerate(full) if item is src), None)
+            if idx is None:
+                continue
+            full[idx] = dict(shot)
+        previous = planned_shots_from_attrs(parent)
+        if previous != full:
+            pattrs = dict(getattr(parent, "attrs", None) or {})
+            pattrs["кадры"] = full
             parent.attrs = pattrs
             _flag_attrs(parent)
             updated += 1
+        # На кадры — только живые шоты. Помеченный остаётся в лестнице
+        # родителя, но не занимает индекс и не подменяет зеркало ребёнка.
+        live_planned = [s for s in planned if shot_is_active(s)]
         for i, fr in enumerate(ordered):
-            shot = planned[i] if i < len(planned) else None
+            shot = live_planned[i] if i < len(live_planned) else None
             if not isinstance(shot, dict):
                 continue
             old_action = str(

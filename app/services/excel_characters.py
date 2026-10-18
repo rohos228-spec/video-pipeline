@@ -217,7 +217,12 @@ def _cell_text(ws, row: int, col: int) -> str:
 
 
 def characters_from_entities(entities: list[Any]) -> list[ExcelCharacter]:
-    """Entity(type=character) → ExcelCharacter (тот же shape, что лист «Персонажи»)."""
+    """Entity(type=character) → ExcelCharacter (тот же shape, что лист «Персонажи»).
+
+    Архивные карточки (Каркас снял код) в меню и промты не попадают.
+    Помеченные удалён тоже не попадают.
+    """
+    from app.services.db_v2 import entity_is_archived
     from app.services.frame_tombstones import entity_is_marked
 
     rows: list[Any] = []
@@ -227,6 +232,8 @@ def characters_from_entities(entities: list[Any]) -> list[ExcelCharacter]:
         code = str(getattr(e, "code", None) or "").strip()
         etype = str(getattr(e, "type", None) or "").strip()
         if etype != "character" or not code or not _ID_RE.match(code):
+            continue
+        if entity_is_archived(e):
             continue
         rows.append(e)
     rows.sort(

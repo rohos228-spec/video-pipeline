@@ -16,6 +16,28 @@ from loguru import logger
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
 
+def _mark_over_shot_limit(out: list[dict[str, Any]], limit: int) -> None:
+    """Сверх лимита кадры остаются в списке с активен False."""
+    if limit <= 0 or len(out) <= limit:
+        return
+    normal_n = 0
+    for shot in out:
+        over = False
+        if is_cutaway_shot(shot) and normal_n >= limit:
+            over = False
+        elif normal_n < limit:
+            if not is_cutaway_shot(shot):
+                normal_n += 1
+        else:
+            over = True
+        if over and shot.get("активен") is not False and not shot.get("карантин"):
+            _mark_shot_kept(
+                shot,
+                f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
+                where="merge_gpt_shots_with_action",
+            )
+
+
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
     shot["карантин"] = True
@@ -749,6 +771,7 @@ def merge_gpt_shots_with_action(
         action, cell_number=cell_number, prev_place=prev_place
     )
     if not canonical:
+        _mark_over_shot_limit(cleaned, expected if expected > 0 else cap)
         return cleaned, None
     by_stem: dict[str, dict[str, Any]] = {}
     for s in cleaned:
@@ -830,24 +853,7 @@ def merge_gpt_shots_with_action(
     # «общий вид»), дописываем. Идентификаторы не теряем.
     _append_unmatched_gpt_shots(out, cleaned, matched_sources)
     # VO-cap / expected: сверх лимита помечаем, кадры не выкидываем.
-    limit = expected if expected > 0 else cap
-    if limit > 0 and len(out) > limit:
-        normal_n = 0
-        for shot in out:
-            over = False
-            if is_cutaway_shot(shot) and normal_n >= limit:
-                over = False
-            elif normal_n < limit:
-                if not is_cutaway_shot(shot):
-                    normal_n += 1
-            else:
-                over = True
-            if over and not shot.get("карантин"):
-                _mark_shot_kept(
-                    shot,
-                    f"сверх лимита кадров {limit} (VO-cap/expected) — кадр сохранён",
-                    where="merge_gpt_shots_with_action",
-                )
+    _mark_over_shot_limit(out, expected if expected > 0 else cap)
     return out, None
 
 
@@ -1091,12 +1097,11 @@ def align_shots_to_action_chain(
             scene_place = places.get(n) or ""
             shot_place = str(shot.get("место") or "").strip()
             if scene_place and shot_place and not _same_place(shot_place, scene_place):
-                reason = (
-                    f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён"
-                )
-                if not shot.get("карантин"):
+                if shot.get("активен") is not False and not shot.get("карантин"):
                     _mark_shot_kept(
-                        shot, reason, where="align_shots_to_action_chain"
+                        shot,
+                        f"чужое место «{shot_place}» ≠ сцена «{scene_place}» — кадр сохранён",
+                        where="align_shots_to_action_chain",
                     )
                     removed += 1
                 kept.append(shot)
@@ -1970,28 +1975,56 @@ def ensure_wide_before_dialogue(shots):
             if "точка" in w:
                 w["точка"] = "фронт"
             _set_cam_text(w, "ОБЩИЙ", "Ракурс фронт — камера спереди, видны оба собеседника.")
+            for key in (
+                "image_prompt",
+                "animation_prompt",
+                "промт_картинки",
+                "промт_видео",
+                "промт",
+                "media",
+                "png",
+                "video",
+                "child_prompts",
+            ):
+                w.pop(key, None)
+            used = {str(row.get("id") or "") for row in shots if isinstance(row, dict)}
+            m_id = _KID_RE.match(str(s.get("id") or ""))
+            if m_id:
+                stem = m_id.group(1)
+                max_k = 0
+                for row in shots:
+                    if not isinstance(row, dict):
+                        continue
+                    rm = _KID_RE.match(str(row.get("id") or ""))
+                    if not rm or rm.group(1) != stem:
+                        continue
+                    try:
+                        max_k = max(max_k, int(rm.group(2)))
+                    except ValueError:
+                        pass
+                cand = f"{stem}{max_k + 1}"
+                while cand in used:
+                    max_k += 1
+                    cand = f"{stem}{max_k + 1}"
+            else:
+                base = str(s.get("id") or "wide")
+                n_id = 1
+                cand = f"{base}-K{n_id}"
+                while cand in used:
+                    n_id += 1
+                    cand = f"{base}-K{n_id}"
+            w["id"] = cand
+            if "порядок" in w:
+                for row in shots[i:]:
+                    if not isinstance(row, dict) or "порядок" not in row:
+                        continue
+                    try:
+                        row["порядок"] = int(row["порядок"]) + 1
+                    except (TypeError, ValueError):
+                        pass
             shots.insert(i, w)
             notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
             i = j + 1
             continue
         i = j
-    if notes:
-        idmap = {}
-        k = 0
-        for s in shots:
-            if not isinstance(s, dict):
-                continue
-            k += 1
-            old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
-                if old and old not in idmap:
-                    idmap[old] = new
-                s["id"] = new
-            if "порядок" in s:
-                s["порядок"] = k
-        for s in shots:
-            if isinstance(s, dict) and str(s.get("parent_id") or "") in idmap:
-                s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes

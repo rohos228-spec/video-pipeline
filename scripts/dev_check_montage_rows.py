@@ -95,6 +95,10 @@ async def main(project_id: int, out_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    pid = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    import os
+
+    if os.environ.get("VP_DEV_SEED") != "1" or len(sys.argv) < 2:
+        raise SystemExit("нужны VP_DEV_SEED=1 и явный project id")
+    pid = int(sys.argv[1])
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/tmp/montage-shots")
     asyncio.run(main(pid, out))

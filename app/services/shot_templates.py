@@ -924,6 +924,7 @@ def fill_kadry_from_catalog(
     plan = plan_templates_for_action(action)
     plan_by_n = {int(row["n"]): row for row in plan}
     incoming = [dict(s) for s in shots if isinstance(s, dict)]
+    consumed: set[int] = set()
     by_scene: dict[int, list[dict[str, Any]]] = {}
     unmatched: list[dict[str, Any]] = []
     parsed: list[tuple[int | None, dict[str, Any]]] = []
@@ -988,6 +989,7 @@ def fill_kadry_from_catalog(
                 for sh in existing:
                     _ensure_full_shot_action(sh, place=place, scene_action=act)
                     scene_acc.append(sh)
+                    consumed.add(id(sh))
                 out.extend(_assign_scene_vo(scene_acc, vo))
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
@@ -1006,8 +1008,12 @@ def fill_kadry_from_catalog(
                     catalog_role=role,
                 )
                 scene_acc.append(sh)
+                consumed.add(id(sh))
             out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
             continue
+        for sh in existing[: len(rows)]:
+            consumed.add(id(sh))
+        seed = existing[0] if existing else {}
         incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
         master_id = str(
             (existing[0].get("id") if existing else "")
@@ -1076,6 +1082,7 @@ def fill_kadry_from_catalog(
                 scene_action=action,
             )
             leftover.append(sh)
+            consumed.add(id(sh))
         glue = " ".join(
             str(s.get("закадр") or "").strip()
             for s in leftover
@@ -1084,6 +1091,23 @@ def fill_kadry_from_catalog(
         out.extend(_assign_scene_vo(leftover, glue))
     elif unmatched:
         out.extend(unmatched)
+    tail: list[dict[str, Any]] = []
+    for sh in incoming:
+        if id(sh) in consumed:
+            continue
+        if any(sh is row for row in out):
+            continue
+        marked = dict(sh)
+        marked["активен"] = False
+        marked["карантин"] = True
+        marked["пометка"] = "кадр каталога не вошёл в лестницу — сохранён"
+        tail.append(marked)
+    if tail:
+        logger.warning(
+            "WARN fill_kadry_from_catalog: {} кадров не вошли в каталог и остаются с активен: False",
+            len(tail),
+        )
+        out.extend(tail)
     from app.pipeline.no_deletions_guard import keep_soft_kadry
 
     return keep_soft_kadry(incoming, out, scene_id=cell_number, number=cell_number)

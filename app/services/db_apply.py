@@ -328,6 +328,48 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
+def _structured_container_empty(value: Any) -> bool:
+    """Пустой список или объект не считаем новой лестницей."""
+    return isinstance(value, (list, dict)) and len(value) == 0
+
+
+def _shot_row_id(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("id") or "").strip()
+
+
+def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
+    """Короткий список не выкидывает старые шоты: их хвост с активен False.
+
+    Пустой incoming не подменяет лестницу — это делает вызывающий код.
+    """
+    old_rows = (
+        [dict(row) for row in old if isinstance(row, dict)]
+        if isinstance(old, list)
+        else []
+    )
+    new_rows = (
+        [dict(row) for row in incoming if isinstance(row, dict)]
+        if isinstance(incoming, list)
+        else []
+    )
+    if not new_rows:
+        return old_rows
+    seen = {_shot_row_id(row) for row in new_rows}
+    seen.discard("")
+    out = list(new_rows)
+    for row in old_rows:
+        sid = _shot_row_id(row)
+        if not sid or sid in seen:
+            continue
+        kept = dict(row)
+        kept["активен"] = False
+        out.append(kept)
+        seen.add(sid)
+    return out
+
+
 def _coerce_structured_attr(value: Any) -> Any:
     """Биты/кадры — JSON-массив или объект, не строка Excel."""
     if value is None:
@@ -794,6 +836,24 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
         return 0
     normalized = [_normalize_scene_card(s) for s in scenes]
     meta = dict(project.meta or {})
+    old = meta.get("scene_registry")
+    seen = {
+        str(card.get("id_scene") or "").strip()
+        for card in normalized
+        if str(card.get("id_scene") or "").strip()
+    }
+    if isinstance(old, list):
+        for row in old:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id_scene") or row.get("id") or "").strip()
+            if not sid or sid in seen:
+                continue
+            kept = dict(row)
+            kept["id_scene"] = sid
+            kept["активен"] = False
+            normalized.append(kept)
+            seen.add(sid)
     meta["scene_registry"] = normalized
     project.meta = meta
     return len(normalized)
@@ -1106,7 +1166,8 @@ async def upsert_characters(
 ) -> int:
     """Записать/обновить сущности type=character по code (c01…).
 
-    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
+    replace=True: коды, которых нет в новом списке, помечаются archived
+    (карточка и hero_reference остаются)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1148,17 +1209,30 @@ async def upsert_characters(
             by_code[code] = en
         else:
             en.name = card["name"]
-            en.attrs = card["attrs"]
             en.type = "character"
+            old = dict(en.attrs) if isinstance(en.attrs, dict) else {}
+            merged = {**old, **card["attrs"]}
+            # Код снова в ответе Каркаса — карточка живая, реф не стираем.
+            merged.pop("archived", None)
+            merged.pop("inactive", None)
+            en.attrs = merged
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(en, "attrs")
         n += 1
     if replace and seen:
         from loguru import logger
+        from sqlalchemy.orm.attributes import flag_modified
 
         for code, en in list(by_code.items()):
             if code not in seen:
-                await session.delete(en)
+                attrs = dict(en.attrs or {})
+                attrs["archived"] = True
+                attrs["inactive"] = True
+                en.attrs = attrs
+                flag_modified(en, "attrs")
                 logger.info(
-                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    "[#{}] upsert_characters replace: помечен archived {} ({})",
                     project.id,
                     code,
                     en.name,
@@ -1179,10 +1253,14 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         SHEET_PERSONS,
     )
 
+    from app.services.db_v2 import entity_is_archived
+
     chars = [
         e
         for e in entities
-        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+        if getattr(e, "type", None) == "character"
+        and getattr(e, "code", None)
+        and not entity_is_archived(e)
     ]
     chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
     if SHEET_PERSONS in wb.sheetnames:
@@ -1584,10 +1662,28 @@ async def apply_ops(
             attrs["промты_детей"] = children
         if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
             attrs = _merge_camera_subdivide(attrs, fields)
+        from loguru import logger
+
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            raw_attr = fields[attr_key]
+            blank = raw_attr is None or (
+                isinstance(raw_attr, str) and not raw_attr.strip()
+            )
+            empty_box = attr_key in {"кадры", "биты"} and _structured_container_empty(
+                raw_attr
+            )
+            if blank or empty_box:
+                logger.warning(
+                    "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
+                    attr_key,
+                )
+                continue
+            coerced = _coerce_structured_attr(raw_attr)
+            if attr_key == "кадры" and isinstance(coerced, list):
+                coerced = merge_kadry_keep_missing(attrs.get("кадры"), coerced)
+            attrs[attr_key] = coerced
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
