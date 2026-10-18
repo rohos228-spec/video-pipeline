@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AGENT_LABEL,
+  approvalButtons,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -292,6 +293,8 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onRetry={() => void chat.decide(approval.id, approval.taskId, "retry_step")}
+                  onBindProject={(projectId) => void chat.bindProject(approval.id, projectId)}
                   onClose={() => chat.dismissBlock(approval.id)}
                   onPaidDecision={(decision) => chat.decidePaidOutcome(approval.id, decision)}
                   onPaidGrant={() => chat.confirmPaidRestart(approval.id)}
@@ -636,6 +639,8 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onRetry,
+  onBindProject,
   onClose,
   onPaidDecision,
   onPaidGrant,
@@ -645,46 +650,21 @@ function ApprovalCard({
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
+  onBindProject: (projectId: number) => void;
   onClose: () => void;
   onPaidDecision: (decision: PaidOutcomeDecision) => Promise<PaidOutcomeDecisionResult>;
   onPaidGrant: () => Promise<PaidOutcomeDecisionResult | null>;
 }) {
-  const [retryReady, setRetryReady] = useState(false);
-  const [retryForecast, setRetryForecast] = useState<number | null>(null);
-  const [retryOpen, setRetryOpen] = useState(false);
-  const [confirmHidden, setConfirmHidden] = useState(false);
+  const [projectDraft, setProjectDraft] = useState("");
   const copy = BLOCK_COPY[approval.reason];
   const paidOutcome = approval.reason === PAID_OUTCOME_UNKNOWN_REASON;
   const terminal = isTerminalBlock(approval.reason);
+  const buttons = approvalButtons(approval.reason);
   const title = copy?.title || approval.title || "Нужно подтверждение";
   const body = copy?.body || approval.reason || approval.title;
   const showCost = !paidOutcome && approval.costEstimate != null;
-
-  const startRetry = () => {
-    if (!approval.restartOffered || pending) return;
-    void onPaidDecision(PAID_OUTCOME_DECISION.retryStep)
-      .then((result) => {
-        if (!result.ok) return;
-        setRetryForecast(result.forecast);
-        setRetryReady(result.retryReady);
-        setRetryOpen(true);
-      })
-      .catch(() => {
-        /* ошибка уже на карточке */
-      });
-  };
-
-  // Одно правило для серверного флага и локального ответа: кнопка есть только при
-  // retry_armed и конечном прогнозе >= 0. Плохой прогноз панель открывает, кнопки нет.
-  // Валидный прогноз без retry_armed оставляет кнопку неактивной.
-  const serverRearm = paidOutcome && approval.retryArmed;
-  const panelOpen = serverRearm || retryOpen;
-  const shownForecast = serverRearm ? approval.forecast : retryForecast;
-  const shownReady = paidOutcomeRetryReady({
-    retry_armed: serverRearm ? true : retryReady,
-    forecast_usd: shownForecast,
-  });
-
+  const projectId = Number(projectDraft);
   return (
     <div
       data-testid="orch-approval"
@@ -709,53 +689,44 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.changeId ? (
-          paidOutcome ? (
-            <PaidOutcomeActions
-              pending={pending}
-              restartOffered={approval.restartOffered}
-              retryOpen={panelOpen}
-              forecast={shownForecast}
-              retryReady={shownReady}
-              confirmHidden={confirmHidden}
-              onDone={() => {
-                void onPaidDecision(PAID_OUTCOME_DECISION.approve).catch(() => {
-                  /* ошибка уже на карточке */
-                });
-              }}
-              onRetry={startRetry}
-              onDeny={() => {
-                void onPaidDecision(PAID_OUTCOME_DECISION.deny).catch(() => {
-                  /* ошибка уже на карточке */
-                });
-              }}
-              onConfirm={() => {
-                if (!shownReady) return;
-                void onPaidGrant()
-                  .then((result) => {
-                    if (!result || result.retryArmed) return;
-                    setRetryReady(false);
-                    setConfirmHidden(true);
-                    if (result.reason === "retry_grant_required") {
-                      setRetryOpen(false);
-                      setConfirmHidden(false);
-                    }
-                  })
-                  .catch(() => {
-                    /* ошибка уже на карточке */
-                  });
-              }}
+        ) : approval.reason === MISSING_PROJECT ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (Number.isInteger(projectId) && projectId >= 1) onBindProject(projectId);
+            }}
+          >
+            <Input
+              value={projectDraft}
+              inputMode="numeric"
+              data-testid="orch-project-id"
+              className="h-8 w-24"
+              placeholder="project"
+              onChange={(event) => setProjectDraft(event.target.value)}
             />
-          ) : (
-            <>
+            <Button type="submit" size="sm" data-testid="orch-bind-project" disabled={pending}>
+              Привязать проект
+            </Button>
+          </form>
+        ) : approval.changeId && buttons.length > 0 ? (
+          <>
+            {buttons.includes("approve") ? (
               <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
                 Approve
               </Button>
+            ) : null}
+            {buttons.includes("retry_step") ? (
+              <Button type="button" size="sm" data-testid="orch-retry" disabled={pending} onClick={onRetry}>
+                Перезапустить шаг
+              </Button>
+            ) : null}
+            {buttons.includes("deny") ? (
               <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
                 Reject
               </Button>
-            </>
-          )
+            ) : null}
+          </>
         ) : (
           <p className="basis-full text-[11px] text-white/55" data-testid="orch-approval-noid">
             Нет change_id формата orch-appr-&lt;задача&gt;-&lt;n&gt; — подтвердить нельзя.

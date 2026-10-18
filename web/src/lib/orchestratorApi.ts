@@ -374,6 +374,7 @@ async function postApproval(
 export interface OrchApproveIn {
   change_id: string;
   decision: "approve" | "retry_step" | "deny";
+  retry_grant?: boolean;
 }
 
 /** Успешный `POST .../approve`: 200 и JSON, не 204. */
@@ -400,10 +401,15 @@ export async function postOrchDecision(
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
+  const payload: { change_id: string; decision: OrchApproveIn["decision"]; retry_grant?: boolean } = {
+    change_id: body.change_id,
+    decision: body.decision,
+  };
+  if (body.retry_grant === true) payload.retry_grant = true;
   const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/approve`), {
     method: "POST",
     headers,
-    body: JSON.stringify({ change_id: body.change_id, decision: body.decision }),
+    body: JSON.stringify(payload),
     signal,
   });
   if (res.status === 204) throw new OrchApiError(204, APPROVE_NOT_JSON);
@@ -497,6 +503,20 @@ export async function postPaidOutcomeRestartGrant(
 ): Promise<PaidOutcomeDecisionResult> {
   const raw = await postPaidJson<unknown>(cfg, paidOutcomeApprovePath(cfg.session), paidOutcomeWireBody(body), signal);
   return readPaidOutcomeDecisionResult(raw);
+}
+
+/** Снять `missing_project_id`. Это не /approve. */
+export function postOrchProject(
+  cfg: OrchClientConfig,
+  projectId: number,
+  signal?: AbortSignal,
+): Promise<{ ok?: boolean; project_id?: number }> {
+  return postJson(
+    cfg,
+    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+    { project_id: projectId },
+    signal,
+  );
 }
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
