@@ -61,7 +61,7 @@ def validate_scope(run, project, rows, selected):
     graph=WorkflowGraph(run.nodes_snapshot,run.edges_snapshot)
     states={n.node_key:n for n in rows}
     contracts={}
-    if any(n.status in {NodeRunStatus.running,NodeRunStatus.queued,NodeRunStatus.waiting_hitl} for n in rows):
+    if any(n.status in {NodeRunStatus.running,NodeRunStatus.queued,NodeRunStatus.waiting_hitl,NodeRunStatus.waiting_approval} for n in rows):
         raise ValueError('active node or HITL must settle first')
     for key in selected:
         node=graph._by_id.get(key)

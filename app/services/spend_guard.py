@@ -580,6 +580,7 @@ class _InFlight:
 
 
 _inflight: list[_InFlight] = []
+_inflight_lock = asyncio.Lock()
 _seam: contextvars.ContextVar[str | None] = contextvars.ContextVar("spend_paid_seam", default=None)
 _block_event_stamp: dict[tuple, float] = {}
 BLOCK_EVENT_MIN_INTERVAL_S = 60.0
@@ -779,6 +780,8 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
             f"Платный вызов {provider} заблокирован аварийным рубильником. Запрос не отправлялся.",
             provider=provider, what=what) from exc
     _disk_verdict(provider, what)
+    # Тот же провайдер уже внутри paid_call: второй резерв не открывается.
+    # Другой провайдер считается отдельно и может упереться в потолок.
     if _seam.get() == provider:
         return PaidTicket(None, 0.0)
     usd = _default_estimate(estimate_usd)
@@ -787,9 +790,11 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
     windows = (("spend_cap_run", "run", bool(run_id)),
                ("spend_cap_project", "project", pid is not None),
                ("spend_cap_daily", "daily", True))
-    if any(c[key] > 0 and applies for _code, key, applies in windows):
-        async with _sessions()() as session:
-            sums = await conservative_sums(session, project_id=pid, run_id=run_id)
+    async with _inflight_lock:
+        sums = {"run": 0.0, "project": 0.0, "daily": 0.0}
+        if any(c[key] > 0 and applies for _code, key, applies in windows):
+            async with _sessions()() as session:
+                sums = await conservative_sums(session, project_id=pid, run_id=run_id)
         fly = inflight_usd(project_id=pid, run_id=run_id)
         for code, key, applies in windows:
             cap = c[key]
@@ -802,11 +807,11 @@ async def _paid_gate(provider, what, estimate_usd, pid, run_id, register) -> Pai
                     f"и оценками, этот вызов {usd:.2f} USD). Запрос не отправлялся.",
                     provider=provider, what=what,
                     detail={"spent": round(spent, 6), "cap": cap, "estimate": usd, "source": what})
-    entry = None
-    if register:
+        if not register:
+            return PaidTicket(None, usd)
         entry = _InFlight(usd, pid, run_id, _today(), provider, what)
         _inflight.append(entry)
-    return PaidTicket(entry, usd)
+        return PaidTicket(entry, usd)
 
 
 @asynccontextmanager

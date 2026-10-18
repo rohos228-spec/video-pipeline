@@ -8,7 +8,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FAST = [
-    "tests/actions/test_whitelist_no_exec.py",
     "tests/actions/test_atomic_private_helpers.py",
     "tests/actions/test_atomic_write_allowlist.py",
     "tests/actions/test_atomic_write_backup.py",
@@ -28,6 +27,7 @@ FAST = [
     "tests/actions/test_prompt_rollback.py",
     "tests/actions/test_symlink_or_skip.py",
     "tests/actions/test_version_conflict_class.py",
+    "tests/actions/test_whitelist_no_exec.py",
     "tests/actions/test_node_param_snapshots.py",
     "tests/actions/test_create_master_destructive.py",
     "tests/actions/test_master_prompt_rollback.py",

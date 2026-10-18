@@ -5,6 +5,7 @@
   queued → running
   running → done | failed | waiting_hitl | waiting_approval
   waiting_hitl → done | running | failed
+  waiting_approval → queued | running | failed | pending
   failed → queued
   любой → pending — явный сброс/стоп (ui_reset, api_reset, api_stop, ui_restart, auto_unstick)
 
@@ -45,6 +46,14 @@ _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
     ),
     NodeRunStatus.waiting_hitl: frozenset(
         {NodeRunStatus.done, NodeRunStatus.running, NodeRunStatus.failed}
+    ),
+    NodeRunStatus.waiting_approval: frozenset(
+        {
+            NodeRunStatus.queued,
+            NodeRunStatus.running,
+            NodeRunStatus.failed,
+            NodeRunStatus.pending,
+        }
     ),
     NodeRunStatus.failed: frozenset({NodeRunStatus.queued}),
     NodeRunStatus.done: frozenset(),
@@ -333,13 +342,26 @@ def transition_node_status(
     return True
 
 
+_APPROVAL_INITIATORS = frozenset({"approval", "approved"})
+
+
 def queue_node_for_start(nr: NodeRun, *, project_id: int | None, initiator: str = "api") -> bool:
-    """pending | failed → queued перед запуском шага."""
+    """pending | failed → queued перед запуском шага.
+
+    waiting_approval снимается только инициатором одобрения. Обычный api-старт
+    парковку бюджета не трогает.
+    """
     if nr.status == NodeRunStatus.failed:
         return transition_node_status(
             nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
         )
     if nr.status == NodeRunStatus.pending:
+        return transition_node_status(
+            nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
+        )
+    if nr.status == NodeRunStatus.waiting_approval:
+        if initiator not in _APPROVAL_INITIATORS:
+            return False
         return transition_node_status(
             nr, NodeRunStatus.queued, initiator=initiator, project_id=project_id
         )
@@ -390,6 +412,8 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
 
 
 def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "worker") -> bool:
+    if nr.status == NodeRunStatus.waiting_approval:
+        return False
     if initiator != "worker":
         logger.error(
             "complete_node: initiator={!r} запрещён для {}/{}",

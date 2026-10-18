@@ -4070,5 +4070,3 @@ def test_executor_calling_studio_delete_is_not_keep() -> None:
     assert verdict_of("group.list") == "keep"
     assert verdict_of("montage.cancel_queue_ops") == "keep"
     assert verdict_of("frame.restore") == "keep"
-
-

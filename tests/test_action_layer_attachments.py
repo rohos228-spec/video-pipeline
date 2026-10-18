@@ -364,6 +364,29 @@ async def test_claim_is_atomic_for_two_attachments(live) -> None:
     assert {r.name: r.consumed_at is not None for r in await rows(live)} == {"one.mp3": True, "two.mp3": False}
 
 
+async def test_orphan_watcher_is_alive_until_the_fixture_drains_it(live) -> None:
+    """Сторож сироты живёт до конца теста. Фикстура обязана его дождаться."""
+    import asyncio
+
+    from app.services.action_layer import executor
+    from app.services.action_layer.spec import ActionSpec
+
+    async def _noop(_ctx, _params):
+        return {}
+
+    spec = ActionSpec(
+        id="zz.leak", title_ru="t", description_ru="t",
+        params_schema={"type": "object"}, executor=_noop, poll_interval_s=30,
+    )
+    executor._hold_project(
+        PID, "leak-plan", spec,
+        {"start": {"id": "job"}, "ctx": None, "params": {}},
+        lambda _state: None,
+    )
+    names = {task.get_name() for task in asyncio.all_tasks() if not task.done()}
+    assert any(name.startswith("action-layer-orphan-") for name in names)
+
+
 async def test_invalid_plan_releases_the_file(live) -> None:
     out = await ok_upload(live, "frame99.png", PNG, "image/png")
     use(res(reply([st("montage.upload_image", frame_number=99)])))

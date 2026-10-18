@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,8 +70,14 @@ async def env(tmp_path, monkeypatch):
     app.dependency_overrides[get_session] = _gen
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield Env(app=app, engine=engine, factory=factory, client=client, tmp_path=tmp_path)
-    for plan_id in executor.live_plan_ids():
-        executor._TASKS[plan_id].cancel()
+    await executor.drain_background()
+    current = asyncio.current_task()
+    leaked = [
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done() and task.get_name().startswith("action-layer")
+    ]
+    assert leaked == []
     store.configure_sessions(None)
     kill_switch.reset_cache()
     await engine.dispose()
