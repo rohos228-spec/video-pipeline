@@ -27,8 +27,8 @@ CONTRACT_VERSION = "ws3-r3.4"
 # константу, следующий sha (запрет «@» в action) меняется одним коммитом.
 WS2_RESULT_SCHEMA: dict[str, str] = {
     "version": "ws2-r2.3",
-    "sha256": "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c",
-    "head": "627580674c8b80a4507be113ebb54b3e839ac6e4",
+    "sha256": "76d2ec8cf8a0d4f17f9d7e43217978909b0511e25c94e7409c1ca957b1a54123",
+    "head": "2216f10e27eef6117e31e81d915824140135a145",
 }
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
