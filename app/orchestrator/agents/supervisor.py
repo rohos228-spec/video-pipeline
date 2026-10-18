@@ -728,10 +728,15 @@ class Supervisor:
         return data, data.plan[int(data.position)]
 
     def _locate_paid_unknown(self, task_id: int, data: CheckpointData) -> tuple[int, PlanStep] | None:
-        """Позиция и identity unknown-шага, а не начало батча."""
+        """Позиция и identity unknown-шага, а не начало батча.
+
+        Живая строка ``running`` важнее памяти ``_unknown_step``: та
+        остаётся на старом индексе, когда чекпоинт уже сдвинулся.
+        """
+        running = self._running_paid_index(task_id, data.plan)
+        if running is not None:
+            return running
         stored = _unpack_unknown(data.context or "")
-        if stored is None:
-            stored = self._unknown_step.get(task_id)
         if isinstance(stored, dict) and "position" in stored:
             try:
                 index = int(stored["position"])
@@ -740,13 +745,31 @@ class Supervisor:
             action = str(stored.get("action") or "")
             if 0 <= index < len(data.plan) and data.plan[index].action == action:
                 return index, data.plan[index]
+        return None
+
+    def _running_paid_index(self, task_id: int, plan: list[PlanStep]) -> tuple[int, PlanStep] | None:
+        """Индекс плана для открытой платной строки. Публичные params точнее имени."""
         for row in self.tasks.list_steps(task_id):
             if str(row.get("status")) != "running" or not row.get("paid"):
                 continue
+            try:
+                stored = json.loads(row.get("params_json") or "{}")
+            except json.JSONDecodeError:
+                stored = {}
+            if not isinstance(stored, dict):
+                stored = {}
+            public = _public_params(stored)
             action = str(row.get("action_name") or "")
-            for index, step in enumerate(data.plan):
-                if step.paid and step.action == action:
+            same_name: tuple[int, PlanStep] | None = None
+            for index, step in enumerate(plan):
+                if not step.paid or step.action != action:
+                    continue
+                if _public_params(step.params) == public:
                     return index, step
+                if same_name is None:
+                    same_name = (index, step)
+            if same_name is not None:
+                return same_name
         return None
 
     def _remember_unknown_step(self, task_id: int, index: int, step: PlanStep) -> None:
