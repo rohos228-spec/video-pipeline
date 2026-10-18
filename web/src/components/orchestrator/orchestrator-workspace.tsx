@@ -650,7 +650,7 @@ function ApprovalCard({
           <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
             Закрыть
           </Button>
-        ) : approval.changeId ? (
+        ) : approval.serverId ? (
           <>
             <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
               Approve

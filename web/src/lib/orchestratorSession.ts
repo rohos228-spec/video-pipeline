@@ -351,9 +351,35 @@ function approvalChangeId(body: Record<string, unknown>): string | null {
   return serverApprovalId((nested as Record<string, unknown>).change_id);
 }
 
-function closeServerApproval(state: OrchScreenState, changeId: string, decision: "approved" | "rejected"): void {
-  const item = state.approvals.find((entry) => entry.serverId && entry.changeId === changeId);
-  if (!item || item.resolved) return;
+function approvalLegacyId(body: Record<string, unknown>): string | null {
+  const direct = serverApprovalId(body.approval_id);
+  if (direct) return direct;
+  const nested = body.payload;
+  if (!nested || typeof nested !== "object") return null;
+  return serverApprovalId((nested as Record<string, unknown>).approval_id);
+}
+
+/**
+ * Ключ закрытия: `change_id`, иначе старый `approval_id`.
+ *
+ * ws3-r3.4 (#370 @ 1cfbcb7c) в `publish_approval_required` и payload
+ * `approval_decided` всегда кладёт серверный id `orch-appr-<task_id>-<n>`
+ * (`app/orchestrator/agents/supervisor.py`, `_mint_change_id` / `_APPR_ID`).
+ * `ApprovalEvent.change_id` в `app/orchestrator/contracts.py` на том же
+ * коммите остаётся `str | None`; `app/orchestrator/events.py` payload не
+ * проверяет. События #342 могли прийти только с `approval_id`.
+ */
+function approvalDecisionKey(body: Record<string, unknown>): string | null {
+  return approvalChangeId(body) ?? approvalLegacyId(body);
+}
+
+function closeServerApproval(state: OrchScreenState, key: string, decision: "approved" | "rejected"): void {
+  const item = state.approvals.find((entry) => {
+    if (!entry.serverId || entry.resolved) return false;
+    if (entry.changeId) return entry.changeId === key;
+    return entry.id === key;
+  });
+  if (!item) return;
   item.resolved = decision;
 }
 
@@ -601,8 +627,8 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   const taskId = taskKey(event.task_id);
   if (event.type !== "approval_required") {
     const decided = approvalDecision(payload.decision ?? payload.approval_decision);
-    const changeId = approvalChangeId(payload);
-    if (decided && changeId) closeServerApproval(next, changeId, decided);
+    const key = approvalDecisionKey(payload);
+    if (decided && key) closeServerApproval(next, key, decided);
   }
 
   if (event.type === "ack") {
