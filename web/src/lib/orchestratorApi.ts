@@ -446,16 +446,18 @@ export async function postOrchDecision(
 }
 
 /** Снять `missing_project_id`. Это не /approve. */
-export function postOrchProject(
+export async function postOrchProject(
   cfg: OrchClientConfig,
   projectId: number,
   signal?: AbortSignal,
 ): Promise<{ ok?: boolean; project_id?: number }> {
-  return postJson(
-    cfg,
-    `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
-    { project_id: projectId },
-    signal,
+  return requireJsonBody(
+    await postJson(
+      cfg,
+      `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/project`,
+      { project_id: projectId },
+      signal,
+    ),
   );
 }
 
