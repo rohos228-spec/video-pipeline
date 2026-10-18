@@ -2223,6 +2223,188 @@ def measure_holdout4_once(out: Path | None = None) -> dict[str, Any]:
     return payload
 
 
+HOLDOUT5_MEASURE_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_holdout5_measure.json"
+HOLDOUT5_RUN_COMMIT = "eba4e90ec8fe0e0afb9a0dd597a50dc92003d1a1"
+HOLDOUT5_DATASET_COMMIT = "bbec0dab8db105d86dc1c1eb4b44d6f0100e011e"
+HOLDOUT5_CONFIG_COMMIT = "5ce57af9ad80da74be40b6a78e685a116e9735f4"
+
+
+def _assert_holdout5_sha_before_load() -> str:
+    """Сначала байты и пин. JSON открывается только после совпадения."""
+    from evals.orchestrator.frozen_datasets import FROZEN_SHA256, FrozenDatasetError, file_sha256
+    from evals.orchestrator.holdout5 import HOLDOUT5_PATH
+
+    pin = FROZEN_SHA256["precision_live_holdout5.json"]["sha256"]
+    digest = file_sha256(HOLDOUT5_PATH)
+    if digest != pin:
+        raise FrozenDatasetError(f"holdout-5 sha256 {digest} != {pin}")
+    return digest
+
+
+def _assert_dev_v2_default() -> dict[str, Any]:
+    """Профиль на диске — тот же, что в 5ce57af9: expand_tail, 0.25/1.5, k=20, protect 2."""
+    profile = ROOT / "app" / "orchestrator" / "rag" / "profile.py"
+    committed = subprocess.check_output(
+        ["git", "show", f"{HOLDOUT5_CONFIG_COMMIT}:app/orchestrator/rag/profile.py"],
+        cwd=ROOT,
+    )
+    if profile.read_bytes() != committed:
+        raise RuntimeError("profile.py разошёлся с дефолтом 5ce57af9")
+    config = _remeasure_config()
+    if (
+        config["aggregate"] != "expand_tail"
+        or int(config["rrf_k"]) != 20
+        or float(config["fusion_bm25"]) != 0.25
+        or float(config["fusion_rerank"]) != 1.5
+        or float(config["bm25_protect"]) != 2.0
+        or float(config["family_boost"]) != 1.0
+    ):
+        raise RuntimeError(f"профиль не совпал с дефолтом 5ce57af9: {config}")
+    return config
+
+
+def measure_holdout5_once(out: Path | None = None) -> dict[str, Any]:
+    """Один fp32-проход holdout-5 и три холодных p95. Повторный запуск запрещён."""
+    import platform
+
+    from app.orchestrator.rag import get_engine, reset_engine
+    from evals.orchestrator.holdout5 import load_holdout5_queries
+
+    destination = out or HOLDOUT5_MEASURE_PATH
+    if destination.exists():
+        raise RuntimeError(f"{destination.name} уже записан, повторный замер запрещён")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if head != HOLDOUT5_RUN_COMMIT:
+        raise RuntimeError(f"замер holdout-5 только на {HOLDOUT5_RUN_COMMIT}, HEAD {head}")
+    config = _assert_dev_v2_default()
+    query_sha = _assert_holdout5_sha_before_load()
+    queries = load_holdout5_queries()
+    if len(queries) != 40 or any(not str(query["id"]).startswith("h5-") for query in queries):
+        raise RuntimeError("holdout-5: ожидались id h5-* и n = 40")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="orch-rag-holdout5-"))
+    db_path = temp_dir / "orch_rag.db"
+    embedder = build_embedder("e5-large", eval_mode=True)
+    reranker = build_reranker("bge-m3", max_length=int(config["max_length"]), eval_mode=True)
+    engine = _engine(db_path, embedder, reranker)
+    try:
+        print("holdout5 reindex", os.getpid(), flush=True)
+        engine.reindex(["rules", "nodes", "prompts"], timeout=900)
+        print("holdout5 chunks", len(_index_catalog(engine)), flush=True)
+        rows = measure_chunk_rows(
+            engine,
+            queries,
+            rerank=True,
+            rrf_k=int(config["rrf_k"]),
+            rrf_weights=(float(config["lexical"]), float(config["vector"])),
+            bm25_scope=str(config["bm25_scope"]),
+            rerank_pool=int(config["rerank_pool"]),
+            aggregate=str(config["aggregate"]),
+            rerank_fusion=str(config["rerank_fusion"]),
+            rerank_fusion_weights=(float(config["fusion_bm25"]), float(config["fusion_rerank"])),
+            bm25_protect=float(config["bm25_protect"]),
+            family_boost=float(config["family_boost"]),
+            record_top5=True,
+        )
+        slices = family_slices(rows)
+    finally:
+        engine.close()
+    print("holdout5 slices", json.dumps(slices, ensure_ascii=False), flush=True)
+    by_id = {row["id"]: row for row in rows}
+    per_query = []
+    for query in queries:
+        row = by_id[query["id"]]
+        gold = [
+            str(item["chunk_id"])
+            for item in query.get("relevant") or []
+            if int(item.get("grade") or 0) > 0 and item.get("chunk_id")
+        ]
+        per_query.append(
+            {
+                "id": query["id"],
+                "family": query.get("family"),
+                "gold": gold,
+                "top5": list(row["top5"]),
+            }
+        )
+
+    import app.orchestrator.rag as rag_mod
+
+    prod_dir = Path(tempfile.mkdtemp(prefix="orch-rag-holdout5-prod-"))
+    rag_mod.default_db_path = lambda: prod_dir / "orch_rag.db"
+    reset_engine()
+    prod = get_engine(profile="contour-b")
+    defaults = {key: value for key, value in prod.retrieve_defaults.items() if value is not None}
+    if (
+        defaults.get("aggregate") != "expand_tail"
+        or tuple(defaults.get("rerank_fusion_weights") or ()) != (0.25, 1.5)
+        or int(defaults.get("rrf_k") or 0) != 20
+        or float(defaults.get("bm25_protect") or 0) != 2.0
+    ):
+        reset_engine()
+        raise RuntimeError(f"прод-путь не дефолт 5ce57af9: {defaults}")
+    prod_corpora = ["rules", "history", "nodes", "prompts"]
+    samples: list[float] = []
+    try:
+        print("holdout5 prod reindex", flush=True)
+        prod.reindex(prod_corpora, timeout=900)
+        for index in range(PASS_COUNT):
+            prod._clear_retrieval_cache()
+            prod_rows = measure_chunk_rows(
+                prod,
+                queries,
+                rerank=defaults.get("rerank", True) is not False,
+                rrf_k=int(defaults["rrf_k"]),
+                rrf_weights=tuple(defaults["rrf_weights"]),
+                bm25_scope=str(defaults["bm25_scope"]),
+                rerank_pool=int(defaults["rerank_pool"]),
+                aggregate=str(defaults["aggregate"]),
+                rerank_fusion=str(defaults["rerank_fusion"]),
+                rerank_fusion_weights=tuple(defaults["rerank_fusion_weights"]),
+                bm25_protect=float(defaults["bm25_protect"]),
+                family_boost=float(defaults["family_boost"]),
+                corpora=prod_corpora,
+            )
+            samples.append(float(summarize_rows(prod_rows)["p95_s"]))
+            print("HOLDOUT5_PROD_PASS", index, samples[-1], flush=True)
+    finally:
+        reset_engine()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(prod_dir, ignore_errors=True)
+
+    gate = prod_p95_each_gate(samples)
+    overall = slices["all"]
+    payload = {
+        "set": "holdout-5",
+        "passes": 1,
+        "commit": HOLDOUT5_RUN_COMMIT,
+        "dataset_commit": HOLDOUT5_DATASET_COMMIT,
+        "config_commit": HOLDOUT5_CONFIG_COMMIT,
+        "query_sha256": query_sha,
+        "config": config,
+        "slices": slices,
+        "queries": per_query,
+        "hit_at_5": overall["hit_at_5"],
+        "ndcg_at_8": overall["ndcg_at_8"],
+        "thresholds": {"ndcg_at_8": NDCG_AT_8_MIN, "hit_at_5": HIT_AT_5_MIN, "p95_s": P95_MAX_S},
+        "hit_at_5_met": overall["hit_at_5"] >= HIT_AT_5_MIN,
+        "ndcg_at_8_met": overall["ndcg_at_8"] >= NDCG_AT_8_MIN,
+        "prod_p95_s": samples,
+        "prod_p95_gate": gate,
+        "prod_p95_met": gate["each_within_limit"],
+        "hardware": {"cpu_count": os.cpu_count(), "platform": platform.platform()},
+    }
+    write_pass_artifact(destination, payload)
+    print(
+        json.dumps(
+            {"hit_at_5": payload["hit_at_5"], "ndcg_at_8": payload["ndcg_at_8"], "prod_p95_s": samples},
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
@@ -2247,6 +2429,7 @@ def main() -> None:
     parser.add_argument("--holdout-prod-p95", action="store_true", help="три холодных p95 прод-пути на holdout")
     parser.add_argument("--holdout3-measure", action="store_true", help="один проход holdout-3 на замороженном конфиге")
     parser.add_argument("--holdout4-measure", action="store_true", help="один проход holdout-4 на замороженном конфиге")
+    parser.add_argument("--holdout5-measure", action="store_true", help="один проход holdout-5 на дефолте 5ce57af9")
     parser.add_argument("--pass-dir", type=Path)
     parser.add_argument("--pass-out", type=Path)
     args = parser.parse_args()
@@ -2268,6 +2451,9 @@ def main() -> None:
         return
     if args.holdout4_measure:
         measure_holdout4_once()
+        return
+    if args.holdout5_measure:
+        measure_holdout5_once()
         return
     if args.remeasure_pass:
         if args.pass_dir is None or args.pass_out is None:
