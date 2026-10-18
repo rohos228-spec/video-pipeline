@@ -32,7 +32,6 @@ const KILL_CONFIRM_MS = 12_000;
 
 function approvalPostAccepted(result: ApprovalHttpResult, approvalId: string): boolean {
   if (result.status === 204) return true;
-  if (result.status < 200 || result.status >= 300) return false;
   const body = result.body;
   if (!body) return false;
   if (body.ok === false || body.matched === false) return false;

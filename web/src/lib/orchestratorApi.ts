@@ -257,7 +257,8 @@ async function readError(res: Response): Promise<string> {
   return text.slice(0, 300);
 }
 
-async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+/** Общий POST: Bearer, 401 и не-2xx. postJson и postApproval не расходятся по этим проверкам. */
+async function postOrch(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   assertBearerTarget(cfg.apiBase);
   const headers = orchAuthHeaders(cfg);
   headers.set("Content-Type", "application/json");
@@ -273,6 +274,11 @@ async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, s
   if (!res.ok) {
     throw new OrchApiError(res.status, await readError(res));
   }
+  return res;
+}
+
+async function postJson<T>(cfg: OrchClientConfig, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await postOrch(cfg, path, body, signal);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -297,21 +303,7 @@ async function postApproval(
   body: unknown,
   signal?: AbortSignal,
 ): Promise<ApprovalHttpResult> {
-  assertBearerTarget(cfg.apiBase);
-  const headers = orchAuthHeaders(cfg);
-  headers.set("Content-Type", "application/json");
-  const res = await fetch(apiUrl(cfg.apiBase, path), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (res.status === 401) {
-    throw new OrchApiError(401, "401 — токен не принят");
-  }
-  if (!res.ok) {
-    throw new OrchApiError(res.status, await readError(res));
-  }
+  const res = await postOrch(cfg, path, body, signal);
   if (res.status === 204) return { status: 204, body: null };
   const text = await res.text();
   if (!text.trim()) return { status: res.status, body: null };

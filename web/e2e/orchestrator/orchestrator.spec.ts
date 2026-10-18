@@ -6,6 +6,8 @@ import {
   bearerTargetAllowed,
   envOrchApiBase,
   normalizedOrchEnvApi,
+  postOrchApprove,
+  postOrchMessage,
   isSameOriginApiBase,
   orchAuthHeaders,
   orchTestModeEnabled,
@@ -21,6 +23,22 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("approve и message делят отказ 401", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "no" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  const cfg = { apiBase: "", session: "s", token: "t", scenario: "" };
+  try {
+    await expect(postOrchApprove(cfg, { approval_id: "appr-1", task_id: null })).rejects.toMatchObject({ status: 401 });
+    await expect(postOrchMessage(cfg, { text: "привет" })).rejects.toMatchObject({ status: 401 });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 
 test("хвостовые слэши в NEXT_PUBLIC_ORCH_API снимаются все", () => {
   expect(normalizedOrchEnvApi("https://api.example.com/orch//")).toBe("https://api.example.com/orch");
