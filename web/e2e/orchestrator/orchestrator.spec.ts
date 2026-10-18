@@ -1590,6 +1590,15 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
   });
 
+  test("после retry_step видна подсказка про kill", async ({ page }) => {
+    await openWithToken(page, "paidoutcome", "paid-kill-hint");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-paid-kill-hint")).toHaveCount(0);
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-kill-hint")).toContainText("Kill");
+  });
+
   test("paid_outcome_unknown: retry_step → approval_decided → approval_required(retry_armed) → grant", async ({ page }) => {
     await openWithToken(page, "paidoutcome", "paid-rearm");
     await page.getByTestId("orch-composer").fill("платный шаг оборвался");

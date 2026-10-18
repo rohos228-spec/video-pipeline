@@ -857,6 +857,9 @@ function PaidOutcomeActions({
           <p className="text-[11px] text-white/80">
             {forecast != null ? formatPaidOutcomeForecast(forecast) : PAID_OUTCOME_COPY.forecastMissing}
           </p>
+          <p data-testid="orch-paid-kill-hint" className="mt-1 text-[11px] text-white/55">
+            {PAID_OUTCOME_COPY.killAfterRetry}
+          </p>
           {!confirmHidden && forecast != null ? (
             <Button
               type="button"
