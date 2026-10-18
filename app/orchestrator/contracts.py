@@ -1398,27 +1398,30 @@ def load_risk_escalations() -> tuple[Any, ...]:
 
 
 def group_is_new(params: Any) -> bool:
-    """Новая группа — по серверному ключу. Флаг планировщика только без ключа.
+    """Новая группа. Флаг планировщика риск не снижает.
 
-    ``group`` / ``group_id`` / ``group_key``: нет записи или сбой lookup —
-    группа новая. Без ключа остаётся ``group_is_new is True``.
+    Нет ключа ``group`` / ``group_id`` / ``group_key`` — группа новая.
+    Ключ есть: нет записи или сбой lookup — новая. ``group_is_new is True``
+    может только повысить уже найденную группу.
     """
+    planner_new = isinstance(params, dict) and params.get("group_is_new") is True
     if not isinstance(params, dict):
-        return False
+        return True
     key = ""
     for field in ("group", "group_id", "group_key"):
         raw = params.get(field)
         if isinstance(raw, str) and raw.strip():
             key = raw.strip()
             break
-    if key:
-        try:
-            from app.services.node_groups import get_node_group
+    if not key:
+        return True
+    try:
+        from app.services.node_groups import get_node_group
 
-            return get_node_group(key) is None
-        except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
-            return True
-    return params.get("group_is_new") is True
+        server_new = get_node_group(key) is None
+    except Exception:  # noqa: BLE001 — lookup группы fail-closed: считаем новой
+        return True
+    return server_new or planner_new
 
 
 def escalation_for(action: str, params: Any) -> Any | None:
