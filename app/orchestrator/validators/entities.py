@@ -256,6 +256,7 @@ def _is_shot(item: Any) -> bool:
     """Шот с id. Нет ключа «закадр» — пустой закадр, как ``""``.
 
     Ключи шота раньше ``имя`` и op: реальный шот с именем остаётся видимым.
+    ``описание`` тоже ключ шота: ``{id, имя, описание}`` не теряется.
     Обёртка ``{id, attrs}`` сама не шот — шоты лежат в ``attrs.кадры``.
     """
 
@@ -263,7 +264,10 @@ def _is_shot(item: Any) -> bool:
         return False
     if any(key in item for key in ("кадры", "cells", "ячейки", "shots")):
         return False
-    has_shot_key = any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план"))
+    has_shot_key = any(
+        key in item
+        for key in ("место", "действие", "сцена", "закадр", "активен", "план", "описание")
+    )
     attrs = item.get("attrs")
     if isinstance(attrs, dict) and "кадры" in attrs:
         return False
