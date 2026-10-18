@@ -219,35 +219,35 @@ class RagEngine:
         if use_rerank:
             pool = max(pool, rerank_pool)
         expanded = expand_family_query(query)
-        lexical = (
-            self.store.bm25(fts_match_query(expanded), selected, limit=pool, scope=bm25_scope)
+        stored, vectors = self._cached_corpus(selected)
+        parent_of = _parent_of_windows(stored)
+        by_id = {chunk.chunk_id: chunk for chunk in stored if not _is_section_window(chunk)}
+        # Окна не занимают слоты пула: оценка окна переходит родителю до RRF и реранкера.
+        lexical_rows = (
+            self.store.bm25(fts_match_query(expanded), selected, limit=pool * 4, scope=bm25_scope)
             if channel != "vector"
             else []
         )
-        lexical_ids = [chunk_id for chunk_id, _score in lexical]
-        lexical_scores = dict(lexical)
-        stored, vectors = self._cached_corpus(selected)
-        vector_scored: list[tuple[float, Chunk]] = []
+        lexical_ids, lexical_scores = _absorb_windows(lexical_rows, parent_of)
+        lexical_ids = lexical_ids[:pool]
         if channel == "bm25":
-            for chunk in stored:
-                vector_scored.append((0.0, chunk))
-            query_vector_ids: list[str] = []
+            query_vector_ids = []
+            vector_scores = {chunk_id: 0.0 for chunk_id in by_id}
         else:
             query_vector = self._cached_query_vector(expanded)
-            for chunk in stored:
-                score = cosine(query_vector, vectors.get(chunk.chunk_id) or [])
-                vector_scored.append((score, chunk))
-            vector_scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
-            query_vector_ids = [chunk.chunk_id for _score, chunk in vector_scored[:pool]]
-        vector_scores = {chunk.chunk_id: score for score, chunk in vector_scored}
+            vector_rows = [
+                (chunk.chunk_id, cosine(query_vector, vectors.get(chunk.chunk_id) or []))
+                for chunk in stored
+            ]
+            _vector_ids, vector_scores = _absorb_windows(vector_rows, parent_of)
+            query_vector_ids = _vector_ids[:pool]
         if channel == "bm25":
-            fused = {chunk_id: score for chunk_id, score in lexical}
+            fused = {chunk_id: lexical_scores[chunk_id] for chunk_id in lexical_ids}
         elif channel == "vector":
             fused = {chunk_id: score for chunk_id, score in vector_scores.items()}
         else:
             weights = None if rrf_weights is None else [rrf_weights[0], rrf_weights[1]]
             fused = rrf_merge([lexical_ids, query_vector_ids], k=rrf_k, weights=weights)
-        by_id = {chunk.chunk_id: chunk for _score, chunk in vector_scored}
         ordered = [
             chunk_id
             for chunk_id in sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
@@ -454,6 +454,40 @@ def _doc_key(chunk: Chunk) -> str:
 
 def _is_section_window(chunk: Chunk) -> bool:
     return bool(str(chunk.metadata.get("parent_part_key") or ""))
+
+
+def _parent_of_windows(chunks: list[Chunk]) -> dict[str, str]:
+    """chunk_id окна → chunk_id родительской секции."""
+    parents: dict[tuple[str, str, str], str] = {}
+    for chunk in chunks:
+        if _is_section_window(chunk):
+            continue
+        key = (chunk.corpus, chunk.source_id, str(chunk.metadata.get("part_key") or ""))
+        parents[key] = chunk.chunk_id
+    mapping: dict[str, str] = {}
+    for chunk in chunks:
+        parent_key = str(chunk.metadata.get("parent_part_key") or "")
+        if not parent_key:
+            continue
+        target = parents.get((chunk.corpus, chunk.source_id, parent_key))
+        if target:
+            mapping[chunk.chunk_id] = target
+    return mapping
+
+
+def _absorb_windows(
+    ranked: list[tuple[str, float]],
+    parent_of: dict[str, str],
+) -> tuple[list[str], dict[str, float]]:
+    """Склеивает окно с родителем, оставляя лучшую оценку. Окна из списка уходят."""
+    best: dict[str, float] = {}
+    for chunk_id, score in ranked:
+        target = parent_of.get(chunk_id, chunk_id)
+        previous = best.get(target)
+        if previous is None or score > previous:
+            best[target] = float(score)
+    order = sorted(best, key=lambda chunk_id: (-best[chunk_id], chunk_id))
+    return order, best
 
 
 def _collapse_to_parents(

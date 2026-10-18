@@ -130,3 +130,56 @@ def test_window_hit_returns_the_parent_chunk_id(tmp_path: Path) -> None:
     assert found[0].chunk_id == chunk_id_for("prompts", "n_excel_gpt_sd_asm", "s5")
     assert found[0].metadata.get("part_key") == "s5"
     assert all("~" not in str(chunk.metadata.get("part_key")) for chunk in found)
+
+
+def test_rerank_scores_the_parent_text_not_the_window(tmp_path: Path) -> None:
+    parent = SourceDoc(
+        corpus="prompts",
+        source_id="n_excel_gpt_sd_asm",
+        title="Сборка",
+        text="Общий закон без редкого слова.",
+        part_key="s5",
+    )
+    child = SourceDoc(
+        corpus="prompts",
+        source_id="n_excel_gpt_sd_asm",
+        title="Сборка",
+        text="Здесь лежит уникальное слово крючок.",
+        part_key="s5~0",
+        metadata={"parent_part_key": "s5"},
+    )
+    other = SourceDoc(
+        corpus="prompts",
+        source_id="n_other",
+        title="Другое",
+        text="Совсем другой текст про двор.",
+        part_key="s0",
+    )
+
+    class _Recording:
+        reranker_id = "recording"
+
+        def __init__(self) -> None:
+            self.passages: list[str] = []
+
+        def score(self, query: str, passages: list[str]) -> list[float]:
+            self.passages = list(passages)
+            return [float(len(passages) - index) for index in range(len(passages))]
+
+    recorder = _Recording()
+    engine = RagEngine(
+        db_path=tmp_path / "orch_rag.db",
+        rules_path=tmp_path / "no-rules.md",
+        static_docs={"prompts": [parent, child, other], "nodes": [], "rules": [], "history": []},
+        scan_git=False,
+        reranker=recorder,
+    )
+    try:
+        engine.reindex("prompts")
+        found = engine.retrieve("крючок", ["prompts"], top_k=2, rerank=True, rerank_pool=4)
+    finally:
+        engine.close()
+    assert found[0].metadata.get("part_key") == "s5"
+    assert recorder.passages
+    assert any("Общий закон" in passage for passage in recorder.passages)
+    assert all("крючок" not in passage for passage in recorder.passages)
