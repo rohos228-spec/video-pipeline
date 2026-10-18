@@ -2063,6 +2063,7 @@ def apply_scene_plan_cells(
             if len(mine) != len(c["shots"]) and any("порядок" in s for s in mine):
                 for n, s in enumerate(mine, start=1):
                     s["порядок"] = n
+            # Срез не выбрасывает шоты: не-словари и всё, что симуляция не вернула, остаются.
             seen = {id(s) for s in mine}
             for shot in list(c.get("shots") or []):
                 if (

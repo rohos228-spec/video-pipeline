@@ -36,6 +36,79 @@ def _ids(rows: list[dict]) -> list[str]:
     return [str(row.get("id")) for row in rows]
 
 
+def test_scene_plan_slice_keeps_non_dict_and_replica(warn_log) -> None:
+    """Срез ячейки не выбрасывает шоты и не стирает реплику."""
+    from app.services.scene_plan import apply_scene_plan_cells
+
+    shot = {
+        "id": "1-S1-K1",
+        "зона": "кухня",
+        "план": "СРЕДНИЙ",
+        "действие": "герой стоит у стола",
+        "закадр": "Герой стоит у стола.",
+        "реплика": "алло",
+        "говорит": "герой",
+        "select_fix": "T3→T1",
+        "люди": [{"кто": "герой"}],
+    }
+    cells = [{
+        "key": "cell",
+        "owned": True,
+        "plan": {"зоны": [{"id": "кухня", "предметы": []}], "проходы": []},
+        "shots": [shot, "не словарь"],
+    }]
+    apply_scene_plan_cells(cells)
+    shots = cells[0]["shots"]
+    assert "не словарь" in shots
+    kept = next(s for s in shots if isinstance(s, dict) and s.get("id") == "1-S1-K1")
+    assert kept.get("реплика") == "алло"
+    assert kept.get("говорит") == "герой"
+    assert kept.get("select_fix") == "T3→T1"
+    assert any("не словарь" in line for line in warn_log)
+
+
+def test_align_keeps_foreign_shot_fields(warn_log) -> None:
+    from app.services.scene_shot_grammar import align_shots_to_action_chain
+
+    action = (
+        "1. кабинет следствия — следователь открывает папку\n"
+        "(Следователь открыл толстую следственную папку на столе.)"
+    )
+    shots = [
+        {
+            "id": "a",
+            "сцена": 1,
+            "место": "кабинет следствия",
+            "действие": "открывает",
+            "реплика": "где",
+            "говорит": "следователь",
+            "select_fix": "T1",
+        },
+        {
+            "id": "lab",
+            "сцена": 1,
+            "место": "лаборатория криминалистики",
+            "действие": "снимает",
+            "реплика": "алло",
+            "говорит": "эксперт",
+            "select_fix": "T3→T1",
+        },
+        "хвост",
+    ]
+    ops = [{"frame_uuid": "u1", "fields": {"кадры": shots}}]
+    frames = [{"uuid": "u1", "attrs": {"главное_действие": action}}]
+    align_shots_to_action_chain(ops, frames)
+    kept = ops[0]["fields"]["кадры"]
+    assert [s.get("id") if isinstance(s, dict) else s for s in kept] == ["a", "lab", "хвост"]
+    foreign = kept[1]
+    assert foreign["карантин"] is True
+    assert foreign["реплика"] == "алло"
+    assert foreign["говорит"] == "эксперт"
+    assert foreign["select_fix"] == "T3→T1"
+    assert kept[0]["реплика"] == "где"
+    assert any("WARN align_shots_to_action_chain" in line for line in warn_log)
+
+
 def test_align_marks_foreign_room_and_keeps_shot_ids(warn_log) -> None:
     from app.services.scene_shot_grammar import align_shots_to_action_chain
 
