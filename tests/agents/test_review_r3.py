@@ -1020,7 +1020,10 @@ async def test_plan_mutating_false_does_not_loosen_registry(token: str) -> None:
         task_id = await rt.supervisor.start_task("r3-tighten", "правка")
         await rt.supervisor.wait(task_id, timeout=5)
         assert actions.calls == []
-        assert rt.tasks.get(task_id)["error"] == "deletion_blocked"
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert rt.tasks.get(task_id)["error"] != "deletion_blocked"
+        approvals = [event for event in rt.bus.replay("r3-tighten", 0) if event.type == "approval_required"]
+        assert approvals[-1].payload["reason"] == "missing_project_id"
     finally:
         set_runtime(None)
 
