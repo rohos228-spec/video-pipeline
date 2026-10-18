@@ -165,7 +165,8 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
     # Полный список до фильтра: R15 и per-frame таймлайн должны видеть
     # помеченный кадр, иначе его речь остаётся в voice_full и не вырезается.
     all_frame_numbers = [int(fr.number) for fr in frames_all]
-    marked_numbers = [int(fr.number) for fr in frames_all if not frame_is_active(fr)]
+    marked_frames = [fr for fr in frames_all if not frame_is_active(fr)]
+    marked_numbers = [int(fr.number) for fr in marked_frames]
     if marked_numbers:
         logger.warning(
             "WARN [#{}] assemble: кадры {} помечены «удалён» — не входят в ролик, строки сохранены",
@@ -359,6 +360,7 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             frames=frames,
             frames_all=frames_all,
             marked_numbers=marked_numbers,
+            marked_frames=marked_frames,
             skipped_no_video=skipped_no_video,
             audio=audio,
             audio_path=audio_path,
@@ -383,6 +385,89 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
         raise
 
 
+def _remember_r15_window(frame: Frame, start_s: float, end_s: float) -> None:
+    """Окно помеченного кадра живёт на строке БД, не только в ячейке R15."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    attrs = dict(frame.attrs or {})
+    attrs["r15_window"] = {"start_s": float(start_s), "end_s": float(end_s)}
+    frame.attrs = attrs
+    try:
+        flag_modified(frame, "attrs")
+    except Exception:  # noqa: BLE001
+        pass
+    if frame.start_ts is None or frame.end_ts is None:
+        frame.start_ts = float(start_s)
+        frame.end_ts = float(end_s)
+
+
+def _marker_from_frame_window(frame: Frame):
+    """Метка R15 из start/end кадра или attrs['r15_window'], если ячейка пуста."""
+    from app.services.montage.r15 import R15Marker
+    from app.services.plan_timestamps import format_timecode_range
+
+    attrs = frame.attrs if isinstance(frame.attrs, dict) else {}
+    window = attrs.get("r15_window") if isinstance(attrs.get("r15_window"), dict) else {}
+    start = frame.start_ts if frame.start_ts is not None else window.get("start_s")
+    end = frame.end_ts if frame.end_ts is not None else window.get("end_s")
+    if start is None or end is None:
+        return None
+    start_f, end_f = float(start), float(end)
+    if end_f <= start_f + 0.01:
+        return None
+    return R15Marker(
+        int(frame.number),
+        format_timecode_range(start_f, end_f),
+        start_f,
+        end_f,
+    )
+
+
+def _markers_for_marked_frames(
+    project: Project,
+    marked_frames: list[Frame],
+    *,
+    sheet_numbers: list[int],
+) -> list:
+    """Метки помеченных кадров: ячейка R15, иначе окно на самой строке кадра.
+
+    Экспорт может очистить ROW_TIMECODE_V8. Интервал при этом остаётся
+    в Frame.start_ts/end_ts или в attrs['r15_window'], и речь всё равно вырезается.
+    """
+    from app.services.montage.r15 import load_r15_markers
+
+    by_number = {int(fr.number): fr for fr in marked_frames}
+    sheet_ids = {int(n) for n in sheet_numbers}
+    markers = []
+    if sheet_ids:
+        loaded, _row = load_r15_markers(project, [n for n in sheet_numbers])
+        for marker in loaded:
+            frame = by_number.get(int(marker.frame_number))
+            if frame is not None:
+                _remember_r15_window(frame, marker.start_s, marker.end_s)
+            markers.append(marker)
+    for frame in marked_frames:
+        if int(frame.number) in sheet_ids:
+            continue
+        marker = _marker_from_frame_window(frame)
+        if marker is None:
+            logger.warning(
+                "WARN [#{}] R15: кадр {} помечен, строка 15 пуста и на кадре нет интервала",
+                project.id,
+                frame.number,
+            )
+            continue
+        logger.warning(
+            "WARN [#{}] R15: кадр {} — ячейка строки 15 пуста, окно {:.2f}-{:.2f}s взято с кадра",
+            project.id,
+            frame.number,
+            marker.start_s,
+            marker.end_s,
+        )
+        markers.append(marker)
+    return markers
+
+
 async def _assemble_body(
     session: AsyncSession,
     project: Project,
@@ -391,6 +476,7 @@ async def _assemble_body(
     frames: list[Frame],
     frames_all: list[Frame],
     marked_numbers: list[int],
+    marked_frames: list[Frame],
     skipped_no_video: list[int],
     audio,
     audio_path: Path,
@@ -437,8 +523,12 @@ async def _assemble_body(
                 "нет активных меток R15 — помеченные «удалён» не входят в ролик"
             )
         markers, ts_row = load_r15_markers(project, kept_numbers)
-        if marked_in_sheet:
-            marked_markers, _marked_row = load_r15_markers(project, marked_in_sheet)
+        marked_markers = _markers_for_marked_frames(
+            project,
+            marked_frames,
+            sheet_numbers=marked_in_sheet,
+        )
+        if marked_markers:
             markers = [*markers, *marked_markers]
         markers, mux_audio, audio_duration, r15_cuts = await prepare_r15_live_voice(
             markers, audio_path, marked_set

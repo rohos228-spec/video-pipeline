@@ -1381,19 +1381,21 @@ async def test_coverage_delete_stamps_parent_shot(
     assert child.voiceover_text == "хвост"
 
 
-def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
+def test_export_keeps_marked_frame_timecode(tmp_path: Path) -> None:
+    """Экспорт не стирает R15 и закадр помеченного кадра. db_apply не меняем."""
     from types import SimpleNamespace
 
     from openpyxl import Workbook, load_workbook
 
     from app.services.db_apply import export_project_xlsx
-    from app.services.xlsx_v8_import import ROW_VOICEOVER_V8
+    from app.services.xlsx_v8_import import ROW_TIMECODE_V8, ROW_VOICEOVER_V8
 
     path = tmp_path / "project.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "план"
     ws.cell(row=ROW_VOICEOVER_V8, column=4, value="старый-закадр")
+    ws.cell(row=ROW_TIMECODE_V8, column=4, value="0:01.00-0:02.00")
     wb.save(path)
     wb.close()
     marked = SimpleNamespace(
@@ -1421,7 +1423,10 @@ def test_export_skips_marked_frame_column(tmp_path: Path) -> None:
     wb2 = load_workbook(path)
     sheet = wb2["план"]
     assert sheet.cell(ROW_VOICEOVER_V8, 3).value == "живой"
-    assert sheet.cell(ROW_VOICEOVER_V8, 4).value is None
+    assert sheet.cell(ROW_VOICEOVER_V8, 4).value == "секретный закадр"
+    timecode = str(sheet.cell(ROW_TIMECODE_V8, 4).value or "")
+    assert timecode
+    assert "0:00.00" in timecode and "0:03.00" in timecode
     wb2.close()
     assert marked.voiceover_text == "секретный закадр"
     assert marked.attrs["удалён"] is True
@@ -2620,3 +2625,166 @@ async def test_run_assemble_cuts_marked_frame_speech(
     assert marked.voiceover_text == "два"
     assert (marked.attrs or {}).get("удалён") is True
     assert any("речь помеченных кадров" in line for line in warn_log)
+
+
+@pytest.mark.asyncio
+async def test_run_assemble_cuts_marked_speech_when_r15_cell_cleared(
+    session: AsyncSession, project: Project, monkeypatch, warn_log
+) -> None:
+    """Пустая ячейка R15 у помеченного кадра не возвращает его речь в ролик.
+
+    Окно берётся с Frame.start_ts/end_ts. db_apply не участвует.
+    """
+    import json
+    import subprocess
+
+    from openpyxl import Workbook
+
+    from app.settings import settings
+
+    if not isinstance(settings.data_dir, Path):
+        settings.data_dir = Path(settings.data_dir)
+
+    from app.models import Artifact, ArtifactKind, FrameStatus
+    from app.orchestrator.steps.assemble import _run_assemble
+    from app.services.media_probe import probe_duration
+    from app.services.xlsx_v8_import import ROW_TIMECODE_V8, ROW_VOICEOVER_V8, SHEET_PLAN_V8
+
+    def tone(path: Path, seconds: float, freq: int) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"sine=frequency={freq}:duration={seconds}:sample_rate=44100",
+                "-c:a", "pcm_s16le",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    def clip(path: Path, color: str) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"color=c={color}:s=320x240:d=2:r=30",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    session.add(project)
+    await session.flush()
+    root = project.data_dir
+    audio = root / "audio"
+    videos = root / "videos"
+    audio.mkdir(parents=True)
+    videos.mkdir(parents=True)
+    parts = [audio / "p1.wav", audio / "p2.wav", audio / "p3.wav"]
+    tone(parts[0], 1.0, 440)
+    tone(parts[1], 1.0, 2000)
+    tone(parts[2], 1.0, 880)
+    voice = audio / "voice_full.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(parts[0]), "-i", str(parts[1]), "-i", str(parts[2]),
+            "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le",
+            str(voice),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    clip(videos / "clip_001_a.mp4", "red")
+    clip(videos / "clip_003_a.mp4", "blue")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    for col, text in ((3, "один"), (4, "два"), (5, "три")):
+        ws.cell(row=ROW_VOICEOVER_V8, column=col, value=text)
+    ws.cell(row=ROW_TIMECODE_V8, column=3, value="0:00.00-0:01.00")
+    ws.cell(row=ROW_TIMECODE_V8, column=5, value="0:02.00-0:03.00")
+    wb.save(root / "project.xlsx")
+    wb.close()
+
+    async def _noop(*_a, **_k):
+        return None
+
+    async def _enter(*_a, **_k):
+        return True, "", None
+
+    monkeypatch.setattr("app.orchestrator.steps.assemble.recover_before_assemble", _noop)
+    monkeypatch.setattr("app.orchestrator.steps.assemble.can_enter_running", _enter)
+    monkeypatch.setattr("app.orchestrator.steps.assemble.send_hitl_video", _noop)
+    monkeypatch.setattr("app.services.mass_factory.on_child_montage_complete", _noop)
+
+    words_path = audio / "words.json"
+    words_path.write_text(
+        json.dumps({
+            "words": [
+                {"word": "один", "start": 0.0, "end": 0.9, "prob": 0.9},
+                {"word": "три", "start": 2.1, "end": 2.9, "prob": 0.9},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    for number, text, marked in (
+        (1, "один", False),
+        (2, "два", True),
+        (3, "три", False),
+    ):
+        attrs = (
+            {"удалён": True, "активен": False, "карантин": True, "пометка": "сборка"}
+            if marked
+            else {}
+        )
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=number,
+                uuid=f"{number:02d}" * 12,
+                voiceover_text=text,
+                status=FrameStatus.planned,
+                attrs=attrs,
+                start_ts=1.0 if marked else None,
+                end_ts=2.0 if marked else None,
+            )
+        )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.audio,
+            uuid="au" * 12,
+            path=str(voice),
+            meta={"mode": "full_voice"},
+        )
+    )
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid="ww" * 12,
+            path=str(words_path),
+            meta={},
+        )
+    )
+    await session.flush()
+
+    full_dur = await probe_duration(voice)
+    await _run_assemble(session, project, None)  # type: ignore[arg-type]
+    out = root / "final" / f"{project.slug}.mp4"
+    out_dur = await probe_duration(out)
+    assert abs(out_dur - 2.0) < 0.35
+    assert out_dur < full_dur - 0.7
+    mid_after = _band_mean_db(out, "bandpass=f=2000:width_type=h:w=200")
+    kept_after = _band_mean_db(out, "highpass=f=300,lowpass=f=600")
+    assert mid_after < -20.0
+    assert kept_after > mid_after + 12.0
+    marked_row = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id, Frame.number == 2))
+    ).scalar_one()
+    assert marked_row.voiceover_text == "два"
+    assert (marked_row.attrs or {}).get("удалён") is True
+    assert any("взято с кадра" in line for line in warn_log)
