@@ -9,6 +9,7 @@ import {
   orchKillUsesMessageField,
   orchTaskModeEnabled,
   parseOrchProjectId,
+  parseOrchTaskId,
   projectBindWireBody,
   postOrchProject,
   PROJECT_BIND_CONFLICT,
@@ -397,7 +398,7 @@ export function useOrchestratorChat() {
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
       setDecisionError(null);
-      const taskNum = taskId != null && /^[1-9]\d*$/.test(taskId) ? Number(taskId) : null;
+      const taskNum = parseOrchTaskId(taskId);
       try {
         await postOrchProject(cfg, projectBindWireBody(projectId, taskNum));
         dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });

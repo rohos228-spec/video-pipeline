@@ -13,6 +13,7 @@ import {
   orchKillUsesMessageField,
   orchContractIsR34,
   parseOrchProjectId,
+  parseOrchTaskId,
   projectBindWireBody,
   PROJECT_BIND_CONFLICT,
   PROJECT_BIND_FOREIGN,
@@ -40,6 +41,13 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("task_id вне безопасного целого не уходит в bind", () => {
+  expect(parseOrchTaskId("12")).toBe(12);
+  expect(parseOrchTaskId(null)).toBeNull();
+  expect(parseOrchTaskId("1.5")).toBeNull();
+  expect(parseOrchTaskId("9007199254740993")).toBeNull();
+});
 
 test("message_start пользователя не получает id ассистента", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {

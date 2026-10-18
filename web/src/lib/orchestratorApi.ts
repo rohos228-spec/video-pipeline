@@ -127,6 +127,16 @@ export function orchContractIsR34(search?: string): boolean {
   return orchKillUsesMessageField(search);
 }
 
+/** Целый task_id ≥ 1 в безопасном диапазоне Number. Иначе null. */
+export function parseOrchTaskId(raw: string | null): number | null {
+  if (raw == null) return null;
+  const text = raw.trim();
+  if (!/^[1-9]\d*$/.test(text)) return null;
+  const id = Number(text);
+  if (!Number.isSafeInteger(id) || id < 1) return null;
+  return id;
+}
+
 /** Целое ≥ 1. Ноль, минус, дробь и пустая строка не уходят на сервер. */
 export function parseOrchProjectId(raw: string): number | null {
   const text = raw.trim();
