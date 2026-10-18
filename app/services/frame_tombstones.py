@@ -31,9 +31,9 @@ _KEY = "deleted_frame_numbers"
 REASON_MARK = "пометка"
 
 # Один предикат. Если модуль WS1 импортируется — это его функции.
-# Локальная матрица только при ImportError. Она совпадает с blob
-# e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0, включая NaN и неизвестные
-# строки. Вызывающие передают кадр; матрица читает ``attrs``.
+# Локальная матрица только при ImportError. Сигнатуры те же, что у blob
+# e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0: ``shot_is_active(shot)``,
+# ``frame_is_active(attrs)``. Вызывающие передают словарь attrs, не кадр.
 
 
 def _activity_flags():
@@ -117,24 +117,16 @@ def frame_marked_deleted(frame: Any) -> bool:
     return bool(is_true(attrs.get(DELETED_MARK)))
 
 
-def _fallback_frame_is_active(frame: Any) -> bool:
-    """Живой кадр. Вызывающие передают кадр, матрица — ``frame_is_active(attrs)``."""
-    if frame is None:
-        return False
-    attrs = getattr(frame, "attrs", None)
-    if attrs is None:
-        attrs = {}
-    return _fallback_frame_attrs_is_active(attrs)
-
-
 try:
     from app.orchestrator.validators.activity_flags import (
         frame_is_active,
         shot_is_active,
     )
 except ImportError:
+    # Те же сигнатуры, что у WS1: shot — словарь шота, frame_is_active — attrs.
+    # Обёртка над кадром читала бы dict.attrs как пусто и считала бы кадр живым.
     shot_is_active = _fallback_shot_is_active
-    frame_is_active = _fallback_frame_is_active
+    frame_is_active = _fallback_frame_attrs_is_active
 
 
 _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")

@@ -194,8 +194,8 @@ def test_shot_activity_matches_frame_tombstones_matrix(
 _FLAGS_BLOB = "e8a3284aa116f4fa4f8c2d9c07bfbd25a5fc62d0"
 
 
-def test_activity_fallback_simulates_import_error() -> None:
-    """ImportError оставляет локальную матрицу. Ядро: True, False, нет ключа."""
+def _block_activity_flags_import():
+    """ImportError на модуль WS1. Возвращает (tomb, restore)."""
     import builtins
     import importlib
 
@@ -210,23 +210,31 @@ def test_activity_fallback_simulates_import_error() -> None:
 
     builtins.__import__ = _blocked
     sys.modules.pop("app.orchestrator.validators.activity_flags", None)
-    try:
-        importlib.reload(tomb)
-        assert tomb.shot_is_active is tomb._fallback_shot_is_active
-        assert tomb.frame_is_active is tomb._fallback_frame_is_active
-        assert tomb.shot_is_active({}) is True
-        assert tomb.shot_is_active({ACTIVE_MARK: True}) is True
-        assert tomb.shot_is_active({ACTIVE_MARK: False}) is False
-        assert tomb.shot_is_active({DELETED_MARK: True}) is False
-        assert tomb.shot_is_active({QUARANTINE_MARK: True}) is False
-        assert tomb.frame_is_active(SimpleNamespace(attrs={})) is True
-        assert tomb.frame_is_active(SimpleNamespace(attrs={ACTIVE_MARK: False})) is False
-        assert tomb.frame_is_active(SimpleNamespace(attrs={DELETED_MARK: True})) is False
-        assert tomb.frame_is_active(SimpleNamespace(attrs={QUARANTINE_MARK: True})) is False
-    finally:
+    importlib.reload(tomb)
+
+    def _restore() -> None:
         builtins.__import__ = original
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
+
+    return tomb, _restore
+
+
+def test_activity_fallback_simulates_import_error() -> None:
+    """ImportError: удалённый кадр и неактивный шот остаются неактивными."""
+    tomb, restore = _block_activity_flags_import()
+    try:
+        assert tomb.shot_is_active is tomb._fallback_shot_is_active
+        assert tomb.frame_is_active is tomb._fallback_frame_attrs_is_active
+        deleted = SimpleNamespace(number=2, attrs={DELETED_MARK: True, ACTIVE_MARK: False})
+        inactive_shot = {ACTIVE_MARK: False, "id": "k"}
+        assert tomb.frame_is_active(getattr(deleted, "attrs", None) or {}) is False
+        assert tomb.shot_is_active(inactive_shot) is False
+        assert tomb.shot_is_active({DELETED_MARK: True}) is False
+        assert tomb.frame_is_active({}) is True
+        assert tomb.shot_is_active({}) is True
+    finally:
+        restore()
 
 
 def _activity_flags_blob_source() -> bytes | None:
@@ -285,6 +293,34 @@ def test_activity_predicates_reexport_when_importable(tmp_path) -> None:
     finally:
         sys.modules.pop("app.orchestrator.validators.activity_flags", None)
         importlib.reload(tomb)
+
+
+def test_fallback_signatures_match_ws1_blob(tmp_path) -> None:
+    """Сигнатуры fallback совпадают с blob e8a3284a: те же параметры и тип аргумента."""
+    import inspect
+
+    import app.services.activity_flags_fallback as fallback
+
+    source = _activity_flags_blob_source()
+    if source is None:
+        pytest.skip("git или blob activity_flags недоступен")
+    remote = _load_activity_flags_blob(tmp_path, source, "activity_flags_blob_signatures")
+    tomb, restore = _block_activity_flags_import()
+    try:
+        for name in ("shot_is_active", "frame_is_active"):
+            local = inspect.signature(getattr(tomb, name))
+            blob = inspect.signature(getattr(remote, name))
+            assert local == blob
+            assert local == inspect.signature(getattr(fallback, name))
+            assert [p.kind for p in local.parameters.values()] == [
+                p.kind for p in blob.parameters.values()
+            ]
+        assert list(inspect.signature(tomb.frame_is_active).parameters) == ["attrs"]
+        assert list(inspect.signature(tomb.shot_is_active).parameters) == ["shot"]
+        assert list(inspect.signature(remote.frame_is_active).parameters) == ["attrs"]
+        assert list(inspect.signature(remote.shot_is_active).parameters) == ["shot"]
+    finally:
+        restore()
 
 
 def test_fallback_matches_final_activity_flags_blob(tmp_path) -> None:
