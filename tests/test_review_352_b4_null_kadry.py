@@ -26,7 +26,10 @@ async def session(tmp_path: Path) -> AsyncSession:
 
 
 @pytest.mark.asyncio
-async def test_null_kadry_keeps_old_ladder(session: AsyncSession) -> None:
+@pytest.mark.parametrize("incoming", [None, [], "", {}])
+async def test_null_kadry_keeps_old_ladder(
+    session: AsyncSession, incoming: object
+) -> None:
     project = Project(slug="null-kadry", topic="t", hero_mode="auto")
     session.add(project)
     await session.flush()
@@ -46,7 +49,7 @@ async def test_null_kadry_keeps_old_ladder(session: AsyncSession) -> None:
     await apply_ops(
         session,
         project,
-        [{"frame_uuid": frame.uuid, "fields": {"кадры": None}}],
+        [{"frame_uuid": frame.uuid, "fields": {"кадры": incoming}}],
     )
     await session.commit()
     live = (

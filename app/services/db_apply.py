@@ -328,6 +328,11 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
+def _structured_container_empty(value: Any) -> bool:
+    """Пустой список или объект не считаем новой лестницей."""
+    return isinstance(value, (list, dict)) and len(value) == 0
+
+
 def _coerce_structured_attr(value: Any) -> Any:
     """Биты/кадры — JSON-массив или объект, не строка Excel."""
     if value is None:
@@ -1584,7 +1589,13 @@ async def apply_ops(
             if attr_key not in fields:
                 continue
             raw_attr = fields[attr_key]
-            if raw_attr is None or (isinstance(raw_attr, str) and not raw_attr.strip()):
+            blank = raw_attr is None or (
+                isinstance(raw_attr, str) and not raw_attr.strip()
+            )
+            empty_box = attr_key in {"кадры", "биты"} and _structured_container_empty(
+                raw_attr
+            )
+            if blank or empty_box:
                 logger.warning(
                     "WARN db_apply: пустое {} не пишем, прежнее значение на месте",
                     attr_key,
