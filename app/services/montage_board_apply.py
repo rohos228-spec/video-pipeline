@@ -716,10 +716,12 @@ async def _run_ops_phase(
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
             if result.get("paid_frame_skipped"):
-                # Платный кадр не трогаем, но правка остаётся в pending_ops.
-                op_status[idx] = op_status_after_result(result, ok)
-                result["held"] = True
-                result["held_reason"] = str(result.get("skipped") or "paid_frame_skipped")
+                # Платный кадр не трогаем; правка с текстом пользователя остаётся в pending_ops.
+                status = op_status_after_result(result, ok, all_ops[idx])
+                op_status[idx] = status
+                if status == "held":
+                    result["held"] = True
+                    result["held_reason"] = str(result.get("skipped") or "paid_frame_skipped")
                 results.append(result)
                 board["pending_ops"] = _pending_snapshot()
                 async with session_scope(project_id) as session:
@@ -734,7 +736,7 @@ async def _run_ops_phase(
                 if on_progress is not None:
                     await on_progress(len(results), max(total, 1), result)
                 return
-            op_status[idx] = op_status_after_result(result, ok)
+            op_status[idx] = op_status_after_result(result, ok, all_ops[idx])
             mapping = result.get("renumber") if ok else None
             if isinstance(mapping, dict) and mapping:
                 # Якорь создал шот → номера кадров сдвинулись: чиним ещё не

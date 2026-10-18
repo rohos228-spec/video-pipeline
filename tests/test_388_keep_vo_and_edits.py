@@ -61,10 +61,22 @@ def test_fold_already_present_not_duplicated_but_saved() -> None:
     assert dead["закадр_перенесён"] == "кот спит"
 
 
-def test_paid_frame_skip_keeps_op_pending() -> None:
-    status = op_status_after_result({"paid_frame_skipped": True}, False)
-    assert status == "held"
-    assert op_is_open(status)
+def test_paid_frame_skip_keeps_user_edit_pending() -> None:
+    for op_type in ("image_ai_change", "video_ai_change"):
+        op = {"type": op_type, "frame_number": 2, "instruction": "сделать закат"}
+        status = op_status_after_result({"paid_frame_skipped": True}, False, op)
+        assert status == "held"
+        assert op_is_open(status)
+
+
+def test_paid_frame_skip_drops_plain_regen() -> None:
+    for op_type in ("image_regen", "video_regen"):
+        status = op_status_after_result(
+            {"paid_frame_skipped": True}, False, {"type": op_type}
+        )
+        assert status == "skip"
+        assert not op_is_open(status)
+    assert op_status_after_result({"paid_frame_skipped": True}, False) == "skip"
 
 
 def test_op_status_ok_and_fail() -> None:
