@@ -238,6 +238,9 @@ def _scene_voiceover_covered(scene: dict[str, Any]) -> bool:
     if not scene_text:
         return True
     live, parked = _shot_voice_parts(scene)
+    # Закадр только на неактивных шотах — это потеря, даже если текст сходится.
+    if not live:
+        return False
     return _parts_cover(scene_text, live, parked)
 
 

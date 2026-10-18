@@ -281,6 +281,34 @@ def test_participation_follows_shots_of(monkeypatch: pytest.MonkeyPatch) -> None
     assert ("vo_on_inactive", "error", "b") not in _codes(violations)
 
 
+def test_scene_vo_without_active_shots_flagged() -> None:
+    """Сцена с закадром и только неактивными шотами — vo_on_inactive.
+
+    Если так уже было на before, повторно не блокируем.
+    """
+
+    before = _project(
+        [
+            {"id": "a", "закадр": "x"},
+            {"id": "b", "закадр": "y"},
+        ],
+        "x y",
+    )
+    after = _project(
+        [
+            {"id": "a", "активен": False, "закадр": "x"},
+            {"id": "b", "активен": False, "закадр": "y"},
+        ],
+        "x y",
+    )
+    violations = check_active_shots(before, after)
+    assert ("vo_on_inactive", "error", "s1") in _codes(violations)
+    assert violations[0].path == "scenes/s1/закадр"
+
+    parked = check_active_shots(after, copy.deepcopy(after))
+    assert ("vo_on_inactive", "error", "s1") not in _codes(parked)
+
+
 def test_reorder_with_scene_vo_passes() -> None:
     """Перестановка живых шотов не рвёт покрытие закадра сцены."""
 
