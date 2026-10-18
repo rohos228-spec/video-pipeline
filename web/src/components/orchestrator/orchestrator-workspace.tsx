@@ -183,7 +183,11 @@ export function OrchestratorWorkspace() {
             size="sm"
             className="h-9 gap-1.5 px-3 text-xs font-semibold"
             data-testid="orch-kill"
-            disabled={chat.needsToken}
+            disabled={
+              chat.needsToken ||
+              chat.state.killNotice?.phase === "stopping" ||
+              chat.state.killNotice?.phase === "stopped"
+            }
             onClick={() => setKillOpen(true)}
             title="Остановить неплатные шаги. Платный шаг остановится на границе."
           >

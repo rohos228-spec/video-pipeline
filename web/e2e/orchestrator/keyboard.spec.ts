@@ -154,6 +154,7 @@ test("клавиатура: Kill switch Tab, фокус и один Enter-зап
   await tabUntil(page, confirm);
   await expect(confirm).toBeFocused();
   await page.keyboard.press("Enter");
+  await expect(kill).toBeDisabled();
   await page.keyboard.press("Enter");
   const banner = page.getByTestId("orch-kill-status");
   await expect(banner).toContainText("Останавливаю…");
