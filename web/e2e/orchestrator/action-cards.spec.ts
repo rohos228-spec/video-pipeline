@@ -68,16 +68,18 @@ test("схема ws2-r2.3 закреплена sha256", () => {
   const raw = readFileSync(file);
   const hash = createHash("sha256").update(raw).digest("hex");
   expect(hash).toBe(ACTION_SCHEMA_SHA256);
-  expect(hash).toBe("d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10");
+  expect(hash).toBe("a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c");
   expect(ACTION_CONTRACT_VERSION).toBe("ws2-r2.3");
-  expect(ACTION_CONTRACT_REF).toBe("fdd8591499004d8c3c8c6f0b6f788ef708aec370");
+  expect(ACTION_CONTRACT_REF).toBe("627580674c8b80a4507be113ebb54b3e839ac6e4");
   expect(ACTION_SCHEMA_PATH).toBe("app/orchestrator/action_contracts");
   expect(JSON.parse(raw.toString("utf8")).version).toBe("ws2-r2.3");
   const source = readFileSync(path.join(dir, "orchestratorActionCards.ts"), "utf8");
   expect(source).toContain("app/orchestrator/action_contracts");
   expect(source).toContain("#378");
-  expect(source).toContain("fdd8591499004d8c3c8c6f0b6f788ef708aec370");
+  expect(source).toContain("627580674c8b80a4507be113ebb54b3e839ac6e4");
+  expect(source).toContain("a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c");
   expect(source).not.toContain("create_node@new_group");
+  expect(source).not.toContain("d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10");
 
   const elevated = metadataFrom({
     name: "create_node",
@@ -227,15 +229,6 @@ test("невалидный ответ действия остаётся карт
   expect(readActionEnvelope(blank, 2)?.kind).toBe("invalid");
   expect(readActionEnvelope(blank, 2)?.error).toBe("Некорректный ответ действия");
 
-  const implied = structuredClone(EXAMPLE_PARAMS_EDIT);
-  const impliedResult = implied.result as { skipped?: string[]; partial?: boolean };
-  impliedResult.skipped = ["shot-2"];
-  impliedResult.partial = false;
-  const partial = readActionEnvelope(implied, 3);
-  expect(partial?.kind).toBe("params");
-  expect(partial?.partial).toBe(true);
-  expect(partial?.skipped).toEqual(["shot-2"]);
-
   await openWithToken(page, "act-invalid");
   await emit(page, "act-invalid", "step_finished", stale);
   const card = page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" });
@@ -248,11 +241,36 @@ test("невалидный ответ действия остаётся карт
   await expect(page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" })).toHaveCount(2);
   await expect(page.getByTestId("orch-soft-delete")).toHaveCount(0);
   await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+});
 
-  await emit(page, "act-invalid", "step_finished", implied);
-  const kept = page.getByTestId("orch-action-card").filter({ hasText: "shot-2" });
-  await expect(kept.getByTestId("orch-action-partial")).toContainText("Частично");
-  await expect(kept).not.toContainText("Некорректный ответ действия");
+test("skipped без partial считается некорректным ответом", async ({ page }) => {
+  const broken = structuredClone(EXAMPLE_PARAMS_EDIT);
+  const result = broken.result as { skipped?: string[]; partial?: boolean };
+  result.skipped = ["shot-2"];
+  result.partial = false;
+  const view = readActionEnvelope(broken, 1);
+  expect(view?.kind).toBe("invalid");
+  expect(view?.error).toBe("Некорректный ответ действия");
+
+  const missing = structuredClone(EXAMPLE_PARTIAL_EDIT);
+  const missingResult = missing.result as { skipped?: string[]; partial?: boolean };
+  expect(missingResult.skipped?.length).toBeGreaterThan(0);
+  delete missingResult.partial;
+  expect(readActionEnvelope(missing, 2)?.kind).toBe("invalid");
+  expect(readActionEnvelope(missing, 2)?.error).toBe("Некорректный ответ действия");
+
+  const ok = readActionEnvelope(EXAMPLE_PARTIAL_EDIT, 3);
+  expect(ok?.kind).toBe("params");
+  expect(ok?.partial).toBe(true);
+  expect(ok?.skipped).toEqual(["shot-2"]);
+
+  await openWithToken(page, "act-skip-partial");
+  await emit(page, "act-skip-partial", "step_finished", broken);
+  const card = page.getByTestId("orch-action-card").filter({ hasText: "Некорректный ответ действия" });
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute("data-kind", "invalid");
+  await expect(card.getByTestId("orch-action-partial")).toHaveCount(0);
+  await expect(page.getByTestId("orch-action-card").filter({ hasText: "Частично" })).toHaveCount(0);
 });
 
 test("построчный дифф промта не теряет строки", () => {

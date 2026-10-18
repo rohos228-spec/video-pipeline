@@ -1,14 +1,14 @@
 /**
  * Карточки результатов действий по контракту WS2.
  *
- * ws2-r2.3 — PR #378 @ fdd8591499004d8c3c8c6f0b6f788ef708aec370.
+ * ws2-r2.3 — PR #378 @ 627580674c8b80a4507be113ebb54b3e839ac6e4.
  * Схема: app/orchestrator/action_contracts
  * Копия для моков: web/src/lib/orchestratorActionResults.schema.json
- * sha256 d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10
+ * sha256 a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c
  *
  * Формат результатов тот же, что у r2.2. version строго больше base_version;
- * пустой snapshot_id и archive_ref недействительны; непустой skipped включает
- * partial. Иначе карточка «Некорректный ответ действия», интерфейс не падает.
+ * пустой snapshot_id и archive_ref недействительны. Непустой skipped без
+ * partial=true — некорректный ответ, карточка «Некорректный ответ действия».
  * Риск и approval карточки берутся из metadata, не из имени действия.
  * Имя с «@» отвергает UI, не схема: ответ некорректный, карточка не рисуется.
  * Отдельной строки name@… в таблице нет.
@@ -29,9 +29,9 @@
  */
 
 export const ACTION_CONTRACT_VERSION = "ws2-r2.3";
-export const ACTION_CONTRACT_REF = "fdd8591499004d8c3c8c6f0b6f788ef708aec370";
+export const ACTION_CONTRACT_REF = "627580674c8b80a4507be113ebb54b3e839ac6e4";
 export const ACTION_SCHEMA_PATH = "app/orchestrator/action_contracts";
-export const ACTION_SCHEMA_SHA256 = "d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10";
+export const ACTION_SCHEMA_SHA256 = "a26a0f02630cb1c8fa71dba10540ba74ccabdb7b532cfc7e4a4219dc090ab99c";
 export const INVALID_ACTION_TEXT = "Некорректный ответ действия";
 export const REPORT_EDIT_ACTION = "update_report";
 const CHANGE_ID = /^orch-appr-[0-9]+-[0-9]+$/;
@@ -370,9 +370,14 @@ function diffShape(result: Record<string, unknown>): "unified" | "fields" | null
 function partialPair(result: Record<string, unknown> | null, payload: Record<string, unknown>): { partial: boolean; skipped: string[] } {
   const fromResult = result ? stringList(result.skipped) : [];
   const skipped = fromResult.length ? fromResult : stringList(payload.skipped);
-  let partial = result?.partial === true || payload.partial === true;
-  if (skipped.length > 0) partial = true;
+  const partial = result?.partial === true || (fromResult.length === 0 && payload.partial === true);
   return { partial, skipped };
+}
+
+/** Схема: непустой skipped требует partial=true на том же объекте результата. */
+function skippedWithoutPartial(result: Record<string, unknown> | null): boolean {
+  if (!result) return false;
+  return stringList(result.skipped).length > 0 && result.partial !== true;
 }
 
 function blankRef(value: unknown): boolean {
@@ -469,6 +474,7 @@ function readActionEnvelopeInner(payload: Record<string, unknown>, seq: number):
   }
   const metaRaw = result ? plainObject(result.metadata) : null;
   if (metaRaw && badActionName(metaRaw.name)) return invalidView(seq);
+  if (skippedWithoutPartial(result)) return invalidView(seq);
   if (status === "approval_required") {
     const metadata = metadataFrom(metaRaw);
     if (!metadata) return invalidView(seq);
