@@ -1,0 +1,3 @@
+609a0e94 R0c-B eco: activity_flags-предикат в frame_tombstones, перенос пометок, fail-closed regen, chronology/camera_expand/frame_audio фиксы
+4b5c674e Merge remote-tracking branch 'pr/386' into HEAD
+4776dd9a Merge pull request #379 from rohos228-spec/cursor/ws1-r1-validators

@@ -1,0 +1,482 @@
+From 609a0e941aab7b43482b986bf96384bc4989bfd7 Mon Sep 17 00:00:00 2001
+From: rohos228-spec <rohos228-spec@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:13:15 +0300
+Subject: [PATCH] =?UTF-8?q?R0c-B=20eco:=20activity=5Fflags-=D0=BF=D1=80?=
+ =?UTF-8?q?=D0=B5=D0=B4=D0=B8=D0=BA=D0=B0=D1=82=20=D0=B2=20frame=5Ftombsto?=
+ =?UTF-8?q?nes,=20=D0=BF=D0=B5=D1=80=D0=B5=D0=BD=D0=BE=D1=81=20=D0=BF?=
+ =?UTF-8?q?=D0=BE=D0=BC=D0=B5=D1=82=D0=BE=D0=BA,=20fail-closed=20regen,=20?=
+ =?UTF-8?q?chronology/camera=5Fexpand/frame=5Faudio=20=D1=84=D0=B8=D0=BA?=
+ =?UTF-8?q?=D1=81=D1=8B?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ app/orchestrator/validators/grammar.py     | 31 +++++++----
+ app/services/frame_audio.py                |  6 +-
+ app/services/frame_tombstones.py           | 64 ++++++++++++++--------
+ app/services/montage_board_regen.py        | 11 +++-
+ app/services/scene_design/camera_expand.py | 20 +++++--
+ app/services/scene_design/chronology.py    | 13 +++--
+ app/services/vo_shot_expand.py             | 38 ++++++-------
+ tests/test_r0c_b_eco_fixes.py              | 61 +++++++++++++++++++++
+ tests/validators/test_inactive_shots.py    |  4 +-
+ 9 files changed, 177 insertions(+), 71 deletions(-)
+ create mode 100644 tests/test_r0c_b_eco_fixes.py
+
+diff --git a/app/orchestrator/validators/grammar.py b/app/orchestrator/validators/grammar.py
+index 75cce475..ca952754 100644
+--- a/app/orchestrator/validators/grammar.py
++++ b/app/orchestrator/validators/grammar.py
+@@ -187,23 +187,30 @@ def _merge_active_neighbors(shots: list[Any]) -> list[str]:
+ def local_merge_trivial_shots(shots: list[Any]) -> list[str]:
+     """Временная копия ``merge_trivial_shots``. TODO(R0a): удалить.
+ 
+-    Неактивный шот не склеивается и не меняет ``порядок`` живых. Из списка
+-    он не выкидывается и его поля не пишутся заново.
++    Как R0a: склеиваются только живые соседи; склеенный шот не выкидывается,
++    а остаётся в списке с ``активен: False`` (merge_kadry_keep_missing).
++    Неактивный шот не склеивается и остаётся неактивным.
+     """
+ 
+     if not isinstance(shots, list) or len(shots) < 2:
+         return []
+-    if all(shot_counts_as_active(shot) for shot in shots):
+-        return _merge_active_neighbors(shots)
+-    original = list(shots)
+-    live = [shot for shot in original if shot_counts_as_active(shot)]
++    inactive_ids = {
++        str(shot.get("id"))
++        for shot in shots
++        if isinstance(shot, dict) and shot.get("id") and not shot_counts_as_active(shot)
++    }
++    live = [shot for shot in shots if isinstance(shot, dict) and shot_counts_as_active(shot)]
++    if len(live) < 2:
++        return []
+     notes = _merge_active_neighbors(live)
+-    survived = {id(shot) for shot in live}
+-    shots[:] = [
+-        shot
+-        for shot in original
+-        if (not shot_counts_as_active(shot)) or id(shot) in survived
+-    ]
++    if not notes:
++        return []
++    from app.services.frame_tombstones import merge_kadry_keep_missing
++
++    shots[:] = merge_kadry_keep_missing(list(shots), live)
++    for row in shots:
++        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
++            row["активен"] = False
+     return notes
+ 
+ 
+diff --git a/app/services/frame_audio.py b/app/services/frame_audio.py
+index 6e49a562..96e94747 100644
+--- a/app/services/frame_audio.py
++++ b/app/services/frame_audio.py
+@@ -479,8 +479,10 @@ async def build_assembly_timeline(
+         raw_sum = sum(c.duration for c in clips)
+         if raw_sum <= 0:
+             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
++        # Пометка, не задевшая ни одного клипа, не отменяет пересборку voice_full.
++        omit_hit = {int(n) for n in (omit_numbers or ())} & {int(c.frame_number) for c in clips}
+ 
+-        if abs(raw_sum - master) > 0.05 and not omit_numbers:
++        if abs(raw_sum - master) > 0.05 and not omit_hit:
+             logger.info(
+                 "voice_full {:.2f}s != clips {:.2f}s — пересборка из frame_*.mp3",
+                 master,
+@@ -498,7 +500,7 @@ async def build_assembly_timeline(
+             )
+             master = raw_sum
+ 
+-        if clips and abs(clips[-1].end_ts - master) > 0.01 and not omit_numbers:
++        if clips and abs(clips[-1].end_ts - master) > 0.01 and not omit_hit:
+             clips[-1].end_ts = round(master, 3)
+             clips[-1].duration = round(clips[-1].end_ts - clips[-1].start_ts, 3)
+ 
+diff --git a/app/services/frame_tombstones.py b/app/services/frame_tombstones.py
+index 63f3657e..fb34438e 100644
+--- a/app/services/frame_tombstones.py
++++ b/app/services/frame_tombstones.py
+@@ -74,34 +74,52 @@ def forget_deleted(project, number: int | None = None) -> None:
+     _touch(project)
+ 
+ 
++def _frame_attrs(frame: Any) -> dict[str, Any] | None:
++    if isinstance(frame, dict):
++        return frame
++    attrs = getattr(frame, "attrs", None)
++    return attrs if isinstance(attrs, dict) else None
++
++
+ def frame_marked_deleted(frame: Any) -> bool:
+-    """Кадр помечен «удалён» и должен остаться неактивным."""
++    """Кадр помечен «удалён» (матрица activity_flags) и должен остаться неактивным."""
++    from app.orchestrator.validators.activity_flags import flag_is_true
++
+     if frame is None:
+         return False
+-    attrs = getattr(frame, "attrs", None)
+-    if not isinstance(attrs, dict):
++    attrs = _frame_attrs(frame)
++    if attrs is None:
+         return False
+-    return bool(attrs.get(DELETED_MARK))
++    return flag_is_true(attrs.get(DELETED_MARK), mark=DELETED_MARK)
+ 
+ 
+ def frame_is_active(frame: Any) -> bool:
+-    if frame is None or frame_marked_deleted(frame):
+-        return False
+-    attrs = getattr(frame, "attrs", None) or {}
+-    if isinstance(attrs, dict) and attrs.get(ACTIVE_MARK) is False:
++    """Кадр или его attrs. Единственный предикат — activity_flags (вкл. карантин)."""
++    from app.orchestrator.validators.activity_flags import frame_is_active as _active
++
++    if frame is None:
+         return False
+-    return True
++    return _active(_frame_attrs(frame) or {})
+ 
+ 
+ def shot_is_active(shot: Any) -> bool:
+-    """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
+-    if not isinstance(shot, dict):
+-        return False
+-    if shot.get(DELETED_MARK) or shot.get("карантин"):
+-        return False
+-    if shot.get(ACTIVE_MARK) is False:
+-        return False
+-    return True
++    """Живой элемент ``кадры[]`` — тот же предикат, что activity_flags."""
++    from app.orchestrator.validators.activity_flags import shot_is_active as _active
++
++    return _active(shot)
++
++
++_HIDE_KEYS = (ACTIVE_MARK, DELETED_MARK, "удален", "карантин", REASON_MARK)
++
++
++def _carry_hide_marks(old: dict[str, Any], incoming: dict[str, Any]) -> None:
++    """Пометки скрытого старого шота переходят на входящую копию: он не оживает."""
++    if shot_is_active(old):
++        return
++    for key in _HIDE_KEYS:
++        if key in old and key not in (ACTIVE_MARK,):
++            incoming[key] = old[key]
++    incoming[ACTIVE_MARK] = False
+ 
+ 
+ _SHOT_ID_KEYS = ("id", "id_shot", "shot_id")
+@@ -180,8 +198,7 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
+         sid = _shot_id(shot)
+         if sid:
+             if sid in seen_ids:
+-                if shot.get(ACTIVE_MARK) is False:
+-                    incoming_by_id[sid][ACTIVE_MARK] = False
++                _carry_hide_marks(shot, incoming_by_id[sid])
+                 continue
+         else:
+             ident = _shot_content_identity(shot)
+@@ -190,10 +207,9 @@ def merge_kadry_keep_missing(old: Any, new: Any) -> Any:
+                 and old_content_counts.get(ident) == 1
+                 and new_content_counts.get(ident) == 1
+             ):
+-                if shot.get(ACTIVE_MARK) is False:
+-                    matched = incoming_by_content.get(ident) or []
+-                    if len(matched) == 1:
+-                        matched[0][ACTIVE_MARK] = False
++                matched = incoming_by_content.get(ident) or []
++                if len(matched) == 1:
++                    _carry_hide_marks(shot, matched[0])
+                 continue
+             if ident is None and any(
+                 isinstance(item, dict) and _shot_id(item) is None and item == shot
+@@ -230,7 +246,7 @@ def mark_shots_inactive(shots: Any, *, where: str) -> Any:
+             out.append(shot)
+             continue
+         item = dict(shot)
+-        if item.get(ACTIVE_MARK) is not False:
++        if shot_is_active(item):
+             labels.append(_shot_id(item) or "?")
+         item[ACTIVE_MARK] = False
+         out.append(item)
+diff --git a/app/services/montage_board_regen.py b/app/services/montage_board_regen.py
+index 22e7fb77..c67ef820 100644
+--- a/app/services/montage_board_regen.py
++++ b/app/services/montage_board_regen.py
+@@ -178,8 +178,15 @@ async def _regen_paid_blocked(project_id: int, frame_number: int, *, where: str)
+ 
+         async with session_scope(project_id) as session:
+             fr = await _frame_by_number(session, project_id, frame_number)
+-    except Exception:  # noqa: BLE001
+-        return False
++    except Exception as exc:  # noqa: BLE001
++        # Не смогли проверить пометку — платный вызов не делаем (fail closed).
++        logger.warning(
++            "WARN {}: сессия кадра #{} не открылась ({}), платная генерация пропущена",
++            where,
++            frame_number,
++            type(exc).__name__,
++        )
++        return True
+     if fr is None:
+         return False
+     if frame_is_active(getattr(fr, "attrs", None) or {}):
+diff --git a/app/services/scene_design/camera_expand.py b/app/services/scene_design/camera_expand.py
+index 1c32f96d..5a246a19 100644
+--- a/app/services/scene_design/camera_expand.py
++++ b/app/services/scene_design/camera_expand.py
+@@ -878,13 +878,15 @@ def _group_frames_into_scenes(
+     # chrono_dyn: сцена = id_scene из shot_plan (не parent_uuid после «1 шота»).
+     # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
+     if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
+-        frames_sorted = [
+-            f for f in sorted(frames, key=_sort_key) if f.uuid and frame_is_active(getattr(f, "attrs", None) or {})
+-        ]
++        # Индекс zip считается по всем кадрам с uuid: помеченный кадр держит
++        # свой слот шота, иначе живые кадры съезжают в чужие сцены.
++        frames_sorted = [f for f in sorted(frames, key=_sort_key) if f.uuid]
+         by_scene: dict[str, list[Frame]] = {}
+         scene_order: list[str] = []
+         scene_beat: dict[str, dict[str, Any]] = {}
+         for i, fr in enumerate(frames_sorted):
++            if not frame_is_active(getattr(fr, "attrs", None) or {}):
++                continue
+             beat: dict[str, Any] = {}
+             if i < len(shots) and str(shots[i].get("id_scene") or "").strip():
+                 beat = shots[i]
+@@ -1015,7 +1017,17 @@ def _retain_missing_scenes(
+             if not isinstance(kid, dict):
+                 continue
+             ident = _kadry_identity(kid)
+-            if not ident or all(token in present_ids for token in ident):
++            if not ident:
++                # Шот без id сверяется целиком: если такого нет ни в одной сцене,
++                # он не выпадает, а остаётся помеченным.
++                if any(
++                    isinstance(cur, dict) and cur == kid
++                    for scene in scenes
++                    if isinstance(scene, dict)
++                    for cur in (scene.get("кадры") or [])
++                ):
++                    continue
++            elif all(token in present_ids for token in ident):
+                 continue
+             item = copy.deepcopy(kid)
+             item["активен"] = False
+diff --git a/app/services/scene_design/chronology.py b/app/services/scene_design/chronology.py
+index 88580808..899b585c 100644
+--- a/app/services/scene_design/chronology.py
++++ b/app/services/scene_design/chronology.py
+@@ -13,7 +13,7 @@ import re
+ from typing import Any
+ 
+ from app.models import Frame, Project, SceneDesignCell
+-from app.orchestrator.validators.activity_flags import shot_is_active
++from app.orchestrator.validators.activity_flags import frame_is_active, shot_is_active
+ from app.services.scene_design.context_builder import frame_seconds
+ 
+ 
+@@ -125,10 +125,8 @@ def _append_missing_kadry(previous: list[Any], current: list[Any]) -> None:
+             continue
+         ident = _kadry_identity(item)
+         if ident and all(token in present for token in ident):
+-            if not shot_is_active(item):
+-                for kid in current:
+-                    if isinstance(kid, dict) and set(_kadry_identity(kid)) & set(ident):
+-                        kid["активен"] = False
++            # Кадр есть в новой раскладке: его активность берётся из БД, а не
++            # из прошлой раскладки (иначе восстановленный кадр снова гаснет).
+             continue
+         if not ident and any(
+             isinstance(kid, dict) and kid == item for kid in current
+@@ -170,6 +168,8 @@ def assign_frames_to_scenes(
+             "закадр": (fr.voiceover_text or "").strip(),
+             "время_сек": sec,
+         }
++        if not frame_is_active(getattr(fr, "attrs", None) or {}):
++            frame_row["активен"] = False
+         target = None
+         if offset is not None:
+             for sp in spans:
+@@ -184,7 +184,8 @@ def assign_frames_to_scenes(
+                 left = [sp for sp in spans if sp["start"] != -1 and sp["start"] <= offset]
+                 target = left[-1] if left else (spans[0] if spans else None)
+         if target is None:
+-            unassigned.append(frame_row)
++            if shot_is_active(frame_row):
++                unassigned.append(frame_row)
+         else:
+             target["row"]["кадры"].append(frame_row)
+     for sp in spans:
+diff --git a/app/services/vo_shot_expand.py b/app/services/vo_shot_expand.py
+index b2039b1b..3ec5ad7f 100644
+--- a/app/services/vo_shot_expand.py
++++ b/app/services/vo_shot_expand.py
+@@ -1084,18 +1084,12 @@ def _write_frame_shot_id(
+     planned = planned_shots_from_attrs(frame)
+     if not planned:
+         return
+-    from app.services.frame_tombstones import merge_kadry_keep_missing
+ 
+     old_rows = (
+         [dict(item) if isinstance(item, dict) else item for item in raw]
+         if isinstance(raw, list)
+         else [dict(shot) for shot in planned]
+     )
+-    inactive_ids = {
+-        str(shot.get("id"))
+-        for shot in planned
+-        if shot.get("id") and not shot_is_active(shot)
+-    }
+     active = [shot for shot in planned if shot_is_active(shot)]
+     if not active:
+         frame.attrs = attrs
+@@ -1107,15 +1101,28 @@ def _write_frame_shot_id(
+     if parent_sid is not None:
+         live["parent_id"] = parent_sid or None
+     rest = [dict(shot) for shot in active[1:]]
+-    merged = merge_kadry_keep_missing(old_rows, [live, *rest])
+-    for row in merged:
+-        if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+-            row["активен"] = False
++    merged = _merge_live_keep_dead(old_rows, [live, *rest])
+     attrs["кадры"] = merged
+     frame.attrs = attrs
+     _flag_attrs(frame)
+ 
+ 
++def _merge_live_keep_dead(old_rows: list[Any], live_rows: list[Any]) -> list[Any]:
++    """Живые сливаются со старыми живыми; неактивные строки идут в хвост как есть.
++
++    Неактивный шот сверяется по самой строке, а не по id: живой шот, получивший
++    после перенумерации id архивного, не гаснет, а архивный не оживает.
++    """
++    from app.services.frame_tombstones import merge_kadry_keep_missing
++
++    old_live = [row for row in old_rows if not isinstance(row, dict) or shot_is_active(row)]
++    old_dead = [dict(row) for row in old_rows if isinstance(row, dict) and not shot_is_active(row)]
++    merged = merge_kadry_keep_missing(old_live, live_rows)
++    if not isinstance(merged, list):
++        merged = list(live_rows)
++    return [*merged, *old_dead]
++
++
+ def sync_live_coverage_ids(frames: list[Any]) -> int:
+     """shot_id = ``{живой_номер_K1}-S{сцена}-K{i}``. Stale 12-S3 при кадре 13.
+ 
+@@ -1162,11 +1169,6 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
+         planned = planned_shots_from_attrs(parent)
+         old_planned = [dict(shot) for shot in planned]
+ 
+-        inactive_ids = {
+-            str(shot.get("id"))
+-            for shot in old_planned
+-            if shot.get("id") and not shot_is_active(shot)
+-        }
+         live_planned = [shot for shot in planned if shot_is_active(shot)]
+         for i, fr in enumerate(ordered, start=1):
+             sid = f"{pno}-S{int(scene)}-K{i}"
+@@ -1202,13 +1204,9 @@ def sync_live_coverage_ids(frames: list[Any]) -> int:
+             if before != after:
+                 changed += 1
+         if planned:
+-            from app.services.frame_tombstones import merge_kadry_keep_missing
+ 
+             attrs = dict(getattr(parent, "attrs", None) or {})
+-            merged = merge_kadry_keep_missing(old_planned, live_planned)
+-            for row in merged:
+-                if isinstance(row, dict) and str(row.get("id") or "") in inactive_ids:
+-                    row["активен"] = False
++            merged = _merge_live_keep_dead(old_planned, live_planned)
+             attrs["кадры"] = merged
+             parent.attrs = attrs
+             _flag_attrs(parent)
+diff --git a/tests/test_r0c_b_eco_fixes.py b/tests/test_r0c_b_eco_fixes.py
+new file mode 100644
+index 00000000..1163dd81
+--- /dev/null
++++ b/tests/test_r0c_b_eco_fixes.py
+@@ -0,0 +1,61 @@
++"""Eco-фиксы R0c-B: единый предикат, перенос пометок, fail-closed платного regen."""
++
++from __future__ import annotations
++
++import asyncio
++from types import SimpleNamespace
++
++from app.services import frame_tombstones as ft
++from app.services.scene_design.chronology import _append_missing_kadry
++
++
++def test_tombstones_predicate_follows_activity_flags_quarantine():
++    assert ft.frame_is_active({"карантин": True}) is False
++    assert ft.frame_is_active(SimpleNamespace(attrs={"удалён": "да"})) is False
++    assert ft.frame_is_active({"активен": "false"}) is False
++    assert ft.frame_is_active({}) is True
++    assert ft.frame_marked_deleted({"удалён": "да"}) is True
++    assert ft.shot_is_active({"id": "a", "активен": "нет"}) is False
++
++
++def test_merge_carries_all_hide_marks_from_old_inactive_shot():
++    old = [{"id": "a", "карантин": True, "активен": False, "пометка": "брак"}]
++    new = [{"id": "a", "действие": "новое"}]
++    merged = ft.merge_kadry_keep_missing(old, new)
++    row = next(r for r in merged if r.get("id") == "a")
++    assert row["действие"] == "новое"
++    assert row["активен"] is False
++    assert row["карантин"] is True
++    assert row["пометка"] == "брак"
++
++
++def test_merge_quarantined_old_shot_not_revived():
++    old = [{"id": "a", "карантин": True}]
++    merged = ft.merge_kadry_keep_missing(old, [{"id": "a"}])
++    assert all(not ft.shot_is_active(r) for r in merged if r.get("id") == "a")
++
++
++def test_chronology_restored_frame_not_sticky_inactive():
++    previous = [{"uuid": "u1", "активен": False}]
++    current = [{"uuid": "u1", "number": 1}]
++    _append_missing_kadry(previous, current)
++    assert current == [{"uuid": "u1", "number": 1}]
++
++
++def test_chronology_missing_frame_kept_marked():
++    previous = [{"uuid": "u1"}, {"uuid": "u2"}]
++    current = [{"uuid": "u1"}]
++    _append_missing_kadry(previous, current)
++    assert [r["uuid"] for r in current] == ["u1", "u2"]
++    assert current[1]["активен"] is False
++
++
++def test_regen_paid_blocked_fails_closed_on_session_error(monkeypatch):
++    from app.services import montage_board_apply, montage_board_regen
++
++    def boom(_pid):
++        raise RuntimeError("db down")
++
++    monkeypatch.setattr(montage_board_apply, "session_scope", boom)
++    blocked = asyncio.run(montage_board_regen._regen_paid_blocked(1, 3, where="t"))
++    assert blocked is True
+diff --git a/tests/validators/test_inactive_shots.py b/tests/validators/test_inactive_shots.py
+index cd59ffdb..8b7adf05 100644
+--- a/tests/validators/test_inactive_shots.py
++++ b/tests/validators/test_inactive_shots.py
+@@ -57,7 +57,9 @@ def test_merge_keeps_inactive_shot_and_its_voiceover() -> None:
+     shots = [_shot(id="a"), _shot(id="b", действие="сидит дальше"), dead]
+     notes = local_merge_trivial_shots(shots)
+     assert any("b склеен в a" in note for note in notes)
+-    assert [shot["id"] for shot in shots] == ["a", "dead"]
++    # Как R0a (#386): склеенный b не выкидывается, а остаётся с активен False.
++    assert [shot["id"] for shot in shots] == ["a", "b", "dead"]
++    assert shots[1]["активен"] is False
+     assert dead == frozen_dead
+     assert shots[0].get("закадр", "") == ""
+ 
+-- 
+2.47.3
+
