@@ -9,6 +9,7 @@ import {
   postOrchApprove,
   postOrchKill,
   postOrchMessage,
+  paidGrantAccepted,
   postPaidOutcomeDecision,
   postPaidOutcomeRestartGrant,
   readOrchProjectId,
@@ -330,7 +331,7 @@ export function useOrchestratorChat() {
       setDecisionError(null);
       try {
         const result = await postPaidOutcomeRestartGrant(cfg, paidOutcomeGrantBody(card.changeId));
-        if (!paidPostAccepted(result, card.changeId)) {
+        if (!paidGrantAccepted(result, card.changeId)) {
           setDecisionError({
             id: approvalId,
             message: paidOutcomeGrantNotice(result.reason) || result.reason || "сервер не подтвердил это решение",

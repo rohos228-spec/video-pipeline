@@ -425,18 +425,34 @@ function readPaidRetryArmed(body: unknown): boolean {
   return (body as Record<string, unknown>).retry_armed === true;
 }
 
+function readPaidRawReason(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const reason = (body as Record<string, unknown>).reason;
+  return typeof reason === "string" && reason ? reason : null;
+}
+
 export function readPaidOutcomeDecisionResult(raw: unknown): PaidOutcomeDecisionResult {
-  const reason = readPaidOutcomeFailureReason(raw);
+  const known = readPaidOutcomeFailureReason(raw);
+  const rawReason = readPaidRawReason(raw);
+  const executed = readPaidOutcomeExecuted(raw);
+  const unknownRefusal = !executed && known == null && rawReason != null;
   return {
-    ok: reason == null,
+    ok: known == null && !unknownRefusal,
     changeId: readPaidChangeId(raw),
     decision: readPaidDecision(raw),
     forecast: readPaidOutcomeForecast(raw),
-    executed: readPaidOutcomeExecuted(raw),
-    reason,
+    executed,
+    reason: known ?? (unknownRefusal ? rawReason : null),
     retryArmed: readPaidRetryArmed(raw),
     retryReady: paidOutcomeRetryReady(raw),
   };
+}
+
+/** Grant закрывает карточку только когда шаг реально выполнен. */
+export function paidGrantAccepted(result: PaidOutcomeDecisionResult, changeId: string): boolean {
+  if (!result.ok || result.executed !== true) return false;
+  if (result.changeId != null && result.changeId !== changeId) return false;
+  return true;
 }
 
 /** Три `decision` на `POST /chat/{session}/approve`. Лишних полей нет. */

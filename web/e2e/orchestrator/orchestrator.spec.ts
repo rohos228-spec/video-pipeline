@@ -10,6 +10,8 @@ import {
   isSameOriginApiBase,
   noteOrchContractVersion,
   orchAuthHeaders,
+  paidGrantAccepted,
+  readPaidOutcomeDecisionResult,
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
@@ -221,6 +223,58 @@ test("клиент approve шлёт только change_id, decision и retry_gr
     decision: null,
     retry_grant: true,
   });
+});
+
+test("grant с executed false и неизвестным reason не закрывает шаг", () => {
+  const killed = readPaidOutcomeDecisionResult({
+    executed: false,
+    reason: "kill_switch",
+    change_id: "orch-appr-1-1",
+    decision: null,
+    retry_armed: false,
+  });
+  expect(killed.ok).toBe(false);
+  expect(killed.reason).toBe("kill_switch");
+  expect(paidGrantAccepted(killed, "orch-appr-1-1")).toBe(false);
+
+  const bare = readPaidOutcomeDecisionResult({
+    executed: false,
+    reason: null,
+    change_id: "orch-appr-1-1",
+    decision: null,
+  });
+  expect(bare.ok).toBe(true);
+  expect(paidGrantAccepted(bare, "orch-appr-1-1")).toBe(false);
+
+  const spent = readPaidOutcomeDecisionResult({
+    executed: false,
+    reason: "retry_grant_spent",
+    change_id: "orch-appr-1-1",
+    decision: null,
+  });
+  expect(spent.ok).toBe(false);
+  expect(paidGrantAccepted(spent, "orch-appr-1-1")).toBe(false);
+
+  const done = readPaidOutcomeDecisionResult({
+    executed: true,
+    reason: null,
+    change_id: "orch-appr-1-1",
+    decision: "retry_step",
+    retry_armed: false,
+  });
+  expect(done.ok).toBe(true);
+  expect(paidGrantAccepted(done, "orch-appr-1-1")).toBe(true);
+
+  const armed = readPaidOutcomeDecisionResult({
+    executed: false,
+    reason: null,
+    change_id: "orch-appr-1-1",
+    decision: "retry_step",
+    retry_armed: true,
+    forecast_usd: 2.4,
+  });
+  expect(armed.ok).toBe(true);
+  expect(armed.retryReady).toBe(true);
 });
 
 test("подтверждение перезапуска требует retry_armed и конечный forecast_usd", () => {
