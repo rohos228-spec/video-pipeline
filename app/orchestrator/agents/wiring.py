@@ -22,6 +22,7 @@ from app.orchestrator.contracts import (
     Risk,
     ValidatorResult,
     coerce_risk,
+    not_in_whitelist,
 )
 
 _ROUTING = "app.orchestrator.routing"
@@ -261,6 +262,12 @@ class ModuleActions:
             raise KeyError(name)
         return fn(name)
 
+    def metadata_registry(self) -> Any:
+        fn = getattr(self._module, "metadata_registry", None)
+        if not callable(fn):
+            return None
+        return fn()
+
 
 class ActionsBridge:
     """Будущий ``metadata_of``: dict или ``KeyError``. Approval-id действиям не отдаём."""
@@ -274,6 +281,13 @@ class ActionsBridge:
             raise KeyError(name)
         return fn(name)
 
+    def metadata_registry(self) -> Any:
+        for owner in (self.inner, getattr(self.inner, "_module", None)):
+            fn = getattr(owner, "metadata_registry", None)
+            if callable(fn):
+                return fn()
+        return None
+
     def risk_of(self, name: str) -> Risk:
         try:
             meta = self.metadata_of(name)
@@ -285,6 +299,8 @@ class ActionsBridge:
         return coerce_risk(raw)
 
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> Any:
+        if not_in_whitelist(name, self):
+            return ActionResult(ok=False, data={"error": "not_in_whitelist"}, change_id=None, cost=0.0)
         result = self.inner.execute(name, params, task_ctx)
         if inspect.isawaitable(result):
             result = await result

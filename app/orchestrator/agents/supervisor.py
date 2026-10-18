@@ -1634,6 +1634,9 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        if any(not_in_whitelist(step.action, self.actions) for step in plan[start:]):
+            await self._apply_block(task_id, session_id, "not_in_whitelist")
+            return
         if forecast_unknown(plan):
             await self._apply_block(task_id, session_id, "unknown_cost")
             return
