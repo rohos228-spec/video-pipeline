@@ -15,7 +15,6 @@ import {
   readOrchToken,
   sleepWithSignal,
   writeOrchToken,
-  type ApprovalHttpResult,
   type OrchClientConfig,
 } from "@/lib/orchestratorApi";
 import {
@@ -29,12 +28,12 @@ export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 /** Сколько ждём подтверждение kill. Дольше — ошибка и «Повторить». */
 const KILL_CONFIRM_MS = 12_000;
 
-function approvalPostAccepted(result: ApprovalHttpResult, approvalId: string): boolean {
-  if (result.status === 204) return true;
-  const body = result.body;
-  if (!body) return false;
-  if (body.ok === false || body.matched === false) return false;
-  if (typeof body.approval_id === "string" && body.approval_id !== approvalId) return false;
+function approvalPostAccepted(
+  result: { ok?: boolean; matched?: boolean; approval_id?: string } | undefined,
+  approvalId: string,
+): boolean {
+  if (!result || result.ok === false || result.matched === false) return false;
+  if (typeof result.approval_id === "string" && result.approval_id !== approvalId) return false;
   return true;
 }
 
