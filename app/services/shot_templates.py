@@ -978,45 +978,52 @@ def fill_kadry_from_catalog(
             continue
         for sh in existing[: len(rows)]:
             consumed.add(id(sh))
-        seed = existing[0] if existing else {}
         incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
-        master_id = str(
-            (existing[0].get("id") if existing else "")
-            or f"{cell_number}-S{n}-K1"
-        )
+        master_id = ""
         scene_acc = []
         for i, row in enumerate(rows):
+            src = existing[i] if i < len(existing) else None
             sid = f"{cell_number}-S{n}-K{i + 1}"
+            if src and str(src.get("id") or "").strip():
+                sid = str(src["id"]).strip()
+            if not master_id:
+                master_id = sid
             plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
             cat = str(row.get("action") or "")
-            src = existing[i] if i < len(existing) else None
+            # #352: лестница не подменяет id позицией и копирует медиа.
+            # Пометка и остальные поля источника остаются на кадре.
             shot = dict(src) if isinstance(src, dict) else {}
-            shot.setdefault("id", sid)
-            if i == 0:
-                shot["parent_id"] = None
-                shot["id"] = master_id
-            else:
-                shot.setdefault("parent_id", master_id)
-            shot.setdefault("порядок", i + 1)
-            shot.setdefault("сцена", n)
-            shot.setdefault("шаблон", tid)
-            shot.setdefault("план", plan_name)
-            shot.setdefault("ракурс", angle if angle != "—" else "")
-            shot.setdefault("место", place)
-            if (
-                not str(shot.get("действие") or "").strip()
-                or is_stub_shot_action(str(shot.get("действие") or ""))
+            shot["id"] = sid
+            shot["parent_id"] = None if i == 0 else master_id
+            shot["порядок"] = i + 1
+            shot["сцена"] = n
+            shot["шаблон"] = tid
+            shot["план"] = plan_name
+            shot["ракурс"] = angle if angle != "—" else ""
+            shot["место"] = place
+            shot["действие"] = compose_shot_action(
+                plan=plan_name,
+                place=place,
+                scene_action=act,
+                catalog_action=cat,
+                catalog_role=str(row.get("role") or ""),
+            )
+            shot["закадр"] = incoming_vo[i] if i < len(incoming_vo) else ""
+            if src and src.get("закадр"):
+                shot["закадр"] = str(src.get("закадр") or shot.get("закадр") or "")
+            if src and not is_stub_shot_action(str(src.get("действие") or "")):
+                shot["действие"] = str(src.get("действие") or shot["действие"])
+            for media_key in (
+                "png",
+                "video",
+                "media",
+                "image_prompt",
+                "animation_prompt",
+                "child_prompts",
             ):
-                shot["действие"] = compose_shot_action(
-                    plan=plan_name,
-                    place=place,
-                    scene_action=act,
-                    catalog_action=cat,
-                    catalog_role=str(row.get("role") or ""),
-                )
-            if not str(shot.get("закадр") or "").strip():
-                shot["закадр"] = incoming_vo[i] if i < len(incoming_vo) else ""
+                if src and src.get(media_key) not in (None, "", []):
+                    shot[media_key] = src[media_key]
             _ensure_full_shot_action(
                 shot,
                 place=place,
