@@ -412,11 +412,14 @@ function closeServerApproval(
   item.resolved = decision;
 }
 
-/** Карточка без change_id закрывается только сменой статуса своей задачи и сессии. */
+/**
+ * Карточка без id сервера и без change_id закрывается сменой статуса своей задачи и сессии.
+ * Старая карточка с serverId сравнивается по approval_id, статус её не закрывает.
+ */
 function closeApprovalsWithoutChange(state: OrchScreenState, taskId: string, sessionId: string | null): void {
   if (!taskId || !sessionId) return;
   for (const item of state.approvals) {
-    if (item.resolved || item.changeId) continue;
+    if (item.resolved || item.changeId || item.serverId) continue;
     if (item.taskId !== taskId || item.sessionId !== sessionId) continue;
     item.resolved = "closed";
   }

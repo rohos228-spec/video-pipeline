@@ -120,6 +120,66 @@ test("approval_decided с change_id и approval_id закрывает карто
   expect(decided.approvals[0]?.resolved).toBe("approved");
 });
 
+test("старая карточка с serverId не закрывается сменой статуса", () => {
+  const opened = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "legacy",
+      payload: { approval_id: "appr-old", reason: "risk", action: "note" },
+    },
+  });
+  expect(opened.approvals[0]?.serverId).toBe(true);
+  expect(opened.approvals[0]?.changeId).toBeNull();
+  const moved = reduceOrchScreen(opened, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 3,
+      session_id: "legacy",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(moved.approvals[0]?.resolved).toBeNull();
+  const decided = reduceOrchScreen(moved, {
+    type: "event",
+    event: {
+      type: "approval_decided",
+      task_id: 1,
+      seq: 4,
+      session_id: "legacy",
+      payload: { approval_id: "appr-old", decision: "approve" },
+    },
+  });
+  expect(decided.approvals[0]?.resolved).toBe("approved");
+
+  const local = reduceOrchScreen(initialOrchScreen(), {
+    type: "event",
+    event: {
+      type: "approval_required",
+      task_id: 1,
+      seq: 2,
+      session_id: "noid",
+      payload: { reason: "budget_exhausted", action: "note" },
+    },
+  });
+  expect(local.approvals[0]?.serverId).toBe(false);
+  const localMoved = reduceOrchScreen(local, {
+    type: "event",
+    event: {
+      type: "agent_status",
+      task_id: 1,
+      seq: 3,
+      session_id: "noid",
+      payload: { agent: "supervisor", status: "running", task_status: "executing" },
+    },
+  });
+  expect(localMoved.approvals[0]?.resolved).toBe("closed");
+});
+
 test("approval_decided закрывает карточку по своему change_id", () => {
   const opened = reduceOrchScreen(initialOrchScreen(), {
     type: "event",
