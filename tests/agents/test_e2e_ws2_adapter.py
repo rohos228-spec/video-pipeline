@@ -24,17 +24,25 @@ def _bridge(monkeypatch):
     import app.orchestrator.actions as actions
 
     calls: list[str] = []
+    contexts: list[dict] = []
     real = actions.execute
 
     async def spy(name, params, ctx):
         calls.append(name)
+        contexts.append(dict(ctx))
         return await real(name, params, ctx)
 
     monkeypatch.setattr(actions, "execute", spy)
-    return ActionsBridge(ModuleActions(actions)), calls
+    return ActionsBridge(ModuleActions(actions)), calls, contexts
 
 
-def _grant(ctx: dict, action: str, change_id: str = "orch-appr-7-1") -> dict:
+def _grant(
+    ctx: dict,
+    action: str,
+    change_id: str = "orch-appr-7-1",
+    *,
+    cc_change_id: str | None = None,
+) -> dict:
     return {
         **ctx,
         "approval": {
@@ -43,7 +51,7 @@ def _grant(ctx: dict, action: str, change_id: str = "orch-appr-7-1") -> dict:
             "risk": "high",
             "destructive": True,
             "granted": True,
-            "cc_change_id": None,
+            "cc_change_id": cc_change_id,
         },
     }
 
@@ -62,7 +70,7 @@ def test_e2e_unknown_metadata_is_high_card_not_keyerror() -> None:
 @pytest.mark.asyncio
 async def test_e2e_read_through_core(env, monkeypatch, token: str) -> None:
     del token
-    bridge, calls = _bridge(monkeypatch)
+    bridge, calls, _contexts = _bridge(monkeypatch)
     runtime = build_runtime(
         actions=bridge,
         validators=MockValidators(),
@@ -95,16 +103,27 @@ async def test_e2e_mutation_runs_only_with_grant(env, monkeypatch) -> None:
     registry.register(spec)
     ctx = {"app": env.app, "operator": "e2e"}
     try:
-        bridge, calls = _bridge(monkeypatch)
+        bridge, calls, contexts = _bridge(monkeypatch)
         held = await bridge.execute("adapter.e2e_mutate", {}, ctx)
         assert held["status"] == "approval_required"
         assert held["ok"] is False
         assert held["error"] is None
+        assert held["data"]["metadata"]["risk"] == "high"
+        assert held["data"]["metadata"]["destructive"] is True
         assert ran == []
-        done = await bridge.execute("adapter.e2e_mutate", {}, _grant(ctx, "adapter.e2e_mutate"))
+        done = await bridge.execute(
+            "adapter.e2e_mutate",
+            {},
+            _grant(ctx, "adapter.e2e_mutate", cc_change_id="cc-e2e-1"),
+        )
         assert done["ok"] is True
         assert done["status"] == "ok"
         assert done["data"]["marker"] == "ran"
+        assert done["change_id"] is None
+        assert done["cc_change_id"] == "cc-e2e-1"
+        approval = contexts[-1]["approval"]
+        assert approval["change_id"] == "orch-appr-7-1"
+        assert approval["cc_change_id"] == "cc-e2e-1"
         assert ran == ["run"]
         assert calls == ["adapter.e2e_mutate", "adapter.e2e_mutate"]
     finally:
@@ -115,7 +134,7 @@ async def test_e2e_mutation_runs_only_with_grant(env, monkeypatch) -> None:
 async def test_e2e_soft_delete_needs_grant_and_core_change_id(env, monkeypatch) -> None:
     from app.models import Frame
 
-    bridge, calls = _bridge(monkeypatch)
+    bridge, calls, _contexts = _bridge(monkeypatch)
     pid = await env.add_project(frames=1)
     ids = await env.frame_ids(pid)
     async with env.factory() as session:
@@ -155,7 +174,7 @@ async def test_e2e_unknown_name_is_refused(env, monkeypatch) -> None:
     from app.orchestrator.actions import metadata_of
 
     metadata_of("frobnicate")
-    bridge, calls = _bridge(monkeypatch)
+    bridge, calls, _contexts = _bridge(monkeypatch)
     out = await bridge.execute("frobnicate", {}, {"operator": "e2e"})
     assert out.ok is False
     assert out.data["error"] == "not_in_whitelist"

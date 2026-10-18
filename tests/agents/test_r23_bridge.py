@@ -209,6 +209,19 @@ async def test_object_approval_required_is_escalation_not_error(token: str) -> N
 
 
 @pytest.mark.asyncio
+async def test_envelope_cc_change_id_is_copied_as_its_own_key() -> None:
+    """cc_change_id — отдельный ключ конверта, не change_id ядра."""
+    envelope = _Envelope("ok", _Body(seen=1, change_id="orch-appr-7-1"), cost=0.0)
+    envelope.cc_change_id = "cc-e2e-1"
+    out = await ActionsBridge(_ObjectAdapter(envelope)).execute("look", {}, {})
+    assert out["ok"] is True
+    assert out["change_id"] is None
+    assert out["cc_change_id"] == "cc-e2e-1"
+    assert out["data"]["seen"] == 1
+    assert "change_id" not in out["data"]
+
+
+@pytest.mark.asyncio
 async def test_partial_and_skipped_are_read_from_result_not_data() -> None:
     out = await ActionsBridge(
         _ObjectAdapter(
