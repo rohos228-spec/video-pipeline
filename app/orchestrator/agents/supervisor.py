@@ -318,6 +318,15 @@ class Supervisor:
             self._paid_outcome_hold.discard(task_id)
             self._block_reason.pop(task_id, None)
             position += 1
+            if self._paid_spend_fills_budget(task_id):
+                self._budget_stop.add(task_id)
+                await self._checkpoint(task_id, session_id, plan, position)
+                await self._apply_block(
+                    task_id,
+                    session_id,
+                    ApprovalReason.budget_exhausted.value,
+                )
+                return
         elif position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
@@ -1510,6 +1519,13 @@ class Supervisor:
                 bucket.append(text)
             return True
         return False
+
+    def _paid_spend_fills_budget(self, task_id: int) -> bool:
+        """Уже списанная стоимость платных шагов заняла потолок прогноза."""
+        limit = server_forecast_limit()
+        if ceiling_blocks(limit):
+            return True
+        return self._spend(task_id).actions >= float(limit)
 
     async def _deny_paid_outcome(self, session_id: str, task_id: int) -> None:
         """Отказ по неизвестному платному исходу: задача cancelled, строка остаётся."""
