@@ -114,7 +114,9 @@ async def test_soft_delete_restore_roundtrip(env, prompts_root, monkeypatch) -> 
         gone = await session.scalar(
             select(Frame).where(Frame.project_id == pid, Frame.number == 2)
         )
-        assert gone is None
+        # Мягкое удаление (R0a/WS2): строка кадра остаётся в БД, скрыта флагами.
+        assert gone is not None
+        assert gone.attrs["удалён"] is True and gone.attrs["активен"] is False
         assert 2 in deleted_numbers(await session.get(Project, pid))
 
     restored = await _run(env, [{

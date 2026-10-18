@@ -185,7 +185,7 @@ async def test_empty_queue_cancel_uses_force_clear_and_arg_preconditions(env) ->
         assert (await _preview(env, [bad])).status_code == 422, bad
 
 
-async def test_destructive_delete_frame_needs_approval_and_removes_frame(env) -> None:
+async def test_destructive_delete_frame_needs_approval_and_marks_frame_deleted(env) -> None:
     pid = await _setup(env, frames=3)
     ids = await env.frame_ids(pid)
     steps = [{"action_id": "montage.delete_frame", "params": {"project_id": pid, "frame_id": ids[3]}}]
@@ -196,10 +196,14 @@ async def test_destructive_delete_frame_needs_approval_and_removes_frame(env) ->
     assert run_no_approval.status_code == 403
     view = await _run(env, steps, approve=True)
     assert view["status"] == "succeeded", view
-    assert view["steps"][0]["result"]["deleted"] == 1
+    result = view["steps"][0]["result"]
+    assert result["deleted"] == 1 and result["soft"] is True
     async with env.factory() as s:
         left = (await s.execute(select(Frame.number).where(Frame.project_id == pid))).scalars().all()
-    assert sorted(left) == [1, 2]
+        marked = await s.get(Frame, ids[3])
+    # Мягкое удаление (R0a/WS2): строка остаётся, скрытие — только флагами.
+    assert sorted(left) == [1, 2, 3]
+    assert marked.attrs["удалён"] is True and marked.attrs["активен"] is False
 
 
 async def test_structure_actions_reach_endpoints_and_report_backend_errors(env) -> None:

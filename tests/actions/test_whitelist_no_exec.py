@@ -2311,7 +2311,6 @@ def test_audit_header_counters() -> None:
     assert len(modify_ids) == header["modify"]
     assert header["fs_breach"] == (
         ("group.delete", "http.delete"),
-        ("montage.delete_frame", "http.delete"),
         ("node.clear_check_agent", "http.delete"),
         ("prompt.delete_master", "http.delete"),
         ("storage.clear_files", "http.delete"),
@@ -3727,7 +3726,6 @@ def test_whitelist_has_no_code_exec_tools() -> None:
     assert len(modify_ids) == header["modify"]
     assert header["fs_breach"] == (
         ("group.delete", "http.delete"),
-        ("montage.delete_frame", "http.delete"),
         ("node.clear_check_agent", "http.delete"),
         ("prompt.delete_master", "http.delete"),
         ("storage.clear_files", "http.delete"),

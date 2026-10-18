@@ -7,7 +7,7 @@ actions: 102
 keep: 80
 modify: 22
 remove: 0
-fs_breach: group.delete:http.delete,montage.delete_frame:http.delete,node.clear_check_agent:http.delete,prompt.delete_master:http.delete,storage.clear_files:http.delete
+fs_breach: group.delete:http.delete,node.clear_check_agent:http.delete,prompt.delete_master:http.delete,storage.clear_files:http.delete
 snapshot_allow: montage.upload_voice,montage.upload_music,history.rollback
 -->
 

@@ -717,7 +717,7 @@ async def _align_audio(ctx, params):
 
 async def _set_assemble_params(ctx, params):
     from app.orchestrator.node_store.meta_book import (
-        VersionConflict, checked_meta_version, load_book)
+        VersionConflict, load_book, writer_meta_version)
 
     pid = params["project_id"]
     detail = await ctx.call("GET", f"/projects/{pid}")
@@ -727,7 +727,7 @@ async def _set_assemble_params(ctx, params):
     guard_stale_edit(params, book.version)
     changed = {k: params[k] for k in _ASSEMBLE_KEYS if k in params}
     try:
-        book.set_assemble_params(values=changed, version=checked_meta_version(params, book))
+        book.set_assemble_params(values=changed, version=writer_meta_version(params, book))
     except VersionConflict as exc:
         raise ActionCallError(exc.status_code, str(exc)) from exc
     await ctx.call("PATCH", f"/projects/{pid}", json={"meta": {

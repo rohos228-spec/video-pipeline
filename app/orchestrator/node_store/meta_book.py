@@ -248,3 +248,15 @@ def expected_version(params: dict, book: MetaBook) -> int:
     except (TypeError, ValueError) as exc:
         raise VersionConflict("версия meta не число") from exc
 
+
+def writer_meta_version(params: dict, book: MetaBook) -> int:
+    """Версия для внутренних писателей action-layer: книга прочитана и правится в одном вызове.
+
+    Передан expected_meta_version — строгая сверка, как у внешних HTTP-клиентов (R0b).
+    Не передан — версия только что прочитанной книги: писатель передаёт ровно ту
+    версию, которую сам прочитал, проверка для внешних не ослабляется.
+    """
+    if "expected_meta_version" not in params:
+        return book.version
+    return expected_version(params, book)
+

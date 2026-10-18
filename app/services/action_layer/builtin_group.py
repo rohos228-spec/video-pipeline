@@ -304,7 +304,7 @@ def _conflict(exc) -> ActionCallError:
 
 
 async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
-    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+    from app.orchestrator.node_store.meta_book import VersionConflict, writer_meta_version
 
     proj = await _get_project(ctx, params["project_id"])
     resolved = await ctx.call(
@@ -317,7 +317,7 @@ async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
     body = {k: params[k] for k in _CONFIG_FIELDS if k in params}
     try:
         book.set_config(node_key=params["node_key"], fields=body,
-                        version=checked_meta_version(params, book))
+                        version=writer_meta_version(params, book))
     except VersionConflict as exc:
         raise _conflict(exc) from exc
     data = await ctx.call("PATCH", f"/projects/{params['project_id']}/gpt-operator/"
@@ -327,7 +327,7 @@ async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
 
 
 async def _node_set_prompt_variant(ctx: ActionContext, params: dict) -> dict:
-    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+    from app.orchestrator.node_store.meta_book import VersionConflict, writer_meta_version
 
     proj = await _get_project(ctx, params["project_id"])
     book = _meta_book(proj)
@@ -337,7 +337,7 @@ async def _node_set_prompt_variant(ctx: ActionContext, params: dict) -> dict:
     try:
         book.set_prompt_variant(
             node_key=params["node_key"], slot_id=slot_id, variant=params["variant"],
-            version=checked_meta_version(params, book))
+            version=writer_meta_version(params, book))
     except VersionConflict as exc:
         raise _conflict(exc) from exc
     await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {
@@ -347,7 +347,7 @@ async def _node_set_prompt_variant(ctx: ActionContext, params: dict) -> dict:
 
 
 async def _node_set_disabled(ctx: ActionContext, params: dict) -> dict:
-    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+    from app.orchestrator.node_store.meta_book import VersionConflict, writer_meta_version
 
     proj = await _get_project(ctx, params["project_id"])
     book = _meta_book(proj)
@@ -356,7 +356,7 @@ async def _node_set_disabled(ctx: ActionContext, params: dict) -> dict:
     try:
         result = book.set_disabled(
             node_key=params["node_key"], disabled=bool(params["disabled"]),
-            version=checked_meta_version(params, book))
+            version=writer_meta_version(params, book))
     except VersionConflict as exc:
         raise _conflict(exc) from exc
     await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {

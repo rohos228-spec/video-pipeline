@@ -236,6 +236,16 @@ def soft_deleted_attrs(attrs: Any) -> dict:
     return marked
 
 
+def _soft_delete_marked(attrs: Any) -> bool:
+    """Обратная к soft_deleted_attrs: стоит ли на строке пометка мягкого удаления.
+
+    Карантин пометкой удаления не считается: restore не должен молча снимать карантин.
+    """
+    if not isinstance(attrs, dict):
+        return False
+    return bool(attrs.get("удалён")) or attrs.get("активен") is False
+
+
 def restored_frame_attrs(current: Any, before: dict) -> dict:
     """attrs после восстановления: пометки сняты, кадры[] текущей строки слиты со снимком.
 
@@ -259,8 +269,9 @@ async def mark_frame_soft_deleted(project_id: int, number: int) -> bool:
     """Мягкое удаление кадра без DELETE: ставит флаги, строку не трогает. False — кадра нет."""
     from sqlalchemy import select
 
-    from app.models import Frame
+    from app.models import Frame, Project
     from app.services.action_layer.store import sessions
+    from app.services.frame_tombstones import remember_deleted
 
     async with sessions()() as session:
         frame = await session.scalar(
@@ -269,6 +280,11 @@ async def mark_frame_soft_deleted(project_id: int, number: int) -> bool:
         if frame is None:
             return False
         frame.attrs = soft_deleted_attrs(frame.attrs)
+        # R0b: номер уходит в tombstone, чтобы импорт и регенерация не
+        # воскресили удалённый пользователем кадр; restore снимает его forget_deleted.
+        project = await session.get(Project, int(project_id))
+        if project is not None:
+            remember_deleted(project, int(number))
         await session.commit()
         return True
 
@@ -289,7 +305,11 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
             select(Frame).where(Frame.project_id == project_id, Frame.number == number)
         )
         if frame is not None:
-            # Строка жива (мягкое удаление): снимаем пометки, тексты и промты не трогаем.
+            if not _soft_delete_marked(frame.attrs):
+                # Живую строку снимком не перезаписываем: merge разрешён
+                # только со своей мягко удалённой строкой.
+                raise ActionCallError(409, f"conflict: номер {number} занят живым кадром")
+            # Строка мягко удалена: снимаем пометки, тексты и промты не трогаем.
             attrs = restored_frame_attrs(frame.attrs, before)
             frame.attrs = attrs
         else:

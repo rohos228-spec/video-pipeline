@@ -240,7 +240,7 @@ async def test_coverage_backed_actions_send_expected_bodies() -> None:
         ctx, {"project_id": 1, "frame_number": 2, "text": "кусок", "start": 3, "end": 9})
     await spec("montage.set_voiceover_span").executor(
         ctx, {"project_id": 1, "frame_number": 2, "clear": True})
-    await spec("montage.delete_child_frame").executor(ctx, {"project_id": 1, "frame_number": 3})
+    out = await spec("montage.delete_child_frame").executor(ctx, {"project_id": 1, "frame_number": 3})
     bodies = [c[3] for c in ctx.calls]
     assert bodies[0] == {"type": "coverage_scene_action", "frame_number": 2, "shot": 1,
                          "action": "а → б"}
@@ -248,7 +248,9 @@ async def test_coverage_backed_actions_send_expected_bodies() -> None:
     assert bodies[2] == {"type": "coverage_vo_span", "frame_number": 2, "start": 3, "end": 9,
                          "text": "кусок"}
     assert bodies[3] == {"type": "coverage_vo_span", "frame_number": 2, "clear": True}
-    assert bodies[4] == {"type": "coverage_delete", "frame_number": 3}
+    # Мягкое удаление: coverage_delete в API больше не уходит; кадра 3 в БД нет — ok=False.
+    assert len(bodies) == 4
+    assert out == {"ok": False, "deleted_frame_number": 3, "soft": True}
 
 
 async def test_queue_cancel_and_trim_use_queue_endpoint_with_force_clear_only_when_empty() -> None:
