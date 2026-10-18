@@ -110,7 +110,10 @@ def test_wide_rewrites_prompt_and_ids() -> None:
     assert "Ракурс фронт" in str(inserted["промт"])
     assert "Высота уровень глаз" in str(inserted["промт"])
     assert inserted["промт_видео"] == "не трогать"
-    assert inserted["parent_id"] == "s-K3"
+    # Как R0a: свежий id у вставленного, чужие id и parent_id не переписываются.
+    assert inserted["id"] == "s-K3"
+    assert inserted["parent_id"] == "s-K2"
+    assert [row["id"] for row in shots[1:3]] == ["s-K1", "s-K2"]
     assert local_ensure_wide_before_dialogue([]) == []
 
 

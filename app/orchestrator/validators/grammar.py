@@ -265,33 +265,57 @@ def local_ensure_wide_before_dialogue(shots: list[Any]) -> list[str]:
             if "точка" in w:
                 w["точка"] = "фронт"
             _set_cam_text(w, "ОБЩИЙ", "Ракурс фронт — камера спереди, видны оба собеседника.")
+            # Как R0a: новый шот получает свежий id, чужие id не переписываются.
+            w["id"] = _fresh_wide_id(shots, s)
+            if "порядок" in w:
+                for row in shots[i:]:
+                    if not isinstance(row, dict) or "порядок" not in row:
+                        continue
+                    if not shot_counts_as_active(row):
+                        continue
+                    try:
+                        row["порядок"] = int(row["порядок"]) + 1
+                    except (TypeError, ValueError):
+                        pass
             shots.insert(i, w)
             notes.append(f"{s.get('id')}: вставлен ОБЩИЙ установочный перед диалогом")
             i = j + 1
             continue
         i = j
-    if notes:
-        idmap: dict[str, str] = {}
-        k = 0
-        for s in shots:
-            if not isinstance(s, dict) or not shot_counts_as_active(s):
-                continue
-            k += 1
-            old = str(s.get("id") or "")
-            m = _KID_RE.match(old)
-            if m:
-                new = f"{m.group(1)}{k}"
-                if old and old not in idmap:
-                    idmap[old] = new
-                s["id"] = new
-            if "порядок" in s:
-                s["порядок"] = k
-        for s in shots:
-            if not isinstance(s, dict) or not shot_counts_as_active(s):
-                continue
-            if str(s.get("parent_id") or "") in idmap:
-                s["parent_id"] = idmap[str(s.get("parent_id"))]
     return notes
+
+
+def _fresh_wide_id(shots: list[Any], source: Any) -> str:
+    """Свежий id для вставленного ОБЩЕГО (как в R0a scene_shot_grammar)."""
+
+    used = {str(row.get("id") or "") for row in shots if isinstance(row, dict)}
+    src_id = str(source.get("id") or "") if isinstance(source, dict) else ""
+    m_id = _KID_RE.match(src_id)
+    if m_id:
+        stem = m_id.group(1)
+        max_k = 0
+        for row in shots:
+            if not isinstance(row, dict):
+                continue
+            rm = _KID_RE.match(str(row.get("id") or ""))
+            if not rm or rm.group(1) != stem:
+                continue
+            try:
+                max_k = max(max_k, int(rm.group(2)))
+            except ValueError:
+                pass
+        cand = f"{stem}{max_k + 1}"
+        while cand in used:
+            max_k += 1
+            cand = f"{stem}{max_k + 1}"
+        return cand
+    base = src_id or "wide"
+    n_id = 1
+    cand = f"{base}-K{n_id}"
+    while cand in used:
+        n_id += 1
+        cand = f"{base}-K{n_id}"
+    return cand
 
 
 def upstream_grammar() -> Any | None:

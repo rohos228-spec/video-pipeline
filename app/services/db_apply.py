@@ -369,7 +369,9 @@ def _kept_hide_marks(row: dict[str, Any]) -> dict[str, Any]:
     return marks
 
 
-def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
+def merge_kadry_keep_missing(
+    old: Any, incoming: Any, *, allow_restore: bool = False
+) -> list[dict[str, Any]]:
     """Короткий список не выкидывает старые шоты: их хвост с активен False.
 
     Строка без id остаётся. Совпадающий id сливается как {**old, **new},
@@ -402,7 +404,11 @@ def merge_kadry_keep_missing(old: Any, incoming: Any) -> list[dict[str, Any]]:
         sid = _shot_row_id(row)
         if sid and sid in old_by_id:
             merged = {**old_by_id[sid], **row}
-            merged.update(_kept_hide_marks(old_by_id[sid]))
+            marks = _kept_hide_marks(old_by_id[sid])
+            if allow_restore:
+                # Явный restore: снимаются только пометки, пришедшие в строке.
+                marks = {k: v for k, v in marks.items() if k not in row}
+            merged.update(marks)
             out.append(merged)
             seen.add(sid)
             continue
@@ -1980,7 +1986,14 @@ async def apply_ops(
                     continue
                 coerced = _coerce_structured_attr(raw_attr)
                 if attr_key == "кадры" and isinstance(coerced, list):
-                    coerced = merge_kadry_keep_missing(attrs.get("кадры"), coerced)
+                    coerced = merge_kadry_keep_missing(
+                        attrs.get("кадры"),
+                        coerced,
+                        allow_restore=str(
+                            op.get("op") or op.get("action") or op.get("type") or ""
+                        ).strip().casefold()
+                        in _RESTORE_VERBS,
+                    )
                 attrs[attr_key] = coerced
             for attr_key in _ATTR_EXCEL_ROWS:
                 if attr_key in fields:

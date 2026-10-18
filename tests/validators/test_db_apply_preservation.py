@@ -42,6 +42,9 @@ async def test_db_apply_runs_no_deletions(
         return real(before, after, ops, mode=mode)
 
     monkeypatch.setattr(db_apply, "run_preservation_validators", _spy)
+    # merge #352 сохраняет k2 (активен False); имитируем его регрессию,
+    # чтобы проверить, что валидатор ловит реальную потерю шота.
+    monkeypatch.setattr(db_apply, "merge_kadry_keep_missing", lambda old, new, **_: list(new))
 
     project = Project(slug="keep", topic="тест", status=None)  # type: ignore[arg-type]
     session.add(project)
@@ -674,6 +677,9 @@ async def test_rejected_script_text_does_not_touch_voiceover_file(
     """Отказ сохранности не оставляет на диске отвергнутый voiceover.txt."""
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    # merge #352 сохраняет k2 (активен False); имитируем его регрессию,
+    # чтобы проверить, что валидатор ловит реальную потерю шота.
+    monkeypatch.setattr(db_apply, "merge_kadry_keep_missing", lambda old, new, **_: list(new))
     project = Project(slug="vo-file", topic="тест", status=None)  # type: ignore[arg-type]
     session.add(project)
     await session.flush()
