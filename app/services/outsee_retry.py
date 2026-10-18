@@ -1785,7 +1785,8 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling,
+                                     kie=use_kling or primary_backend == "kie")
             if use_kling and substitution_line:
                 result.model_substitution = substitution_line
             return result

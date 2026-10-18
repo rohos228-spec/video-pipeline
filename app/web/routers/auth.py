@@ -160,8 +160,10 @@ async def login(body: LoginBody, request: Request, response: Response) -> dict:
         token = ua.new_session(u["id"], request.headers.get("user-agent", ""))
         _session_cookie(response, request, token)
         return {"ok": True, "token": token, "auth_required": settings.web_auth_enabled, "user": ua.public(u)}
-    # legacy single env user from main
-    if legacy_studio_password_ok(body.username, body.password):
+    # Пароль студии в settings может быть хешем (W1.2, verify_credentials) или открытым env-значением (main).
+    if auth_sessions.verify_credentials(body.username, body.password) or legacy_studio_password_ok(
+        body.username, body.password
+    ):
         auth_sessions.login_throttle.record_success(keys)
         token = issue_session_token(body.username)
         _session_cookie(response, request, token)
