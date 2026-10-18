@@ -127,6 +127,14 @@ test("клавиатура: Enter во время IME не отправляет"
         isComposing: true,
       }),
     );
+    const safari = new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(safari, "keyCode", { get: () => 229 });
+    el.dispatchEvent(safari);
   });
   await expect(composer).toHaveValue("черновик");
   expect(posts).toHaveLength(0);

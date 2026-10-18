@@ -341,7 +341,13 @@ export function OrchestratorWorkspace() {
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                    if (
+                      event.key !== "Enter" ||
+                      event.shiftKey ||
+                      event.nativeEvent.isComposing ||
+                      event.nativeEvent.keyCode === 229
+                    )
+                      return;
                     event.preventDefault();
                     send();
                   }}
