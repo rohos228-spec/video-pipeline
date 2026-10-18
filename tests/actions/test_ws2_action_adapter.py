@@ -20,21 +20,20 @@ async def test_execute_returns_r22_action_result(env) -> None:
     ctx = {"app": env.app, "operator": "adapter-test"}
 
     read = await execute("history.list_snapshots", {"limit": 5}, ctx)
-    assert isinstance(read, dict)
-    assert read.status == "ok"
-    assert read.error is None
-    assert isinstance(read.warnings, list)
-    assert isinstance(read.result, dict)
-    assert "snapshots" in read.result
-    assert read.model_dump()["status"] == "ok"
+    assert type(read) is dict
+    assert read["status"] == "ok"
+    assert read["error"] is None
+    assert isinstance(read["warnings"], list)
+    assert isinstance(read["result"], dict)
+    assert "snapshots" in read["result"]
 
     pid = await env.add_project()
     write = await execute("project.pause", {"project_id": pid}, ctx)
-    assert isinstance(write, dict)
-    assert write.status == "ok"
-    assert write.error is None
-    assert isinstance(write.result, dict)
-    assert write.result.get("status") == "paused"
+    assert type(write) is dict
+    assert write["status"] == "ok"
+    assert write["error"] is None
+    assert isinstance(write["result"], dict)
+    assert write["result"].get("status") == "paused"
 
     async with env.factory() as session:
         project = await session.get(Project, pid)
@@ -189,7 +188,7 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
 
     import json
 
-    from app.orchestrator.action_contracts.contracts import ApprovalRequired
+    from app.orchestrator.action_contracts.contracts import ActionResult, ApprovalRequired
     from app.orchestrator.actions.executor import execute
     from app.services.action_layer.spec import registry
     from tests.action_layer_support import make_spec
@@ -200,14 +199,15 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
         {"step_code": "anim_pr", "name": "adapter-probe", "content": "текст"},
         ctx,
     )
-    assert held.status == "approval_required"
-    assert held.error is None
-    assert isinstance(held.result, ApprovalRequired)
-    assert held.result.metadata.destructive is True
-    assert held.result.metadata.needs_approval is True
-    envelope = json.dumps(held.model_dump(), ensure_ascii=False)
+    assert held["status"] == "approval_required"
+    assert held["error"] is None
+    parsed = ActionResult.model_validate(held)
+    assert isinstance(parsed.result, ApprovalRequired)
+    assert parsed.result.metadata.destructive is True
+    assert parsed.result.metadata.needs_approval is True
+    envelope = json.dumps(held, ensure_ascii=False)
     assert "orch-appr-" not in envelope
-    assert "change_id" not in held.model_dump()["result"]
+    assert "change_id" not in held["result"]
 
     async def _nikita(_ctx, _params):
         return {
@@ -236,18 +236,19 @@ async def test_adapter_never_emits_core_change_id(env) -> None:
         )
     finally:
         registry.unregister("adapter.probe_cc")
-    assert probed.status == "ok"
-    assert probed.cc_change_id == "cc-proposal-1"
-    dumped = probed.model_dump()
-    assert "orch-appr-" not in json.dumps(dumped)
-    assert dumped["result"].get("change_id") is None
-    assert dumped["result"].get("proposal_id") == "cc-proposal-1"
+    assert probed["status"] == "ok"
+    assert probed["cc_change_id"] == "cc-proposal-1"
+    assert "orch-appr-" not in json.dumps(probed)
+    assert probed["result"].get("change_id") is None
+    assert probed["result"].get("proposal_id") == "cc-proposal-1"
 
 
 async def test_execute_requires_matching_granted_approval(env) -> None:
     """risk high или destructive: исполнитель только после совпавшего granted."""
 
-    from app.orchestrator.action_contracts.contracts import ApprovalRequired
+    import json
+
+    from app.orchestrator.action_contracts.contracts import ActionResult, ApprovalRequired
     from app.orchestrator.actions.executor import execute
     from app.services.action_layer.spec import registry
     from tests.action_layer_support import make_spec
@@ -283,11 +284,12 @@ async def test_execute_requires_matching_granted_approval(env) -> None:
             {**base, "approval": {**form, "action": "other.action"}},
         )
         for held in (missing, denied, foreign):
-            assert held.status == "approval_required"
-            assert held.error is None
-            assert isinstance(held.result, ApprovalRequired)
-            assert "change_id" not in held.result.model_dump()
-            assert "orch-appr-" not in held.model_dump_json()
+            assert held["status"] == "approval_required"
+            assert held["error"] is None
+            parsed = ActionResult.model_validate(held)
+            assert isinstance(parsed.result, ApprovalRequired)
+            assert "change_id" not in held["result"]
+            assert "orch-appr-" not in json.dumps(held)
         assert calls["n"] == 0
 
         done = await execute(
@@ -295,12 +297,12 @@ async def test_execute_requires_matching_granted_approval(env) -> None:
             {},
             {**base, "approval": form},
         )
-        assert done.status == "ok"
+        assert done["status"] == "ok"
         assert calls["n"] == 1
-        assert done.result["marker"] == "ran"
-        assert done.cc_change_id == "cc-from-core"
-        assert "orch-appr-" not in done.model_dump_json()
-        assert done.model_dump()["result"].get("change_id") is None
+        assert done["result"]["marker"] == "ran"
+        assert done["cc_change_id"] == "cc-from-core"
+        assert "orch-appr-" not in json.dumps(done)
+        assert done["result"].get("change_id") is None
     finally:
         registry.unregister("adapter.approval_probe")
 
@@ -353,7 +355,7 @@ async def test_whitelist_names_match_action_pattern() -> None:
     assert meta.risk == "high"
     assert meta.needs_approval is True
     held = await execute("frame.restore", {}, {})
-    assert held.status == "approval_required"
+    assert held["status"] == "approval_required"
 
 
 async def test_group_and_prompt_delete_held_until_r2(env, monkeypatch) -> None:
@@ -400,10 +402,10 @@ async def test_group_and_prompt_delete_held_until_r2(env, monkeypatch) -> None:
         {"step_code": "plan", "name": "r2hold"},
         grant("prompt.delete_master"),
     )
-    assert group_result.status == "failed"
-    assert prompt_result.status == "failed"
-    assert group_result.error == "до R2 недоступно"
-    assert prompt_result.error == "до R2 недоступно"
+    assert group_result["status"] == "failed"
+    assert prompt_result["status"] == "failed"
+    assert group_result["error"] == "до R2 недоступно"
+    assert prompt_result["error"] == "до R2 недоступно"
     assert group_path.read_bytes() == group_bytes
     assert prompt_path.read_bytes() == prompt_bytes
 
@@ -411,10 +413,11 @@ async def test_group_and_prompt_delete_held_until_r2(env, monkeypatch) -> None:
 async def test_delete_frame_via_adapter_is_soft(env) -> None:
     """delete_frame и delete_child_frame помечают кадр и не стирают строку."""
 
+    import json
+
     from sqlalchemy import select
 
     from app.models import Frame, Project
-    from app.orchestrator.action_contracts.contracts import SoftDeleteResult
     from app.orchestrator.actions.executor import execute
     from app.services.frame_tombstones import deleted_numbers
 
@@ -436,8 +439,8 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
         {"project_id": pid, "frame_id": ids[1]},
         bare,
     )
-    assert held.status == "approval_required"
-    assert "orch-appr-" not in held.model_dump_json()
+    assert held["status"] == "approval_required"
+    assert "orch-appr-" not in json.dumps(held)
 
     def grant(action: str, change_id: str = "orch-appr-7-1") -> dict:
         return {
@@ -457,8 +460,8 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
         {"project_id": pid, "frame_id": ids[1]},
         grant("montage.delete_frame", change_id=""),
     )
-    assert missing_id.status == "failed"
-    assert "orch-appr-" not in (missing_id.error or "")
+    assert missing_id["status"] == "failed"
+    assert "orch-appr-" not in (missing_id["error"] or "")
 
     deleted = await execute(
         "montage.delete_frame",
@@ -474,13 +477,13 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
         (deleted, "montage.delete_frame"),
         (child, "montage.delete_child_frame"),
     ):
-        assert result.status == "ok"
-        assert isinstance(result.result, SoftDeleteResult)
-        assert result.result.marked is True
-        assert result.result.snapshot_id
-        assert result.result.change_id == "orch-appr-7-1"
-        assert result.result.action == action
-        assert result.result.restore_action == "frame.restore"
+        assert result["status"] == "ok"
+        body = result["result"]
+        assert body["marked"] is True
+        assert body["snapshot_id"]
+        assert body["change_id"] == "orch-appr-7-1"
+        assert body["action"] == action
+        assert body["restore_action"] == "frame.restore"
 
     async with env.factory() as session:
         rows = list((await session.scalars(select(Frame).where(Frame.project_id == pid))).all())
@@ -498,9 +501,13 @@ async def test_delete_frame_via_adapter_is_soft(env) -> None:
             assert by_id[kept]["текст"] == ("второй" if kept == "s2" else "первый")
 
     assert list(env.tmp_path.rglob("deleted-*")) == []
-    bare_restore = await execute("frame.restore", {"project_id": pid, "snapshot_id": deleted.result.snapshot_id}, bare)
-    assert bare_restore.status == "approval_required"
-    assert bare_restore.result.action == "frame.restore"
+    bare_restore = await execute(
+        "frame.restore",
+        {"project_id": pid, "snapshot_id": deleted["result"]["snapshot_id"]},
+        bare,
+    )
+    assert bare_restore["status"] == "approval_required"
+    assert bare_restore["result"]["action"] == "frame.restore"
 
 
 async def test_delete_frame_then_frame_restore_roundtrip(env) -> None:
@@ -543,27 +550,27 @@ async def test_delete_frame_then_frame_restore_roundtrip(env) -> None:
         {"project_id": pid, "frame_id": ids[1]},
         grant("montage.delete_frame", "orch-appr-7-1"),
     )
-    assert deleted.status == "ok"
-    snapshot_id = deleted.result.snapshot_id
+    assert deleted["status"] == "ok"
+    snapshot_id = deleted["result"]["snapshot_id"]
 
     held = await execute(
         "frame.restore",
         {"project_id": pid, "snapshot_id": snapshot_id},
         {"app": env.app, "operator": "adapter-test"},
     )
-    assert held.status == "approval_required"
+    assert held["status"] == "approval_required"
 
     restored = await execute(
         "frame.restore",
         {"project_id": pid, "snapshot_id": snapshot_id},
         grant("frame.restore", "orch-appr-8-1"),
     )
-    assert restored.status == "ok"
-    assert restored.result["action"] == "frame.restore"
-    assert restored.result["change_id"] == "orch-appr-8-1"
-    assert restored.result["snapshot_id"] == snapshot_id
-    assert restored.result["restored"] is True
-    assert restored.cc_change_id == "cc-restore-1"
+    assert restored["status"] == "ok"
+    assert restored["result"]["action"] == "frame.restore"
+    assert restored["result"]["change_id"] == "orch-appr-8-1"
+    assert restored["result"]["snapshot_id"] == snapshot_id
+    assert restored["result"]["restored"] is True
+    assert restored["cc_change_id"] == "cc-restore-1"
 
     async with env.factory() as session:
         frame = await session.get(Frame, ids[1])
@@ -579,21 +586,21 @@ async def test_delete_frame_then_frame_restore_roundtrip(env) -> None:
         {"project_id": pid, "snapshot_id": snapshot_id},
         grant("frame.restore", "orch-appr-8-2"),
     )
-    assert again.status == "failed"
+    assert again["status"] == "failed"
 
     child = await execute(
         "montage.delete_child_frame",
         {"project_id": pid, "frame_number": 2},
         grant("montage.delete_child_frame", "orch-appr-7-2"),
     )
-    assert child.status == "ok"
+    assert child["status"] == "ok"
     by_change = await execute(
         "frame.restore",
         {"project_id": pid, "change_id": "orch-appr-7-2"},
         grant("frame.restore", "orch-appr-8-3"),
     )
-    assert by_change.status == "ok"
-    assert by_change.result["restored"] is True
+    assert by_change["status"] == "ok"
+    assert by_change["result"]["restored"] is True
     async with env.factory() as session:
         project_row = await session.get(Project, pid)
         assert deleted_numbers(project_row) == set()
@@ -643,7 +650,7 @@ async def test_frame_restore_keeps_edits_made_after_delete(env) -> None:
         {"project_id": pid, "frame_id": ids[1]},
         grant("montage.delete_frame", "orch-appr-11-1"),
     )
-    assert deleted.status == "ok"
+    assert deleted["status"] == "ok"
     async with env.factory() as session:
         frame = await session.get(Frame, ids[1])
         edited = []
@@ -660,10 +667,10 @@ async def test_frame_restore_keeps_edits_made_after_delete(env) -> None:
 
     restored = await execute(
         "frame.restore",
-        {"project_id": pid, "snapshot_id": deleted.result.snapshot_id},
+        {"project_id": pid, "snapshot_id": deleted["result"]["snapshot_id"]},
         grant("frame.restore", "orch-appr-11-2"),
     )
-    assert restored.status == "ok"
+    assert restored["status"] == "ok"
     async with env.factory() as session:
         frame = await session.get(Frame, ids[1])
         by_id = {shot["id"]: shot for shot in frame.attrs["кадры"]}
@@ -717,12 +724,11 @@ async def test_execute_wire_validates_and_keeps_cc_change_id(env) -> None:
             },
         },
     )
-    assert isinstance(done, dict)
-    assert done["cc_change_id"] == "cc-wire-1"
-    body = {key: value for key, value in done.items() if key != "cc_change_id"}
-    parsed = ActionResult.model_validate(body)
+    assert type(done) is dict
+    parsed = ActionResult.model_validate(done)
     assert parsed.status == "ok"
     assert parsed.result.action == "montage.delete_frame"
+    assert parsed.cc_change_id == "cc-wire-1"
     assert done["cc_change_id"] == "cc-wire-1"
 
 
@@ -761,7 +767,7 @@ async def test_adapter_result_matches_contract_schema(env) -> None:
         },
     )
     for result in (held, done):
-        payload = result.model_dump(mode="json")
+        payload = result
         jsonschema.validate(payload, schema)
         names = _action_names(payload)
         assert names
