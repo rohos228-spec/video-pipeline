@@ -297,6 +297,36 @@ def test_add_shot_without_vo_key_passes() -> None:
     assert all(item.code != "shot_dropped" for item in missing)
 
 
+def test_attrs_kadry_wrapper_with_scene_is_not_a_shot() -> None:
+    """Обёртка с ``attrs.кадры`` не шот, даже если у неё есть ``сцена``."""
+
+    def wrapped(shots: list[dict], *, key: str) -> dict:
+        return {
+            key: [
+                {
+                    "id": "cell1",
+                    "сцена": 1,
+                    "attrs": {"кадры": shots},
+                }
+            ]
+        }
+
+    shots = [
+        {"id": "k1", "закадр": "а"},
+        {"id": "k2", "закадр": "б"},
+    ]
+    replaced = [
+        {"id": "k1", "закадр": "а"},
+        {"id": "k9", "закадр": "б"},
+    ]
+    for key in ("cells", "frames"):
+        with pytest.raises(PreservationRejected) as raised:
+            run_preservation_validators(wrapped(shots, key=key), wrapped(replaced, key=key), mode="reject")
+        assert any(
+            item.code == "shot_dropped" and item.id == "k2" for item in raised.value.violations
+        )
+
+
 def test_add_idless_child_shot_passes() -> None:
     """Элемент без id не прячет список. reject и soft не дают shot_dropped."""
 

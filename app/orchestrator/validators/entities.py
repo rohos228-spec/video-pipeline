@@ -264,6 +264,9 @@ def _is_shot(item: Any) -> bool:
     if any(key in item for key in ("кадры", "cells", "ячейки", "shots")):
         return False
     has_shot_key = any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план"))
+    attrs = item.get("attrs")
+    if isinstance(attrs, dict) and "кадры" in attrs:
+        return False
     if "attrs" in item and not has_shot_key:
         return False
     if frame_id(item) is None:
