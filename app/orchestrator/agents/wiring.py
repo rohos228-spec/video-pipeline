@@ -15,11 +15,19 @@ from typing import Any
 
 from app.orchestrator.agents.planner import NullRetriever
 from app.orchestrator.agents.stubs import FallbackRouter, UnlinkedActions, UnlinkedValidators
-from app.orchestrator.contracts import ActionResult, ClassifyResult, MessageMode, Risk, coerce_risk
+from app.orchestrator.contracts import (
+    ActionResult,
+    ClassifyResult,
+    MessageMode,
+    Risk,
+    ValidatorResult,
+    coerce_risk,
+)
 
 _ROUTING = "app.orchestrator.routing"
 _RAG = "app.orchestrator.rag"
 _VALIDATORS = "app.orchestrator.validators"
+_PRESERVATION = "app.orchestrator.validators.preservation"
 _ACTIONS = "app.orchestrator.actions"
 _APPROVAL_CHANGE_ID = re.compile(r"^orch-appr-\d+-\d+$")
 _ENVELOPE_STATUSES = frozenset({"ok", "failed", "approval_required"})
@@ -183,12 +191,44 @@ def load_validators() -> tuple[Any, str | None]:
     return FunctionValidators(fn), None
 
 
+def _preservation_symbols() -> tuple[Any, type[BaseException] | None]:
+    """Мягкий импорт WS1. Нет модуля — оба символа отсутствуют, зависимость не нужна."""
+    module = load_module(_PRESERVATION)
+    if module is None:
+        return None, None
+    fn = getattr(module, "run_preservation_validators", None)
+    rejected = getattr(module, "PreservationRejected", None)
+    if not isinstance(rejected, type) or not issubclass(rejected, BaseException):
+        rejected = None
+    return fn, rejected
+
+
+def _blocking_preservation(name: str, exc: BaseException) -> ValidatorResult:
+    return ValidatorResult(name=name, passed=False, blocking=True, details=str(exc))
+
+
 class FunctionValidators:
     def __init__(self, fn: Any) -> None:
         self._fn = fn
 
     def run(self, name: str, project_id: int, context: dict[str, Any] | None = None) -> Any:
-        return self._fn(name, project_id, context)
+        payload = dict(context or {})
+        fn, rejected = _preservation_symbols()
+        try:
+            result = self._fn(name, project_id, payload)
+        except Exception as exc:
+            if rejected is not None and isinstance(exc, rejected):
+                return _blocking_preservation(name, exc)
+            raise
+        if name != "preservation" or not callable(fn):
+            return result
+        try:
+            fn(payload.get("before"), payload.get("after"), payload.get("ops"))
+        except Exception as exc:
+            if rejected is not None and isinstance(exc, rejected):
+                return _blocking_preservation(name, exc)
+            raise
+        return result
 
 
 def load_actions() -> tuple[Any, str | None]:
