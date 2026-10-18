@@ -62,10 +62,19 @@ def _read_legacy_text(target: Path) -> str:
         raise VersionConflict("файл не в UTF-8") from exc
 
 
+def _looks_like_version_wrapper(raw: str) -> bool:
+    """Текст начинается как {"version": …, даже если JSON оборван."""
+    text = raw.lstrip()
+    if not text.startswith("{"):
+        return False
+    return text[1:].lstrip().startswith('"version"')
+
+
 def _stored_version(target: Path) -> int:
     """Версия обёртки. Нет файла или сырое тело без обёртки — 0.
 
     Ошибка чтения не превращается в версию 0. Байты не в UTF-8 — 409.
+    Обрезанная обёртка {"version": … тоже 409, а не версия 0.
     """
     if not target.is_file():
         return 0
@@ -73,6 +82,8 @@ def _stored_version(target: Path) -> int:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
+        if _looks_like_version_wrapper(raw):
+            raise VersionConflict("обрезанная обёртка версии")
         return 0
     wrapped = _versioned_payload(payload)
     if wrapped is None:
