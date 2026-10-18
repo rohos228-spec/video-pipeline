@@ -48,18 +48,15 @@ def _grant(ctx: dict, action: str, change_id: str = "orch-appr-7-1") -> dict:
     }
 
 
-@pytest.mark.xfail(
-    reason=(
-        "WS2 metadata_of на неизвестное имя не бросает KeyError, а отдаёт карточку high. "
-        "Вызов закрывает whitelist(). Обход metadata_of не добавлялся."
-    ),
-    strict=False,
-)
-def test_e2e_unknown_metadata_of_is_keyerror() -> None:
-    from app.orchestrator.actions import metadata_of
+def test_e2e_unknown_metadata_is_high_card_not_keyerror() -> None:
+    """WS2 #385 @ 2c6cf6e0: неизвестное имя — карточка high, не KeyError."""
+    from app.orchestrator.actions import metadata_of, whitelist
 
-    with pytest.raises(KeyError):
-        metadata_of("frobnicate")
+    card = metadata_of("frobnicate")
+    assert "frobnicate" not in whitelist()
+    assert card.risk == "high"
+    assert card.destructive is True
+    assert card.paid is True
 
 
 @pytest.mark.asyncio
@@ -153,7 +150,11 @@ async def test_e2e_soft_delete_needs_grant_and_core_change_id(env, monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_e2e_unknown_name_is_refused(env, monkeypatch) -> None:
+    """Канон — whitelist(). Карточка metadata_of вызов не открывает."""
     del env
+    from app.orchestrator.actions import metadata_of
+
+    metadata_of("frobnicate")
     bridge, calls = _bridge(monkeypatch)
     out = await bridge.execute("frobnicate", {}, {"operator": "e2e"})
     assert out.ok is False
