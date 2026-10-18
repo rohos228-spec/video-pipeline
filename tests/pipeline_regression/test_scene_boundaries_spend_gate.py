@@ -511,7 +511,6 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
     import httpx
 
     from app.services import gpt_api
-    from app.services.spend_guard import BudgetExhausted
     from app.settings import settings
 
     estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
@@ -575,15 +574,14 @@ async def test_block_mid_retry_stops_further_tries(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(disk_guard, "check", lambda: None)
     spend_guard.reset_inflight()
     sleeps.clear()
-    with pytest.raises(Exception) as raised:
+    from app.services.gpt_api import GptApiError
+
+    with pytest.raises(GptApiError) as raised:
         await call_opus("привет", "система", "http500", tmp_path / "http500")
     blocked = raised.value
-    gate = getattr(blocked, "context", None) or {}
-    assert (
-        isinstance(blocked, (BudgetExhausted, PaidCallBlocked))
-        or (isinstance(gate, dict) and (gate.get("paid_gate_blocked") or gate.get("gate_code") in spend_guard.REFUSAL_CODES))
-        or spend_guard.is_budget_exhausted(blocked)
-    ), type(blocked)
+    gate = blocked.context
+    assert gate.get("paid_gate_blocked") is True
+    assert gate.get("gate_code") in spend_guard.REFUSAL_CODES
     assert _Http.n == 1, sleeps
     assert len([delay for delay in sleeps if delay >= 2]) == 0, sleeps
     assert all(delay < 15 for delay in sleeps)
