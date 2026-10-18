@@ -97,7 +97,7 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "GET /api/orchestrator/chat/{session}/partial-changes отдаёт change_id шагов partial. "
         "resume_allowed истинен только для paused, waiting_approval или critic_review, "
         "если чекпоинт есть и прогон не живой. "
-        "partial_write → waiting_approval. "
+        "partial_write → waiting_approval; approve принимает запись, deny проваливает задачу. "
         "skipped_without_partial хранит change_id и не повторяет execute. "
         "deletion_forbidden: кадр без soft_delete не исполняется даже после grant.",
     ),
@@ -2341,6 +2341,10 @@ def export_contract_schemas() -> dict[str, Any]:
             "default_block_outcome": TaskStatus.failed.value,
             "approval_decision_labels": dict(APPROVAL_DECISION_LABELS),
             "retained_event_types": sorted(RETAINED_EVENT_TYPES),
+            "partial_write_decisions": [
+                ApprovalDecision.approve.value,
+                ApprovalDecision.deny.value,
+            ],
             "stop_key": "project_{id}.stop",
             "partial_changes_path": "/api/orchestrator/chat/{session}/partial-changes",
         },
