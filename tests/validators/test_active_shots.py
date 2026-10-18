@@ -7,7 +7,10 @@ import copy
 import pytest
 
 from app.orchestrator.validators.grammar import shots_of
-from app.orchestrator.validators.preservation import run_preservation_validators
+from app.orchestrator.validators.preservation import (
+    PreservationRejected,
+    run_preservation_validators,
+)
 from app.orchestrator.validators.shot_activity import _op_id, check_active_shots
 
 
@@ -322,6 +325,61 @@ def test_scene_vo_without_active_shots_flagged() -> None:
 
     parked = check_active_shots(after, copy.deepcopy(after))
     assert ("vo_on_inactive", "error", "s1") not in _codes(parked)
+
+
+def _copied_inactive() -> tuple[dict, dict]:
+    before = {
+        "сцены": [
+            {
+                "id": "frame-a",
+                "номер": 1,
+                "кадры": [{"id": "k", "активен": False, "закадр": ""}],
+            },
+            {
+                "id": "frame-b",
+                "номер": 2,
+                "кадры": [{"id": "b", "закадр": "живой"}],
+            },
+        ]
+    }
+    after = {
+        "сцены": [
+            {
+                "id": "frame-a",
+                "номер": 1,
+                "кадры": [{"id": "k", "активен": False, "закадр": ""}],
+            },
+            {
+                "id": "frame-b",
+                "номер": 2,
+                "кадры": [
+                    {"id": "b", "закадр": "живой"},
+                    {"id": "k", "закадр": ""},
+                ],
+            },
+        ]
+    }
+    return before, after
+
+
+def test_copy_inactive_shot_to_other_frame_is_revived() -> None:
+    """Копия неактивного шота в другой кадр без ops — revived."""
+
+    before, after = _copied_inactive()
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="reject")
+    assert any(
+        item.code == "inactive_shot_revived" and item.id == "k"
+        for item in raised.value.violations
+    )
+
+
+def test_restore_copied_inactive_shot_passes() -> None:
+    """Явный restore на кадр-копию разрешает оживление."""
+
+    before, after = _copied_inactive()
+    ops = [{"op": "restore", "shot_id": "k", "frame_uuid": "frame-b"}]
+    assert run_preservation_validators(before, after, ops, mode="reject") == []
 
 
 def test_restore_scoped_to_frame_does_not_revive_copy() -> None:

@@ -505,6 +505,48 @@ async def test_rejected_apply_ops_leaves_session_clean(session: AsyncSession) ->
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_copy_inactive_shot_raises(session: AsyncSession) -> None:
+    """Копия неактивного шота в другой кадр через apply_ops — ApplyOpsError."""
+
+    project = Project(slug="copy-dead", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    source = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="frame-a-uuid",
+        voiceover_text="",
+        attrs={"кадры": [{"id": "k", "активен": False, "закадр": ""}]},
+    )
+    target = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="frame-b-uuid",
+        voiceover_text="живой",
+        attrs={"кадры": [{"id": "b", "закадр": "живой"}]},
+    )
+    session.add(source)
+    session.add(target)
+    await session.commit()
+
+    with pytest.raises(db_apply.ApplyOpsError):
+        await db_apply.apply_ops(
+            session,
+            project,
+            [
+                {
+                    "frame_uuid": target.uuid,
+                    "fields": {
+                        "кадры": [
+                            {"id": "b", "закадр": "живой"},
+                            {"id": "k", "закадр": ""},
+                        ]
+                    },
+                }
+            ],
+        )
+
+
 async def test_db_apply_restore_shot_via_kadry_edit_passes(session: AsyncSession) -> None:
     """Явный restore шота по shot_id или индексу в кадры[] проходит preservation."""
     project = Project(slug="revive", topic="тест", status=None)  # type: ignore[arg-type]

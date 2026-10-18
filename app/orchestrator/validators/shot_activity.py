@@ -63,6 +63,7 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
     seen: set[tuple[str, str, str]] = set()
     before_scenes = _scene_nodes(before)
     before_inactive = _inactive_pairs(before_scenes)
+    inactive_ids = {shot_id for _owner, shot_id in before_inactive}
     before_by_id, before_by_number = _index_scenes(before_scenes)
     activated = _activated_pairs(operations, before_inactive)
     deactivated = [fid for op in operations if (fid := _targeted(op, False))]
@@ -85,7 +86,9 @@ def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violati
             if not isinstance(shot, dict) or id(shot) not in active_mark:
                 continue
             fid = frame_id(shot) or ""
-            if fid and (entity, fid) in before_inactive and (entity, fid) not in activated:
+            # Id был неактивен в любом кадре. Копия в другом кадре — тоже revived,
+            # пока restore не разрешил именно эту пару (кадр, shot_id).
+            if fid and fid in inactive_ids and (entity, fid) not in activated:
                 _add(
                     violations,
                     seen,
