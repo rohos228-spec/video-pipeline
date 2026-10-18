@@ -255,22 +255,25 @@ def _walk_shots(node: Any, found: list[dict[str, Any]], seen: set[int], depth: i
 def _is_shot(item: Any) -> bool:
     """Шот с id. Нет ключа «закадр» — пустой закадр, как ``""``.
 
-    Иначе один такой элемент в ``кадры[]`` прячет остальные шоты, и они
-    выглядят как ``shot_dropped``. Персонаж и op с id шотом не становятся.
+    Ключи шота раньше ``имя`` и op: реальный шот с именем остаётся видимым.
+    Обёртка ``{id, attrs}`` сама не шот — шоты лежат в ``attrs.кадры``.
     """
 
     if not isinstance(item, dict):
         return False
-    if "кадры" in item or "cells" in item or "ячейки" in item:
+    if any(key in item for key in ("кадры", "cells", "ячейки", "shots")):
+        return False
+    has_shot_key = any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план"))
+    if "attrs" in item and not has_shot_key:
         return False
     if frame_id(item) is None:
         return False
+    if has_shot_key:
+        return True
     if _is_op(item):
         return False
     if any(key in item for key in ("имя", "name", "внешность", "code", "код")):
         return False
-    if any(key in item for key in ("место", "действие", "сцена", "закадр", "активен", "план")):
-        return True
     # Строка сцены и служебные строки снимка — не шоты, даже с id.
     if any(
         key in item

@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from app.orchestrator.validators.preservation import run_preservation_validators
+import pytest
+
+from app.orchestrator.validators.preservation import PreservationRejected, run_preservation_validators
 from app.orchestrator.validators.shot_dropped import check_shot_dropped
 
 
@@ -314,3 +316,66 @@ def test_add_idless_child_shot_passes() -> None:
     softened = run_preservation_validators(before, copy.deepcopy(after), mode="soft")
     assert rejected == []
     assert all(item.code != "shot_dropped" for item in softened)
+
+
+def test_add_shot_with_name_key_passes() -> None:
+    """``имя`` на новом элементе не прячет старые шоты. Реальный шот с ``имя`` виден."""
+
+    before = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза. Вторая фраза.",
+                "кадры": [
+                    {"id": "k1", "закадр": "Первая фраза."},
+                    {"id": "k2", "закадр": "Вторая фраза."},
+                ],
+            }
+        ]
+    }
+    added = copy.deepcopy(before)
+    added["сцены"][0]["кадры"].append({"id": "k9", "имя": "Анна"})
+    got = run_preservation_validators(before, added, mode="reject")
+    assert got == []
+    assert all(item.code != "shot_dropped" for item in got)
+
+    named = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза.",
+                "кадры": [{"id": "k1", "закадр": "Первая фраза.", "имя": "Анна"}],
+            }
+        ]
+    }
+    cleared = {
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "закадр": "Первая фраза.",
+                "кадры": [],
+            }
+        ]
+    }
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(named, cleared, mode="reject")
+    assert any(item.code == "shot_dropped" and item.id == "k1" for item in raised.value.violations)
+
+    wrapped_before = {
+        "frames": [
+            {"id": "u1", "attrs": {"кадры": [{"id": "k1", "закадр": "а"}]}},
+        ]
+    }
+    wrapped_after = {
+        "frames": [
+            {"id": "u2", "attrs": {"кадры": [{"id": "k1", "закадр": "а"}]}},
+        ]
+    }
+    try:
+        wrapped = run_preservation_validators(wrapped_before, wrapped_after, mode="reject")
+    except PreservationRejected as exc:
+        wrapped = exc.violations
+    assert all(item.code != "shot_dropped" for item in wrapped)
