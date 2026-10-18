@@ -179,6 +179,8 @@ async def test_midtask_steer_append_and_sse_reconnect(token: str) -> None:
             assert created.status_code == 200
             await runtime.queue.drain()
             task_id = _task_id(runtime, session)
+            await runtime.supervisor.wait(task_id, timeout=5)
+            await runtime.supervisor.grant_approval(session)
             await actions.started.wait()
             assert runtime.tasks.get(task_id)["status"] == TaskStatus.executing.value
             assert [call["name"] for call in actions.calls] == ["charge"]
@@ -213,6 +215,9 @@ async def test_midtask_steer_append_and_sse_reconnect(token: str) -> None:
             run = runtime.supervisor._runs.get(task_id)
             assert run is not None
             await runtime.supervisor.wait(task_id, timeout=5)
+            if runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value:
+                await runtime.supervisor.grant_approval(session)
+                await runtime.supervisor.wait(task_id, timeout=5)
 
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
         names = [call["name"] for call in actions.calls]

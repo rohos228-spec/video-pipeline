@@ -104,6 +104,8 @@ async def test_shield_records_paid_step_when_driver_is_cancelled(token: str) -> 
     set_runtime(rt)
     try:
         task_id = await rt.supervisor.start_task("shield-1", "платный", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("shield-1")
         await actions.started.wait()
         run = rt.supervisor._runs[task_id]
         run.cancel()
@@ -173,6 +175,8 @@ async def test_shield_records_paid_run_node_after_verify(token: str) -> None:
     set_runtime(rt)
     try:
         task_id = await rt.supervisor.start_task("shield-node", "нода", project_id=13)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.grant_approval("shield-node")
         await asyncio.wait_for(paid_started.wait(), timeout=5)
         run = rt.supervisor._runs[task_id]
         run.cancel()

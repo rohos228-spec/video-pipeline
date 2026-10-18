@@ -36,6 +36,8 @@ async def test_paid_unknown_approval_carries_step_change_id_and_actions(token: s
     session = "appr-paid"
     try:
         task_id = await runtime.supervisor.start_task(session, "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval(session)
         await actions.started.wait()
         runtime.supervisor.request_kill(session)
         actions.release.set()

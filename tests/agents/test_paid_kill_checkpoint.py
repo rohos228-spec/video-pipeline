@@ -35,6 +35,8 @@ async def test_paid_kill_checkpoint_keeps_step_change_id(token: str) -> None:
     set_runtime(runtime)
     try:
         task_id = await runtime.supervisor.start_task("paid-kill-cp", "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("paid-kill-cp")
         await actions.started.wait()
         notes = runtime.bus.subscribe("paid-kill-cp")
         runtime.supervisor.request_kill("paid-kill-cp")
@@ -83,6 +85,8 @@ async def test_overlapping_paid_outcome_mark_stays_waiting_approval(token: str) 
     set_runtime(runtime)
     try:
         task_id = await runtime.supervisor.start_task("paid-race", "платный", project_id=13)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        await runtime.supervisor.grant_approval("paid-race")
         await actions.started.wait()
         runtime.supervisor.request_cancel("paid-race")
         actions.release.set()
