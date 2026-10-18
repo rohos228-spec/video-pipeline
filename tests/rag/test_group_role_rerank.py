@@ -120,7 +120,12 @@ def test_head_bm25_matches_title_key_and_role_not_the_body(tmp_path: Path) -> No
 def test_contour_b_profile_records_the_measured_default() -> None:
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
+        CONTOUR_B_BM25_PROTECT,
         CONTOUR_B_BM25_SCOPE,
+        CONTOUR_B_FAMILY_BOOST,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
         CONTOUR_B_EMBEDDER,
         CONTOUR_B_RERANK_MAX_LENGTH,
         CONTOUR_B_RERANK_POOL,
@@ -140,6 +145,10 @@ def test_contour_b_profile_records_the_measured_default() -> None:
     assert CONTOUR_B_RERANK_POOL == 12
     assert CONTOUR_B_AGGREGATE == "prompt_pool"
     assert CONTOUR_B_RERANK_MAX_LENGTH == 256
+    assert CONTOUR_B_RERANK_FUSION == "rrf"
+    assert (CONTOUR_B_FUSION_BM25, CONTOUR_B_FUSION_RERANK) == (0.5, 1.5)
+    assert CONTOUR_B_BM25_PROTECT == 0.0
+    assert CONTOUR_B_FAMILY_BOOST == 1.0
     assert build_reranker("none") is None
     kept = choose_default(
         [

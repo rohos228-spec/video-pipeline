@@ -15,6 +15,13 @@ EVAL_INTRA_OP_THREADS = 1
 EVAL_INTER_OP_THREADS = 1
 
 
+def session_identity(base: str, *, graph: str, eval_mode: bool) -> tuple[str, int]:
+    """Имя модели с вариантом графа, режимом и числом intra-потоков."""
+    intra = EVAL_INTRA_OP_THREADS if eval_mode else max(1, os.cpu_count() or 1)
+    mode = "eval" if eval_mode else "prod"
+    return f"{base}:{graph}:{mode}:intra{intra}", intra
+
+
 def make_session_options(*, eval_mode: bool, production_inter_op: int | None) -> Any:
     """Сессия эвалов: intra=1, inter=1, фиксированный сид.
 

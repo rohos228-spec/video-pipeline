@@ -186,7 +186,19 @@ def transfer_labels(
     return transferred, ambiguous_doc
 
 
-def write_label_files(repo_root: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def write_label_files(
+    repo_root: Path | None = None,
+    *,
+    rewrite: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Без ``rewrite`` существующий файл только сверяется с pin и не пишется заново."""
+    from evals.orchestrator.frozen_datasets import assert_frozen
+
+    if not rewrite:
+        for path in (TRANSFERRED_PATH, AMBIGUOUS_PATH):
+            if path.exists():
+                assert_frozen(path)
+        return transfer_labels(repo_root=repo_root)
     transferred, ambiguous = transfer_labels(repo_root=repo_root)
     TRANSFERRED_PATH.write_text(
         json.dumps(transferred, ensure_ascii=False, indent=2) + "\n",

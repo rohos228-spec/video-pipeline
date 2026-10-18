@@ -5,7 +5,6 @@ from __future__ import annotations
 import concurrent.futures
 import math
 import queue
-import re
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -15,6 +14,8 @@ from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
+from app.orchestrator.rag.family_boost import boost_scores
+from app.orchestrator.rag.lexical import LEXICAL_ANALYZER, fts_or_query
 from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
 from app.orchestrator.rag.node_store import NodeStore
 from app.orchestrator.rag.rerank import Reranker
@@ -22,31 +23,14 @@ from app.orchestrator.rag.rrf import rrf_merge
 from app.orchestrator.rag.store import RagStore, chunk_id_for
 from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
-_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 _RRF_K = 60
 _AGGREGATES = ("none", "prompt_pool", "prompt_expand")
+_RERANK_FUSIONS = frozenset({"replace", "rrf"})
 
 
 def fts_match_query(text: str) -> str:
-    tokens = _TOKEN_RE.findall(text)
-    if not tokens:
-        return ""
-    min_len = 3 if any(len(token) >= 3 for token in tokens) else 1
-    seen: list[str] = []
-    lowered: set[str] = set()
-    for token in tokens:
-        if len(token) < min_len:
-            continue
-        key = token.lower()
-        if key in lowered:
-            continue
-        lowered.add(key)
-        seen.append(token.replace('"', '""'))
-        if len(seen) >= 32:
-            break
-    if not seen:
-        return ""
-    return " OR ".join(f'"{token}"' for token in seen)
+    """FTS-запрос в тех же формах, что лежат в индексе BM25."""
+    return fts_or_query(text)
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -133,6 +117,8 @@ class RagEngine:
         self.store = RagStore(self.db_path)
         self._worker = ReindexWorker()
         self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
+        self._cache_lock = threading.Lock()
+        self._index_generation = 0
         self._query_vectors: dict[str, list[float]] = {}
         self._corpus_cache: dict[tuple[str, ...], tuple[list[Chunk], dict[str, list[float]]]] = {}
 
@@ -168,6 +154,10 @@ class RagEngine:
         rerank_pool: int = 30,
         bm25_scope: str = "full",
         aggregate: str = "none",
+        rerank_fusion: str = "replace",
+        rerank_fusion_weights: tuple[float, float] = (1.0, 1.0),
+        bm25_protect: float = 0.0,
+        family_boost: float = 1.0,
     ) -> list[Chunk]:
         """``rerank=None`` берёт подключённый реранкер, ``False`` выключает его.
 
@@ -176,6 +166,11 @@ class RagEngine:
         Эмбеддинги чанков и повторных запросов берутся из кэша процесса.
         ``aggregate=prompt_pool`` склеивает части одного промпта внутри пула.
         ``aggregate=prompt_expand`` поднимает все части такого промпта.
+        ``rerank_fusion=rrf`` не отдаёт порядок реранкеру: RRF с BM25.
+        ``bm25_protect`` — во сколько раз топ-1 BM25 должен обгонять топ-2,
+        чтобы остаться первым. 0 выключает защиту.
+        ``family_boost`` умножает оценку чанков семейства, которое запрос
+        назвал. 1 оставляет порядок как есть.
         """
         selected = self._corpora_arg(None if corpora is None else list(corpora))
         if top_k <= 0 or not str(query).strip():
@@ -192,6 +187,14 @@ class RagEngine:
             raise ValueError("aggregate должен быть none, prompt_pool или prompt_expand")
         if rrf_weights is not None and (rrf_weights[0] <= 0 or rrf_weights[1] <= 0):
             raise ValueError("веса RRF должны быть > 0")
+        if rerank_fusion not in _RERANK_FUSIONS:
+            raise ValueError("rerank_fusion должен быть replace или rrf")
+        if bm25_protect < 0:
+            raise ValueError("bm25_protect должен быть >= 0")
+        if rerank_fusion_weights[0] <= 0 or rerank_fusion_weights[1] <= 0:
+            raise ValueError("веса слияния BM25 и реранкера должны быть > 0")
+        if family_boost < 1:
+            raise ValueError("family_boost должен быть >= 1")
         use_rerank = (self.reranker is not None) if rerank is None else rerank
         if use_rerank and channel != "hybrid":
             use_rerank = False
@@ -242,14 +245,43 @@ class RagEngine:
             if len(raw_scores) != len(candidates):
                 raise RuntimeError("реранкер вернул не столько оценок, сколько пассажей")
             rerank_scores = dict(zip(candidates, raw_scores, strict=True))
-            ordered = [
+            rerank_ids = [
                 chunk_id
                 for chunk_id, _score in sorted(
                     rerank_scores.items(),
                     key=lambda item: (-item[1], item[0]),
                 )
             ]
+            if rerank_fusion == "rrf":
+                blended = _fuse_bm25_and_rerank(
+                    lexical_ids,
+                    rerank_ids,
+                    lexical_scores,
+                    k=rrf_k,
+                    weights=rerank_fusion_weights,
+                    protect=bm25_protect,
+                )
+                rerank_scores = blended
+                ordered = [
+                    chunk_id
+                    for chunk_id, _score in sorted(
+                        blended.items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )
+                    if chunk_id in by_id
+                ]
+            else:
+                ordered = rerank_ids
         rank_scores = rerank_scores if rerank_scores else fused
+        if family_boost != 1:
+            rank_scores = boost_scores(rank_scores, by_id, query, family_boost)
+            ordered = [
+                chunk_id
+                for chunk_id, _score in sorted(
+                    ((chunk_id, rank_scores.get(chunk_id, fused.get(chunk_id, 0.0))) for chunk_id in ordered),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ]
         ordered = _aggregate_parts(ordered, rank_scores, by_id, aggregate)
         result: list[Chunk] = []
         for rank, chunk_id in enumerate(ordered[:top_k], start=1):
@@ -268,19 +300,28 @@ class RagEngine:
         return result
 
     def _clear_retrieval_cache(self) -> None:
-        self._query_vectors.clear()
-        self._corpus_cache.clear()
+        with self._cache_lock:
+            self._query_vectors.clear()
+            self._corpus_cache.clear()
+            self._index_generation += 1
 
     def _cached_query_vector(self, query: str) -> list[float]:
-        cached = self._query_vectors.get(query)
-        if cached is None:
-            cached = self.embedder.embed_query(query)
-            self._query_vectors[query] = cached
-        return cached
+        with self._cache_lock:
+            generation = self._index_generation
+            cached = self._query_vectors.get(query)
+        if cached is not None:
+            return cached
+        vector = self.embedder.embed_query(query)
+        with self._cache_lock:
+            if self._index_generation == generation:
+                self._query_vectors[query] = vector
+        return vector
 
     def _cached_corpus(self, selected: list[str]) -> tuple[list[Chunk], dict[str, list[float]]]:
         key = tuple(selected)
-        cached = self._corpus_cache.get(key)
+        with self._cache_lock:
+            generation = self._index_generation
+            cached = self._corpus_cache.get(key)
         if cached is not None:
             return cached
         stored = self.store.fetch_chunks(selected)
@@ -290,7 +331,9 @@ class RagEngine:
             if embedding:
                 vectors[chunk.chunk_id] = embedding
         snapshot = (stored, vectors)
-        self._corpus_cache[key] = snapshot
+        with self._cache_lock:
+            if self._index_generation == generation:
+                self._corpus_cache[key] = snapshot
         return snapshot
 
     def _reindex_many(self, corpora: list[str]) -> ReindexResult | dict[str, ReindexResult]:
@@ -299,11 +342,14 @@ class RagEngine:
         invalidate_group_role_cache()
         self._node_cache = None
         self._clear_retrieval_cache()
-        results = {corpus: self._reindex_one(corpus) for corpus in corpora}
-        self._node_cache = None
-        if len(corpora) == 1:
-            return results[corpora[0]]
-        return results
+        try:
+            results = {corpus: self._reindex_one(corpus) for corpus in corpora}
+            if len(corpora) == 1:
+                return results[corpora[0]]
+            return results
+        finally:
+            self._node_cache = None
+            self._clear_retrieval_cache()
 
     def _reindex_one(self, corpus: str) -> ReindexResult:
         docs, skipped = self._load(corpus)
@@ -424,6 +470,29 @@ def _aggregate_parts(
     return flat
 
 
+def _fuse_bm25_and_rerank(
+    bm25_ids: list[str],
+    rerank_ids: list[str],
+    bm25_scores: dict[str, float],
+    *,
+    k: int,
+    weights: tuple[float, float],
+    protect: float,
+) -> dict[str, float]:
+    """RRF порядка BM25 и реранкера. Сильный топ-1 BM25 остаётся первым."""
+    fused = rrf_merge([bm25_ids, rerank_ids], k=k, weights=[weights[0], weights[1]])
+    if protect <= 0 or not bm25_ids:
+        return fused
+    leader = bm25_ids[0]
+    leader_score = float(bm25_scores.get(leader, 0.0))
+    second = float(bm25_scores.get(bm25_ids[1], 0.0)) if len(bm25_ids) > 1 else 0.0
+    ratio = float("inf") if second <= 0 else leader_score / second
+    if ratio < protect:
+        return fused
+    fused[leader] = max(fused.values(), default=0.0) + 1.0
+    return fused
+
+
 def _rerank_passage(chunk: Chunk) -> str:
     """В cross-encoder уходит заголовок и начало чанка, не весь текст."""
     title = (chunk.title or "").strip()
@@ -444,6 +513,7 @@ def _group_docs(docs: list[SourceDoc], embedder_id: str) -> dict[str, tuple[str,
         revision = sha256_payload(
             {
                 "embedder": embedder_id,
+                "lexical": LEXICAL_ANALYZER,
                 "parts": [
                     {
                         "metadata": doc.metadata,

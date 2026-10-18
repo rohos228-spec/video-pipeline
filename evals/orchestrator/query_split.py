@@ -31,7 +31,12 @@ def split_queries(queries: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
     return groups
 
 
-def write_split_file() -> dict[str, Any]:
+def write_split_file(*, rewrite: bool = False) -> dict[str, Any]:
+    if SPLIT_PATH.exists() and not rewrite:
+        from evals.orchestrator.frozen_datasets import assert_frozen
+
+        assert_frozen(SPLIT_PATH)
+        return json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
     queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
     groups = split_queries(queries)
     document = {

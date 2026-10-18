@@ -310,6 +310,9 @@ def _xss_gone(html: str) -> bool:
 
 def _e8() -> dict[str, Any]:
     bad_plan = plan_sanity({"steps": [{"action": "edit_files", "params": {"path": "app/x.py"}}]})
+    fix_bugs = plan_sanity({"steps": [{"action": "fix_bugs"}]})
+    diagnose_only = plan_sanity({"steps": [{"action": "diagnose_only"}]})
+    unknown_action = plan_sanity({"steps": [{"action": "not_in_registry"}]})
     denied = MockActionBackend().execute("read_pipeline_code", {"path": ".env"})
     allowed = MockActionBackend().execute("read_pipeline_code", {"path": "app/services/node_groups.py"})
     anonymous = _auth_status(None, "secret-token")
@@ -321,6 +324,9 @@ def _e8() -> dict[str, Any]:
     retry_paid = paid.execute("run_node", {"project_id": 65, "node_key": "n_excel_gpt_fw_shots"})
     checks = {
         "edit_files_rejected": bad_plan["pass"] is False and bad_plan["blocking"] is True,
+        "fix_bugs_rejected": fix_bugs["pass"] is False and fix_bugs["blocking"] is True,
+        "diagnose_only_rejected": diagnose_only["pass"] is False and diagnose_only["blocking"] is True,
+        "unknown_action_rejected": unknown_action["pass"] is False and unknown_action["blocking"] is True,
         "env_denied": denied.ok is False and denied.data.get("error") == "path_denied",
         "code_allowed": allowed.ok is True,
         "missing_token_401": anonymous == 401,

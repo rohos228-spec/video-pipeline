@@ -15,6 +15,7 @@ import struct
 from pathlib import Path
 
 from app.orchestrator.rag.canon import sha256_payload
+from app.orchestrator.rag.lexical import lexical_index_text
 from app.orchestrator.rag.types import CORPORA, Chunk, SourceDoc, normalize_metadata
 
 logger = logging.getLogger(__name__)
@@ -304,11 +305,11 @@ class RagStore:
         )
         conn.execute(
             "INSERT INTO chunks_fts(chunk_id, title, text, corpus) VALUES (?, ?, ?, ?)",
-            (chunk_id, doc.title, doc.text, doc.corpus),
+            (chunk_id, lexical_index_text(doc.title), lexical_index_text(doc.text), doc.corpus),
         )
         conn.execute(
             "INSERT INTO chunks_head_fts(chunk_id, head, corpus) VALUES (?, ?, ?)",
-            (chunk_id, lexical_head(doc.title, metadata), doc.corpus),
+            (chunk_id, lexical_index_text(lexical_head(doc.title, metadata)), doc.corpus),
         )
 
     def existing_revisions(self, corpus: str) -> dict[str, str]:

@@ -248,16 +248,91 @@ def test_locked_remeasure_passes_match_and_r5_is_marked() -> None:
     assert payload["identical"] is True
     assert payload["pass_count"] == 3
     assert payload["acceptance"]["threshold"] == 0.65
-    assert payload["acceptance"]["experimental"] is True
-    assert payload["acceptance"]["mark"] == "R5 не достигнут"
+    assert payload["median"]["test"]["ndcg_at_8"] >= 0.65
+    assert payload["acceptance"]["experimental"] is CONTOUR_B_EXPERIMENTAL is True
+    assert payload["acceptance"]["mark"] == ""
+    assert payload["median"]["test"]["hit_at_5"] < 0.9
+    assert payload["prod_p95"]["median_s"] <= P95_MAX_S
+    assert str(payload["prod_p95"]["commit"]).startswith("fadcb6cf")
+    assert len({item["pid"] for item in payload["pass_meta"]}) == 3
     for name in payload["passes"][0]:
         hits = [item[name]["hit_at_5"] for item in payload["passes"]]
         ndcgs = [item[name]["ndcg_at_8"] for item in payload["passes"]]
         assert hits[0] == hits[1] == hits[2]
         assert ndcgs[0] == ndcgs[1] == ndcgs[2]
-    assert CONTOUR_B_EXPERIMENTAL is True
-    assert CONTOUR_B_R5_NOTE == "R5 не достигнут"
     assert NDCG_AT_8_MIN == 0.65
+
+
+def test_experimental_flag_in_code_artifact_and_note_agree() -> None:
+    """Код, артефакт и заметка говорят одно: контур экспериментальный, R5 открыт."""
+    from app.orchestrator.rag.profile import CONTOUR_B_EXPERIMENTAL, CONTOUR_B_R5_NOTE
+
+    payload = json.loads(
+        (ROOT / "evals" / "orchestrator" / "datasets" / "precision_live_passes.json").read_text(encoding="utf-8")
+    )
+    note = CONTOUR_B_R5_NOTE.strip()
+    assert CONTOUR_B_EXPERIMENTAL is True
+    assert payload["acceptance"]["experimental"] is True
+    assert payload["acceptance"]["experimental"] is CONTOUR_B_EXPERIMENTAL
+    assert note
+    assert "не взят" in note
+    assert "0.88" in note and "0.9" in note
+    assert "0.96" in note and "0.80" in note and "1.00" in note and "0.75" in note
+
+
+def test_note_experimental_follows_the_code_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Непустая заметка R5 не держит experimental, когда флаг контура выключен."""
+    import app.orchestrator.rag.profile as profile
+    from evals.orchestrator.precision_live import acceptance_for_remeasure
+
+    monkeypatch.setattr(
+        profile,
+        "CONTOUR_B_R5_NOTE",
+        "R5 на этом PR не взят: hit@5 0.88 < 0.9, обязательный порог choose_default.",
+    )
+    monkeypatch.setattr(profile, "CONTOUR_B_EXPERIMENTAL", True)
+    enabled = acceptance_for_remeasure(0.65)
+    assert enabled["mark"] == ""
+    assert enabled["experimental"] is True
+    monkeypatch.setattr(profile, "CONTOUR_B_EXPERIMENTAL", False)
+    disabled = acceptance_for_remeasure(0.65)
+    assert disabled["mark"] == ""
+    assert disabled["experimental"] is False
+
+
+def test_regenerated_artifact_with_empty_mark_stays_experimental(tmp_path: Path) -> None:
+    """Повторная сборка пишет весь файл артефакта, не только блок acceptance."""
+    import inspect
+
+    from evals.orchestrator.precision_live import acceptance_for_remeasure, run_remeasure, write_pass_artifact
+
+    path = ROOT / "evals" / "orchestrator" / "datasets" / "precision_live_passes.json"
+    committed = json.loads(path.read_text(encoding="utf-8"))
+    acceptance = acceptance_for_remeasure(committed["median"]["test"]["ndcg_at_8"])
+    assert acceptance["mark"] == ""
+    assert acceptance["experimental"] is True
+    regenerated = {**committed, "acceptance": acceptance}
+    out = tmp_path / path.name
+    write_pass_artifact(out, regenerated)
+    assert out.read_bytes() == path.read_bytes()
+    assert "acceptance_for_remeasure(" in inspect.getsource(run_remeasure)
+
+
+def test_fusion_weights_stay_experimental_until_dev_selection() -> None:
+    """rrf 0.5/1.5 не выбран choose_default: на dev hit@5 был 0.88."""
+    from app.orchestrator.rag.profile import (
+        CONTOUR_B_EXPERIMENTAL,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
+    )
+
+    assert CONTOUR_B_RERANK_FUSION == "rrf"
+    assert CONTOUR_B_FUSION_BM25 == 0.5
+    assert CONTOUR_B_FUSION_RERANK == 1.5
+    assert CONTOUR_B_EXPERIMENTAL is True
+    missed = choose_default([("rrf", "rrf 0.5/1.5", {"ndcg_at_8": 0.7, "hit_at_5": 0.88, "p95_s": 0.4})])
+    assert missed[0] == ""
 
 
 def test_r5_below_0_65_is_experimental_and_threshold_stays() -> None:

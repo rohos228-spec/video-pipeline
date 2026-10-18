@@ -1,18 +1,18 @@
 {
-  "key": "0975181073c20a5173e538f7968baf49ae539a215caaf5fd70f65377db6225eb",
+  "key": "fd66a798ff6da3e5539fcbd0f1544395e9f5819a57ea74315018a54ee27987f6",
   "request_meta": {
-    "tier": "fast",
+    "tier": "strong",
     "temperature": null,
     "max_tokens": null,
-    "reasoning_effort": null,
-    "messages_sha256": "dfb428172c8c70c75e86d967abc298d0f9013ce550a05eb1006410cf009f1f77"
+    "reasoning_effort": "high",
+    "messages_sha256": "e3a30e618aec1714bf7d0a993463c3cb8b9f24845708ed40cc6c15d648fd654d"
   },
   "response": {
     "text": "{\"tier\": \"fast\", \"mode\": \"append\"}",
     "call_id": "script-e6",
     "model": "gpt-5.6-sol",
     "provider": "scripted",
-    "tier": "fast",
+    "tier": "strong",
     "finish_reason": "stop",
     "usage": {
       "prompt_tokens": 32,
@@ -23,8 +23,8 @@
     "latency_ms": 1,
     "fallback_index": 0,
     "deterministic": true,
-    "fixture_key": "0975181073c20a5173e538f7968baf49ae539a215caaf5fd70f65377db6225eb"
+    "fixture_key": "fd66a798ff6da3e5539fcbd0f1544395e9f5819a57ea74315018a54ee27987f6"
   },
   "recorded_at": "2026-10-17T00:00:00Z",
-  "recorded_model": "scripted"
+  "recorded_model": "gpt-5.6-sol"
 }

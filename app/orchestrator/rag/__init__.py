@@ -25,19 +25,34 @@ def _rerank_disabled() -> bool:
     return os.environ.get("ORCH_RAG_RERANK", "1").strip().lower() in {"0", "false", "off", "no", "none"}
 
 
+def _runtime_sources() -> dict[str, object]:
+    """Ноды и история читаются из проектной базы, а не из пустого MemoryNodeStore."""
+    from app.orchestrator.rag.node_store import SqliteNodeStore
+    from app.settings import settings
+
+    project_db = Path(settings.sqlite_path)
+    return {"project_db": project_db, "node_store": SqliteNodeStore(project_db)}
+
+
 def _engine_for_profile(profile: str) -> RagEngine:
     """``contour-b`` подключает embedder/реранкер и дефолты retrieve.
 
     ``ORCH_RAG_RERANK=0`` оставляет гибрид без реранкера. Любой другой профиль,
     включая пустой, — hashing без весов: так CI не качает модели.
     """
+    sources = _runtime_sources()
     if profile != "contour-b":
-        return RagEngine(db_path=default_db_path())
+        return RagEngine(db_path=default_db_path(), **sources)
     from app.orchestrator.rag.embedder import build_embedder
     from app.orchestrator.rag.profile import (
         CONTOUR_B_AGGREGATE,
+        CONTOUR_B_BM25_PROTECT,
         CONTOUR_B_BM25_SCOPE,
         CONTOUR_B_EMBEDDER,
+        CONTOUR_B_FAMILY_BOOST,
+        CONTOUR_B_FUSION_BM25,
+        CONTOUR_B_FUSION_RERANK,
+        CONTOUR_B_RERANK_FUSION,
         CONTOUR_B_RERANK_MAX_LENGTH,
         CONTOUR_B_RERANK_POOL,
         CONTOUR_B_RERANKER,
@@ -54,6 +69,7 @@ def _engine_for_profile(profile: str) -> RagEngine:
         db_path=default_db_path(),
         embedder=build_embedder(CONTOUR_B_EMBEDDER),
         reranker=reranker,
+        **sources,
     )
     engine.retrieve_defaults = {
         "rrf_k": CONTOUR_B_RRF_K,
@@ -62,6 +78,10 @@ def _engine_for_profile(profile: str) -> RagEngine:
         "rerank_pool": CONTOUR_B_RERANK_POOL,
         "aggregate": CONTOUR_B_AGGREGATE,
         "rerank": False if _rerank_disabled() else None,
+        "rerank_fusion": CONTOUR_B_RERANK_FUSION,
+        "rerank_fusion_weights": (CONTOUR_B_FUSION_BM25, CONTOUR_B_FUSION_RERANK),
+        "bm25_protect": CONTOUR_B_BM25_PROTECT,
+        "family_boost": CONTOUR_B_FAMILY_BOOST,
     }
     return engine
 
