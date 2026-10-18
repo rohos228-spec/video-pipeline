@@ -17,12 +17,11 @@ from app.services.vo_shot_expand import (
 def test_strip_non_scene_kadry_archives_and_keeps_list() -> None:
     stub = SimpleNamespace(attrs={"кадры": [{"id": "B01-K1", "действие": "ищут"}]})
     assert strip_non_scene_kadry(stub) is True
-    ladder = stub.attrs.get("кадры") or []
-    assert len(ladder) == 1
-    assert ladder[0]["id"] == "B01-K1"
-    assert ladder[0].get("активен") is False
+    assert stub.attrs.get("кадры") == []
     archived = stub.attrs.get("кадры_archived") or []
-    assert archived and archived[0]["id"] == "B01-K1"
+    assert [row["id"] for row in archived] == ["B01-K1"]
+    assert strip_non_scene_kadry(stub) is False
+    assert [row["id"] for row in stub.attrs["кадры_archived"]] == ["B01-K1"]
 
 
 def test_apply_voiceover_keeps_qc_pieces_when_ladder_is_longer() -> None:

@@ -283,32 +283,47 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Фейковые Bnn-K1 не сцена: пометить и положить в архив, список не резать."""
+    """Фейковые Bnn-K1 не сцена: снять с активной лестницы в архив.
+
+    Активный список очищается, чтобы шаг «Кадры» писал лестницу с нуля.
+    Архив идемпотентный: повторный вызов не плодит дубли по id.
+    """
     planned = planned_shots_from_attrs(frame)
-    if not planned or kadry_are_scene_shots(planned):
+    live = [shot for shot in planned if shot.get("активен") is not False]
+    if not live or kadry_are_scene_shots(live):
         return False
     attrs = dict(getattr(frame, "attrs", None) or {})
     archived = [
         dict(row) if isinstance(row, dict) else {"value": row}
         for row in (attrs.get("кадры_archived") or [])
     ]
-    marked: list[dict[str, Any]] = []
-    for shot in planned:
-        row = dict(shot) if isinstance(shot, dict) else {"value": shot}
+    seen = {
+        str(row.get("id") or "").strip()
+        for row in archived
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+    added = 0
+    for shot in live:
+        row = dict(shot)
+        sid = str(row.get("id") or "").strip()
+        if sid and sid in seen:
+            continue
         row["активен"] = False
         row["карантин"] = True
-        row["пометка"] = "не сцена — кадр сохранён"
-        marked.append(row)
-        archived.append(dict(row))
-    attrs["кадры"] = marked
+        row["пометка"] = "не сцена — в архиве"
+        archived.append(row)
+        if sid:
+            seen.add(sid)
+        added += 1
+    attrs["кадры"] = []
     if "shots" in attrs:
-        attrs["shots"] = [dict(row) for row in marked]
+        attrs["shots"] = []
     attrs["кадры_archived"] = archived
     frame.attrs = attrs
     _flag_attrs(frame)
     logger.warning(
-        "WARN strip_non_scene_kadry: {} шотов помечены, не удалены",
-        len(marked),
+        "WARN strip_non_scene_kadry: {} шотов в архиве, активная лестница пуста",
+        added,
     )
     return True
 
