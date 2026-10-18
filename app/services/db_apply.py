@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
 from app.services import db_v2
+from app.services.frame_tombstones import shot_is_active
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
     ROW_IMAGE_PROMPT_2_V8,
@@ -352,6 +353,18 @@ def _shot_content_identity(shot: dict[str, Any]) -> tuple[tuple[str, str], ...] 
     return tuple(parts)
 
 
+_TOMBSTONE_MARKS = ("удалён", "пометка", "карантин", "активен")
+
+
+def _stamp_tombstone_marks(old_shot: dict[str, Any], target: dict[str, Any]) -> None:
+    """Неживой старый шот не оживает: пометки переносятся на входящую копию."""
+    if shot_is_active(old_shot):
+        return
+    for key in _TOMBSTONE_MARKS:
+        if key in old_shot:
+            target[key] = old_shot[key]
+
+
 def _kadry_dedup_key(shot: Any) -> tuple:
     """Ключ хвоста: id, иначе текст, иначе поля без ``активен``."""
     if not isinstance(shot, dict):
@@ -378,7 +391,9 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     Иначе старый шот остаётся в хвосте с ``активен: False``.
     Входящий ``активен: False`` не снимается. Старый неактивный шот не
     оживает: ни если его нет в новом списке, ни если новый пришёл без флага,
-    ни если во входящем явно ``активен: True``.
+    ни если во входящем явно ``активен: True``. Совпадение по id или тексту
+    переносит ``удалён``, ``пометка``, ``карантин`` и ``активен`` на каждую
+    входящую копию с тем же id или текстом.
     ``{}``, не-JSON и прочий не-список — мусор: поле не меняется.
     Явный ``null`` до этого уже стал пустым списком и помечает шоты.
     """
@@ -392,7 +407,7 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         return old
     incoming: list[Any] = []
     seen_ids: set[str] = set()
-    incoming_by_id: dict[str, dict[str, Any]] = {}
+    incoming_by_id: dict[str, list[dict[str, Any]]] = {}
     new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
     incoming_by_content: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
     for shot in new:
@@ -404,7 +419,7 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(item)
         if sid:
             seen_ids.add(sid)
-            incoming_by_id[sid] = item
+            incoming_by_id.setdefault(sid, []).append(item)
             continue
         ident = _shot_content_identity(item)
         if ident is not None:
@@ -427,8 +442,9 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             if sid in seen_ids:
-                if shot.get("активен") is False:
-                    incoming_by_id[sid]["активен"] = False
+                if not shot_is_active(shot):
+                    for item in incoming_by_id.get(sid) or []:
+                        _stamp_tombstone_marks(shot, item)
                 continue
         else:
             ident = _shot_content_identity(shot)
@@ -437,10 +453,9 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 and old_content_counts.get(ident) == 1
                 and new_content_counts.get(ident) == 1
             ):
-                if shot.get("активен") is False:
-                    matched = incoming_by_content.get(ident) or []
-                    if len(matched) == 1:
-                        matched[0]["активен"] = False
+                if not shot_is_active(shot):
+                    for item in incoming_by_content.get(ident) or []:
+                        _stamp_tombstone_marks(shot, item)
                 continue
             if ident is None and any(
                 isinstance(item, dict) and _shot_id(item) is None and item == shot

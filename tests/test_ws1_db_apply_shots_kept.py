@@ -566,3 +566,99 @@ async def test_replace_all_frames_skips_tombstone_numbers(session: AsyncSession)
     )
     assert len(rows) == 3
     assert any(fr.uuid == "tomb-old" and int(fr.number) == 1 for fr in rows)
+
+
+_TOMBSTONE = {
+    "удалён": True,
+    "пометка": "дубль",
+    "карантин": True,
+    "активен": False,
+}
+
+
+def _assert_tombstone_copied(shot: dict) -> None:
+    assert shot["удалён"] is True
+    assert shot["пометка"] == "дубль"
+    assert shot["карантин"] is True
+    assert shot["активен"] is False
+    assert shot_is_active(shot) is False
+
+
+@pytest.mark.asyncio
+async def test_matched_shot_keeps_tombstone_marks(session: AsyncSession) -> None:
+    """Совпадение по id или тексту не снимает удалён, пометку и карантин.
+
+    Дубль одного id во входящем списке получает те же пометки на каждую копию.
+    """
+    project = Project(slug="ws1-tomb-marks", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    by_id = await _frame_with_kadry(
+        session,
+        project,
+        "tomb-by-id",
+        [{"id": "a", "закадр": "альфа", **_TOMBSTONE}],
+        number=1,
+    )
+    by_text = await _frame_with_kadry(
+        session,
+        project,
+        "tomb-by-text",
+        [{"закадр": "альфа", "описание": "одно", **_TOMBSTONE}],
+        number=2,
+    )
+    duplicated = await _frame_with_kadry(
+        session,
+        project,
+        "tomb-dup-id",
+        [{"id": "a", "закадр": "альфа", **_TOMBSTONE}],
+        number=3,
+    )
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": by_id.uuid,
+                "fields": {"кадры": [{"id": "a", "закадр": "альфа новая"}]},
+            },
+            {
+                "frame_uuid": by_text.uuid,
+                "fields": {
+                    "кадры": [{"закадр": "альфа", "описание": "одно", "камера": "wide"}]
+                },
+            },
+            {
+                "frame_uuid": duplicated.uuid,
+                "fields": {
+                    "кадры": [
+                        {"id": "a", "закадр": "первая копия"},
+                        {"id": "a", "закадр": "вторая копия"},
+                    ]
+                },
+            },
+        ],
+        export_xlsx=False,
+    )
+
+    await session.refresh(by_id)
+    id_shots = list(by_id.attrs["кадры"])
+    assert len(id_shots) == 1
+    assert id_shots[0]["закадр"] == "альфа новая"
+    _assert_tombstone_copied(id_shots[0])
+
+    await session.refresh(by_text)
+    text_shots = list(by_text.attrs["кадры"])
+    assert len(text_shots) == 1
+    assert text_shots[0]["закадр"] == "альфа"
+    assert text_shots[0]["камера"] == "wide"
+    _assert_tombstone_copied(text_shots[0])
+
+    await session.refresh(duplicated)
+    dup_shots = list(duplicated.attrs["кадры"])
+    assert len(dup_shots) == 2
+    assert [shot["закадр"] for shot in dup_shots] == ["первая копия", "вторая копия"]
+    for shot in dup_shots:
+        _assert_tombstone_copied(shot)
