@@ -181,15 +181,9 @@ async def test_concurrent_calls_cannot_both_pass_cap(
 ) -> None:
     estimate = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
     _quiet_gate(monkeypatch, run_cap=estimate * 1.5)
-    started = 0
-    release = asyncio.Event()
 
     async def slow_sums(_session: object, **_k: object) -> dict[str, float]:
-        nonlocal started
-        started += 1
-        if started >= 2:
-            release.set()
-        await release.wait()
+        assert spend_guard._inflight_lock.locked()
         return {"run": 0.0, "project": 0.0, "daily": 0.0}
 
     monkeypatch.setattr(spend_guard, "conservative_sums", slow_sums)
