@@ -1,0 +1,30 @@
+{
+  "key": "fd66a798ff6da3e5539fcbd0f1544395e9f5819a57ea74315018a54ee27987f6",
+  "request_meta": {
+    "tier": "strong",
+    "temperature": null,
+    "max_tokens": null,
+    "reasoning_effort": "high",
+    "messages_sha256": "e3a30e618aec1714bf7d0a993463c3cb8b9f24845708ed40cc6c15d648fd654d"
+  },
+  "response": {
+    "text": "{\"tier\": \"fast\", \"mode\": \"append\"}",
+    "call_id": "script-e6",
+    "model": "gpt-5.6-sol",
+    "provider": "scripted",
+    "tier": "strong",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 64,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 1,
+    "fallback_index": 0,
+    "deterministic": true,
+    "fixture_key": "fd66a798ff6da3e5539fcbd0f1544395e9f5819a57ea74315018a54ee27987f6"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "gpt-5.6-sol"
+}

@@ -1,0 +1,2161 @@
+{
+  "version": 1,
+  "description": "50 запросов, у каждого 8 релевантных чанков. На закрытом наборе CI считает macro precision@8 как регрессию hashing-фейка. Якоря размечены явно, эмбеддер в CI — детерминированный фейк.",
+  "documents": [
+    {
+      "corpus": "history",
+      "source_id": "stagger-history-01",
+      "title": "Разнос параллельных батчей #1",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "stagger-history-02",
+      "title": "Разнос параллельных батчей #2",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "stagger-history-03",
+      "title": "Разнос параллельных батчей #3",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "stagger-nodes-04",
+      "title": "Разнос параллельных батчей #4",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "stagger-nodes-05",
+      "title": "Разнос параллельных батчей #5",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "stagger-prompts-06",
+      "title": "Разнос параллельных батчей #6",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "stagger-prompts-07",
+      "title": "Разнос параллельных батчей #7",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "stagger-prompts-08",
+      "title": "Разнос параллельных батчей #8",
+      "text": "Разнос параллельных батчей. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. Якорь staggersec4rule. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "reasoning-history-01",
+      "title": "reasoning effort high #1",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "reasoning-history-02",
+      "title": "reasoning effort high #2",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "reasoning-history-03",
+      "title": "reasoning effort high #3",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "reasoning-nodes-04",
+      "title": "reasoning effort high #4",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "reasoning-nodes-05",
+      "title": "reasoning effort high #5",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "reasoning-prompts-06",
+      "title": "reasoning effort high #6",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "reasoning-prompts-07",
+      "title": "reasoning effort high #7",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "reasoning-prompts-08",
+      "title": "reasoning effort high #8",
+      "text": "reasoning effort high. Для нод пайплайна и strong-tier нужен высокий reasoning effort. Якорь reasoningefforthigh. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "nodelete-history-01",
+      "title": "Запрет удаления сцен #1",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "nodelete-history-02",
+      "title": "Запрет удаления сцен #2",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "nodelete-history-03",
+      "title": "Запрет удаления сцен #3",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "nodelete-nodes-04",
+      "title": "Запрет удаления сцен #4",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "nodelete-nodes-05",
+      "title": "Запрет удаления сцен #5",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "nodelete-prompts-06",
+      "title": "Запрет удаления сцен #6",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "nodelete-prompts-07",
+      "title": "Запрет удаления сцен #7",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "nodelete-prompts-08",
+      "title": "Запрет удаления сцен #8",
+      "text": "Запрет удаления сцен. Проверки не удаляют сцены и кадры, уменьшение id блокируется. Якорь nodeletionscenes. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "model-history-01",
+      "title": "Модель 52pay gpt-5.6-sol #1",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "model-history-02",
+      "title": "Модель 52pay gpt-5.6-sol #2",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "model-history-03",
+      "title": "Модель 52pay gpt-5.6-sol #3",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "model-nodes-04",
+      "title": "Модель 52pay gpt-5.6-sol #4",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "model-nodes-05",
+      "title": "Модель 52pay gpt-5.6-sol #5",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "model-prompts-06",
+      "title": "Модель 52pay gpt-5.6-sol #6",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "model-prompts-07",
+      "title": "Модель 52pay gpt-5.6-sol #7",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "model-prompts-08",
+      "title": "Модель 52pay gpt-5.6-sol #8",
+      "text": "Модель 52pay gpt-5.6-sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. Якорь pay52gpt56sol. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "merge-history-01",
+      "title": "Склейка тривиальных кадров #1",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "merge-history-02",
+      "title": "Склейка тривиальных кадров #2",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "merge-history-03",
+      "title": "Склейка тривиальных кадров #3",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "merge-nodes-04",
+      "title": "Склейка тривиальных кадров #4",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "merge-nodes-05",
+      "title": "Склейка тривиальных кадров #5",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "merge-prompts-06",
+      "title": "Склейка тривиальных кадров #6",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "merge-prompts-07",
+      "title": "Склейка тривиальных кадров #7",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "merge-prompts-08",
+      "title": "Склейка тривиальных кадров #8",
+      "text": "Склейка тривиальных кадров. В кадрах соседние постановки склеиваются, если их можно объединить. Якорь rmergetrivial. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "wide-history-01",
+      "title": "Общий план перед диалогом #1",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "wide-history-02",
+      "title": "Общий план перед диалогом #2",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "wide-history-03",
+      "title": "Общий план перед диалогом #3",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "wide-nodes-04",
+      "title": "Общий план перед диалогом #4",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "wide-nodes-05",
+      "title": "Общий план перед диалогом #5",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "wide-prompts-06",
+      "title": "Общий план перед диалогом #6",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "wide-prompts-07",
+      "title": "Общий план перед диалогом #7",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "wide-prompts-08",
+      "title": "Общий план перед диалогом #8",
+      "text": "Общий план перед диалогом. Перед репликой стоит общий план, широкий кадр раньше диалога. Якорь rwidebeforedialog. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "vo-history-01",
+      "title": "Закадр 200–300 символов #1",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "vo-history-02",
+      "title": "Закадр 200–300 символов #2",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "vo-history-03",
+      "title": "Закадр 200–300 символов #3",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "vo-nodes-04",
+      "title": "Закадр 200–300 символов #4",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "vo-nodes-05",
+      "title": "Закадр 200–300 символов #5",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "vo-prompts-06",
+      "title": "Закадр 200–300 символов #6",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "vo-prompts-07",
+      "title": "Закадр 200–300 символов #7",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "vo-prompts-08",
+      "title": "Закадр 200–300 символов #8",
+      "text": "Закадр 200–300 символов. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. Якорь vozover200300. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "shots-history-01",
+      "title": "Нода кадры #1",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "shots-history-02",
+      "title": "Нода кадры #2",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "shots-history-03",
+      "title": "Нода кадры #3",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "shots-nodes-04",
+      "title": "Нода кадры #4",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "shots-nodes-05",
+      "title": "Нода кадры #5",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "shots-prompts-06",
+      "title": "Нода кадры #6",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "shots-prompts-07",
+      "title": "Нода кадры #7",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "shots-prompts-08",
+      "title": "Нода кадры #8",
+      "text": "Нода кадры. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. Якорь excelgptfwshots. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": "n_excel_gpt_fw_shots",
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "qc-history-01",
+      "title": "QC промптов #1",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "qc-history-02",
+      "title": "QC промптов #2",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "qc-history-03",
+      "title": "QC промптов #3",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "qc-nodes-04",
+      "title": "QC промптов #4",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "qc-nodes-05",
+      "title": "QC промптов #5",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "qc-prompts-06",
+      "title": "QC промптов #6",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "qc-prompts-07",
+      "title": "QC промптов #7",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "qc-prompts-08",
+      "title": "QC промптов #8",
+      "text": "QC промптов. Нода QC проверяет промпты непрерывности и чинит только нарушения. Якорь promptsqccontinuity. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "p65-history-01",
+      "title": "Проект 65 tkach-finalochka #1",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 1, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "p65-history-02",
+      "title": "Проект 65 tkach-finalochka #2",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 2, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "p65-history-03",
+      "title": "Проект 65 tkach-finalochka #3",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 3, корпус history.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "p65-nodes-04",
+      "title": "Проект 65 tkach-finalochka #4",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 4, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "nodes",
+      "source_id": "p65-nodes-05",
+      "title": "Проект 65 tkach-finalochka #5",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 5, корпус nodes.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "p65-prompts-06",
+      "title": "Проект 65 tkach-finalochka #6",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 6, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "p65-prompts-07",
+      "title": "Проект 65 tkach-finalochka #7",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 7, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "prompts",
+      "source_id": "p65-prompts-08",
+      "title": "Проект 65 tkach-finalochka #8",
+      "text": "Проект 65 tkach-finalochka. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. Якорь tkachfinalochka65. Пример 8, корпус prompts.",
+      "metadata": {
+        "node_key": null,
+        "version": 1,
+        "project_id": 65,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-01",
+      "title": "Отвлекающая заметка 1",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 1 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-02",
+      "title": "Отвлекающая заметка 2",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 2 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-03",
+      "title": "Отвлекающая заметка 3",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 3 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-04",
+      "title": "Отвлекающая заметка 4",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 4 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-05",
+      "title": "Отвлекающая заметка 5",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 5 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-06",
+      "title": "Отвлекающая заметка 6",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 6 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-07",
+      "title": "Отвлекающая заметка 7",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 7 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-08",
+      "title": "Отвлекающая заметка 8",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 8 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-09",
+      "title": "Отвлекающая заметка 9",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 9 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-10",
+      "title": "Отвлекающая заметка 10",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 10 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-11",
+      "title": "Отвлекающая заметка 11",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 11 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-12",
+      "title": "Отвлекающая заметка 12",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 12 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-13",
+      "title": "Отвлекающая заметка 13",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 13 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-14",
+      "title": "Отвлекающая заметка 14",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 14 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-15",
+      "title": "Отвлекающая заметка 15",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 15 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    },
+    {
+      "corpus": "history",
+      "source_id": "distractor-16",
+      "title": "Отвлекающая заметка 16",
+      "text": "Кадр сцены показывает героя. Промпт картинки собран. Закадр короткий. Заметка 16 без редкого якоря.",
+      "metadata": {
+        "node_key": null,
+        "version": null,
+        "project_id": null,
+        "updated_at": "2026-10-17T00:00:00Z"
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "stagger-01",
+      "query": "staggersec4rule Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "stagger-history-01",
+        "stagger-history-02",
+        "stagger-history-03",
+        "stagger-nodes-04",
+        "stagger-nodes-05",
+        "stagger-prompts-06",
+        "stagger-prompts-07",
+        "stagger-prompts-08"
+      ]
+    },
+    {
+      "id": "stagger-02",
+      "query": "Разнос параллельных батчей. staggersec4rule Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "stagger-history-01",
+        "stagger-history-02",
+        "stagger-history-03",
+        "stagger-nodes-04",
+        "stagger-nodes-05",
+        "stagger-prompts-06",
+        "stagger-prompts-07",
+        "stagger-prompts-08"
+      ]
+    },
+    {
+      "id": "stagger-03",
+      "query": "Якорь staggersec4rule. Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "stagger-history-01",
+        "stagger-history-02",
+        "stagger-history-03",
+        "stagger-nodes-04",
+        "stagger-nodes-05",
+        "stagger-prompts-06",
+        "stagger-prompts-07",
+        "stagger-prompts-08"
+      ]
+    },
+    {
+      "id": "stagger-04",
+      "query": "Сдвиг батчей 2–5 с — только локальный housepc, в main не требуется (решение пользователя 17.10). staggersec4rule. staggersec4rule Разнос параллельных батчей",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "stagger-history-01",
+        "stagger-history-02",
+        "stagger-history-03",
+        "stagger-nodes-04",
+        "stagger-nodes-05",
+        "stagger-prompts-06",
+        "stagger-prompts-07",
+        "stagger-prompts-08"
+      ]
+    },
+    {
+      "id": "stagger-05",
+      "query": "staggersec4rule Разнос параллельных батчей",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "stagger-history-01",
+        "stagger-history-02",
+        "stagger-history-03",
+        "stagger-nodes-04",
+        "stagger-nodes-05",
+        "stagger-prompts-06",
+        "stagger-prompts-07",
+        "stagger-prompts-08"
+      ]
+    },
+    {
+      "id": "reasoning-01",
+      "query": "reasoningefforthigh Для нод пайплайна и strong-tier нужен высокий reasoning effort.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "reasoning-history-01",
+        "reasoning-history-02",
+        "reasoning-history-03",
+        "reasoning-nodes-04",
+        "reasoning-nodes-05",
+        "reasoning-prompts-06",
+        "reasoning-prompts-07",
+        "reasoning-prompts-08"
+      ]
+    },
+    {
+      "id": "reasoning-02",
+      "query": "reasoning effort high. reasoningefforthigh Для нод пайплайна и strong-tier нужен высокий reasoning effort.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "reasoning-history-01",
+        "reasoning-history-02",
+        "reasoning-history-03",
+        "reasoning-nodes-04",
+        "reasoning-nodes-05",
+        "reasoning-prompts-06",
+        "reasoning-prompts-07",
+        "reasoning-prompts-08"
+      ]
+    },
+    {
+      "id": "reasoning-03",
+      "query": "Якорь reasoningefforthigh. Для нод пайплайна и strong-tier нужен высокий reasoning effort.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "reasoning-history-01",
+        "reasoning-history-02",
+        "reasoning-history-03",
+        "reasoning-nodes-04",
+        "reasoning-nodes-05",
+        "reasoning-prompts-06",
+        "reasoning-prompts-07",
+        "reasoning-prompts-08"
+      ]
+    },
+    {
+      "id": "reasoning-04",
+      "query": "Для нод пайплайна и strong-tier нужен высокий reasoning effort. reasoningefforthigh reasoning effort high",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "reasoning-history-01",
+        "reasoning-history-02",
+        "reasoning-history-03",
+        "reasoning-nodes-04",
+        "reasoning-nodes-05",
+        "reasoning-prompts-06",
+        "reasoning-prompts-07",
+        "reasoning-prompts-08"
+      ]
+    },
+    {
+      "id": "reasoning-05",
+      "query": "reasoningefforthigh reasoning effort high",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "reasoning-history-01",
+        "reasoning-history-02",
+        "reasoning-history-03",
+        "reasoning-nodes-04",
+        "reasoning-nodes-05",
+        "reasoning-prompts-06",
+        "reasoning-prompts-07",
+        "reasoning-prompts-08"
+      ]
+    },
+    {
+      "id": "nodelete-01",
+      "query": "nodeletionscenes Проверки не удаляют сцены и кадры, уменьшение id блокируется.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "nodelete-history-01",
+        "nodelete-history-02",
+        "nodelete-history-03",
+        "nodelete-nodes-04",
+        "nodelete-nodes-05",
+        "nodelete-prompts-06",
+        "nodelete-prompts-07",
+        "nodelete-prompts-08"
+      ]
+    },
+    {
+      "id": "nodelete-02",
+      "query": "Запрет удаления сцен. nodeletionscenes Проверки не удаляют сцены и кадры, уменьшение id блокируется.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "nodelete-history-01",
+        "nodelete-history-02",
+        "nodelete-history-03",
+        "nodelete-nodes-04",
+        "nodelete-nodes-05",
+        "nodelete-prompts-06",
+        "nodelete-prompts-07",
+        "nodelete-prompts-08"
+      ]
+    },
+    {
+      "id": "nodelete-03",
+      "query": "Якорь nodeletionscenes. Проверки не удаляют сцены и кадры, уменьшение id блокируется.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "nodelete-history-01",
+        "nodelete-history-02",
+        "nodelete-history-03",
+        "nodelete-nodes-04",
+        "nodelete-nodes-05",
+        "nodelete-prompts-06",
+        "nodelete-prompts-07",
+        "nodelete-prompts-08"
+      ]
+    },
+    {
+      "id": "nodelete-04",
+      "query": "Проверки не удаляют сцены и кадры, уменьшение id блокируется. nodeletionscenes Запрет удаления сцен",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "nodelete-history-01",
+        "nodelete-history-02",
+        "nodelete-history-03",
+        "nodelete-nodes-04",
+        "nodelete-nodes-05",
+        "nodelete-prompts-06",
+        "nodelete-prompts-07",
+        "nodelete-prompts-08"
+      ]
+    },
+    {
+      "id": "nodelete-05",
+      "query": "nodeletionscenes Запрет удаления сцен",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "nodelete-history-01",
+        "nodelete-history-02",
+        "nodelete-history-03",
+        "nodelete-nodes-04",
+        "nodelete-nodes-05",
+        "nodelete-prompts-06",
+        "nodelete-prompts-07",
+        "nodelete-prompts-08"
+      ]
+    },
+    {
+      "id": "model-01",
+      "query": "pay52gpt56sol Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "model-history-01",
+        "model-history-02",
+        "model-history-03",
+        "model-nodes-04",
+        "model-nodes-05",
+        "model-prompts-06",
+        "model-prompts-07",
+        "model-prompts-08"
+      ]
+    },
+    {
+      "id": "model-02",
+      "query": "Модель 52pay gpt-5.6-sol. pay52gpt56sol Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "model-history-01",
+        "model-history-02",
+        "model-history-03",
+        "model-nodes-04",
+        "model-nodes-05",
+        "model-prompts-06",
+        "model-prompts-07",
+        "model-prompts-08"
+      ]
+    },
+    {
+      "id": "model-03",
+      "query": "Якорь pay52gpt56sol. Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "model-history-01",
+        "model-history-02",
+        "model-history-03",
+        "model-nodes-04",
+        "model-nodes-05",
+        "model-prompts-06",
+        "model-prompts-07",
+        "model-prompts-08"
+      ]
+    },
+    {
+      "id": "model-04",
+      "query": "Ноды пайплайна ходят в модель gpt-5.6-sol через 52pay, запасной канал Kie. pay52gpt56sol Модель 52pay gpt-5.6-sol",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "model-history-01",
+        "model-history-02",
+        "model-history-03",
+        "model-nodes-04",
+        "model-nodes-05",
+        "model-prompts-06",
+        "model-prompts-07",
+        "model-prompts-08"
+      ]
+    },
+    {
+      "id": "model-05",
+      "query": "pay52gpt56sol Модель 52pay gpt-5.6-sol",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "model-history-01",
+        "model-history-02",
+        "model-history-03",
+        "model-nodes-04",
+        "model-nodes-05",
+        "model-prompts-06",
+        "model-prompts-07",
+        "model-prompts-08"
+      ]
+    },
+    {
+      "id": "merge-01",
+      "query": "rmergetrivial В кадрах соседние постановки склеиваются, если их можно объединить.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "merge-history-01",
+        "merge-history-02",
+        "merge-history-03",
+        "merge-nodes-04",
+        "merge-nodes-05",
+        "merge-prompts-06",
+        "merge-prompts-07",
+        "merge-prompts-08"
+      ]
+    },
+    {
+      "id": "merge-02",
+      "query": "Склейка тривиальных кадров. rmergetrivial В кадрах соседние постановки склеиваются, если их можно объединить.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "merge-history-01",
+        "merge-history-02",
+        "merge-history-03",
+        "merge-nodes-04",
+        "merge-nodes-05",
+        "merge-prompts-06",
+        "merge-prompts-07",
+        "merge-prompts-08"
+      ]
+    },
+    {
+      "id": "merge-03",
+      "query": "Якорь rmergetrivial. В кадрах соседние постановки склеиваются, если их можно объединить.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "merge-history-01",
+        "merge-history-02",
+        "merge-history-03",
+        "merge-nodes-04",
+        "merge-nodes-05",
+        "merge-prompts-06",
+        "merge-prompts-07",
+        "merge-prompts-08"
+      ]
+    },
+    {
+      "id": "merge-04",
+      "query": "В кадрах соседние постановки склеиваются, если их можно объединить. rmergetrivial Склейка тривиальных кадров",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "merge-history-01",
+        "merge-history-02",
+        "merge-history-03",
+        "merge-nodes-04",
+        "merge-nodes-05",
+        "merge-prompts-06",
+        "merge-prompts-07",
+        "merge-prompts-08"
+      ]
+    },
+    {
+      "id": "merge-05",
+      "query": "rmergetrivial Склейка тривиальных кадров",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "merge-history-01",
+        "merge-history-02",
+        "merge-history-03",
+        "merge-nodes-04",
+        "merge-nodes-05",
+        "merge-prompts-06",
+        "merge-prompts-07",
+        "merge-prompts-08"
+      ]
+    },
+    {
+      "id": "wide-01",
+      "query": "rwidebeforedialog Перед репликой стоит общий план, широкий кадр раньше диалога.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "wide-history-01",
+        "wide-history-02",
+        "wide-history-03",
+        "wide-nodes-04",
+        "wide-nodes-05",
+        "wide-prompts-06",
+        "wide-prompts-07",
+        "wide-prompts-08"
+      ]
+    },
+    {
+      "id": "wide-02",
+      "query": "Общий план перед диалогом. rwidebeforedialog Перед репликой стоит общий план, широкий кадр раньше диалога.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "wide-history-01",
+        "wide-history-02",
+        "wide-history-03",
+        "wide-nodes-04",
+        "wide-nodes-05",
+        "wide-prompts-06",
+        "wide-prompts-07",
+        "wide-prompts-08"
+      ]
+    },
+    {
+      "id": "wide-03",
+      "query": "Якорь rwidebeforedialog. Перед репликой стоит общий план, широкий кадр раньше диалога.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "wide-history-01",
+        "wide-history-02",
+        "wide-history-03",
+        "wide-nodes-04",
+        "wide-nodes-05",
+        "wide-prompts-06",
+        "wide-prompts-07",
+        "wide-prompts-08"
+      ]
+    },
+    {
+      "id": "wide-04",
+      "query": "Перед репликой стоит общий план, широкий кадр раньше диалога. rwidebeforedialog Общий план перед диалогом",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "wide-history-01",
+        "wide-history-02",
+        "wide-history-03",
+        "wide-nodes-04",
+        "wide-nodes-05",
+        "wide-prompts-06",
+        "wide-prompts-07",
+        "wide-prompts-08"
+      ]
+    },
+    {
+      "id": "wide-05",
+      "query": "rwidebeforedialog Общий план перед диалогом",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "wide-history-01",
+        "wide-history-02",
+        "wide-history-03",
+        "wide-nodes-04",
+        "wide-nodes-05",
+        "wide-prompts-06",
+        "wide-prompts-07",
+        "wide-prompts-08"
+      ]
+    },
+    {
+      "id": "vo-01",
+      "query": "vozover200300 Закадр сцены 200–300 символов и раскладывается по кадрам без потерь.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "vo-history-01",
+        "vo-history-02",
+        "vo-history-03",
+        "vo-nodes-04",
+        "vo-nodes-05",
+        "vo-prompts-06",
+        "vo-prompts-07",
+        "vo-prompts-08"
+      ]
+    },
+    {
+      "id": "vo-02",
+      "query": "Закадр 200–300 символов. vozover200300 Закадр сцены 200–300 символов и раскладывается по кадрам без потерь.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "vo-history-01",
+        "vo-history-02",
+        "vo-history-03",
+        "vo-nodes-04",
+        "vo-nodes-05",
+        "vo-prompts-06",
+        "vo-prompts-07",
+        "vo-prompts-08"
+      ]
+    },
+    {
+      "id": "vo-03",
+      "query": "Якорь vozover200300. Закадр сцены 200–300 символов и раскладывается по кадрам без потерь.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "vo-history-01",
+        "vo-history-02",
+        "vo-history-03",
+        "vo-nodes-04",
+        "vo-nodes-05",
+        "vo-prompts-06",
+        "vo-prompts-07",
+        "vo-prompts-08"
+      ]
+    },
+    {
+      "id": "vo-04",
+      "query": "Закадр сцены 200–300 символов и раскладывается по кадрам без потерь. vozover200300 Закадр 200–300 символов",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "vo-history-01",
+        "vo-history-02",
+        "vo-history-03",
+        "vo-nodes-04",
+        "vo-nodes-05",
+        "vo-prompts-06",
+        "vo-prompts-07",
+        "vo-prompts-08"
+      ]
+    },
+    {
+      "id": "vo-05",
+      "query": "vozover200300 Закадр 200–300 символов",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "vo-history-01",
+        "vo-history-02",
+        "vo-history-03",
+        "vo-nodes-04",
+        "vo-nodes-05",
+        "vo-prompts-06",
+        "vo-prompts-07",
+        "vo-prompts-08"
+      ]
+    },
+    {
+      "id": "shots-01",
+      "query": "excelgptfwshots Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "shots-history-01",
+        "shots-history-02",
+        "shots-history-03",
+        "shots-nodes-04",
+        "shots-nodes-05",
+        "shots-prompts-06",
+        "shots-prompts-07",
+        "shots-prompts-08"
+      ]
+    },
+    {
+      "id": "shots-02",
+      "query": "Нода кадры. excelgptfwshots Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "shots-history-01",
+        "shots-history-02",
+        "shots-history-03",
+        "shots-nodes-04",
+        "shots-nodes-05",
+        "shots-prompts-06",
+        "shots-prompts-07",
+        "shots-prompts-08"
+      ]
+    },
+    {
+      "id": "shots-03",
+      "query": "Якорь excelgptfwshots. Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "shots-history-01",
+        "shots-history-02",
+        "shots-history-03",
+        "shots-nodes-04",
+        "shots-nodes-05",
+        "shots-prompts-06",
+        "shots-prompts-07",
+        "shots-prompts-08"
+      ]
+    },
+    {
+      "id": "shots-04",
+      "query": "Нода n_excel_gpt_fw_shots режет сцены в кадры, промпт scenes_to_frames. excelgptfwshots Нода кадры",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "shots-history-01",
+        "shots-history-02",
+        "shots-history-03",
+        "shots-nodes-04",
+        "shots-nodes-05",
+        "shots-prompts-06",
+        "shots-prompts-07",
+        "shots-prompts-08"
+      ]
+    },
+    {
+      "id": "shots-05",
+      "query": "excelgptfwshots Нода кадры",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "shots-history-01",
+        "shots-history-02",
+        "shots-history-03",
+        "shots-nodes-04",
+        "shots-nodes-05",
+        "shots-prompts-06",
+        "shots-prompts-07",
+        "shots-prompts-08"
+      ]
+    },
+    {
+      "id": "qc-01",
+      "query": "promptsqccontinuity Нода QC проверяет промпты непрерывности и чинит только нарушения.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "qc-history-01",
+        "qc-history-02",
+        "qc-history-03",
+        "qc-nodes-04",
+        "qc-nodes-05",
+        "qc-prompts-06",
+        "qc-prompts-07",
+        "qc-prompts-08"
+      ]
+    },
+    {
+      "id": "qc-02",
+      "query": "QC промптов. promptsqccontinuity Нода QC проверяет промпты непрерывности и чинит только нарушения.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "qc-history-01",
+        "qc-history-02",
+        "qc-history-03",
+        "qc-nodes-04",
+        "qc-nodes-05",
+        "qc-prompts-06",
+        "qc-prompts-07",
+        "qc-prompts-08"
+      ]
+    },
+    {
+      "id": "qc-03",
+      "query": "Якорь promptsqccontinuity. Нода QC проверяет промпты непрерывности и чинит только нарушения.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "qc-history-01",
+        "qc-history-02",
+        "qc-history-03",
+        "qc-nodes-04",
+        "qc-nodes-05",
+        "qc-prompts-06",
+        "qc-prompts-07",
+        "qc-prompts-08"
+      ]
+    },
+    {
+      "id": "qc-04",
+      "query": "Нода QC проверяет промпты непрерывности и чинит только нарушения. promptsqccontinuity QC промптов",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "qc-history-01",
+        "qc-history-02",
+        "qc-history-03",
+        "qc-nodes-04",
+        "qc-nodes-05",
+        "qc-prompts-06",
+        "qc-prompts-07",
+        "qc-prompts-08"
+      ]
+    },
+    {
+      "id": "qc-05",
+      "query": "promptsqccontinuity QC промптов",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "qc-history-01",
+        "qc-history-02",
+        "qc-history-03",
+        "qc-nodes-04",
+        "qc-nodes-05",
+        "qc-prompts-06",
+        "qc-prompts-07",
+        "qc-prompts-08"
+      ]
+    },
+    {
+      "id": "p65-01",
+      "query": "tkachfinalochka65 Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "p65-history-01",
+        "p65-history-02",
+        "p65-history-03",
+        "p65-nodes-04",
+        "p65-nodes-05",
+        "p65-prompts-06",
+        "p65-prompts-07",
+        "p65-prompts-08"
+      ]
+    },
+    {
+      "id": "p65-02",
+      "query": "Проект 65 tkach-finalochka. tkachfinalochka65 Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "p65-history-01",
+        "p65-history-02",
+        "p65-history-03",
+        "p65-nodes-04",
+        "p65-nodes-05",
+        "p65-prompts-06",
+        "p65-prompts-07",
+        "p65-prompts-08"
+      ]
+    },
+    {
+      "id": "p65-03",
+      "query": "Якорь tkachfinalochka65. Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа.",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "p65-history-01",
+        "p65-history-02",
+        "p65-history-03",
+        "p65-nodes-04",
+        "p65-nodes-05",
+        "p65-prompts-06",
+        "p65-prompts-07",
+        "p65-prompts-08"
+      ]
+    },
+    {
+      "id": "p65-04",
+      "query": "Проект 65 tkach-finalochka: кадры для сцен 3–5 и проверка заказа. tkachfinalochka65 Проект 65 tkach-finalochka",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "p65-history-01",
+        "p65-history-02",
+        "p65-history-03",
+        "p65-nodes-04",
+        "p65-nodes-05",
+        "p65-prompts-06",
+        "p65-prompts-07",
+        "p65-prompts-08"
+      ]
+    },
+    {
+      "id": "p65-05",
+      "query": "tkachfinalochka65 Проект 65 tkach-finalochka",
+      "corpora": [
+        "rules",
+        "history",
+        "nodes",
+        "prompts"
+      ],
+      "relevant_source_ids": [
+        "p65-history-01",
+        "p65-history-02",
+        "p65-history-03",
+        "p65-nodes-04",
+        "p65-nodes-05",
+        "p65-prompts-06",
+        "p65-prompts-07",
+        "p65-prompts-08"
+      ]
+    }
+  ],
+  "expected_macro_precision_at_8": 1.0
+}
