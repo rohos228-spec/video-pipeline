@@ -45,8 +45,10 @@ def prompts_root(tmp_path, monkeypatch):
 async def _run(env, steps, *, approve=True):
     r = await env.client.post(f"{BASE}/plans/preview", json={"steps": steps})
     assert r.status_code == 200, r.text
-    plan = r.json()["plan_id"]
-    if approve:
+    body = r.json()
+    plan = body["plan_id"]
+    preview = body.get("preview") if isinstance(body.get("preview"), dict) else {}
+    if approve and preview.get("needs_approval"):
         approved = await env.client.post(f"{BASE}/plans/{plan}/approve")
         assert approved.status_code == 200, approved.text
     assert (await env.client.post(f"{BASE}/plans/{plan}/run")).status_code == 200
@@ -114,7 +116,10 @@ async def test_soft_delete_restore_roundtrip(env, prompts_root, monkeypatch) -> 
         gone = await session.scalar(
             select(Frame).where(Frame.project_id == pid, Frame.number == 2)
         )
-        assert gone is None
+        assert gone is not None
+        hidden = gone.attrs or {}
+        assert hidden.get("удалён") is True
+        assert hidden.get("карантин") is True
         assert 2 in deleted_numbers(await session.get(Project, pid))
 
     restored = await _run(env, [{

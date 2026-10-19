@@ -43,8 +43,22 @@ async def test_execute_returns_r22_action_result(env) -> None:
     assert project.status == "paused"
 
 
+def _same_or_stricter(offered, base) -> None:
+    """Ярус можно поднять. Ослабить риск или флаги относительно аудита нельзя."""
+
+    rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    assert offered.name == base.name
+    assert rank[offered.risk] >= rank[base.risk]
+    assert (not offered.read_only) or base.read_only
+    assert offered.destructive or not base.destructive
+    assert offered.paid or not base.paid
+
+
 def test_metadata_of_covers_registry() -> None:
-    """Метаданные контракта есть у каждого из 102 имён живого реестра."""
+    """Метаданные контракта есть у каждого имени живого реестра.
+
+    102 из аудита плюс frame.restore, group.restore и prompt.restore_master.
+    """
 
     import pytest
 
@@ -55,15 +69,13 @@ def test_metadata_of_covers_registry() -> None:
 
     ensure_builtin_actions()
     specs = registry.list()
-    assert len(specs) == 102
+    assert len(specs) == 105
     for spec in specs:
         meta = metadata_of(spec.id)
         assert isinstance(meta, ActionMetadata)
         assert meta.name == spec.id
         assert meta.risk in {"none", "low", "medium", "high"}
-        assert meta.model_dump(include={"name", "risk", "read_only", "destructive", "paid"}) == (
-            contract_metadata(spec.id).model_dump()
-        )
+        _same_or_stricter(meta, contract_metadata(spec.id))
     with pytest.raises(ValueError):
         metadata_of("create_node@new_group")
     raised = metadata_of("create_node", group_is_new=True)
@@ -103,23 +115,24 @@ def test_metadata_marks_soft_delete_with_restore() -> None:
 
 
 def test_registry_populated_on_import() -> None:
-    """Импорт адаптера сам вызывает ensure_builtin_actions: 102 имени."""
+    """Импорт адаптера сам вызывает ensure_builtin_actions: 105 имён."""
 
     import subprocess
     import sys
+    from pathlib import Path
 
     code = (
         "import app.orchestrator.actions\n"
         "from app.services.action_layer.spec import registry\n"
         "ids = [spec.id for spec in registry.list()]\n"
-        "assert len(ids) == 102, len(ids)\n"
-        "assert len(set(ids)) == 102\n"
+        "assert len(ids) == 105, len(ids)\n"
+        "assert len(set(ids)) == 105\n"
     )
     proc = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        cwd="/workspace",
+        cwd=str(Path(__file__).resolve().parents[2]),
     )
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
@@ -128,7 +141,7 @@ def test_risk_mapping_read_local_safe_paid_destructive() -> None:
     """read→none, local_safe→low, paid→medium, destructive→high.
 
     Опубликованные флаги не слабее этой шкалы и не слабее audit_metadata.json.
-    prompt.create_master остаётся destructive, хотя в коде ярус local_safe.
+    prompt.create_master в реестре destructive: общий файл и подтверждение.
     """
 
     from app.orchestrator.action_contracts.contracts import metadata_of as contract_metadata
@@ -164,18 +177,16 @@ def test_risk_mapping_read_local_safe_paid_destructive() -> None:
     ensure_builtin_actions()
     master_spec = registry.find("prompt.create_master")
     assert master_spec is not None
-    assert master_spec.risk == "local_safe"
+    assert master_spec.risk == "destructive"
     master = metadata_of("prompt.create_master")
     assert master.destructive is True
     assert master.needs_approval is True
-    assert master == contract_metadata("prompt.create_master")
+    _same_or_stricter(master, contract_metadata("prompt.create_master"))
 
     for spec in registry.list():
         floor = map_nikita_risk(spec.risk, name=spec.id)
         published = metadata_of(spec.id)
-        assert published.model_dump(include={"name", "risk", "read_only", "destructive", "paid"}) == (
-            contract_metadata(spec.id).model_dump()
-        )
+        _same_or_stricter(published, contract_metadata(spec.id))
         assert rank[published.risk] >= rank[floor.risk]
         if floor.destructive:
             assert published.destructive is True

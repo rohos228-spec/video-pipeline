@@ -209,18 +209,30 @@ async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
     from app.services.llm_override import NodeLlmOverride, use_override
     from app.services.pay52_routes import resolve_text
 
-    if resolve_text(MODEL) is None:
-        raise RuntimeError(f"нет маршрута 52pay для {MODEL}")
-    ov = NodeLlmOverride(
-        model_id=MODEL,
-        channel="stable",
-        kind="text",
-        provider="52pay",
-        label=f"{MODEL} (52pay · high)",
-        reasoning_effort="high",
-    )
+    route = resolve_text(MODEL)
+    if route is None:
+        ov = NodeLlmOverride(
+            model_id=MODEL,
+            channel="stable",
+            kind="text",
+            provider="vibecode",
+            label=f"{MODEL} (vibecode)",
+        )
+        chat_model = MODEL
+    else:
+        ov = NodeLlmOverride(
+            model_id=route.api_model,
+            channel="stable",
+            kind="text",
+            provider="52pay",
+            label=f"{route.api_model} (52pay · high)",
+            reasoning_effort="high",
+        )
+        chat_model = route.api_model
     with use_override(ov):
-        res = await gpt_api.chat(prompt=user, system=system, model=MODEL, auto_pack=False, max_retries=1)
+        res = await gpt_api.chat(
+            prompt=user, system=system, model=chat_model, auto_pack=False, max_retries=1
+        )
     txt = getattr(res, "text", None) or getattr(res, "content", None) or str(res)
     return txt, {"finish_reason": getattr(res, "finish_reason", None) or getattr(res, "status", None), "model": MODEL, "usage": getattr(res, "usage", None)}
 

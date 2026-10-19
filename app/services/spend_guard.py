@@ -991,7 +991,9 @@ from typing import Iterator
 
 from app.services.style_agent.budget import LlmBudget
 
-_active: ContextVar[LlmBudget | None] = ContextVar("spend_budget", default=None)
+_active: contextvars.ContextVar[LlmBudget | None] = contextvars.ContextVar(
+    "spend_budget", default=None
+)
 _pipeline: LlmBudget | None = None
 # Прод без явного лимита не блокируем: бюджет нужен, чтобы записать трату.
 _PIPELINE_MAX_CALLS = 10**9

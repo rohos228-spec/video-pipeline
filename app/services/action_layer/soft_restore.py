@@ -224,6 +224,13 @@ async def frame_restore(ctx: ActionContext, params: dict) -> dict:
     )
 
 
+def _frame_is_hidden(frame: object) -> bool:
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    return bool(attrs.get("удалён") or attrs.get("карантин") or attrs.get("активен") is False)
+
+
 async def _restore_frame_row(project_id: int, before: dict) -> dict:
     from sqlalchemy import select
 
@@ -240,13 +247,13 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
         frame = await session.scalar(
             select(Frame).where(Frame.project_id == project_id, Frame.number == number)
         )
-        if frame is not None:
-            raise ActionCallError(409, "conflict")
         attrs = dict(before.get("attrs") or {})
         attrs["кадры"] = merge_kadry_keep_missing(attrs.get("кадры"), incoming)
-        frame = Frame(
-            project_id=project_id,
-            number=number,
+        attrs.pop("удалён", None)
+        attrs.pop("карантин", None)
+        attrs.pop("пометка", None)
+        attrs["активен"] = True
+        fields = dict(
             voiceover_text=str(before.get("voiceover_text") or ""),
             image_prompt=before.get("image_prompt"),
             animation_prompt=before.get("animation_prompt"),
@@ -256,7 +263,14 @@ async def _restore_frame_row(project_id: int, before: dict) -> dict:
             status=FrameStatus.planned,
             attrs=attrs,
         )
-        session.add(frame)
+        if frame is None:
+            frame = Frame(project_id=project_id, number=number, **fields)
+            session.add(frame)
+        elif _frame_is_hidden(frame):
+            for key, value in fields.items():
+                setattr(frame, key, value)
+        else:
+            raise ActionCallError(409, "conflict")
         forget_deleted(project, number)
         await session.commit()
         return {

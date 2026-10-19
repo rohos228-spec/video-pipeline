@@ -139,6 +139,7 @@ def whitelist() -> list[str]:
     ensure_builtin_actions()
     names = {spec.id for spec in registry.list()}
     names.difference_update(_HELD_UNTIL_R2)
+    names.difference_update(set(SOFT_DELETE_RESTORE.values()) - _IMPLEMENTED_RESTORES)
     names.update(
         restore
         for restore in SOFT_DELETE_RESTORE.values()
@@ -173,6 +174,7 @@ def metadata_of(name: str, *, group_is_new: bool = False) -> ActionMetadata:
     prompt.create_master остаётся destructive. У мягкого удаления есть restore_action.
     """
 
+    ensure_builtin_actions()
     published = contract_escalated(str(name), group_is_new=group_is_new)
     spec = registry.find(published.name)
     base = published if spec is None else _raise_to_floor(
@@ -600,6 +602,3 @@ async def _execute(name: str, params: dict | None, ctx: Any) -> ActionResult:
     body.pop("change_id", None)
     result = BoundResult(status="ok", result=body, error=None, warnings=warnings)
     return _attach_cc(result, approval)
-
-
-ensure_builtin_actions()
