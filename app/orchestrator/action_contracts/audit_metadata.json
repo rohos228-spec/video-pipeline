@@ -1,0 +1,718 @@
+{
+  "actions": [
+    {
+      "name": "change.list",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "change.get",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "change.propose",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "change.apply",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "change.rollback",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "project.stop",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "shot.get_menu",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "shot.edit_cell_voiceover",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "shot.add_cell",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "shot.edit_field",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.list",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.get",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.shots_report",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.insert",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.save_from_selection",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.update",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "group.delete",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "node.get_config",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.get_llm_route",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.set_config",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.set_prompt_variant",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.set_disabled",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.reset_from_step",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "media.get_recovery_assessment",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "media.resume_poll",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "media.list_unknown_outcomes",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "media.release_unknown",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.get_board",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.apply_status",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.montage_status",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.recover_status",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.set_voiceover",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.set_coverage",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.queue_ops",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.swap_shots",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.cancel_queue_ops",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.apply_queue",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "montage.improve_scene",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "montage.generate_scene_images",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "montage.generate_scene",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "montage.suggest_scene_variants",
+      "risk": "high",
+      "read_only": false,
+      "destructive": false,
+      "paid": true
+    },
+    {
+      "name": "montage.set_scene_chain",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.set_anchors",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.set_voiceover_span",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.delete_child_frame",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.insert_frame",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.merge_scenes",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.split_scene",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.explode_scene",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.delete_frame",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.swap_slots",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.move_image",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.delete_image",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.delete_video",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.set_video_trim",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.list_ref_assets",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.link_ref",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.unlink_ref",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.delete_manual_ref",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.recover_outsee",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.run_montage",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.align_audio",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.set_assemble_params",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.get_cost_basis",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "montage.upload_voice",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.upload_music",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.upload_image",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.upload_video",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.upload_ref",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.upload_file",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "node.upload_check_agent",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "node.clear_check_agent",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "project.pause",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "project.resume",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "project.continue_pipeline",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "project.set_auto_mode",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "project.reload_xlsx",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "montage.set_send_to_main_pc",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "prompt.get_master",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "prompt.save_master",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "prompt.create_master",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "prompt.delete_master",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "node.get_run_cost_basis",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "node.run_step",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "step.get_run_cost_basis",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "step.run_step",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "hitl.list_pending",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "hitl.approve",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "hitl.reject",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "hitl.regenerate",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "project.create",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "project.create_child",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "project.patch_settings",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "massfactory.start",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": true
+    },
+    {
+      "name": "kill_switch.engage",
+      "risk": "low",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "project.upload_xlsx",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "hero.replace_image",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "storage.upload_file",
+      "risk": "medium",
+      "read_only": false,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "storage.clear_files",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "history.list_snapshots",
+      "risk": "none",
+      "read_only": true,
+      "destructive": false,
+      "paid": false
+    },
+    {
+      "name": "history.rollback",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    },
+    {
+      "name": "publish.send",
+      "risk": "high",
+      "read_only": false,
+      "destructive": true,
+      "paid": false
+    }
+  ]
+}

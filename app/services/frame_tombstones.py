@@ -34,6 +34,12 @@ def remember_deleted(project, number: int) -> None:
     _touch(project)
 
 
+def mark_frame_deleted(project, number: int) -> None:
+    """Пометить номер кадра удалённым, не стирая строку кадра."""
+
+    remember_deleted(project, number)
+
+
 def forget_deleted(project, number: int | None = None) -> None:
     nums = deleted_numbers(project)
     if not nums:

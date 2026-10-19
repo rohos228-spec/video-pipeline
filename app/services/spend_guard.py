@@ -986,10 +986,7 @@ async def correlation_chain(session, request_id: str) -> list[dict]:
 # === compat: лёгкий pocket-бюджет из линейки WS3 (guard_paid_spend / note_paid_spend и т.д.)
 # Определяет пять мелких функций pocket-бюджета. Большая R0b-система выше работает независимо.
 
-from __future__ import annotations
-
 from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Iterator
 
 from app.services.style_agent.budget import LlmBudget
