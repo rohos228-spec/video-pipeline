@@ -217,3 +217,33 @@ class MetaBook:
             self.meta["disabled_nodes"] = list(before or [])
             return
         raise KeyError(action)
+
+
+def load_book(meta: dict | None) -> MetaBook:
+    """Книга по текущему meta. Версия берётся из ключа meta_version."""
+    source = meta if isinstance(meta, dict) else None
+    book = MetaBook(source)
+    raw = source.get("meta_version") if source else 0
+    try:
+        book.version = int(raw or 0)
+    except (TypeError, ValueError):
+        book.version = 0
+    return book
+
+
+def checked_meta_version(params: dict, book: MetaBook) -> int:
+    """Если ключ передан — его сверяет expected_version. Иначе версия уже прочитанной книги."""
+    if "expected_meta_version" not in params:
+        return book.version
+    return expected_version(params, book)
+
+
+def expected_version(params: dict, book: MetaBook) -> int:
+    """Версия из запроса. Без ключа это не текущая книга: сравнение с собой — конфликт."""
+    if "expected_meta_version" not in params:
+        raise VersionConflict("нет expected_meta_version")
+    try:
+        return int(params["expected_meta_version"])
+    except (TypeError, ValueError) as exc:
+        raise VersionConflict("версия meta не число") from exc
+

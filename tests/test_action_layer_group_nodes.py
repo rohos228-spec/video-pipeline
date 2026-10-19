@@ -174,7 +174,8 @@ async def test_prompt_variant_and_disabled_write_full_meta_buckets(specs) -> Non
     await specs.get("node.set_prompt_variant").executor(
         ctx, {"project_id": 1, "node_key": NODE, "variant": "shots_qc_ru"})
     sent = ctx.calls[-1][3]["meta"]["prompt_slot_variants"]
-    assert sent == {"other": {"main": "a"}, NODE: {"main": "shots_qc_ru"}}
+    assert sent == {NODE: {"main": "shots_qc_ru"}}
+    assert "other" not in sent
     res = await specs.get("node.set_disabled").executor(
         ctx, {"project_id": 1, "node_key": NODE, "disabled": True})
     assert res["disabled_nodes"] == ["n_x", NODE]

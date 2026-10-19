@@ -6,7 +6,10 @@ from typing import Any
 
 from app.services.action_layer.builtin_montage import (
     _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
-from app.services.action_layer.context import ActionContext
+from app.services.action_layer.context import ActionCallError, ActionContext
+from app.services.action_layer.soft_restore import (
+    capture_frame, capture_frame_by_number, frame_restore, remember_soft_delete,
+    precondition_restore_ref, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
     ActionSpec, CostEstimate, JobState, Precondition)
@@ -521,9 +524,25 @@ async def _pre_vo_span_args(ctx, params):
 
 
 async def _delete_child(ctx, params):
-    data = await ctx.call("POST", f"{_base(params['project_id'])}/coverage", json={
-        "type": "coverage_delete", "frame_number": params["frame_number"]})
-    return {"ok": bool(data.get("ok")), "deleted_frame_number": params["frame_number"]}
+    project_id = int(params["project_id"])
+    number = int(params["frame_number"])
+    before = await capture_frame_by_number(project_id, number)
+    snap = None
+    if before is not None:
+        snap = await remember_soft_delete(
+            ctx,
+            action_id="montage.delete_child_frame",
+            project_id=project_id,
+            kind="frame",
+            target={"frame_id": before["frame_id"], "number": before["number"]},
+            before=before,
+        )
+    data = await ctx.call("POST", f"{_base(project_id)}/coverage", json={
+        "type": "coverage_delete", "frame_number": number})
+    out = {"ok": bool(data.get("ok")), "deleted_frame_number": number}
+    if snap is not None:
+        out["snapshot_id"] = snap
+    return out
 
 
 
@@ -564,8 +583,24 @@ async def _explode_scene(ctx, params):
 
 
 async def _delete_frame(ctx, params):
-    data = await ctx.call("DELETE", f"{_base(params['project_id'])}/frames/{params['frame_id']}")
-    return {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
+    project_id = int(params["project_id"])
+    frame_id = int(params["frame_id"])
+    before = await capture_frame(project_id, frame_id)
+    snap = None
+    if before is not None:
+        snap = await remember_soft_delete(
+            ctx,
+            action_id="montage.delete_frame",
+            project_id=project_id,
+            kind="frame",
+            target={"frame_id": frame_id, "number": before["number"]},
+            before=before,
+        )
+    data = await ctx.call("DELETE", f"{_base(project_id)}/frames/{frame_id}")
+    out = {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
+    if snap is not None:
+        out["snapshot_id"] = snap
+    return out
 
 
 
@@ -684,16 +719,22 @@ async def _align_audio(ctx, params):
 
 
 async def _set_assemble_params(ctx, params):
+    from app.orchestrator.node_store.meta_book import (
+        VersionConflict, checked_meta_version, load_book)
+
     pid = params["project_id"]
     detail = await ctx.call("GET", f"/projects/{pid}")
-    nsp = copy.deepcopy((detail.get("meta") or {}).get("node_step_params") or {})
-    bucket = dict(nsp.get("assemble") or {})
+    meta = detail.get("meta") if isinstance(detail, dict) else None
+    book = load_book(meta if isinstance(meta, dict) else None)
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, book.version)
     changed = {k: params[k] for k in _ASSEMBLE_KEYS if k in params}
-    if not changed:
-        raise ValueError("не указано ни одного параметра сборки")
-    bucket.update(changed)
-    nsp["assemble"] = bucket
-    await ctx.call("PATCH", f"/projects/{pid}", json={"meta": {"node_step_params": nsp}})
+    try:
+        book.set_assemble_params(values=changed, version=checked_meta_version(params, book))
+    except VersionConflict as exc:
+        raise ActionCallError(exc.status_code, str(exc)) from exc
+    await ctx.call("PATCH", f"/projects/{pid}", json={"meta": {
+        "node_step_params": {"assemble": changed}, "meta_version": book.version}})
     return {"assemble": changed}
 
 
@@ -1076,13 +1117,25 @@ def _specs() -> list[ActionSpec]:
           executor=_set_assemble_params, risk=RISK_LOCAL_SAFE, idempotent=True,
           preconditions=(_PRE_PROJECT, Precondition("assemble_args", "Указан хотя бы один параметр",
                                                     _pre_assemble_args)),
-          tags=("montage", "assemble")),
+          tags=("montage", "assemble", "edit")),
         S(id="montage.get_cost_basis", title_ru="Модель оплаты проекта и очередь",
           description_ru="Текущие генераторы и разрешения, как их берёт регенерация панели, их цена "
                          "по каталогу Kie (или признак «цена неизвестна») и число операций в очереди. "
                          "Нужно для заявки в платных действиях.",
           params_schema=_obj({}, []), executor=_get_cost_basis, risk=RISK_READ, idempotent=True,
           preconditions=(_PRE_PROJECT,), tags=("montage", "cost")),
+        S(id="frame.restore", title_ru="Вернуть кадр из снимка",
+          description_ru="Снимает отметку удаления и возвращает кадр в таблицу и в кадры[] "
+                         "по snapshot_id (или archive_ref). Шот снова активен. Сцены не "
+                         "пересобираются, файлы не удаляются.",
+          params_schema=restore_params_schema(project=True), executor=frame_restore,
+          risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+          destructive_effects=lambda p: (
+              "Кадр возвращается из снимка в таблицу и в кадры[]; подтверждение нужно, "
+              "файлы проекта не удаляются."),
+          preconditions=(_PRE_PROJECT, Precondition(
+              "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref)),
+          tags=("montage", "frames", "restore")),
     ]
 
 

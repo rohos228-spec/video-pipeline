@@ -11,6 +11,9 @@ from app.services.action_layer.builtin_montage_more import (
     _FRAME_NO, _PRE_NO_ALIGN, _SHOT, _pre_frame_numbers)
 from app.services.action_layer.context import (
     ActionCallError, ActionContext, source_to_upload, validate_source_params)
+from app.services.action_layer.soft_restore import (
+    precondition_restore_ref, prompt_restore_master, remember_soft_delete,
+    restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec, CostEstimate,
     JobState, Precondition)
@@ -305,6 +308,8 @@ async def _save_master(ctx, params):
     old = await _read_prompt(ctx, params)
     if old is None:
         raise RuntimeError("промт не найден")
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, int(old.get("version") or 1))
     prev = _digest(str(old.get("content") or ""))
     await ctx.call("PUT", _prompt_path(params), json={"content": params["content"]})
     new = _digest(params["content"])
@@ -323,10 +328,19 @@ async def _delete_master(ctx, params):
     old = await _read_prompt(ctx, params)
     if old is None:
         raise RuntimeError("промт не найден")
-    prev = _digest(str(old.get("content") or ""))
+    content = str(old.get("content") or "")
+    prev = _digest(content)
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="prompt.delete_master",
+        project_id=None,
+        kind="master_prompt",
+        target={"step_code": params["step_code"], "name": params["name"]},
+        before={"step_code": params["step_code"], "name": params["name"], "content": content},
+    )
     await ctx.call("DELETE", _prompt_path(params))
     return {"removed": True, "previous_sha256": prev["sha256"], "previous_chars": prev["chars"],
-            "scope": "global"}
+            "scope": "global", "snapshot_id": snap}
 
 
 
@@ -647,14 +661,21 @@ def _specs() -> list[ActionSpec]:
           preconditions=(Precondition("prompt_exists", "Промт существует", _pre_prompt_exists),
                          Precondition("content_nonblank", "Текст не пустой",
                                       _pre_content_nonblank)),
-          tags=("prompt", "global")),
+          tags=("prompt", "global", "edit")),
         S(id="prompt.create_master", title_ru="Создать вариант мастер-промта",
-          description_ru="Новый файл варианта промта шага (общий для всех проектов). Существующее "
-                         "имя не перезаписывается.",
+          description_ru="Новый файл варианта промта шага, общий для всех проектов. Существующее "
+                         "имя не перезаписывается. Файл в репозитории общий, поэтому создание "
+                         "требует подтверждения.",
           params_schema=_obj({"step_code": _STEP_CODE, "name": _PROMPT_NAME,
                               "content": {"type": "string", "minLength": 1, "maxLength": 200000}},
                              ["step_code", "name", "content"], project=False),
-          executor=_create_master, risk=RISK_LOCAL_SAFE, idempotent=False, scope="global",
+          executor=_create_master, risk=RISK_DESTRUCTIVE, destructive=True, reversible=False,
+          idempotent=False, scope="global",
+          destructive_effects=lambda p: (
+              f"ГЛОБАЛЬНО: будет создан общий файл варианта промта {p['step_code']}/{p['name']} "
+              "для всех проектов"
+              + ("; это файл шаблона группы script_frames_qc в репозитории"
+                 if _group_query(p) else "")),
           preconditions=(Precondition("prompt_free", "Имя свободно", _pre_prompt_free),
                          Precondition("content_nonblank", "Текст не пустой",
                                       _pre_content_nonblank)),
@@ -671,6 +692,19 @@ def _specs() -> list[ActionSpec]:
           preconditions=(Precondition("not_default", "Это не default", _pre_not_default),
                          Precondition("prompt_exists", "Промт существует", _pre_prompt_exists)),
           tags=("prompt", "global")),
+        S(id="prompt.restore_master", title_ru="Вернуть мастер-промт из снимка",
+          description_ru="Записывает прежний текст общего промта по snapshot_id "
+                         "(или archive_ref). Файл общий для всех проектов, поэтому нужно "
+                         "подтверждение. Другие промты не удаляются.",
+          params_schema=restore_params_schema(project=False), executor=prompt_restore_master,
+          risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+          scope="global",
+          destructive_effects=lambda p: (
+              "ГЛОБАЛЬНО: общий файл мастер-промта возвращается из снимка для всех проектов; "
+              "подтверждение нужно, другие файлы не удаляются."),
+          preconditions=(Precondition(
+              "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref),),
+          tags=("prompt", "global", "restore")),
         S(id="node.get_run_cost_basis", title_ru="Верхняя оценка прогона текстовой ноды",
           description_ru="Для нод Каркас, Площадка, Шоты, QC: пачки, худшее число запросов к "
                          "модели и токены на запрос по реальным данным проекта и файлам промтов. "

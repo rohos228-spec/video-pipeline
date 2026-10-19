@@ -510,6 +510,7 @@ export const PARAM_RU: Record<string, ParamInfo> = {
   hero_mode: { label: "Режим героя", hint: "hero, no_hero или auto" },
   aspect_ratio: { label: "Соотношение сторон", hint: "например 9:16" },
   snapshot_id: { label: "Номер снимка", hint: "id снимка из истории изменений" },
+  archive_ref: { label: "Ссылка на архив", hint: "путь к JSON-архиву внутри data, если снимка нет" },
   force: { label: "Перезаписать, даже если значение менялось", hint: "по умолчанию откат отказывает, если значение уже изменено после правки" },
   platforms: { label: "Площадки публикации", hint: "куда опубликовать ролик" },
   caption: { label: "Подпись к публикации", hint: "берётся из темы проекта" },

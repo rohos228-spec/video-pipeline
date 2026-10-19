@@ -9,6 +9,23 @@ import shutil
 from pathlib import Path
 
 MAX_BYTES = 256 * 1024 * 1024
+_LINKER_WARNING = b"no version information available"
+
+
+def probe_stderr_blocks(stderr: bytes) -> bool:
+    """Предупреждение динамического линкера не делает файл бракованным.
+
+    tmux кладёт свой libncurses в LD_LIBRARY_PATH, и ffprobe пишет в stderr
+    «no version information available», хотя код возврата 0 и JSON годный.
+    """
+    for raw in stderr.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith((b"ffprobe:", b"ffmpeg:")) and _LINKER_WARNING in line:
+            continue
+        return True
+    return False
 
 
 def contained_path(path: Path, root: Path) -> Path:
@@ -89,7 +106,7 @@ async def verify_artifact(path: Path, *, root: Path, kind: str, expected=None) -
                 process.kill()
                 await process.communicate()
                 raise
-            if process.returncode or len(stdout) > 1024 * 1024 or stderr.strip():
+            if process.returncode or len(stdout) > 1024 * 1024 or probe_stderr_blocks(stderr):
                 raise ValueError("media probe rejected file")
             data = json.loads(stdout)
             streams = data.get("streams", [])

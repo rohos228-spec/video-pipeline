@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.services.action_layer import store
-from app.services.action_layer.builtin_group import _get_project, _is_running
+from app.services.action_layer.builtin_group import _CONFIG_FIELDS, _get_project, _is_running
 from app.services.action_layer.builtin_montage import _PID, _base
 from app.services.action_layer.context import (
     ActionCallError, ActionContext, FileUpload, UploadRejected)
@@ -245,6 +245,70 @@ def _file_restorable(_t: dict, before: Any) -> tuple[bool, str]:
     return False, "прежнего файла не было: удалить файл эндпоинтом нельзя, откат невозможен"
 
 
+async def _variant_read(ctx, t):
+    proj = await _get_project(ctx, t["project_id"])
+    slots = (proj.get("meta") or {}).get("prompt_slot_variants") or {}
+    node = slots.get(t["node_key"]) if isinstance(slots, dict) else None
+    if not isinstance(node, dict):
+        return None
+    return node.get(t["slot_id"])
+
+
+async def _variant_write(ctx, t, value):
+    await ctx.call("PATCH", f"/projects/{t['project_id']}", json={"meta": {
+        "prompt_slot_variants": {t["node_key"]: {t["slot_id"]: value}}}})
+
+
+async def _config_read(ctx, t):
+    data = await ctx.call(
+        "GET", f"/projects/{t['project_id']}/gpt-operator/{t['node_key']}/resolve")
+    cfg = (data or {}).get("config") if isinstance(data, dict) else None
+    cfg = cfg if isinstance(cfg, dict) else {}
+    return {key: cfg.get(key) for key in _CONFIG_FIELDS}
+
+
+async def _config_write(ctx, t, value):
+    if not isinstance(value, dict):
+        raise RuntimeError("снимок конфига ноды повреждён")
+    body = {key: value[key] for key in _CONFIG_FIELDS if key in value and value[key] is not None}
+    await ctx.call("PATCH", f"/projects/{t['project_id']}/gpt-operator/{t['node_key']}", json=body)
+
+
+async def _disabled_read(ctx, t):
+    proj = await _get_project(ctx, t["project_id"])
+    cur = [str(item) for item in ((proj.get("meta") or {}).get("disabled_nodes") or [])]
+    return str(t["node_key"]) in cur
+
+
+async def _disabled_write(ctx, t, value):
+    proj = await _get_project(ctx, t["project_id"])
+    cur = [str(item) for item in ((proj.get("meta") or {}).get("disabled_nodes") or [])]
+    key = str(t["node_key"])
+    updated = cur if (value and key in cur) else ([*cur, key] if value else [item for item in cur if item != key])
+    await ctx.call("PATCH", f"/projects/{t['project_id']}", json={"meta": {"disabled_nodes": updated}})
+
+
+async def _assemble_read(ctx, t):
+    proj = await _get_project(ctx, t["project_id"])
+    nsp = (proj.get("meta") or {}).get("node_step_params") or {}
+    bucket = nsp.get("assemble") if isinstance(nsp, dict) else None
+    return dict(bucket) if isinstance(bucket, dict) else {}
+
+
+async def _assemble_write(ctx, t, value):
+    proj = await _get_project(ctx, t["project_id"])
+    nsp = (proj.get("meta") or {}).get("node_step_params") or {}
+    current = nsp.get("assemble") if isinstance(nsp, dict) else None
+    current = current if isinstance(current, dict) else {}
+    wanted = dict(value) if isinstance(value, dict) else {}
+    patch = dict(wanted)
+    for key in current:
+        if key not in wanted:
+            patch[key] = None
+    await ctx.call("PATCH", f"/projects/{t['project_id']}", json={"meta": {
+        "node_step_params": {"assemble": patch}}})
+
+
 HANDLERS: dict[str, Handler] = {
     "montage.set_voiceover": Handler(
         "voiceover", lambda p: {"project_id": p["project_id"], "frame_id": p["frame_id"]},
@@ -280,6 +344,19 @@ HANDLERS: dict[str, Handler] = {
     "prompt.save_master": Handler(
         "master_prompt", lambda p: {"step_code": p["step_code"], "name": p["name"]},
         _prompt_read, _prompt_write, _always(True), scope_project=False),
+    "node.set_prompt_variant": Handler(
+        "prompt_slot", lambda p: {"project_id": p["project_id"], "node_key": p["node_key"],
+                                  "slot_id": p.get("slot_id") or "main"},
+        _variant_read, _variant_write, _always(True)),
+    "node.set_config": Handler(
+        "node_config", lambda p: {"project_id": p["project_id"], "node_key": p["node_key"]},
+        _config_read, _config_write, _always(True)),
+    "node.set_disabled": Handler(
+        "node_disabled", lambda p: {"project_id": p["project_id"], "node_key": p["node_key"]},
+        _disabled_read, _disabled_write, _always(True)),
+    "montage.set_assemble_params": Handler(
+        "assemble_params", lambda p: {"project_id": p["project_id"]},
+        _assemble_read, _assemble_write, _always(True)),
 }
 
 _FILE_KINDS = frozenset({"file_voice", "file_music"})
@@ -406,6 +483,9 @@ async def _rollback(ctx: ActionContext, params: dict) -> dict:
     current_full = await h.read(ctx, target)
     current = _public_file_state(current_full) if isinstance(current_full, dict) else current_full
     if not params.get("force") and _compare_value(h.kind, current) != _compare_value(h.kind, row.after):
+        if h.kind == "master_prompt":
+            raise ActionCallError(
+                409, "текст мастер-промта изменился после снимка: откат отклонён")
         raise RuntimeError("значение изменилось после правки (его поправили ещё раз): откат "
                            "перезатёр бы чужую правку; повторите с force=true, если это нужно")
     saved = current
@@ -436,8 +516,9 @@ def history_specs() -> list[ActionSpec]:
           tags=("history", "rollback")),
         S(id="history.rollback", title_ru="Откатить правку по журналу",
           description_ru="Возвращает прежнее значение из снимка тем же эндпоинтом, которым шла "
-                         "правка. Если значение уже поменяли после правки, откат отклоняется (force=true "
-                         "перезапишет). Сам откат тоже оставляет снимок, поэтому обратим. "
+                         "правка. Если значение уже поменяли после правки, откат отклоняется "
+                         "(текущее содержимое сверяется с after снимка и отвечает 409; "
+                         "force=true перезапишет). Сам откат тоже оставляет снимок, поэтому обратим. "
                          "Якоря, цепочка сцены и поле «набор» автоматически не откатываются.",
           params_schema={"type": "object", "properties": {
               "snapshot_id": {"type": "integer", "minimum": 1},

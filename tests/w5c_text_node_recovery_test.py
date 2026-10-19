@@ -326,11 +326,19 @@ def test_the_system_prompt_does_not_let_the_model_read_labels_as_bans():
 _STAND = ROOT / "scripts" / "e2e_vibecode_text_nodes.py"
 
 
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _run_offline(node, tmp_path, *extra):
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
     for name in ("GPT_RELAY_TOKEN", "GPT_PROXY_URL", "VIBECODE_API_KEY", "GPT_API_KEY"):
         env.pop(name, None)
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_STAND), "--node", node, "--work-dir", str(tmp_path),
+                           "--port", str(_free_port()),
                            "--settle-s", "6", "--sleep-minutes", "0.01", "--timeout-s", "420", *extra],
                           cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=560)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 from app.services.action_layer.context import ActionCallError, ActionContext
+from app.services.action_layer.soft_restore import (
+    group_restore, precondition_restore_ref, remember_soft_delete, restore_params_schema)
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec,
     CostEstimate, JobState, Precondition)
@@ -232,7 +234,23 @@ async def _has_group_patch(ctx: ActionContext, params: dict) -> str | None:
 
 
 async def _group_delete(ctx: ActionContext, params: dict) -> dict:
-    return await ctx.call("DELETE", f"/node-groups/{params['group_id']}")
+    from app.services.node_groups import _group_to_dict, get_node_group
+
+    gid = str(params["group_id"])
+    group = get_node_group(gid)
+    before = _group_to_dict(group) if group is not None else {"group_id": gid, "absent": True}
+    snap = await remember_soft_delete(
+        ctx,
+        action_id="group.delete",
+        project_id=None,
+        kind="group",
+        target={"group_id": gid},
+        before=before,
+    )
+    data = await ctx.call("DELETE", f"/node-groups/{gid}")
+    if isinstance(data, dict):
+        return {**data, "snapshot_id": snap}
+    return {"deleted": gid, "snapshot_id": snap}
 
 
 async def _group_shots_report(ctx: ActionContext, params: dict) -> dict:
@@ -273,8 +291,35 @@ async def _config_output_mode_allowed(ctx: ActionContext, params: dict) -> str |
     return None
 
 
+def _meta_book(proj: dict):
+    from app.orchestrator.node_store.meta_book import load_book
+
+    meta = proj.get("meta") if isinstance(proj, dict) else None
+    return load_book(meta if isinstance(meta, dict) else None)
+
+
+def _conflict(exc) -> ActionCallError:
+    # 409 без getattr: детектор аудита считает любой getattr записью в ФС.
+    return ActionCallError(409, str(exc))
+
+
 async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+
+    proj = await _get_project(ctx, params["project_id"])
+    resolved = await ctx.call(
+        "GET", f"/projects/{params['project_id']}/gpt-operator/{params['node_key']}/resolve")
+    cfg = (resolved or {}).get("config") if isinstance(resolved, dict) else None
+    book = _meta_book(proj)
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, book.version)
+    book.meta.setdefault("node_config", {})[params["node_key"]] = dict(cfg or {})
     body = {k: params[k] for k in _CONFIG_FIELDS if k in params}
+    try:
+        book.set_config(node_key=params["node_key"], fields=body,
+                        version=checked_meta_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
     data = await ctx.call("PATCH", f"/projects/{params['project_id']}/gpt-operator/"
                                    f"{params['node_key']}", json=body)
     return {"ok": bool(data.get("ok")),
@@ -282,25 +327,42 @@ async def _node_set_config(ctx: ActionContext, params: dict) -> dict:
 
 
 async def _node_set_prompt_variant(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+
     proj = await _get_project(ctx, params["project_id"])
-    allv = {k: dict(v) if isinstance(v, dict) else {}
-            for k, v in ((proj.get("meta") or {}).get("prompt_slot_variants") or {}).items()}
-    node = allv.setdefault(params["node_key"], {})
-    node[params.get("slot_id", "main")] = params["variant"]
-    await ctx.call("PATCH", f"/projects/{params['project_id']}",
-                   json={"meta": {"prompt_slot_variants": allv}})
-    return {"node_key": params["node_key"], "slot_id": params.get("slot_id", "main"),
-            "variant": params["variant"]}
+    book = _meta_book(proj)
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, book.version)
+    slot_id = params.get("slot_id", "main")
+    try:
+        book.set_prompt_variant(
+            node_key=params["node_key"], slot_id=slot_id, variant=params["variant"],
+            version=checked_meta_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
+    await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {
+        "prompt_slot_variants": {params["node_key"]: {slot_id: params["variant"]}},
+        "meta_version": book.version}})
+    return {"node_key": params["node_key"], "slot_id": slot_id, "variant": params["variant"]}
 
 
 async def _node_set_disabled(ctx: ActionContext, params: dict) -> dict:
+    from app.orchestrator.node_store.meta_book import VersionConflict, checked_meta_version
+
     proj = await _get_project(ctx, params["project_id"])
-    cur = [str(x) for x in ((proj.get("meta") or {}).get("disabled_nodes") or [])]
-    key = params["node_key"]
-    new = [k for k in cur if k != key] + ([key] if params["disabled"] else [])
-    await ctx.call("PATCH", f"/projects/{params['project_id']}",
-                   json={"meta": {"disabled_nodes": new}})
-    return {"node_key": key, "disabled": params["disabled"], "disabled_nodes": new}
+    book = _meta_book(proj)
+    from app.orchestrator.actions.contracts import guard_stale_edit
+    guard_stale_edit(params, book.version)
+    try:
+        result = book.set_disabled(
+            node_key=params["node_key"], disabled=bool(params["disabled"]),
+            version=checked_meta_version(params, book))
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
+    await ctx.call("PATCH", f"/projects/{params['project_id']}", json={"meta": {
+        "disabled_nodes": result["disabled_nodes"], "meta_version": result["version"]}})
+    return {"node_key": result["node_key"], "disabled": result["disabled"],
+            "disabled_nodes": result["disabled_nodes"]}
 
 
 async def _node_run_step(ctx: ActionContext, params: dict) -> dict:
@@ -476,6 +538,19 @@ def _specs() -> list[ActionSpec]:
             preconditions=(Precondition("group_custom", "Группа пользовательская",
                                         _group_is_custom),),
             tags=("group",)),
+        ActionSpec(
+            id="group.restore", title_ru="Вернуть пользовательскую группу из снимка",
+            description_ru="Восстанавливает файл пользовательской группы по snapshot_id "
+                           "(или archive_ref). Встроенные группы не затрагиваются.",
+            params_schema=restore_params_schema(project=False), executor=group_restore,
+            risk=RISK_DESTRUCTIVE, destructive=True, reversible=True, idempotent=True,
+            scope="global",
+            destructive_effects=lambda p: (
+                "Файл пользовательской группы возвращается из снимка; подтверждение нужно, "
+                "другие группы не удаляются."),
+            preconditions=(Precondition(
+                "restore_ref", "Нужен snapshot_id или archive_ref", precondition_restore_ref),),
+            tags=("group", "restore")),
 
         ActionSpec(
             id="node.get_config", title_ru="Настройки ноды «Работа с GPT»",
@@ -513,7 +588,7 @@ def _specs() -> list[ActionSpec]:
                            Precondition("output_mode_allowed",
                                         "Режим выхода не меняется у нод script_frames_qc",
                                         _config_output_mode_allowed)),
-            tags=("node", "config")),
+            tags=("node", "config", "edit")),
         ActionSpec(
             id="node.set_prompt_variant", title_ru="Выбрать вариант промта слота ноды",
             description_ru="Привязывает файл промта к слоту ноды в этом проекте (meta). Сам файл "
@@ -526,7 +601,7 @@ def _specs() -> list[ActionSpec]:
                             "pattern": r"^[A-Za-z0-9_.\-]+$"}},
                 ["project_id", "node_key", "variant"]),
             executor=_node_set_prompt_variant, risk=RISK_LOCAL_SAFE, idempotent=True,
-            preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE), tags=("node", "prompt")),
+            preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE), tags=("node", "prompt", "edit")),
         ActionSpec(
             id="node.set_disabled", title_ru="Отключить или включить ноду",
             description_ru="Пишет ноду в meta.disabled_nodes проекта или убирает оттуда. "
@@ -535,7 +610,7 @@ def _specs() -> list[ActionSpec]:
                                    "disabled": {"type": "boolean"}},
                                   ["project_id", "node_key", "disabled"]),
             executor=_node_set_disabled, risk=RISK_LOCAL_SAFE, idempotent=True,
-            preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE), tags=("node", "config")),
+            preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE), tags=("node", "config", "edit")),
         ActionSpec(
             id="node.run_step", title_ru="Запустить шаг на ноде «Работа с GPT»",
             description_ru="Явный старт шага ноды (режим resume): убивает активную генерацию проекта "

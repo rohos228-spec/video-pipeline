@@ -69,10 +69,13 @@ def test_wrapped_actions_are_listed_and_keep_their_tier() -> None:
     from app.services.action_layer.builtin_wave5 import WAVE5_CHANGED_IDS
 
     wrapped = set(hist.HANDLERS)
-    assert wrapped <= set(WAVE5_CHANGED_IDS)
-    assert {"montage.set_voiceover", "montage.set_coverage", "montage.set_anchors",
+    core = {"montage.set_voiceover", "montage.set_coverage", "montage.set_anchors",
             "montage.set_scene_chain", "shot.edit_cell_voiceover", "shot.edit_field",
-            "montage.upload_voice", "montage.upload_music", "prompt.save_master"} == wrapped
+            "montage.upload_voice", "montage.upload_music", "prompt.save_master"}
+    param = {"node.set_config", "node.set_prompt_variant", "node.set_disabled",
+             "montage.set_assemble_params"}
+    assert wrapped == core | param
+    assert core <= set(WAVE5_CHANGED_IDS)
     for aid in wrapped:
         spec = registry.get(aid)
         assert "history.rollback" in spec.description_ru, aid
