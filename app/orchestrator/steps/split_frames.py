@@ -35,7 +35,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         await session.flush()
         return
 
+    from app.services.node_capabilities import prepare_split_replacement
+
+    await prepare_split_replacement(session, project)
+
     result = await xsr.run_split_xlsx(project)
+    if getattr(result, "split_verified", None) is False:
+        raise RuntimeError(
+            "split_frames: ответ разбивки не прошёл предпроверку "
+            f"(источник={getattr(result, 'split_source', None)}); кадры не записаны"
+        )
     ops = list(result.apply_ops or [])
     if not ops and result.frames_spec:
         ops = [{"target": "replace_frames", "frames": result.frames_spec}]

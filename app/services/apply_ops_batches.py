@@ -119,7 +119,6 @@ _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
 _ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
 _ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
-# fw_frames: кадр готов только если картинка + видео + действие.
 SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор (по 6).
 SKIP_CAMERA_MENU = "camera_menu"
@@ -134,14 +133,15 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну пачку.
+    """Стена на одну пачку: тройной GPT-таймаут, не короче 180 с.
 
-    Шоты — 15 минут: длинный живой ответ (5–7 мин на high) не выбрасываем;
-    мёртвый сокет ловит keepalive, а не стена. Остальные ноды ждут 20 минут.
+    ``footer_kind`` не меняет стену: шоты и остальные ноды ждут одно и то же.
     """
-    if shots_short_packs(footer_kind):
-        return SHOTS_PACK_TIMEOUT_S
-    return 1200.0
+    del footer_kind
+    from app.settings import settings
+
+    wall = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
+    return max(180.0, wall * 3.0)
 
 
 def shots_short_packs(footer_kind: str | None) -> bool:
@@ -203,14 +203,12 @@ def frames_per_batch(
     skip_if_field: str | None = None,
     target_batches: int | None = None,
 ) -> int:
-    """Сколько кадров в одном GPT-вызове. 0 кадров → 1 (не делить на ноль)."""
     n = max(int(n_frames), 0)
     if n <= 0:
         return 1
     if target_batches and int(target_batches) > 0:
         from math import ceil
 
-        # Добор хвоста (≤32 кадра) — один вызов, не 5 крошечных пачек.
         if dense and n <= 32:
             return n
         return max(1, int(ceil(n / int(target_batches))))
@@ -337,7 +335,6 @@ def _unit_is_heavy(unit: list[dict[str, Any]]) -> bool:
 
 
 def _vo_unit_key(frame: dict[str, Any]) -> str:
-    """Ячейка закадра: parent_uuid шота или свой uuid."""
     uid = str(frame.get("uuid") or "").strip()
     cs = frame.get("camera_subdivide")
     if not isinstance(cs, dict):
@@ -350,7 +347,6 @@ def _vo_unit_key(frame: dict[str, Any]) -> str:
 
 
 def group_vo_units(frames: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Кадры одной VO-ячейки (родитель + шоты) держатся вместе."""
     order: list[str] = []
     buckets: dict[str, list[dict[str, Any]]] = {}
     for fr in frames:
@@ -430,6 +426,20 @@ def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[s
             if pack:
                 packs.append(pack)
         return packs
+    n = min(n, len(frames))
+    per = max(1, (len(frames) + n - 1) // n)
+    return split_frames(frames, per)
+
+
+def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
+    if not frames:
+        return []
+    n = max(1, int(n))
+    units = group_vo_units(frames)
+    if len(units) > 1:
+        n = min(n, len(units))
+        per = max(1, (len(units) + n - 1) // n)
+        return split_vo_units(frames, per)
     n = min(n, len(frames))
     per = max(1, (len(frames) + n - 1) // n)
     return split_frames(frames, per)
@@ -767,7 +777,6 @@ def fill_kadry_ops_from_catalog(
 
 
 def _vo_visible_len(text: str) -> int:
-    """Длина закадра без комбинирующих ударений (символы как в речи)."""
     return len(
         "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
     )
@@ -778,7 +787,6 @@ def _shot_vo_chunk(shot: dict[str, Any]) -> str:
 
 
 def _is_special_short_vo(chunk: str, plan: str) -> bool:
-    """1–2 слова отдельным кадром только как титр/имя/ударная деталь."""
     compact = re.sub(r"\s+", " ", chunk or "").strip()
     if not compact:
         return False
@@ -846,7 +854,6 @@ def _shot_vo_len_reason(
 
 
 def _place_attested_in_vo(place: str, vo: str) -> bool:
-    """Место из кадра должно читаться в закадре, иначе это выдуманный сетап."""
     vo_cf = (vo or "").casefold()
     place_cf = (place or "").strip().casefold()
     if not place_cf or not vo_cf:
@@ -1070,7 +1077,6 @@ def bits_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Биты — массив объектов по числу изменений, не строка и не единица на ячейку."""
     by_uid = _frames_by_uuid(frames)
     for op in ops:
         if not isinstance(op, dict):
@@ -1150,7 +1156,6 @@ def auto_repair_action_chain_ops(
         text = _op_field(fields, "главное_действие", "main_action")
         if not text:
             continue
-        # Если есть «место — действие», но нет «1. »
         if "—" in text and not _SCENE_NUM_RE.search(text):
             text = f"1. {text}"
             if "главное_действие" in fields:
@@ -1491,7 +1496,6 @@ def prompts_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Промты картинок: нужен промт_картинки, не fields.кадры."""
     del frames
     for op in ops:
         if not isinstance(op, dict):
@@ -1577,6 +1581,33 @@ def _batch_footer(
             "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_coverage", "shots"}:
+        expect_lines: list[str] = []
+        for fr in frames or []:
+            if not isinstance(fr, dict):
+                continue
+            uid = str(fr.get("uuid") or "").strip()
+            expected = _frame_expected_shots(fr)
+            steps = _frame_action_steps(fr)
+            vo_n = _frame_vo_chars(fr)
+            if uid and expected > 0:
+                expect_lines.append(
+                    f"- uuid {uid[:8]}: СДЕЛАЙ ≈{expected} кадров "
+                    f"(VO-capacity; steps={steps}, VO≈{vo_n} симв.) — "
+                    f"не 1–5 обобщений; каждый закадр 26–80"
+                )
+        expect_block = ""
+        if expect_lines:
+            expect_block = (
+                "Ожидаемое число кадров по uuid (VO-capacity expected N):\n"
+                + "\n".join(expect_lines[:12])
+                + "\n"
+            )
+        solo_note = ""
+        if n == 1:
+            solo_note = (
+                "СОЛО-ЯЧЕЙКА: это единственный uuid в пачке — не схлопывай в 1–5. "
+                "Верни ≈N кадров по VO-capacity выше.\n"
+            )
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(кадры-шаги, пачка {batch_i}, "
@@ -1692,6 +1723,19 @@ class PassStopError(RuntimeError):
         super().__init__(message)
         self.rule = rule
         self.diary = diary
+
+
+def _pack_transport_failure(exc: BaseException) -> bool:
+    """Обрыв сети. Контракт QC (пустой JSON, отказ, аудит) сюда не входит."""
+    msg = str(exc)
+    if type(exc).__name__ in {
+        "ReadTimeout",
+        "ConnectError",
+        "RemoteProtocolError",
+        "TimeoutError",
+    }:
+        return True
+    return "ConnectError" in msg or "All connection attempts failed" in msg
 
 
 SHOTS_GATE_KINDS = frozenset({"shots_coverage", "shots"})
@@ -2097,6 +2141,71 @@ def rebalance_shot_vo_ops(ops: list[Any]) -> int:
             except RuntimeError:
                 shots[:] = snap
     return n
+def pass_stop_rule(exc: BaseException | None) -> str | None:
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        rule = getattr(exc, "rule", None)
+        if isinstance(exc, PassStopError) and isinstance(rule, str) and rule:
+            return rule
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+_RULE_DIARY_RULES_MAX = 12
+_RULE_DIARY_NOTE_MAX = 200
+
+
+def rule_diary_payload(
+    entries: list[dict[str, Any]] | None,
+    *,
+    call: int,
+    level: int,
+    stop_exc: BaseException | None = None,
+) -> dict[str, Any]:
+    import re as _re
+
+    counts: dict[str, int] = {}
+    rules: dict[str, int] = {}
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        kind = str(e.get("kind") or "info")[:16]
+        counts[kind] = counts.get(kind, 0) + 1
+        rule = str(e.get("rule") or "")[:40]
+        if rule:
+            rules[rule] = rules.get(rule, 0) + 1
+    top = dict(sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))[:_RULE_DIARY_RULES_MAX])
+    stop_rule = pass_stop_rule(stop_exc)
+    if stop_rule is None and stop_exc is not None:
+        raw = getattr(stop_exc, "rule", None)
+        if isinstance(raw, str) and _re.fullmatch(r"R-[A-Z0-9-]{1,40}", raw):
+            stop_rule = raw
+    payload: dict[str, Any] = {
+        "call": int(call), "level": int(level), "counts": counts, "rules": top,
+        "stop_rule": stop_rule,
+    }
+    if stop_exc is not None:
+        payload["note"] = " ".join(str(stop_exc).split())[:_RULE_DIARY_NOTE_MAX]
+    return payload
+
+
+async def _emit_rule_diary(
+    entries: list[dict[str, Any]] | None,
+    *,
+    call: int,
+    level: int,
+    stop_exc: BaseException | None = None,
+) -> None:
+    if not entries and stop_exc is None:
+        return
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact("rule_diary", rule_diary_payload(
+            entries, call=call, level=level, stop_exc=stop_exc))
+    except Exception:
+        logger.debug("rule_diary fact skipped", exc_info=True)
 
 
 def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2949,6 +3058,8 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        if allow_empty_ops:
+            api_kw["allow_empty_ops"] = True
         pack_timeout = pack_call_timeout_s(footer_kind)
         await _acquire_pack_send_slot()
         try:
@@ -2990,8 +3101,15 @@ async def run_apply_ops_batched(
                          kind="stop", note=str(exc)[:500])],
                 error=str(exc),
             )
+            await _emit_rule_diary(
+                list(getattr(exc, "diary", []) or []),
+                call=my_i,
+                level=level,
+                stop_exc=exc,
+            )
             raise
         ops = passes.ops
+        await _emit_rule_diary(passes.entries, call=my_i, level=level)
         by_frame = {
             str(fr.get("uuid") or "").strip(): fr
             for fr in chunk
@@ -3064,7 +3182,26 @@ async def run_apply_ops_batched(
                 logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
             if allow_empty_ops:
-                # QC: ops только по нарушителям; пустой пакет = ок.
+                if not res.empty_ops_accepted:
+                    raise RuntimeError('QC empty result not accepted by the operator contract')
+                from app.services.observation import record_fact, _attempt
+                ctx = _attempt.get()
+                if ctx and ctx.scope.mode == 'managed' and (ctx.scope.gaps or
+                        ctx.scope.execution_id in ctx.observer.failures or
+                        ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+                    raise RuntimeError('managed QC no-op blocked: mandatory audit unavailable')
+                await record_fact('runtime_check', {'check': 'qc_noop', 'performed': True,
+                    'status': 'passed', 'empty_ops_allowed': True, 'response_complete': True,
+                    'required_checks': ['strict_json_ops_array', 'completed_response', 'trusted_empty_ops_policy'],
+                    'semantic_quality_verified': False},
+                    request_id=(getattr(res, 'request_id', None) or (ctx.last_request_id if ctx else None)))
+                if ctx and ctx.scope.mode == 'managed' and (ctx.scope.gaps or
+                        ctx.scope.execution_id in ctx.observer.failures or
+                        ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+                    raise RuntimeError('managed QC no-op blocked: mandatory audit unavailable')
+                async with meta_lock:
+                    last_paths = list(res.output_paths or []) or [batch_path]
+                    replies.append(res.reply_text or '')
                 return []
             why = "; ".join(f"{u[:8]} {w}" for u, w in junk_notes[:6]) or "без ops"
             raise OutrightJunkError(
@@ -3189,15 +3326,7 @@ async def run_apply_ops_batched(
             return
         except Exception as exc:
             if allow_empty_ops:
-                logger.warning(
-                    "[#{}] apply_ops node={!r}: L{} fail ({}) — "
-                    "QC не ретраим пачку (промты уже в БД)",
-                    project_id,
-                    node_key,
-                    level,
-                    str(exc)[:160],
-                )
-                return
+                raise
             nxt = next_split_level(level)
             keep_pack = shots_short_packs(footer_kind)
             if nxt is None or len(chunk) <= 1 or keep_pack:
@@ -3257,7 +3386,7 @@ async def run_apply_ops_batched(
                         return
                     _skip_pack(chunk, level, f"LLM/сеть после {_cap} повторов: {msg[:200]}")
                     return
-                if isinstance(exc, PassStopError) and "скопирован" in msg:
+                if isinstance(exc, PassStopError):
                     raise
                 logger.error(
                     "[#{}] apply_ops node={!r}: L{} пачка упала, "
@@ -3284,7 +3413,6 @@ async def run_apply_ops_batched(
             return
         if not missing:
             return
-        # 1 пропущенный uuid: ещё раз только его. Раньше len<=1 сразу
         # валил всю пачку (7/8 → RuntimeError → soft retry всех 188).
         if len(missing) == 1:
             uid = str(missing[0].get("uuid") or "")[:8]
@@ -3370,6 +3498,8 @@ async def run_apply_ops_batched(
     def _log_pack_errors(results: list[Any]) -> None:
         for err in results:
             if isinstance(err, asyncio.CancelledError):
+                raise err
+            if isinstance(err, PassStopError):
                 raise err
             if isinstance(err, BaseException):
                 logger.error(
@@ -3465,7 +3595,11 @@ async def run_apply_ops_batched(
                 node_key,
                 exc,
             )
-            if isinstance(exc, PassStopError) and "скопирован" in str(exc):
+            # Стоп правил и отказ QC-контракта доходят до вызывающего.
+            # Обрыв сети при allow_empty_ops пачку не дробит и шаг не валит.
+            if isinstance(exc, PassStopError) or (
+                allow_empty_ops and not _pack_transport_failure(exc)
+            ):
                 raise
         if skipped_packs:
             n_cells = sum(len(p["uuids"]) for p in skipped_packs)

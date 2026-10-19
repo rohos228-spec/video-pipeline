@@ -19,13 +19,12 @@ python scripts/verify_ai_pack.py
 | # | Файл | Зачем |
 |---|------|--------|
 | 1 | этот `START_HERE.md` | правила игры |
-| 2 | `00_core/AGENTS.md` | запуск, GPT API, git, провайдеры |
-| 3 | `00_core/AGENT_MAP.md` | карта: куда смотреть в коде |
-| 4 | `00_core/video-pipeline-ops.md` | ветки ПК, Studio, anim_pr, диагностика |
-| 5 | `01_data_prompts/PROMPT_CONTRACT.md` | как писать/править промпты (DB, не Excel) |
-| 6 | `01_data_prompts/DB_V2.md` | кадры, uuid, apply-ops, кнопка «База» |
-| 7 | `01_data_prompts/NODE_SYSTEM.md` | ноды оркестратора |
-| 8 | `02_ops/OPERATOR_BIBLE.md` | шпаргалка оператора |
+| 2 | `00_core/AGENT_MAP.md` | карта: куда смотреть в коде |
+| 3 | `00_core/video-pipeline-ops.md` | ветки ПК, Studio, anim_pr, диагностика |
+| 4 | `01_data_prompts/PROMPT_CONTRACT.md` | как писать/править промпты (DB, не Excel) |
+| 5 | `01_data_prompts/DB_V2.md` | кадры, uuid, apply-ops, кнопка «База» |
+| 6 | `01_data_prompts/NODE_SYSTEM.md` | ноды оркестратора |
+| 7 | `02_ops/OPERATOR_BIBLE.md` | шпаргалка оператора |
 
 Дальше по задаче: `PROMPTS_BLOCKS.md`, `MASS_CREATION.md`, `03_config/env.example`.
 

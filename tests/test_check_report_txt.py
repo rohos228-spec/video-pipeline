@@ -238,11 +238,10 @@ path: excel_gpt_uploads/n_check/project_fixed.xlsx
     )
     assert out.gate_status == "fail"
     assert out.analysis is not None
-    assert out.analysis.fix.rewrite_file == "excel_gpt_uploads/n_check/project_fixed.xlsx"
     fixed = tmp_path / "excel_gpt_uploads" / "n_check" / "project_fixed.xlsx"
-    assert fixed.is_file()
-    got = load_workbook(fixed)
-    assert got["Общий план"]["B1"].value == "новая тема ролика"
+    assert not fixed.exists()
+    got = load_workbook(src)
+    assert got["Общий план"]["B1"].value != "новая тема ролика"
     assert got["прочее"]["A1"].value == "keep"
 
 
@@ -268,7 +267,7 @@ async def test_stub_api_writes_check_report(tmp_path: Path, monkeypatch) -> None
     body = report.read_text(encoding="utf-8")
     assert "verdict:" in body
     assert "mode: report_only" in body
-    assert out.gate_status in ("pass", "fail")
+    assert out.gate_status == "not_checked"
     assert any(p.name == CHECK_REPORT_NAME for p in out.output_paths)
 
 

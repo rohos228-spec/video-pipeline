@@ -31,6 +31,7 @@ import {
   NODE_CATEGORY_ORDER,
   type NodeCategory,
 } from "@/lib/node-catalog";
+import { getNodeIcon } from "@/lib/node-icons";
 import { groupHue } from "@/lib/group-color";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
@@ -66,6 +67,7 @@ export function NodePalette({
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<LibrarySource>("builtin");
   const [search, setSearch] = useState("");
+  const [selectedNodeType, setSelectedNodeType] = useState<string | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const nodeGroups = useQuery({
@@ -136,6 +138,7 @@ export function NodePalette({
         setOpen(v);
         if (!v) {
           setSearch("");
+          setSelectedNodeType(null);
         }
       }}
     >
@@ -164,7 +167,15 @@ export function NodePalette({
           </div>
         </div>
 
-        {tab !== "groups" ? (
+        {tab === "builtin" ? (
+          <NodesTab
+            addable={addable}
+            matchNode={matchNode}
+            selectedNodeType={selectedNodeType}
+            onSelectNodeType={setSelectedNodeType}
+            onAddNode={addNode}
+          />
+        ) : tab !== "groups" ? (
           <LibraryBrowser
             key={tab}
             source={tab}
@@ -196,6 +207,195 @@ export function NodePalette({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ── Ноды ─────────────────────────────────────────────────────────────── */
+
+function NodesTab({
+  addable,
+  matchNode,
+  selectedNodeType,
+  onSelectNodeType,
+  onAddNode,
+}: {
+  addable: string[];
+  matchNode: (t: string) => boolean;
+  selectedNodeType: string | null;
+  onSelectNodeType: (t: string | null) => void;
+  onAddNode: (t: string) => void;
+}) {
+  const [category, setCategory] = useState<NodeCategory | "all">("all");
+  const byCategory = useMemo(() => {
+    const map = new Map<NodeCategory, string[]>();
+    for (const t of addable) {
+      const cat = getNodeSpec(t).category;
+      map.set(cat, [...(map.get(cat) ?? []), t]);
+    }
+    return map;
+  }, [addable]);
+
+  const visible = addable.filter(
+    (t) => (category === "all" || getNodeSpec(t).category === category) && matchNode(t),
+  );
+  const selectedSpec = selectedNodeType ? getNodeSpec(selectedNodeType) : null;
+
+  return (
+    <div className="flex min-h-0 flex-1">
+      <div className="w-[168px] shrink-0 border-r border-white/10 p-2">
+        <CategoryRailButton
+          active={category === "all"}
+          label="Все"
+          count={addable.filter(matchNode).length}
+          onClick={() => setCategory("all")}
+        />
+        {NODE_CATEGORY_ORDER.filter((c) => c !== "hitl" && byCategory.has(c)).map(
+          (c) => (
+            <CategoryRailButton
+              key={c}
+              active={category === c}
+              label={NODE_CATEGORY_LABELS[c]}
+              count={(byCategory.get(c) ?? []).filter(matchNode).length}
+              onClick={() => setCategory(c)}
+            />
+          ),
+        )}
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="grid grid-cols-2 gap-1.5 p-3">
+          {visible.map((t) => {
+            const spec = getNodeSpec(t);
+            const Icon = getNodeIcon(spec.iconKey);
+            const active = selectedNodeType === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                title="Клик — просмотр; двойной клик — сразу на канвас"
+                className={cn(
+                  "flex items-start gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-colors",
+                  active
+                    ? "border-primary/50 bg-primary/10"
+                    : "border-white/10 bg-white/[0.02] hover:border-primary/30 hover:bg-primary/5",
+                )}
+                onClick={() => onSelectNodeType(t)}
+                onDoubleClick={() => onAddNode(t)}
+              >
+                <span
+                  className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+                  style={{
+                    background: `linear-gradient(145deg, hsl(${spec.accent} / 0.3), hsl(${spec.accent} / 0.08))`,
+                    color: `hsl(${spec.accent})`,
+                  }}
+                >
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-medium">
+                    {spec.label}
+                  </span>
+                  <span className="mt-0.5 line-clamp-2 block text-[10px] leading-snug text-muted-foreground">
+                    {spec.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+          {visible.length === 0 && (
+            <div className="col-span-2 py-10 text-center text-xs text-muted-foreground">
+              Ничего не найдено.
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+
+      <div className="flex w-[260px] shrink-0 flex-col border-l border-white/10 p-3">
+        {selectedSpec ? (
+          <>
+            <div className="flex items-center gap-2.5">
+              <span
+                className="flex h-10 w-10 items-center justify-center rounded-full"
+                style={{
+                  background: `linear-gradient(145deg, hsl(${selectedSpec.accent} / 0.3), hsl(${selectedSpec.accent} / 0.08))`,
+                  color: `hsl(${selectedSpec.accent})`,
+                }}
+              >
+                {(() => {
+                  const Icon = getNodeIcon(selectedSpec.iconKey);
+                  return <Icon className="h-5 w-5" />;
+                })()}
+              </span>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold">
+                  {selectedSpec.label}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {selectedSpec.type}
+                </div>
+              </div>
+            </div>
+            <div className="mt-2">
+              <span className="rounded-full border border-white/10 bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                {NODE_CATEGORY_LABELS[selectedSpec.category]}
+              </span>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+              {selectedSpec.description || "Без описания."}
+            </p>
+            <div className="mt-auto pt-3">
+              <Button
+                size="sm"
+                className="h-8 w-full gap-1.5 text-xs"
+                onClick={() => onAddNode(selectedSpec.type)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Добавить на канвас
+              </Button>
+              <div className="mt-1.5 text-center text-[9px] text-muted-foreground">
+                двойной клик по карточке — добавить сразу
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-1 items-center justify-center text-center text-[11px] text-muted-foreground">
+            Кликни по ноде,
+            <br />
+            чтобы посмотреть детали
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CategoryRailButton({
+  active,
+  label,
+  count,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
+        active
+          ? "bg-primary/15 font-medium text-primary"
+          : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+      )}
+      onClick={onClick}
+    >
+      <span className="truncate">{label}</span>
+      <span className="ml-1 rounded-full bg-black/30 px-1.5 py-0.5 text-[9px]">
+        {count}
+      </span>
+    </button>
   );
 }
 

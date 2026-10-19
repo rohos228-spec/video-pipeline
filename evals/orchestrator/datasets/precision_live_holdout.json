@@ -1,0 +1,3257 @@
+{
+  "role": "holdout",
+  "dev_plus": "live-01..live-50, включая бывший чётный test",
+  "label_rule": "семейство: все реальные чанки каталога и промпта двух нод; правило: один part_key. Grade 1. Перефраз live-01..live-50 не используется.",
+  "queries": [
+    {
+      "id": "hold-01",
+      "family": "assemble",
+      "text": "В частичной сборке куска ops пишутся только на uuid кадров этого куска, а полный список лиц возвращается лишь в первом куске?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s1",
+          "chunk_id": "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+          "grade": 1,
+          "from": [
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s2",
+          "chunk_id": "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6",
+          "grade": 1,
+          "from": [
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "chunk_id": "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6",
+          "grade": 1,
+          "from": [
+            "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s4",
+          "chunk_id": "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27",
+          "grade": 1,
+          "from": [
+            "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "chunk_id": "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0",
+          "grade": 1,
+          "from": [
+            "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s6",
+          "chunk_id": "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c",
+          "grade": 1,
+          "from": [
+            "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s7",
+          "chunk_id": "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61",
+          "grade": 1,
+          "from": [
+            "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s1",
+          "chunk_id": "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+          "grade": 1,
+          "from": [
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s2",
+          "chunk_id": "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244",
+          "grade": 1,
+          "from": [
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s3",
+          "chunk_id": "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9",
+          "grade": 1,
+          "from": [
+            "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s4",
+          "chunk_id": "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782",
+          "grade": 1,
+          "from": [
+            "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s5",
+          "chunk_id": "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921",
+          "grade": 1,
+          "from": [
+            "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s6",
+          "chunk_id": "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed",
+          "grade": 1,
+          "from": [
+            "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s7",
+          "chunk_id": "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87",
+          "grade": 1,
+          "from": [
+            "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-02",
+      "family": "assemble",
+      "text": "Машинный контракт требует ровно одну операцию на uuid кадра. Из чего тогда складывается длительность сцены?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s1",
+          "chunk_id": "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+          "grade": 1,
+          "from": [
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s2",
+          "chunk_id": "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6",
+          "grade": 1,
+          "from": [
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "chunk_id": "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6",
+          "grade": 1,
+          "from": [
+            "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s4",
+          "chunk_id": "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27",
+          "grade": 1,
+          "from": [
+            "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "chunk_id": "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0",
+          "grade": 1,
+          "from": [
+            "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s6",
+          "chunk_id": "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c",
+          "grade": 1,
+          "from": [
+            "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s7",
+          "chunk_id": "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61",
+          "grade": 1,
+          "from": [
+            "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s1",
+          "chunk_id": "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+          "grade": 1,
+          "from": [
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s2",
+          "chunk_id": "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244",
+          "grade": 1,
+          "from": [
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s3",
+          "chunk_id": "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9",
+          "grade": 1,
+          "from": [
+            "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s4",
+          "chunk_id": "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782",
+          "grade": 1,
+          "from": [
+            "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s5",
+          "chunk_id": "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921",
+          "grade": 1,
+          "from": [
+            "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s6",
+          "chunk_id": "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed",
+          "grade": 1,
+          "from": [
+            "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s7",
+          "chunk_id": "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87",
+          "grade": 1,
+          "from": [
+            "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-03",
+      "family": "assemble",
+      "text": "Как разложить ступени набора SET по кадрам одной сцены, не превращая колонку таблицы в отдельную сцену?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s1",
+          "chunk_id": "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+          "grade": 1,
+          "from": [
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s2",
+          "chunk_id": "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6",
+          "grade": 1,
+          "from": [
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "chunk_id": "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6",
+          "grade": 1,
+          "from": [
+            "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s4",
+          "chunk_id": "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27",
+          "grade": 1,
+          "from": [
+            "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "chunk_id": "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0",
+          "grade": 1,
+          "from": [
+            "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s6",
+          "chunk_id": "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c",
+          "grade": 1,
+          "from": [
+            "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s7",
+          "chunk_id": "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61",
+          "grade": 1,
+          "from": [
+            "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s1",
+          "chunk_id": "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+          "grade": 1,
+          "from": [
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s2",
+          "chunk_id": "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244",
+          "grade": 1,
+          "from": [
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s3",
+          "chunk_id": "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9",
+          "grade": 1,
+          "from": [
+            "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s4",
+          "chunk_id": "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782",
+          "grade": 1,
+          "from": [
+            "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s5",
+          "chunk_id": "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921",
+          "grade": 1,
+          "from": [
+            "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s6",
+          "chunk_id": "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed",
+          "grade": 1,
+          "from": [
+            "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s7",
+          "chunk_id": "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87",
+          "grade": 1,
+          "from": [
+            "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-04",
+      "family": "assemble",
+      "text": "Если в паспорте героя пустая внешность, финальная склейка обязана дорисовать кастинг-look или имеет право вернуть error?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s1",
+          "chunk_id": "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+          "grade": 1,
+          "from": [
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s2",
+          "chunk_id": "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6",
+          "grade": 1,
+          "from": [
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "chunk_id": "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6",
+          "grade": 1,
+          "from": [
+            "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s4",
+          "chunk_id": "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27",
+          "grade": 1,
+          "from": [
+            "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "chunk_id": "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0",
+          "grade": 1,
+          "from": [
+            "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s6",
+          "chunk_id": "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c",
+          "grade": 1,
+          "from": [
+            "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s7",
+          "chunk_id": "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61",
+          "grade": 1,
+          "from": [
+            "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s1",
+          "chunk_id": "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+          "grade": 1,
+          "from": [
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s2",
+          "chunk_id": "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244",
+          "grade": 1,
+          "from": [
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s3",
+          "chunk_id": "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9",
+          "grade": 1,
+          "from": [
+            "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s4",
+          "chunk_id": "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782",
+          "grade": 1,
+          "from": [
+            "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s5",
+          "chunk_id": "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921",
+          "grade": 1,
+          "from": [
+            "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s6",
+          "chunk_id": "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed",
+          "grade": 1,
+          "from": [
+            "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s7",
+          "chunk_id": "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87",
+          "grade": 1,
+          "from": [
+            "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-05",
+      "family": "assemble",
+      "text": "В сборщике со скелетом фазы идут по phase_index, и ракурс нельзя поднять выше цепи фаз?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "catalog",
+          "chunk_id": "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69",
+          "grade": 1,
+          "from": [
+            "e76fe09b9f28799e5a7eeb5f99caae069cf67e91b0dac9ab916168a320822e69"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "catalog",
+          "chunk_id": "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c",
+          "grade": 1,
+          "from": [
+            "283d82da7cd7c68986a043df5bfb023d7c578c3992467b3af748323c295f885c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s0",
+          "chunk_id": "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27",
+          "grade": 1,
+          "from": [
+            "9afbdfac9afe196cf03384a13df607753026d900e39c3ca15224a2f3f9b37f27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s1",
+          "chunk_id": "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec",
+          "grade": 1,
+          "from": [
+            "bca5c0310b7a002faae4f4bae2278141fcd15f1e07e974245928547f4ca2d0ec"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s2",
+          "chunk_id": "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6",
+          "grade": 1,
+          "from": [
+            "3fbc013d218bf69ed8eceb95df00c7c4ed50a808d51b73d9c2f8080050d738f6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s3",
+          "chunk_id": "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6",
+          "grade": 1,
+          "from": [
+            "e0141ece1295713e26eddece373c9a033a3e30eeb00a0c90cf59a63a940fd6a6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s4",
+          "chunk_id": "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27",
+          "grade": 1,
+          "from": [
+            "c2ca9b828db40daca05bd145f2d18eef0f6c483bdbd74ad9e9f455c436f55d27"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s5",
+          "chunk_id": "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0",
+          "grade": 1,
+          "from": [
+            "6508aa9084061be2f982a7aafa75a31d6dc20bb755d871e45566c86ddf6c50f0"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s6",
+          "chunk_id": "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c",
+          "grade": 1,
+          "from": [
+            "1e0d16794a4065946215a5340ba3ad9e91ef3531efea419dea162e29cc723b2c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_asm",
+          "part_key": "s7",
+          "chunk_id": "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61",
+          "grade": 1,
+          "from": [
+            "9958f3be5ee47d3fa67e9dacf769ff4a98bc5d22c307217a73104988ec52cb61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s0",
+          "chunk_id": "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f",
+          "grade": 1,
+          "from": [
+            "906746186ade0b03f7f1fefa871adba3a977360a856b1ed120bede5e96f9347f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s1",
+          "chunk_id": "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3",
+          "grade": 1,
+          "from": [
+            "4371a0b6890a46e94075c2fa5adf0455abbbe727ea23e97016a31e8b8a0de9a3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s2",
+          "chunk_id": "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244",
+          "grade": 1,
+          "from": [
+            "ec54888b1ff85d43c8495b90f8bd0743ac2ba7020b3a34b44c94f5f790ab8244"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s3",
+          "chunk_id": "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9",
+          "grade": 1,
+          "from": [
+            "f96852aecb5877cd6001a2b7fff561599a143737fbdae431503478d3321ed3a9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s4",
+          "chunk_id": "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782",
+          "grade": 1,
+          "from": [
+            "eaf80da041203d39ab9ba553b1724a2230292ce7fac458c58d1603341d948782"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s5",
+          "chunk_id": "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921",
+          "grade": 1,
+          "from": [
+            "8d22d3eca7e58bb5940993b458038beafba502f6fde6aefbff9db986443fe921"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s6",
+          "chunk_id": "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed",
+          "grade": 1,
+          "from": [
+            "81094e0835f98d103bc6786813dcbcf072b76c6d19949156986c69a9b2d936ed"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_asm",
+          "part_key": "s7",
+          "chunk_id": "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87",
+          "grade": 1,
+          "from": [
+            "ef42e04857d28ffaa5b9de16113509898fa7b5aa5550ea478daa427c7a3cee87"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-06",
+      "family": "world",
+      "text": "Смена зоны внутри одного помещения — новая локация или те же два–четыре участка одного места?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s3",
+          "chunk_id": "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8",
+          "grade": 1,
+          "from": [
+            "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s4",
+          "chunk_id": "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a",
+          "grade": 1,
+          "from": [
+            "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s5",
+          "chunk_id": "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e",
+          "grade": 1,
+          "from": [
+            "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s6",
+          "chunk_id": "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a",
+          "grade": 1,
+          "from": [
+            "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s3",
+          "chunk_id": "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde",
+          "grade": 1,
+          "from": [
+            "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s4",
+          "chunk_id": "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f",
+          "grade": 1,
+          "from": [
+            "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-07",
+      "family": "world",
+      "text": "Какие четыре свойства света надо назвать у места, и когда полная смена схемы света заводит отдельную локацию?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s3",
+          "chunk_id": "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8",
+          "grade": 1,
+          "from": [
+            "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s4",
+          "chunk_id": "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a",
+          "grade": 1,
+          "from": [
+            "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s5",
+          "chunk_id": "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e",
+          "grade": 1,
+          "from": [
+            "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s6",
+          "chunk_id": "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a",
+          "grade": 1,
+          "from": [
+            "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s3",
+          "chunk_id": "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde",
+          "grade": 1,
+          "from": [
+            "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s4",
+          "chunk_id": "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f",
+          "grade": 1,
+          "from": [
+            "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-08",
+      "family": "world",
+      "text": "Сколько конкретных вещей должно жить в локации, чтобы описание не схлопнулось в одно слово?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s3",
+          "chunk_id": "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8",
+          "grade": 1,
+          "from": [
+            "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s4",
+          "chunk_id": "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a",
+          "grade": 1,
+          "from": [
+            "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s5",
+          "chunk_id": "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e",
+          "grade": 1,
+          "from": [
+            "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s6",
+          "chunk_id": "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a",
+          "grade": 1,
+          "from": [
+            "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s3",
+          "chunk_id": "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde",
+          "grade": 1,
+          "from": [
+            "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s4",
+          "chunk_id": "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f",
+          "grade": 1,
+          "from": [
+            "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-09",
+      "family": "world",
+      "text": "Хроно-вариант мира берёт только идентификаторы из locations_seed и при пустом seed отдаёт пустой список?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s3",
+          "chunk_id": "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8",
+          "grade": 1,
+          "from": [
+            "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s4",
+          "chunk_id": "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a",
+          "grade": 1,
+          "from": [
+            "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s5",
+          "chunk_id": "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e",
+          "grade": 1,
+          "from": [
+            "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s6",
+          "chunk_id": "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a",
+          "grade": 1,
+          "from": [
+            "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s3",
+          "chunk_id": "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde",
+          "grade": 1,
+          "from": [
+            "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s4",
+          "chunk_id": "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f",
+          "grade": 1,
+          "from": [
+            "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-10",
+      "family": "world",
+      "text": "Разовый фон без место_id можно завести как постоянное место или его нельзя класть в паспорт?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "catalog",
+          "chunk_id": "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff",
+          "grade": 1,
+          "from": [
+            "10c98c9c490a63badc9b85bed2c176c7424584ea422037756c6ba1ab9638c3ff"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "catalog",
+          "chunk_id": "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8",
+          "grade": 1,
+          "from": [
+            "7013a7ca268887c276438864961b79e2108b1409cd97d90c6972dd7e8f25a1e8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s0",
+          "chunk_id": "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805",
+          "grade": 1,
+          "from": [
+            "991cb96942c3a56c5e44ced7b9c52b80eb0aad5a4cdd86063ddff5f4c77ae805"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s1",
+          "chunk_id": "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c",
+          "grade": 1,
+          "from": [
+            "08884e78995887d87d172e2bb8026123f5db41736780040b8ae794b7763dc00c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s2",
+          "chunk_id": "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901",
+          "grade": 1,
+          "from": [
+            "7c4c4c3c135307d8db8e93e4ccd1a6a1df564918260e695ef680953e10aa6901"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s3",
+          "chunk_id": "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8",
+          "grade": 1,
+          "from": [
+            "343917fcbbac7285409ef1e608026b9a5da77410efe79d4060923c273883ada8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s4",
+          "chunk_id": "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a",
+          "grade": 1,
+          "from": [
+            "da8a71018bef8ec3b91603fbf26c3f79c3d695d1ea8933004b82f3da2db9092a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s5",
+          "chunk_id": "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e",
+          "grade": 1,
+          "from": [
+            "5f8de33339b5dd3b7b02b5d7c851ea24e943697bb807f084ec88ae125451c30e"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_world",
+          "part_key": "s6",
+          "chunk_id": "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a",
+          "grade": 1,
+          "from": [
+            "801895feeb1a0472d6518762f0bee40a0bca9fa857eb1d571694f8f25ab8b68a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s0",
+          "chunk_id": "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c",
+          "grade": 1,
+          "from": [
+            "895b7b100739ba28c1743a342f6b0ef46afa722c6dc70b6705ad32f3e02d840c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s1",
+          "chunk_id": "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94",
+          "grade": 1,
+          "from": [
+            "fd5a131c5b5c326ef7ce49a56a6915772bfafd4e54d33a35dbd3524e55324f94"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s2",
+          "chunk_id": "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f",
+          "grade": 1,
+          "from": [
+            "54e8a6995f5ec46a7e16067ffff50e341115ac8b756450a452601cff2924e50f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s3",
+          "chunk_id": "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde",
+          "grade": 1,
+          "from": [
+            "dbb80952ddc1dd728b2e6e538bd28076c7bbecc66dc4a4ae0bf32abb53c96cde"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_world",
+          "part_key": "s4",
+          "chunk_id": "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f",
+          "grade": 1,
+          "from": [
+            "59f90a731a14f83730913dd03fff0b34d1c4f6869d1b2309bf11e8943a09914f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-11",
+      "family": "camera",
+      "text": "Какие шесть условий Боуэна проверяют на стыке, чтобы склейка не стала красивым повтором?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s1",
+          "chunk_id": "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+          "grade": 1,
+          "from": [
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s2",
+          "chunk_id": "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61",
+          "grade": 1,
+          "from": [
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s3",
+          "chunk_id": "dd74bb55ba11a5f493ebb256ce03b6c22d9c404e607e239b74a2f82955c034e5",
+          "grade": 1,
+          "from": [
+            "dd74bb55ba11a5f493ebb256ce03b6c22d9c404e607e239b74a2f82955c034e5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s4",
+          "chunk_id": "8f1acfc9251fb20b410f063fc013d5b1cb77775408ccd16b960dcfb0c89fc994",
+          "grade": 1,
+          "from": [
+            "8f1acfc9251fb20b410f063fc013d5b1cb77775408ccd16b960dcfb0c89fc994"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s5",
+          "chunk_id": "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679",
+          "grade": 1,
+          "from": [
+            "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s6",
+          "chunk_id": "3e992a314bb087cbdee19e214299cd5d2b1b86e63d1f3c20e707b2395f1912a2",
+          "grade": 1,
+          "from": [
+            "3e992a314bb087cbdee19e214299cd5d2b1b86e63d1f3c20e707b2395f1912a2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s7",
+          "chunk_id": "d5bf0057b511cfbc7ca577fcafe333225076196e426ab0110c42c64f4b104ebe",
+          "grade": 1,
+          "from": [
+            "d5bf0057b511cfbc7ca577fcafe333225076196e426ab0110c42c64f4b104ebe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s1",
+          "chunk_id": "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+          "grade": 1,
+          "from": [
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s2",
+          "chunk_id": "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45",
+          "grade": 1,
+          "from": [
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s3",
+          "chunk_id": "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe",
+          "grade": 1,
+          "from": [
+            "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s4",
+          "chunk_id": "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579",
+          "grade": 1,
+          "from": [
+            "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s5",
+          "chunk_id": "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a",
+          "grade": 1,
+          "from": [
+            "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s6",
+          "chunk_id": "2ac49c1645056beca29b927c0cb69dd2ee4729c8cffa7183141f556916278a1c",
+          "grade": 1,
+          "from": [
+            "2ac49c1645056beca29b927c0cb69dd2ee4729c8cffa7183141f556916278a1c"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-12",
+      "family": "camera",
+      "text": "Когда уместен dissolve, а когда реплики диалога нельзя растворять и нужен cut?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "catalog",
+          "chunk_id": "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616",
+          "grade": 1,
+          "from": [
+            "d671a714d66b871054afd8dd6fa577276f74c15545210f02b2df30e2f17d5616"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "catalog",
+          "chunk_id": "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c",
+          "grade": 1,
+          "from": [
+            "76ea8b89169e9fbd16b318e19d164208b9ccd93e78a3f4b3c586c7f2108df88c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s0",
+          "chunk_id": "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570",
+          "grade": 1,
+          "from": [
+            "2d4a966561e6822a6e579789f506b4238c33ce9d7a5d82108ab458b4c9a31570"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s1",
+          "chunk_id": "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13",
+          "grade": 1,
+          "from": [
+            "ab3fa4e9cf32ba56aa88c2a9a7dd5879c421d490c5090eb4334e4685ed766a13"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s2",
+          "chunk_id": "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61",
+          "grade": 1,
+          "from": [
+            "1f649039035511ba923df9d2091a3bd758e11bf84dce2b392ef6fc2336638b61"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s3",
+          "chunk_id": "dd74bb55ba11a5f493ebb256ce03b6c22d9c404e607e239b74a2f82955c034e5",
+          "grade": 1,
+          "from": [
+            "dd74bb55ba11a5f493ebb256ce03b6c22d9c404e607e239b74a2f82955c034e5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s4",
+          "chunk_id": "8f1acfc9251fb20b410f063fc013d5b1cb77775408ccd16b960dcfb0c89fc994",
+          "grade": 1,
+          "from": [
+            "8f1acfc9251fb20b410f063fc013d5b1cb77775408ccd16b960dcfb0c89fc994"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s5",
+          "chunk_id": "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679",
+          "grade": 1,
+          "from": [
+            "a2699247d527aa2c828d62ab8a9d549fb2bd33da6d0b6a007676cc4db9206679"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s6",
+          "chunk_id": "3e992a314bb087cbdee19e214299cd5d2b1b86e63d1f3c20e707b2395f1912a2",
+          "grade": 1,
+          "from": [
+            "3e992a314bb087cbdee19e214299cd5d2b1b86e63d1f3c20e707b2395f1912a2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_camera",
+          "part_key": "s7",
+          "chunk_id": "d5bf0057b511cfbc7ca577fcafe333225076196e426ab0110c42c64f4b104ebe",
+          "grade": 1,
+          "from": [
+            "d5bf0057b511cfbc7ca577fcafe333225076196e426ab0110c42c64f4b104ebe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s0",
+          "chunk_id": "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d",
+          "grade": 1,
+          "from": [
+            "ed7228d0bd43b649fb1f4bae9f297062546bee5270deda13bfbee7f391b4a18d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s1",
+          "chunk_id": "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb",
+          "grade": 1,
+          "from": [
+            "904f747a05f33d5da32fcdb84b30e7dd91ae247f13bda81a1d6efd639a8570bb"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s2",
+          "chunk_id": "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45",
+          "grade": 1,
+          "from": [
+            "e5fa140b72b562a170707aa7f94ad3a6a6d9c050a35b98641a3b225fe73f7d45"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s3",
+          "chunk_id": "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe",
+          "grade": 1,
+          "from": [
+            "7258983ba6e09f5da2738efbab426f7a9b6ca464a1bf15970b8a8d0f351cadbe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s4",
+          "chunk_id": "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579",
+          "grade": 1,
+          "from": [
+            "cb7dd2e0cc140308346ed75f7bea90feb608b3902ba2cccedd66663e48c40579"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s5",
+          "chunk_id": "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a",
+          "grade": 1,
+          "from": [
+            "b19b9bbcdaede6d8342ef38f94fe1669c21c13001e3a16e531632292cf025d9a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_camera",
+          "part_key": "s6",
+          "chunk_id": "2ac49c1645056beca29b927c0cb69dd2ee4729c8cffa7183141f556916278a1c",
+          "grade": 1,
+          "from": [
+            "2ac49c1645056beca29b927c0cb69dd2ee4729c8cffa7183141f556916278a1c"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-13",
+      "family": "characters",
+      "text": "Толпа, жители и безымянный прохожий заводятся как герои или их запрещено заводить?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s2",
+          "chunk_id": "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s3",
+          "chunk_id": "d94ce492824d3859f773d4480392b251bff2d07ce9cc21e0828e147b8f7d098c",
+          "grade": 1,
+          "from": [
+            "d94ce492824d3859f773d4480392b251bff2d07ce9cc21e0828e147b8f7d098c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s4",
+          "chunk_id": "c293b3205cfd64ea5d929fb8635d307329cd66046e7462ad02f6f522fc625800",
+          "grade": 1,
+          "from": [
+            "c293b3205cfd64ea5d929fb8635d307329cd66046e7462ad02f6f522fc625800"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s5",
+          "chunk_id": "d7427f16c7b522a6ddff2ea978369c66bb424cbe21794d02734eb9326dfc25f8",
+          "grade": 1,
+          "from": [
+            "d7427f16c7b522a6ddff2ea978369c66bb424cbe21794d02734eb9326dfc25f8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s6",
+          "chunk_id": "ca363c756ee2e6bc7230877ab01c872ad92015282be353647054e4fccf526247",
+          "grade": 1,
+          "from": [
+            "ca363c756ee2e6bc7230877ab01c872ad92015282be353647054e4fccf526247"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s7",
+          "chunk_id": "8c78ff3f7c3a1cc6f29bac791c3627b510c8d6e4730881fd84322cb3be62faaa",
+          "grade": 1,
+          "from": [
+            "8c78ff3f7c3a1cc6f29bac791c3627b510c8d6e4730881fd84322cb3be62faaa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s1",
+          "chunk_id": "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+          "grade": 1,
+          "from": [
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s3",
+          "chunk_id": "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf",
+          "grade": 1,
+          "from": [
+            "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s4",
+          "chunk_id": "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee",
+          "grade": 1,
+          "from": [
+            "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s5",
+          "chunk_id": "4b485fe19a098ab748fdbaae3f011f4ae91eaab69abff9ba5508568294a3faba",
+          "grade": 1,
+          "from": [
+            "4b485fe19a098ab748fdbaae3f011f4ae91eaab69abff9ba5508568294a3faba"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s6",
+          "chunk_id": "c769272b69a987bddf03e1b0b41ff3e06521ad52c39e3b13e8680cac39f2e3e1",
+          "grade": 1,
+          "from": [
+            "c769272b69a987bddf03e1b0b41ff3e06521ad52c39e3b13e8680cac39f2e3e1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-14",
+      "family": "characters",
+      "text": "Чем два героя обязаны отличаться на экране, и какие якоря вроде шрама или очков нельзя менять между сценами?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "catalog",
+          "chunk_id": "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4",
+          "grade": 1,
+          "from": [
+            "e2aed1bbf2fbcbc6ba1b39021e51efa8c8267cc8f6351c52c6703f64a201fcb4"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "catalog",
+          "chunk_id": "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6",
+          "grade": 1,
+          "from": [
+            "ae492424bb544f54c2bd8d225b450e8b3c48fe04ba58f12c86c55ad2af5eb5c6"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s0",
+          "chunk_id": "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd",
+          "grade": 1,
+          "from": [
+            "40c95c1413a7bed3ea1908aa37d29a6be10409d99212016fcda0555314200ecd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s1",
+          "chunk_id": "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598",
+          "grade": 1,
+          "from": [
+            "6d49019f63c98432f6bf22174ef2dddea5253a1037b0ea1de09f517164b70598"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s2",
+          "chunk_id": "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb",
+          "grade": 1,
+          "from": [
+            "3193fea31f8faebf16fdc399ab9e2847deab025b2f7a9665e4a5a6eddca0aafb"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s3",
+          "chunk_id": "d94ce492824d3859f773d4480392b251bff2d07ce9cc21e0828e147b8f7d098c",
+          "grade": 1,
+          "from": [
+            "d94ce492824d3859f773d4480392b251bff2d07ce9cc21e0828e147b8f7d098c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s4",
+          "chunk_id": "c293b3205cfd64ea5d929fb8635d307329cd66046e7462ad02f6f522fc625800",
+          "grade": 1,
+          "from": [
+            "c293b3205cfd64ea5d929fb8635d307329cd66046e7462ad02f6f522fc625800"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s5",
+          "chunk_id": "d7427f16c7b522a6ddff2ea978369c66bb424cbe21794d02734eb9326dfc25f8",
+          "grade": 1,
+          "from": [
+            "d7427f16c7b522a6ddff2ea978369c66bb424cbe21794d02734eb9326dfc25f8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s6",
+          "chunk_id": "ca363c756ee2e6bc7230877ab01c872ad92015282be353647054e4fccf526247",
+          "grade": 1,
+          "from": [
+            "ca363c756ee2e6bc7230877ab01c872ad92015282be353647054e4fccf526247"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_characters",
+          "part_key": "s7",
+          "chunk_id": "8c78ff3f7c3a1cc6f29bac791c3627b510c8d6e4730881fd84322cb3be62faaa",
+          "grade": 1,
+          "from": [
+            "8c78ff3f7c3a1cc6f29bac791c3627b510c8d6e4730881fd84322cb3be62faaa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s0",
+          "chunk_id": "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe",
+          "grade": 1,
+          "from": [
+            "955aa9b2a8864e4140bb88a8ee3546d3fe4c2adf81eb5961ded5b41aeaa429fe"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s1",
+          "chunk_id": "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8",
+          "grade": 1,
+          "from": [
+            "17fb56b5c2cceb368f72ebf595026888f073906271c1400eca3b04f28a1d59c8"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s2",
+          "chunk_id": "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1",
+          "grade": 1,
+          "from": [
+            "d1fb55152f486ae469600056e73bbcbe76ac2e1f50bfae2b8f1cbf7cf4badeb1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s3",
+          "chunk_id": "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf",
+          "grade": 1,
+          "from": [
+            "4724520450e6addefaa9cb440dcbab9caef0108bfca1057766ad03a347a91fbf"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s4",
+          "chunk_id": "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee",
+          "grade": 1,
+          "from": [
+            "2afc1fd30ac70567d2050c091ff419630acdcadd478419bab0ca76d790c94cee"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s5",
+          "chunk_id": "4b485fe19a098ab748fdbaae3f011f4ae91eaab69abff9ba5508568294a3faba",
+          "grade": 1,
+          "from": [
+            "4b485fe19a098ab748fdbaae3f011f4ae91eaab69abff9ba5508568294a3faba"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_characters",
+          "part_key": "s6",
+          "chunk_id": "c769272b69a987bddf03e1b0b41ff3e06521ad52c39e3b13e8680cac39f2e3e1",
+          "grade": 1,
+          "from": [
+            "c769272b69a987bddf03e1b0b41ff3e06521ad52c39e3b13e8680cac39f2e3e1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-15",
+      "family": "action",
+      "text": "Фаза «подъезд встречает» или «камера вводит» годится в цепь, или каждая фаза обязана быть видимым движением тела и предмета?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s1",
+          "chunk_id": "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+          "grade": 1,
+          "from": [
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s2",
+          "chunk_id": "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5",
+          "grade": 1,
+          "from": [
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s3",
+          "chunk_id": "8a1d2ec85e0a9d68d4159cea653800e816946c3a5d0fd51a586511c379d918ac",
+          "grade": 1,
+          "from": [
+            "8a1d2ec85e0a9d68d4159cea653800e816946c3a5d0fd51a586511c379d918ac"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s4",
+          "chunk_id": "d755199a18d133a72c5b96b3bfa18fa22eb6fa12256ff4a459d84ddc53ecfd8b",
+          "grade": 1,
+          "from": [
+            "d755199a18d133a72c5b96b3bfa18fa22eb6fa12256ff4a459d84ddc53ecfd8b"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s5",
+          "chunk_id": "ac5e2dd8f3d6595485a3bef27cfe5a1551dce9186bc7a0dfd421c89ee0658859",
+          "grade": 1,
+          "from": [
+            "ac5e2dd8f3d6595485a3bef27cfe5a1551dce9186bc7a0dfd421c89ee0658859"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s6",
+          "chunk_id": "c2710f48f464b75d88a39ec45890fe44def26c5639d096a3e9cfb5066363fabd",
+          "grade": 1,
+          "from": [
+            "c2710f48f464b75d88a39ec45890fe44def26c5639d096a3e9cfb5066363fabd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s7",
+          "chunk_id": "d7adf48a676342a2b5181b6350f3779705c4d135bdeb9428fd96d96c5ebc85a4",
+          "grade": 1,
+          "from": [
+            "d7adf48a676342a2b5181b6350f3779705c4d135bdeb9428fd96d96c5ebc85a4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s1",
+          "chunk_id": "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467",
+          "grade": 1,
+          "from": [
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s2",
+          "chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+          "grade": 1,
+          "from": [
+            "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s3",
+          "chunk_id": "413eb2aaa4ca32388887f0dc3e0385a5a4bce2f3cee22fd3275ed5e245402e56",
+          "grade": 1,
+          "from": [
+            "413eb2aaa4ca32388887f0dc3e0385a5a4bce2f3cee22fd3275ed5e245402e56"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s4",
+          "chunk_id": "30f248c9e0310d50f09fcfdbde2e25bbdfb3a099c0448b726114f63f6a30f40a",
+          "grade": 1,
+          "from": [
+            "30f248c9e0310d50f09fcfdbde2e25bbdfb3a099c0448b726114f63f6a30f40a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s5",
+          "chunk_id": "df11835ff21027c8bbf2a075753e1aa8cefb42659c0bb58c6b17d2e02ca091cd",
+          "grade": 1,
+          "from": [
+            "df11835ff21027c8bbf2a075753e1aa8cefb42659c0bb58c6b17d2e02ca091cd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s6",
+          "chunk_id": "725d3596d2851572ffd237d76d332aa0c87feacc0b67c3ac33b8d9ce2e2502a2",
+          "grade": 1,
+          "from": [
+            "725d3596d2851572ffd237d76d332aa0c87feacc0b67c3ac33b8d9ce2e2502a2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s7",
+          "chunk_id": "7c71e22c40aad253984fc5cad704f9ff0e743a8152f8702a1d1773f03425fdd8",
+          "grade": 1,
+          "from": [
+            "7c71e22c40aad253984fc5cad704f9ff0e743a8152f8702a1d1773f03425fdd8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-16",
+      "family": "action",
+      "text": "Диалог берёт continuity и cut, а сжатие дня — associative и dissolve?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "catalog",
+          "chunk_id": "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1",
+          "grade": 1,
+          "from": [
+            "ad038a2fbc38fdb2cacd3532df6f7151ab9b48c37f234cc79d49acb0ff9a61e1"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "catalog",
+          "chunk_id": "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a",
+          "grade": 1,
+          "from": [
+            "a75b646d7a9428f5dfa03c2e7cc48f875b143bcd50458a12b7d37be5deb1e89a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s0",
+          "chunk_id": "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492",
+          "grade": 1,
+          "from": [
+            "289235c94dae071ed9a3dbe2a02770b8604f94ecbbcdcac1c34488ec81b78492"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s1",
+          "chunk_id": "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd",
+          "grade": 1,
+          "from": [
+            "de3d1d8ebbd9561faa84761556510253b2b93e420dd0a3286018cc386c2d21fd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s2",
+          "chunk_id": "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5",
+          "grade": 1,
+          "from": [
+            "3df5ae9c5360c2500346b41957118f2331e29b4b7bc45b5edb31c8e59f28b3c5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s3",
+          "chunk_id": "8a1d2ec85e0a9d68d4159cea653800e816946c3a5d0fd51a586511c379d918ac",
+          "grade": 1,
+          "from": [
+            "8a1d2ec85e0a9d68d4159cea653800e816946c3a5d0fd51a586511c379d918ac"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s4",
+          "chunk_id": "d755199a18d133a72c5b96b3bfa18fa22eb6fa12256ff4a459d84ddc53ecfd8b",
+          "grade": 1,
+          "from": [
+            "d755199a18d133a72c5b96b3bfa18fa22eb6fa12256ff4a459d84ddc53ecfd8b"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s5",
+          "chunk_id": "ac5e2dd8f3d6595485a3bef27cfe5a1551dce9186bc7a0dfd421c89ee0658859",
+          "grade": 1,
+          "from": [
+            "ac5e2dd8f3d6595485a3bef27cfe5a1551dce9186bc7a0dfd421c89ee0658859"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s6",
+          "chunk_id": "c2710f48f464b75d88a39ec45890fe44def26c5639d096a3e9cfb5066363fabd",
+          "grade": 1,
+          "from": [
+            "c2710f48f464b75d88a39ec45890fe44def26c5639d096a3e9cfb5066363fabd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_action",
+          "part_key": "s7",
+          "chunk_id": "d7adf48a676342a2b5181b6350f3779705c4d135bdeb9428fd96d96c5ebc85a4",
+          "grade": 1,
+          "from": [
+            "d7adf48a676342a2b5181b6350f3779705c4d135bdeb9428fd96d96c5ebc85a4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s0",
+          "chunk_id": "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc",
+          "grade": 1,
+          "from": [
+            "997a939aff25a9eecc15c7e892f8dfe591c594deb417a7c3a258032818975efc"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s1",
+          "chunk_id": "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467",
+          "grade": 1,
+          "from": [
+            "0b25d97595f9135fc1e4bbd30fcbb11610e492a7dbb238fdeacf6d4c89da4467"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s2",
+          "chunk_id": "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f",
+          "grade": 1,
+          "from": [
+            "ab5e4c8ffd31c7a5b6dcc61de111ff3ff3907db7cc0333618fa91a87f155070f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s3",
+          "chunk_id": "413eb2aaa4ca32388887f0dc3e0385a5a4bce2f3cee22fd3275ed5e245402e56",
+          "grade": 1,
+          "from": [
+            "413eb2aaa4ca32388887f0dc3e0385a5a4bce2f3cee22fd3275ed5e245402e56"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s4",
+          "chunk_id": "30f248c9e0310d50f09fcfdbde2e25bbdfb3a099c0448b726114f63f6a30f40a",
+          "grade": 1,
+          "from": [
+            "30f248c9e0310d50f09fcfdbde2e25bbdfb3a099c0448b726114f63f6a30f40a"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s5",
+          "chunk_id": "df11835ff21027c8bbf2a075753e1aa8cefb42659c0bb58c6b17d2e02ca091cd",
+          "grade": 1,
+          "from": [
+            "df11835ff21027c8bbf2a075753e1aa8cefb42659c0bb58c6b17d2e02ca091cd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s6",
+          "chunk_id": "725d3596d2851572ffd237d76d332aa0c87feacc0b67c3ac33b8d9ce2e2502a2",
+          "grade": 1,
+          "from": [
+            "725d3596d2851572ffd237d76d332aa0c87feacc0b67c3ac33b8d9ce2e2502a2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_sd_cd_action",
+          "part_key": "s7",
+          "chunk_id": "7c71e22c40aad253984fc5cad704f9ff0e743a8152f8702a1d1773f03425fdd8",
+          "grade": 1,
+          "from": [
+            "7c71e22c40aad253984fc5cad704f9ff0e743a8152f8702a1d1773f03425fdd8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-17",
+      "family": "shots",
+      "text": "У кадров одного места кто получает parent_id null, а кто ссылается на первый кадр сетапа, а не на предыдущий шот?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s1",
+          "chunk_id": "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2",
+          "grade": 1,
+          "from": [
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s2",
+          "chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+          "grade": 1,
+          "from": [
+            "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s3",
+          "chunk_id": "59f65fab86635aefda64e692a0f9afcd30e4739395b8d55b557c6452cca887b9",
+          "grade": 1,
+          "from": [
+            "59f65fab86635aefda64e692a0f9afcd30e4739395b8d55b557c6452cca887b9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s4",
+          "chunk_id": "54296bd34e494710a33ae07e41b2b18c286bb0bb50b018766464ff440654c9e3",
+          "grade": 1,
+          "from": [
+            "54296bd34e494710a33ae07e41b2b18c286bb0bb50b018766464ff440654c9e3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s5",
+          "chunk_id": "9a26d0f35392df5f84966d7ee903375abd313a666e73d5e86d1bf79f6972487d",
+          "grade": 1,
+          "from": [
+            "9a26d0f35392df5f84966d7ee903375abd313a666e73d5e86d1bf79f6972487d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s6",
+          "chunk_id": "b361fe5cc63b71184b3de966020aecc988b1bd987b3dee31d9b410f77f28ab18",
+          "grade": 1,
+          "from": [
+            "b361fe5cc63b71184b3de966020aecc988b1bd987b3dee31d9b410f77f28ab18"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s7",
+          "chunk_id": "90f00684a07925610f44d820fe1eb3e5e670facb91a52134d92f295f33c07fa5",
+          "grade": 1,
+          "from": [
+            "90f00684a07925610f44d820fe1eb3e5e670facb91a52134d92f295f33c07fa5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s1",
+          "chunk_id": "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+          "grade": 1,
+          "from": [
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s2",
+          "chunk_id": "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5",
+          "grade": 1,
+          "from": [
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s3",
+          "chunk_id": "178057e3cb2c609a586616b53f520784b4f5d5290b3dc28f7a1a1b8dd9db2022",
+          "grade": 1,
+          "from": [
+            "178057e3cb2c609a586616b53f520784b4f5d5290b3dc28f7a1a1b8dd9db2022"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s4",
+          "chunk_id": "d20331fee81a95548e617d76c774d986e88dd3f1e01720716de9385dfac35863",
+          "grade": 1,
+          "from": [
+            "d20331fee81a95548e617d76c774d986e88dd3f1e01720716de9385dfac35863"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s5",
+          "chunk_id": "e4502bad844a074e0c6155990de9540855fc6e196768c47192b373edaa48b6af",
+          "grade": 1,
+          "from": [
+            "e4502bad844a074e0c6155990de9540855fc6e196768c47192b373edaa48b6af"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s6",
+          "chunk_id": "28bcb86b1204afbffab949c17474dcd3b82a1ce7b73c21a7947d15cbf6242789",
+          "grade": 1,
+          "from": [
+            "28bcb86b1204afbffab949c17474dcd3b82a1ce7b73c21a7947d15cbf6242789"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-18",
+      "family": "shots",
+      "text": "Один кадр на ячейку допустим только для титра или имени без поступка, иначе обычно нужно два–четыре?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "catalog",
+          "chunk_id": "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d",
+          "grade": 1,
+          "from": [
+            "c955122b23802eedcbf1d26ae89783db1e576c554d0171b8eefa5c258324202d"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "catalog",
+          "chunk_id": "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa",
+          "grade": 1,
+          "from": [
+            "fef8954004d3210d082f9c5d37e4f50c7245db499875087276c30ad606b6a2fa"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s0",
+          "chunk_id": "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184",
+          "grade": 1,
+          "from": [
+            "390e19107d053e3fccf225db47935168047c6ead6c85ff8b59aa4ac3eee42184"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s1",
+          "chunk_id": "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2",
+          "grade": 1,
+          "from": [
+            "4f409975659cbe0796f4b7aeeba7255162bec5765b2413a572909e93e9ee3fa2"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s2",
+          "chunk_id": "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c",
+          "grade": 1,
+          "from": [
+            "0e5cc420f9403ba94dcee98788ad81b384b4b130086cf39d98fc8ddf8687e97c"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s3",
+          "chunk_id": "59f65fab86635aefda64e692a0f9afcd30e4739395b8d55b557c6452cca887b9",
+          "grade": 1,
+          "from": [
+            "59f65fab86635aefda64e692a0f9afcd30e4739395b8d55b557c6452cca887b9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s4",
+          "chunk_id": "54296bd34e494710a33ae07e41b2b18c286bb0bb50b018766464ff440654c9e3",
+          "grade": 1,
+          "from": [
+            "54296bd34e494710a33ae07e41b2b18c286bb0bb50b018766464ff440654c9e3"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s5",
+          "chunk_id": "9a26d0f35392df5f84966d7ee903375abd313a666e73d5e86d1bf79f6972487d",
+          "grade": 1,
+          "from": [
+            "9a26d0f35392df5f84966d7ee903375abd313a666e73d5e86d1bf79f6972487d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s6",
+          "chunk_id": "b361fe5cc63b71184b3de966020aecc988b1bd987b3dee31d9b410f77f28ab18",
+          "grade": 1,
+          "from": [
+            "b361fe5cc63b71184b3de966020aecc988b1bd987b3dee31d9b410f77f28ab18"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_frames",
+          "part_key": "s7",
+          "chunk_id": "90f00684a07925610f44d820fe1eb3e5e670facb91a52134d92f295f33c07fa5",
+          "grade": 1,
+          "from": [
+            "90f00684a07925610f44d820fe1eb3e5e670facb91a52134d92f295f33c07fa5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s0",
+          "chunk_id": "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421",
+          "grade": 1,
+          "from": [
+            "db3e1c46e56b13090d98f019ce450a3f3c8c627731f4f9318f999a33fd033421"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s1",
+          "chunk_id": "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036",
+          "grade": 1,
+          "from": [
+            "abf1406e431337466612dbcc36e15bc007d15bc42a62ee1336b56c568920e036"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s2",
+          "chunk_id": "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5",
+          "grade": 1,
+          "from": [
+            "64b6ca7b38e58fa99e96b5cedc3ed94e6b5f4be9d77f6a3e37b11a1dfac037a5"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s3",
+          "chunk_id": "178057e3cb2c609a586616b53f520784b4f5d5290b3dc28f7a1a1b8dd9db2022",
+          "grade": 1,
+          "from": [
+            "178057e3cb2c609a586616b53f520784b4f5d5290b3dc28f7a1a1b8dd9db2022"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s4",
+          "chunk_id": "d20331fee81a95548e617d76c774d986e88dd3f1e01720716de9385dfac35863",
+          "grade": 1,
+          "from": [
+            "d20331fee81a95548e617d76c774d986e88dd3f1e01720716de9385dfac35863"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s5",
+          "chunk_id": "e4502bad844a074e0c6155990de9540855fc6e196768c47192b373edaa48b6af",
+          "grade": 1,
+          "from": [
+            "e4502bad844a074e0c6155990de9540855fc6e196768c47192b373edaa48b6af"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_shots",
+          "part_key": "s6",
+          "chunk_id": "28bcb86b1204afbffab949c17474dcd3b82a1ce7b73c21a7947d15cbf6242789",
+          "grade": 1,
+          "from": [
+            "28bcb86b1204afbffab949c17474dcd3b82a1ce7b73c21a7947d15cbf6242789"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-19",
+      "family": "script",
+      "text": "Если склеить скобки под сценами и убрать только переносы строк, получится вся ячейка, включая запятые и имя в начале?",
+      "relevant": [
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "catalog",
+          "chunk_id": "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6",
+          "grade": 1,
+          "from": [
+            "62f42c3ecd43431c9344f95de55a087d8045626886e4fd87b16c92183001a7a6"
+          ]
+        },
+        {
+          "corpus": "nodes",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "catalog",
+          "chunk_id": "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4",
+          "grade": 1,
+          "from": [
+            "ad69d81602a4a33621e67ec99420981ea82eca62c249d3ebc94f49b9e05b94f4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s0",
+          "chunk_id": "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4",
+          "grade": 1,
+          "from": [
+            "6515b0f6b75025e64574b9ae4c2750184854d79846bfdeac3e2108184c238eb4"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s1",
+          "chunk_id": "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd",
+          "grade": 1,
+          "from": [
+            "3720d2b6d618dbbc4266006b2d63da7fbef005ea8e95f800d067f7d01be425bd"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s2",
+          "chunk_id": "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91",
+          "grade": 1,
+          "from": [
+            "5947387bfc7dcac24eb4a4c4fd65e0c9af0a1dffb358e16566285598f7cb4b91"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s3",
+          "chunk_id": "bea7b21bd0a2ef51c807315d377d4a6a052dfd58bf10df5753e922bdbcf62359",
+          "grade": 1,
+          "from": [
+            "bea7b21bd0a2ef51c807315d377d4a6a052dfd58bf10df5753e922bdbcf62359"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s4",
+          "chunk_id": "b9a22755617f39ee850a1b286b0c6f52e990dd3ab2dcd5acedfacb5a3217c017",
+          "grade": 1,
+          "from": [
+            "b9a22755617f39ee850a1b286b0c6f52e990dd3ab2dcd5acedfacb5a3217c017"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_action",
+          "part_key": "s5",
+          "chunk_id": "b8437e99c90002ac15836e9cf7f30360fafe40cf695d82f18ca411991ccd007f",
+          "grade": 1,
+          "from": [
+            "b8437e99c90002ac15836e9cf7f30360fafe40cf695d82f18ca411991ccd007f"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s0",
+          "chunk_id": "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9",
+          "grade": 1,
+          "from": [
+            "6ca664275d12e41bee2e100ef45ff0f7c5bd4b5816844e542e48922f059d92d9"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s1",
+          "chunk_id": "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1",
+          "grade": 1,
+          "from": [
+            "27c951528395de109248716e36d78f6c5055a15e96e8e2f9af9425952f8cf0f1"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s2",
+          "chunk_id": "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d",
+          "grade": 1,
+          "from": [
+            "4c174cfe0eb34f24d0461a88aed8a6683d1d5e348e721a507b98e37777ce0c7d"
+          ]
+        },
+        {
+          "corpus": "prompts",
+          "source_id": "n_excel_gpt_fw_script",
+          "part_key": "s3",
+          "chunk_id": "1c92e4bda3a76f4f7e8106c1f0b8ec298bf32d1f9d61fce3588bfd3a8d8e084e",
+          "grade": 1,
+          "from": [
+            "1c92e4bda3a76f4f7e8106c1f0b8ec298bf32d1f9d61fce3588bfd3a8d8e084e"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hold-20",
+      "family": "rules",
+      "text": "Перед запуском ноды план обязан прочитать код студии и рантайм-определение, или можно сразу жать run?",
+      "relevant": [
+        {
+          "corpus": "rules",
+          "source_id": "docs/fable/user_rules.md",
+          "part_key": "rule-9",
+          "chunk_id": "d488853cd900ff6c4eadbf09fecec5edd8ab8b66239470f8cd92cced576aec25",
+          "grade": 1,
+          "from": [
+            "d488853cd900ff6c4eadbf09fecec5edd8ab8b66239470f8cd92cced576aec25"
+          ]
+        }
+      ]
+    }
+  ]
+}

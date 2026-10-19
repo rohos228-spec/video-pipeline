@@ -20,6 +20,6 @@ def test_merge_helper_source_positions_win() -> None:
 def test_flow_canvas_waits_for_project_meta() -> None:
     src = Path("web/src/components/canvas/flow-canvas.tsx").read_text(encoding="utf-8")
     assert "project.isFetched" in src
-    assert "fitView={!canvasGraph?.saved_at}" in src
+    assert "fitView={!savedViewport && !canvasGraph?.saved_at}" in src
     assert "mergeGraphNodesWithRuntime" in src
     assert "position: old.position" not in src

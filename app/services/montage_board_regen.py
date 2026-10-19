@@ -50,6 +50,7 @@ from app.services.montage_board_meta import (
 )
 from app.services.montage_frame_refs import append_manual_ref_note
 from app.services.outsee_retry import generate_image_with_retries, generate_video_with_retries
+from app.services.request_context import scoped_async
 from app.services.vibecode_catalog import resolve_node_media_settings
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
@@ -380,6 +381,7 @@ def _lock_montage_image_refs(
     )
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def prepare_image_regen(
     session: AsyncSession,
     project: Project,
@@ -538,6 +540,7 @@ async def prepare_image_regen(
     )
 
 
+@scoped_async("regen", lambda prep, *a, **k: prep.project_id)
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     """Только HTTP API (Outsee). Chrome CDP для монтажа отключён."""
     if not _image_api_enabled():
@@ -637,6 +640,7 @@ async def finalize_image_regen(
     }
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def prepare_video_regen(
     session: AsyncSession,
     project: Project,
@@ -706,6 +710,7 @@ async def prepare_video_regen(
     )
 
 
+@scoped_async("regen", lambda prep, *a, **k: prep.project_id)
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     """Только HTTP API (Outsee/Kie). Chrome CDP для монтажа отключён."""
     if not _video_api_enabled():
@@ -788,6 +793,7 @@ async def finalize_video_regen(
     }
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def regen_scene_image(
     session: AsyncSession,
     project: Project,
@@ -813,6 +819,7 @@ async def regen_scene_image(
     return await finalize_image_regen(session, project, prep, new_path, board=board)
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def regen_scene_video(
     session: AsyncSession,
     project: Project,

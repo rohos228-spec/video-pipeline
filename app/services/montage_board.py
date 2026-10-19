@@ -39,6 +39,7 @@ from app.services.montage_coverage_ops import (
     stitch_choices_for_ui,
     stitch_label,
 )
+from app.services.montage_board_assets import _find_shot1_video, _find_shot2_video
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     ROW_IMAGE_PROMPT_2_V8,
@@ -85,30 +86,6 @@ def _preview_url(path: Path | None) -> str | None:
     except OSError:
         mtime_i = 0
     return f"/api/files?path={quote(str(path), safe='')}&v={mtime_i}"
-
-
-def _find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
-    if not videos_dir.is_dir():
-        return None
-    candidates = [
-        p
-        for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
-        if "_s2_" not in p.name
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
-
-
-def _find_shot2_video(videos_dir: Path, frame_number: int) -> Path | None:
-    if not videos_dir.is_dir():
-        return None
-    candidates = list(videos_dir.glob(shot2_video_file_pattern(frame_number)))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
 
 
 def _person_ids_from_attrs(attrs: dict[str, Any] | None) -> list[str]:
@@ -872,6 +849,7 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "scene_action": "",
         "scene_chain": [],
         "vo_scene_number": None,
+        "vo_scene_ordinal": None,
         "vo_scene_size": 0,
         "shot_leftover": False,
     }
@@ -936,6 +914,20 @@ def _coverage_fields_for_frames(
             if vo_int <= 0 or (vo_int == int(fr.number) and vo_size <= 1):
                 row["vo_scene_number"] = parent_number
         out[fr.number] = row
+    ordinals: dict[int, int] = {}
+    for fr in frames:
+        try:
+            key = int(out[fr.number].get("vo_scene_number") or 0)
+        except (TypeError, ValueError):
+            key = 0
+        if key > 0 and key not in ordinals:
+            ordinals[key] = len(ordinals) + 1
+    for fr in frames:
+        try:
+            key = int(out[fr.number].get("vo_scene_number") or 0)
+        except (TypeError, ValueError):
+            key = 0
+        out[fr.number]["vo_scene_ordinal"] = ordinals.get(key)
     return out
 
 

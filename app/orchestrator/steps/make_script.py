@@ -36,7 +36,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         if (fr.voiceover_text or "").strip()
     )
     ready = existing_vo.strip() or (project.script_text or "").strip()
-    from app.services.nii67_card import skip_existing_voiceover_for_script
+    try:
+        from app.services.nii67_card import skip_existing_voiceover_for_script
+    except ImportError:
+        def skip_existing_voiceover_for_script(project, ready_len):
+            return False
 
     if skip_existing_voiceover_for_script(project, len(ready)):
         logger.warning(

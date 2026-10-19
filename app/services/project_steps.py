@@ -76,8 +76,15 @@ async def start_step(
     require_node_fsm: bool = False,
     explicit_ui_start: bool = False,
     force_wipe: bool | None = None,
+    managed_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    if managed_start:
+        if explicit_ui_start or force_wipe or skip_queue_guard:
+            raise ValueError("managed start cannot reset or bypass the queue")
+        from app.services.managed_launch import native_entry
+
+        return await native_entry(session, project, step_code, node_key)
     # Ноды «Работа с GPT» с маркером data.sd_agent — scene-агенты: их ▶
     # приходит как excel_gpt (таков тип ноды), но гоняется шагами
     # scene_d/scene_asm, а не enrich-слотами.

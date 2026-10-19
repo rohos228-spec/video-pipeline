@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, FrameStatus, FrameText, Project
+from app.models import (
+    Artifact,
+    ArtifactKind,
+    Frame,
+    FrameEdge,
+    FrameStatus,
+    FrameText,
+    Project,
+    PromptVersion,
+)
 from app.services.db_v2 import insert_frame_after
+from app.services.frame_tombstones import remember_deleted
 from app.services.montage_coverage_ops import (
     _children_of,
     _clear_child_scene_chain,
@@ -260,6 +274,7 @@ async def delete_montage_frame(
         board = montage_meta(project)
         drop_pending_ops_for_frames(board, {number})
         set_montage_meta(project, board)
+        remember_deleted(project, number)
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
@@ -275,6 +290,7 @@ async def delete_montage_frame(
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
+    remember_deleted(project, number)
     logger.info(
         "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,
@@ -388,10 +404,13 @@ async def merge_montage_scenes(
         live_left.number,
         len(members),
     )
+    from app.services.montage_scene_editor import scene_display_ordinals
+
     return {
         "ok": True,
         "parent_id": int(live_left.id),
         "parent_number": int(live_left.number),
+        "parent_ordinal": scene_display_ordinals(after).get(int(live_left.id)),
         "merged_frames": len(right_members),
         "vo_scene_size": len(members),
     }
@@ -512,6 +531,160 @@ def _split_anchor_bits(frames: list[Frame], parents: list[Frame]) -> None:
         claim_scene_bits(frames, parent, members, rows)
 
 
+SPLIT_UNDO_KEY = "split_undo"
+SPLIT_UNDO_LIMIT = 10
+_MISSING = object()
+
+
+def _attrs_snapshot(frames: list[Frame]) -> dict[int, dict[str, Any]]:
+    return {int(fr.id): deepcopy(dict(getattr(fr, "attrs", None) or {})) for fr in frames}
+
+
+def _val_sha(value: Any) -> str:
+    if value is _MISSING:
+        return "missing"
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _record_split_undo(
+    project: Project,
+    *,
+    kind: str,
+    before: dict[int, dict[str, Any]],
+    after: list[Frame],
+    scene_frame_ids: list[int],
+    at_frame_id: int,
+) -> str | None:
+    changes: dict[str, dict[str, Any]] = {}
+    for fr in after:
+        old = before.get(int(fr.id))
+        if old is None:
+            continue
+        new = dict(getattr(fr, "attrs", None) or {})
+        keys: dict[str, Any] = {}
+        for key in set(old) | set(new):
+            ov = old.get(key, _MISSING)
+            nv = new.get(key, _MISSING)
+            if _val_sha(ov) == _val_sha(nv):
+                continue
+            keys[key] = {
+                "had": ov is not _MISSING,
+                "before": None if ov is _MISSING else ov,
+                "after_sha": _val_sha(nv),
+            }
+        if keys:
+            changes[str(int(fr.id))] = keys
+    if not changes:
+        return None
+    undo_id = hashlib.sha1(
+        f"{project.id}:{datetime.now(timezone.utc).isoformat()}:{at_frame_id}".encode()
+    ).hexdigest()[:12]
+    board = montage_meta(project)
+    stack = [e for e in (board.get(SPLIT_UNDO_KEY) or []) if isinstance(e, dict)]
+    stack.append(
+        {
+            "id": undo_id,
+            "kind": kind,
+            "at_frame_id": int(at_frame_id),
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scene_frame_ids": [int(x) for x in scene_frame_ids],
+            "changes": changes,
+        }
+    )
+    set_montage_meta(project, {SPLIT_UNDO_KEY: stack[-SPLIT_UNDO_LIMIT:]})
+    return undo_id
+
+
+def split_undo_info(project: Project) -> dict[str, Any]:
+    stack = [e for e in (montage_meta(project).get(SPLIT_UNDO_KEY) or []) if isinstance(e, dict)]
+    last = stack[-1] if stack else None
+    return {
+        "can_undo": last is not None,
+        "undo_id": last.get("id") if last else None,
+        "kind": last.get("kind") if last else None,
+        "at_frame_id": last.get("at_frame_id") if last else None,
+        "ts": last.get("ts") if last else None,
+        "depth": len(stack),
+    }
+
+
+async def undo_montage_split(
+    session: AsyncSession,
+    project: Project,
+    *,
+    undo_id: str | None = None,
+) -> dict[str, Any]:
+    board = montage_meta(project)
+    stack = [e for e in (board.get(SPLIT_UNDO_KEY) or []) if isinstance(e, dict)]
+    if not stack:
+        raise RuntimeError("нет деления, которое можно отменить")
+    entry = stack[-1]
+    if undo_id and str(undo_id) != str(entry.get("id")):
+        raise RuntimeError("можно отменить только самое последнее деление")
+    frames = await _load_frames(session, int(project.id))
+    by_id = {int(fr.id): fr for fr in frames}
+    changes: dict[str, dict[str, Any]] = entry.get("changes") or {}
+    conflicts: list[str] = []
+    for fid_s, keys in changes.items():
+        fr = by_id.get(int(fid_s))
+        if fr is None:
+            conflicts.append(f"кадр id={fid_s} удалён")
+            continue
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        for key, spec in keys.items():
+            cur = attrs.get(key, _MISSING)
+            if _val_sha(cur) != spec.get("after_sha"):
+                conflicts.append(f"#{fr.number}")
+                break
+    if conflicts:
+        raise RuntimeError(
+            "после деления эти кадры правили ("
+            + ", ".join(dict.fromkeys(conflicts))
+            + "): отмена затёрла бы правки. Верните сцены вручную (склейка)."
+        )
+    before_numbers = [int(fr.number) for fr in frames]
+    restored_keys = 0
+    for fid_s, keys in changes.items():
+        fr = by_id[int(fid_s)]
+        attrs = dict(getattr(fr, "attrs", None) or {})
+        for key, spec in keys.items():
+            if spec.get("had"):
+                attrs[key] = deepcopy(spec.get("before"))
+            else:
+                attrs.pop(key, None)
+            restored_keys += 1
+        fr.attrs = attrs
+        _flag_attrs(fr)
+    await session.flush()
+    after = await _load_frames(session, int(project.id))
+    if [int(fr.number) for fr in after] != before_numbers:
+        raise RuntimeError("отмена деления не должна менять номера кадров")
+    set_montage_meta(project, {SPLIT_UNDO_KEY: stack[:-1] or None})
+    scene_ids = [int(x) for x in entry.get("scene_frame_ids") or []] or [int(x) for x in by_id]
+    kinds = (ArtifactKind.scene_image, ArtifactKind.scene_video)
+    media = (
+        await session.execute(
+            select(Artifact.kind)
+            .where(Artifact.project_id == int(project.id))
+            .where(Artifact.frame_id.in_(scene_ids))
+            .where(Artifact.kind.in_(kinds))
+        )
+    ).scalars().all()
+    images = sum(1 for k in media if k == ArtifactKind.scene_image)
+    videos = sum(1 for k in media if k == ArtifactKind.scene_video)
+    logger.info("montage split undo #{} id={} frames={}", project.id, entry.get("id"), len(changes))
+    return {
+        "ok": True,
+        "undo_id": entry.get("id"),
+        "kind": entry.get("kind"),
+        "restored_frames": len(changes),
+        "restored_keys": restored_keys,
+        "paid_media_kept": {"images": images, "videos": videos, "total": images + videos},
+        "can_undo_more": bool(stack[:-1]),
+    }
+
+
 async def split_montage_scene_at(
     session: AsyncSession,
     project: Project,
@@ -520,7 +693,7 @@ async def split_montage_scene_at(
     frame_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Кадр ``at`` и все правее в ячейке — новая VO-сцена. Номера не трогаем."""
-    from app.services.montage_scene_editor import scene_group
+    from app.services.montage_scene_editor import scene_display_ordinals, scene_group
 
     frames = await _load_frames(session, int(project.id))
     at = next((fr for fr in frames if int(fr.id) == int(at_frame_id)), None)
@@ -528,6 +701,7 @@ async def split_montage_scene_at(
         raise RuntimeError("кадр для разделения сцены не найден")
     parent, members = scene_group(frames, at)
     visible, extras = _visible_and_extras(members, frame_ids)
+    undo_snap = _attrs_snapshot(frames)
     idx = next(
         (i for i, m in enumerate(visible) if int(m.id) == int(at.id)),
         -1,
@@ -570,6 +744,11 @@ async def split_montage_scene_at(
     after_numbers = [int(fr.number) for fr in after]
     if after_numbers != before_numbers:
         raise RuntimeError("разделение сцен не должно менять номера кадров")
+    undo_id = _record_split_undo(
+        project, kind="at", before=undo_snap, after=after,
+        scene_frame_ids=[int(m.id) for m in members], at_frame_id=int(at.id),
+    )
+    ordinals = scene_display_ordinals(after)
     logger.info(
         "montage split scene #{} at {} → ячейки {} + {}",
         project.id,
@@ -583,8 +762,11 @@ async def split_montage_scene_at(
         "left_number": int(live_left.number),
         "right_id": int(live_right.id),
         "right_number": int(live_right.number),
+        "left_ordinal": ordinals.get(int(live_left.id)),
+        "right_ordinal": ordinals.get(int(live_right.id)),
         "left_size": len(left),
         "right_size": len(right),
+        "undo_id": undo_id,
     }
 
 
@@ -606,6 +788,7 @@ async def split_montage_scene_frames(
     visible, extras = _visible_and_extras(members, frame_ids)
     if len(visible) < 2:
         raise RuntimeError("в сцене один кадр — делить нечего")
+    undo_snap = _attrs_snapshot(frames)
     before_numbers = [int(fr.number) for fr in frames]
     head = visible[0]
     for member in visible[1:]:
@@ -629,6 +812,13 @@ async def split_montage_scene_frames(
     after_numbers = [int(fr.number) for fr in after]
     if after_numbers != before_numbers:
         raise RuntimeError("разделение сцен не должно менять номера кадров")
+    undo_id = _record_split_undo(
+        project, kind="all", before=undo_snap, after=after,
+        scene_frame_ids=[int(m.id) for m in members], at_frame_id=int(head.id),
+    )
+    from app.services.montage_scene_editor import scene_display_ordinals
+
+    ordinals = scene_display_ordinals(after)
     logger.info(
         "montage split-all #{} cell={} → {} сцен",
         project.id,
@@ -640,4 +830,6 @@ async def split_montage_scene_frames(
         "scenes": len(visible),
         "parent_id": int(head.id),
         "parent_number": int(head.number),
+        "parent_ordinal": ordinals.get(int(head.id)),
+        "undo_id": undo_id,
     }

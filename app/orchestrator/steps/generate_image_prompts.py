@@ -42,6 +42,8 @@ def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
 
 
 def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
     return [
         fr
         for fr in frames
@@ -132,6 +134,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего составлять промты")
 
+    from app.services.node_capabilities import record_image_prompt_input
+    await record_image_prompt_input(frames,project)
+
     need = _frames_needing_image_prompt(frames)
     if len(need) > 30:
         logger.warning(
@@ -177,8 +182,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
+            if attempt > 1:
+                await session.commit()
             from app.services import xlsx_step_runners as xsr
+            from app.services.node_capabilities import clear_image_prompt_unusable
 
+            clear_image_prompt_unusable()
             result = await xsr.run_img_pr_xlsx(
                 project,
                 n_frames=len(need),
@@ -207,7 +216,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         last_apply_err = None
                         break
-                    except Exception as apply_err:  # noqa: BLE001
+                    except Exception as apply_err:
                         last_apply_err = apply_err
                         msg = str(apply_err).lower()
                         locked = (
@@ -274,6 +283,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 e,
             )
             if attempt >= 2:
+                try:
+                    from app.services.node_capabilities import record_image_prompt_unusable
+
+                    await record_image_prompt_unusable()
+                except Exception as note_err:
+                    logger.warning("[#{}] image_prompts typed failure not recorded: {}", project.id, note_err)
                 raise RuntimeError(
                     f"generate_image_prompts: не удалось получить промты: {e}"
                 ) from e

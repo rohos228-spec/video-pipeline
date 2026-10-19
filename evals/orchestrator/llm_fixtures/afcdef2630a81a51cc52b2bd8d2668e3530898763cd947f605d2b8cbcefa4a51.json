@@ -1,0 +1,30 @@
+{
+  "key": "afcdef2630a81a51cc52b2bd8d2668e3530898763cd947f605d2b8cbcefa4a51",
+  "request_meta": {
+    "tier": "strong",
+    "temperature": null,
+    "max_tokens": null,
+    "reasoning_effort": "high",
+    "messages_sha256": "45928286b9b67a98052c98ad81042069adba6a4fd26b781489a7b059915d2d96"
+  },
+  "response": {
+    "text": "{\"steps\": [{\"action\": \"edit_node_prompt\", \"params\": {\"node_key\": \"n_excel_gpt_fw_shots\", \"patch_mode\": \"replace_section\", \"section_anchor\": \"R-NO-OVERSPLIT\", \"content\": \"Соседние кадры не дробить. R-NO-OVERSPLIT: один смысл — один набор, без лишней нарезки.\", \"reason\": \"усилить запрет лишней нарезки\"}}]}",
+    "call_id": "script-e3",
+    "model": "gpt-5.6-sol",
+    "provider": "scripted",
+    "tier": "strong",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 64,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 1,
+    "fallback_index": 0,
+    "deterministic": true,
+    "fixture_key": "afcdef2630a81a51cc52b2bd8d2668e3530898763cd947f605d2b8cbcefa4a51"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "scripted"
+}

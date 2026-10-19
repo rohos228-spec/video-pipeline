@@ -3,3 +3,7 @@
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.bat text eol=crlf
+*.schema.json eol=lf
+
+# N-этапный JSON датасетов B: git должен видеть их точные байты при checkout.
+evals/orchestrator/datasets/*.json -text

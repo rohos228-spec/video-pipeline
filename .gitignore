@@ -78,6 +78,22 @@ prompts/**/.history/
 # Неотслеживаемые новые файлы в prompts/ остаются локальными.
 # Уже добавленные промты git видит: ignore не скрывает правки tracked-файлов.
 # Новый промт в репозиторий — через исключение ниже или явный git add -f.
+
+# CI junit output
+reports/
+
+# scheduled DB backups (runtime artefacts)
+api-tracker/backups/
+
+# Поставка (W49): данные заказчика, служебные файлы агентов, внутренние отчёты по потокам
+/exports/
+/tasks/
+/.ai-orchestra-mcp/
+/.clinerules
+/.clineignore
+/.skill*.txt
+/START_AI_ORCHESTRA_PROMPT.txt
+# Все промты — только локально (не тянуть с GitHub при install/update)
 prompts/*
 !prompts/.gitkeep
 # Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git

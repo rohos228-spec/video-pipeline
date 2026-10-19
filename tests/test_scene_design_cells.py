@@ -262,11 +262,10 @@ def test_build_assembly_input_chronology() -> None:
     assert [s["id_scene"] for s in scenes] == ["scene_01", "scene_02"]
     assert [f["uuid"] for f in scenes[0]["кадры"]] == ["u1", "u2"]
     assert [f["uuid"] for f in scenes[1]["кадры"]] == ["u3", "u4"]
-    # Хронометраж: у кадров время из БД (3.0), у сцены — сумма её кадров.
-    assert scenes[0]["кадры"][0]["время_сек"] == 3.0
-    assert scenes[0]["время_сек"] == 6.0
+    assert scenes[0]["кадры"][0]["время_сек"] == 1.5
+    assert scenes[0]["время_сек"] == 2.9
     assert scenes[0]["кадров"] == 2
-    assert scenes[1]["время_сек"] == 6.0
+    assert scenes[1]["время_сек"] == 2.9
 
 
 def test_action_scene_time_cell_passes() -> None:

@@ -202,6 +202,32 @@ def read_plan_timestamps_cells(
     return [(n, out[n]) for n in frame_numbers], ts_row
 
 
+def ensure_plan_sheet(project: Project, cells: list[tuple[int, str]]) -> bool:
+    path = project.data_dir / "project.xlsx"
+    if not path.exists() or not cells:
+        return False
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            if _resolve_plan_sheet(wb) is not None:
+                wb.close()
+                return False
+            ws = wb.create_sheet(SHEET_PLAN_V8)
+            ws.cell(row=ROW_VOICEOVER_V8, column=1, value="закадровый текст")
+            col = 3
+            for _num, text in sorted(cells, key=lambda c: c[0]):
+                if (text or "").strip():
+                    ws.cell(row=ROW_VOICEOVER_V8, column=col, value=text.strip())
+                    col += 1
+            wb.save(path)
+            wb.close()
+    except Exception as e:
+        logger.warning("[#{}] ensure_plan_sheet failed: {}", project.id, e)
+        return False
+    logger.info("[#{}] создан лист «{}»: R49 из БД ({} кадров)", project.id, SHEET_PLAN_V8, len(cells))
+    return True
+
+
 def write_plan_timestamps(
     project: Project,
     ranges: list[tuple[int, str]],

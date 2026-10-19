@@ -193,6 +193,18 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
         "corrections": board.get("corrections") or {},
         "pending_ops": list(board.get("pending_ops") or []),
         "applied_at": board.get("applied_at"),
+        "split_undo": _split_undo_public(board),
+    }
+
+
+def _split_undo_public(board: dict[str, Any]) -> dict[str, Any]:
+    stack = [e for e in (board.get("split_undo") or []) if isinstance(e, dict)]
+    last = stack[-1] if stack else None
+    return {
+        "can_undo": last is not None,
+        "undo_id": last.get("id") if last else None,
+        "kind": last.get("kind") if last else None,
+        "depth": len(stack),
     }
 
 

@@ -90,6 +90,29 @@ def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | No
         return None
 
 
+async def _drop_master_artifact_rows(
+    session: AsyncSession,
+    project: Project,
+    kinds: tuple[ArtifactKind, ...],
+) -> int:
+    from sqlalchemy import delete
+
+    from app.db import engine as master_engine
+    from app.db import session_scope
+
+    try:
+        if str(session.get_bind().url) == str(master_engine.url):
+            return 0
+        async with session_scope() as master:
+            res = await master.execute(
+                delete(Artifact).where(Artifact.project_id == project.id, Artifact.kind.in_(kinds))
+            )
+            return int(res.rowcount or 0)
+    except Exception as e:
+        logger.warning("[#{}] reset_step: не убрал записи артефактов из master: {}", project.id, e)
+        return 0
+
+
 async def _wipe_artifacts_db_only(
     session: AsyncSession,
     project: Project,
@@ -106,6 +129,7 @@ async def _wipe_artifacts_db_only(
     ).scalars().all()
     for a in arts:
         await session.delete(a)
+    await _drop_master_artifact_rows(session, project, kinds)
     return {"artifacts": len(arts), "files": 0}
 
 
@@ -148,6 +172,7 @@ async def _wipe_artifacts_by_kind(
                             project.id, p, e,
                         )
         await session.delete(a)
+    await _drop_master_artifact_rows(session, project, kinds)
     return {"artifacts": len(arts), "files": files_deleted}
 
 

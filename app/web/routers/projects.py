@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
+from app.services.project_slug import slug_taken_on_disk
 from app.services.sidebar_layout import (
     ensure_project_layout,
     get_gen_queue,
@@ -81,10 +82,8 @@ async def _heal_get_runtime_from_master(session: AsyncSession, p: Project) -> bo
 
 
 def _slugify(s: str) -> str:
-    """Простой кириллица-латиница slugifier (как в app/services)."""
     base = re.sub(r"[^\w\s-]", "", s.lower(), flags=re.UNICODE).strip()
     base = re.sub(r"[\s_-]+", "-", base, flags=re.UNICODE)
-    # Транслит кириллицы — повторяем существующую логику из проекта.
     cyr = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
     lat = ["a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i", "y", "k", "l", "m", "n",
            "o", "p", "r", "s", "t", "u", "f", "h", "c", "ch", "sh", "sch", "", "y", "",
@@ -206,40 +205,59 @@ async def project_shots_report(
     return HTMLResponse(existing.read_text(encoding="utf-8"))
 
 
+async def _sync_project_state(session: AsyncSession, p: Project) -> tuple[bool, bool]:
+    import copy
+
+    from app.services.project_state import apply_meta_diff, meta_diff
+
+    await session.refresh(p)
+    before = copy.deepcopy(p.meta) if isinstance(p.meta, dict) else {}
+    pulled = False
+    try:
+        pulled = await _heal_get_runtime_from_master(session, p)
+    except Exception:
+        logger.warning("sync_project: #{} pull parked runtime failed", p.id, exc_info=True)
+    _old, _new, recomputed = await recompute_status(
+        session, p, log_prefix="recompute(web_sync)"
+    )
+    after = dict(p.meta) if isinstance(p.meta, dict) else {}
+    set_keys, del_keys = meta_diff(before, after)
+    await apply_meta_diff(session, p, set_keys, del_keys)
+    return pulled, recomputed
+
+
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(
     project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> ProjectDetail:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
-    # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
+        raise HTTPException(status_code=404, detail="Проект не найден")
     await session.refresh(p)
-    # GET не пишет canvas_graph. Poll каждые ~2с делал upgrade
-    # 20↔18 нод, commit stale snapshot и выжигал сокеты (GPT errno=8).
-    # commit_with_retry — #313 (database is locked). Upgrade на GET не возвращаем.
-    pulled = False
     try:
-        pulled = await _heal_get_runtime_from_master(session, p)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "get_project: #{} pull parked runtime failed",
-            project_id,
-            exc_info=True,
-        )
-    _old, _new, recomputed = await recompute_status(
-        session, p, log_prefix="recompute(web_get)"
-    )
-    if recomputed or pulled:
+        await _sync_project_state(session, p)
+        detail = project_to_detail(p)
+    finally:
+        await session.rollback()
+    return detail
+
+
+@router.post("/{project_id}/sync", response_model=ProjectDetail)
+async def sync_project(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> ProjectDetail:
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    pulled, recomputed = await _sync_project_state(session, p)
+    if pulled or recomputed or session.dirty:
         await commit_with_retry(session)
         await session.refresh(p)
     else:
-        # Poll GET не должен commit'ить stale snapshot: иначе ▶
-        # (enriching_*) затирается обратно в *_ready, воркер не берёт ноду.
         await session.rollback()
         p = await session.get(Project, project_id)
         if p is None:
-            raise HTTPException(status_code=404, detail="project not found")
+            raise HTTPException(status_code=404, detail="Проект не найден")
     return project_to_detail(p)
 
 
@@ -249,7 +267,7 @@ async def create_project(
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     if not body.title or not body.title.strip():
-        raise HTTPException(status_code=400, detail="title is required")
+        raise HTTPException(status_code=400, detail="Нужно указать название проекта")
     display_title = body.title.strip()
     base_slug = _slugify(display_title)
     # Уникализируем slug.
@@ -257,7 +275,7 @@ async def create_project(
     suffix = 2
     while (
         await session.execute(select(Project).where(Project.slug == slug))
-    ).scalar_one_or_none() is not None:
+    ).scalar_one_or_none() is not None or slug_taken_on_disk(slug):
         slug = f"{base_slug}-{suffix}"
         suffix += 1
     auto_mode = body.auto_mode
@@ -272,6 +290,16 @@ async def create_project(
         auto_mode=auto_mode,
         meta={},
     )
+    from app.generation_options import IMAGE_GENERATORS_BY_ID, VIDEO_GENERATORS_BY_ID
+
+    if body.image_generator and body.image_generator not in IMAGE_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {body.image_generator}")
+    if body.video_generator and body.video_generator not in VIDEO_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {body.video_generator}")
+    for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator"):
+        _val = getattr(body, _field, None)
+        if _val:
+            setattr(p, _field, _val)
     session.add(p)
     await session.flush()
     if auto_mode:
@@ -339,7 +367,7 @@ async def create_child_project(
 
     parent = await session.get(Project, project_id)
     if parent is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
 
     try:
         child = await create_child_from_parent(session, parent, slugify=_slugify)
@@ -375,10 +403,10 @@ async def ensure_project_run(
     """Гарантирует WorkflowRun для проекта (связь с графом в БД)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     wf_id = await _get_default_workflow_id(session)
     if wf_id is None:
-        raise HTTPException(status_code=404, detail="default workflow not found")
+        raise HTTPException(status_code=404, detail="Не найден основной сценарий (workflow) по умолчанию")
     run_id = await ensure_run_for_project(project_id, wf_id, session=session)
     await commit_with_retry(session)
     return {"run_id": run_id}
@@ -438,12 +466,11 @@ async def delete_project(
 ) -> None:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     data_dir = p.data_dir
     remove_project_from_layout(project_id)
     await session.delete(p)
     await commit_with_retry(session)
-    # Закрываем кэшированный engine для project.db
     from app.project_db import _ENGINES, _SESSION_MAKERS, _LOCK, resolve_project_db_path
     db_file = resolve_project_db_path(data_dir)
     db_key = str(db_file.resolve())
@@ -467,7 +494,7 @@ async def patch_project(
     """Частичное обновление полей проекта (для inspector-панели)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     from app.generation_options import (
         IMAGE_GENERATORS_BY_ID,
         VIDEO_GENERATORS_BY_ID,
@@ -490,10 +517,10 @@ async def patch_project(
 
     img_gid = payload.get("image_generator")
     if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {img_gid}")
     vid_gid = payload.get("video_generator")
     if "video_generator" in payload and vid_gid and vid_gid not in VIDEO_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown video_generator: {vid_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {vid_gid}")
     ALLOWED = {
         "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
@@ -624,9 +651,10 @@ async def patch_project(
     await commit_with_retry(session)
     await session.refresh(p)
     try:
-        from app.project_db import sync_runtime_both_ways
+        from app.project_db import push_display_fields_to_master, sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, p)
+        await push_display_fields_to_master(session, p, payload.keys())
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "patch_project #{}: runtime sync master↔project.db failed: {}",
@@ -643,7 +671,6 @@ async def media_review(
     kind: str = Query("images", pattern="^(images|videos)$"),
     session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
-    """Кадры с путями к последним scene_image / scene_video для визуального HITL."""
     artifact_kind = (
         ArtifactKind.scene_image if kind == "images" else ArtifactKind.scene_video
     )
@@ -678,6 +705,34 @@ async def media_review(
     return out
 
 
+@router.post("/{project_id}/spend-approval", response_model=ProjectDetail)
+async def approve_project_spend(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> Project:
+    """Одобрить продолжение после потолка трат.
+
+    Ставит approval_status=approved. Ноду в running переводит следующий ▶ шага.
+    """
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    from app.services.step_failure_policy import approve_budget_wait
+
+    try:
+        await approve_budget_wait(session, p)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await commit_with_retry(session)
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"spend_approval": "approved"},
+    )
+    return project_to_detail(p)
+
+
 @router.post("/{project_id}/steps/{step_code}/run", response_model=ProjectDetail)
 async def run_project_step(
     project_id: int,
@@ -696,7 +751,7 @@ async def run_project_step(
     """
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     if dry_run:
         from app.web.studio_dry_run import validate_project_step_dry_run
 
@@ -710,6 +765,10 @@ async def run_project_step(
             payload=payload,
         )
         return p
+    from app.services.actions_v1 import managed_project_enabled
+    if await managed_project_enabled(project_id):
+        raise HTTPException(status_code=409,
+            detail="Управляемый запуск нужно начинать из панели «Действия v1»: так он попадает в журнал и не запускается дважды")
     resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
     # FIX 2026-10-15: стоп-ключ only_node пишем ДО start_step и коммитим —
     # иначе воркер успевает взять проект без ключа и цепочка идёт дальше.

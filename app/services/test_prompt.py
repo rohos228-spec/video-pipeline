@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import TestPromptProject
+from app.services.notification_log import notify
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -231,10 +232,12 @@ async def run_iteration(
     await session.flush()
     if bot and chat_id is not None:
         with contextlib.suppress(Exception):
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 chat_id,
                 f"🧪 #{project.id} «{project.name}» — итерация {new_iter}\n"
                 f"➡ Шаг 1/2: отправляю ChatGPT…",
+                kind="test_prompt_step", project_id=None,
             )
 
     if critique is None:
@@ -279,10 +282,12 @@ async def run_iteration(
     await session.flush()
     if bot and chat_id is not None:
         with contextlib.suppress(Exception):
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 chat_id,
                 f"➡ Шаг 2/2: отправляю в Banana Pro (Relax)…\n"
                 f"Промт получен ({len(new_prompt)} символов).",
+                kind="test_prompt_step", project_id=None,
             )
 
     prompt_id_prefix = (

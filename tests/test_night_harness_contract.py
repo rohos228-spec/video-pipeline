@@ -143,7 +143,8 @@ def test_harness_verify_disk_assembled(tmp_path: Path) -> None:
     wb.save(tmp_path / "project.xlsx")
     wb.close()
     report = verify_project_disk(999001, tmp_path, "assembled")
-    assert report.ok is True or any(c.name == "r48_anim" for c in report.checks)
+    parity = {c.name: c for c in report.checks}["frames_xlsx_parity"]
+    assert "r48=1 " in parity.detail
     assert "audio" not in report.repair_steps
     assert "music" not in report.repair_steps
 
@@ -179,5 +180,4 @@ def test_harness_r48_counts_beyond_17_columns(tmp_path: Path) -> None:
 
     report = verify_project_disk(999003, tmp_path, "assembled")
     by_name = {c.name: c for c in report.checks}
-    assert by_name["r48_anim"].ok is True
-    assert "filled=18" in by_name["r48_anim"].detail
+    assert "r48=18" in by_name["frames_xlsx_parity"].detail

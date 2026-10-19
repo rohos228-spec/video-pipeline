@@ -1,0 +1,150 @@
+"""Сетка dev-70 не открывает holdout-3 и не выбирает просадку hit."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from evals.orchestrator.dev70_grid import (
+    GRID,
+    RERANK_POOL,
+    channel_ahead,
+    explain_displacement,
+    grid_runs_for_choice,
+    load_dev70,
+)
+from evals.orchestrator.holdout import HoldoutLeakError
+from evals.orchestrator.precision_live import choose_default
+
+
+def test_dev70_loader_rejects_holdout3(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "evals.orchestrator.dev70_grid.load_dev_expanded",
+        lambda: [{"id": "h3-01", "family": "camera", "text": "x", "relevant": []}],
+    )
+    with pytest.raises(HoldoutLeakError):
+        load_dev70()
+
+
+def test_rerank_grid_is_top_12_only() -> None:
+    assert RERANK_POOL == 12
+    assert GRID
+    assert all(spec.get("rerank_pool", RERANK_POOL) == 12 for spec in GRID)
+    assert any(spec["aggregate"] == "prompt_pool" for spec in GRID)
+    assert any(spec["rerank"] is False for spec in GRID)
+
+
+def test_displacement_names_the_other_family_and_the_channel() -> None:
+    top = [
+        {
+            "relevant": False,
+            "source_id": "n_excel_gpt_sd_action",
+            "part_key": "s0",
+            "corpus": "prompts",
+            "title": "действие",
+            "score_bm25": 3.0,
+            "score_vec": 0.2,
+        },
+        {
+            "relevant": True,
+            "source_id": "n_excel_gpt_sd_camera",
+            "part_key": "catalog",
+            "corpus": "nodes",
+            "title": "камера",
+            "score_bm25": 0.4,
+            "score_vec": 0.8,
+        },
+    ]
+    explained = explain_displacement("camera", top)
+    assert explained["first_relevant_rank"] == 2
+    assert explained["ahead"][0]["owner"] == "action"
+    assert explained["ahead"][0]["channel"] == "bm25"
+    assert channel_ahead({"score_bm25": 0.1, "score_vec": 0.1}, {"score_bm25": 0.4, "score_vec": 0.8}) == (
+        "fusion_or_rerank"
+    )
+
+
+def test_choose_default_drops_prompt_pool_and_keeps_the_higher_ndcg() -> None:
+    rows = [
+        {"key": "prompt-pool-rrf-0.5-1.5", "rerank": True, "hit_at_5": 0.84, "ndcg_at_8": 0.75},
+        {"key": "none-rrf-0.5-1.5", "rerank": True, "hit_at_5": 0.94, "ndcg_at_8": 0.61},
+        {"key": "prompt-expand-rrf-0.5-1.5", "rerank": True, "hit_at_5": 0.91, "ndcg_at_8": 0.66},
+    ]
+    runs = grid_runs_for_choice(rows, prod_p95_s=0.95)
+    chosen, _why = choose_default(runs)
+    assert chosen == "prompt-expand-rrf-0.5-1.5"
+    blocked = grid_runs_for_choice(rows, prod_p95_s=1.21)
+    none = [row for row in blocked if row[0] == "none-no-rerank"]
+    assert none == []
+    chosen_slow, _why = choose_default(blocked)
+    assert chosen_slow == ""
+
+
+def test_focus_diagnosis_is_dev70_and_names_the_displacing_chunks() -> None:
+    path = Path("evals/orchestrator/datasets/precision_live_dev70_diagnosis.json")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["config"] == "none-rrf-0.5-1.5"
+    queries = document["queries"]
+    assert [query["family"] for query in queries].count("camera") == 8
+    assert [query["family"] for query in queries].count("action") == 8
+    assert [query["family"] for query in queries].count("script") == 7
+    assert all(not str(query["id"]).startswith("h3-") for query in queries)
+    missed = next(query for query in queries if query["id"] == "hold-12")
+    assert missed["hit5"] is False
+    assert missed["first_relevant_rank"] is None
+    assert missed["ahead"][0]["owner"] == "action"
+    note = Path("docs/eval-dev70-camera-action-script.md").read_text(encoding="utf-8")
+    assert "hold-12" in note
+    assert "camera" in note and "action" in note and "script" in note
+    assert "prompt_pool" in note
+
+
+def test_extended_grid_lists_weights_k_and_expand_tail() -> None:
+    from evals.orchestrator.dev70_grid import FUSION_WEIGHTS, RRF_KS, extended_grid, fusion_grid, pending_specs
+
+    specs = extended_grid()
+    assert len(specs) == len(FUSION_WEIGHTS) * len(RRF_KS) * 2 - 1
+    keys = {spec["key"] for spec in specs}
+    assert "expand-tail-rrf-0.5-1.5-k20" in keys
+    assert "none-rrf-0.75-1.5-k20" in keys
+    assert "none-rrf-0.5-2.0-k40" in keys
+    assert "expand-tail-rrf-0.25-1.5-k60" in keys
+    assert "none-rrf-0.5-1.5" not in keys
+    assert all(spec["rrf_k"] in RRF_KS for spec in specs)
+    assert all(spec["rerank"] is True for spec in specs)
+    assert {spec["aggregate"] for spec in specs} == {"none", "expand_tail"}
+    fused = fusion_grid()
+    fused_keys = [spec["key"] for spec in fused]
+    assert len(fused) == len(FUSION_WEIGHTS) * len(RRF_KS) + len(RRF_KS)
+    assert "rrf-none-expand-rrf-0.5-1.5-k20" in fused_keys
+    assert "none-cand-expand-rerank-rrf-0.5-1.5-k60" in fused_keys
+    order = [spec["key"] for spec in pending_specs(set())]
+    assert order[:3] == [
+        "expand-tail-rrf-0.5-1.5-k20",
+        "rrf-none-expand-rrf-0.5-1.5-k20",
+        "none-cand-expand-rerank-rrf-0.5-1.5-k20",
+    ]
+
+
+def test_committed_dev70_grid_keeps_the_hit_pass() -> None:
+    from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
+
+    document = json.loads(GRID_PATH.read_text(encoding="utf-8"))
+    assert document["set"] == "dev-70"
+    assert document["rerank_pool"] == 12
+    keys = {row["key"] for row in document["configs"]}
+    assert {"none-rrf-0.5-1.5", "prompt-expand-rrf-0.5-1.5", "prompt-pool-rrf-0.5-1.5", "none-no-rerank"} <= keys
+    assert "expand-tail-rrf-0.25-1.5-k20" in keys
+    samples = document["prod_p95_s"]
+    assert len(samples) == 3
+    assert all(float(sample) <= 1.2 for sample in samples)
+    hits = {row["key"]: row["hit_at_5"] for row in document["configs"]}
+    assert hits["none-rrf-0.5-1.5"] >= 0.9
+    assert hits["prompt-pool-rrf-0.5-1.5"] < 0.9
+    assert hits["prompt-expand-rrf-0.5-1.5"] < 0.9
+    assert hits["none-no-rerank"] < 0.9
+    assert hits["none-cand-expand-rerank-rrf-0.5-1.5-k20"] < 0.9
+    chosen, _why = choose_default(grid_runs_for_choice(document["configs"], prod_p95_s=max(samples)))
+    assert chosen == "expand-tail-rrf-0.25-1.5-k20"

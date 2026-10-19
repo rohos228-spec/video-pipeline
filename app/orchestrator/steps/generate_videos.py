@@ -259,6 +259,7 @@ async def _claim_shot1_video_batch(
     project_id: int,
     *,
     limit: int,
+    exclude_numbers: frozenset[int] = frozenset(),
 ) -> list[Frame]:
     if limit < 1:
         return []
@@ -277,6 +278,8 @@ async def _claim_shot1_video_batch(
     claimed: list[Frame] = []
     dirty = False
     for fr in frames:
+        if fr.number in exclude_numbers:
+            continue
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
             continue
@@ -320,6 +323,7 @@ async def _claim_shot2_video_batch(
     scenes_dir: Path,
     *,
     limit: int,
+    exclude_numbers: frozenset[int] = frozenset(),
 ) -> list[tuple[Frame, str, Path]]:
     if limit < 1:
         return []
@@ -340,7 +344,7 @@ async def _claim_shot2_video_batch(
 
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
-        if frame_hidden_from_paid_generation(fr):
+        if frame_hidden_from_paid_generation(fr) or fr.number in exclude_numbers:
             continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
@@ -430,6 +434,7 @@ async def _generate_shot1_one(
         generate_audio=False,
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
         duplicate_check_paths=dups,
+        idempotent=True,
     )
     sub_line = getattr(result, "model_substitution", None)
     session.add(
@@ -448,6 +453,7 @@ async def _generate_shot1_one(
         fr.attrs = frame_card_with_substitution(fr.attrs, str(sub_line))
     fr.status = FrameStatus.video_generated
     await session.flush()
+    await _mark_clip_request_consumed(project.id, result.file_path)
     out = Path(result.file_path)
     archive_older_frame_clips(out_dir, fr.number, shot=1, keep=out)
     async with clips_lock:
@@ -502,6 +508,7 @@ async def _generate_shot2_one(
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid)
         + "-S2",
         duplicate_check_paths=dups,
+        idempotent=True,
     )
     session.add(
         Artifact(
@@ -514,6 +521,7 @@ async def _generate_shot2_one(
         )
     )
     await session.flush()
+    await _mark_clip_request_consumed(project.id, result.file_path)
     out = Path(result.file_path)
     archive_older_frame_clips(out_dir, fr.number, shot=2, keep=out)
     async with clips_lock:
@@ -527,22 +535,28 @@ async def _generate_shot2_one(
     return out
 
 
+async def _mark_clip_request_consumed(project_id: int, file_path: Any) -> None:
+    from app.services import media_spend, outsee_idempotency
+
+    try:
+        await outsee_idempotency.mark_consumed(project_id, media_spend._task_key(file_path))
+    except Exception:
+        logger.warning("[#{}] generate_videos: не удалось закрыть ключ запроса клипа", project_id, exc_info=True)
+
+
+async def _frame_store(project: Project) -> Any:
+    from app.services.frame_store import session_factory_for
+
+    return await session_factory_for(project.id, getattr(project, "data_dir", None))
+
+
 async def _note_video_fail_db(
-    project_id: int, frame_id: int, err: BaseException
+    project_id: int, frame_id: int, err: BaseException, session_factory: Any = None
 ) -> int:
-    """+1 счётчик ошибок в БД; ≥5 подряд → video_gen_skip (кадр больше не claim)."""
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker, get_project_data_dir
+    if session_factory is None:
+        from app.db import SessionLocal as session_factory
 
-        p_dir = await get_project_data_dir(project_id)
-        if p_dir:
-            session_maker = await get_project_sessionmaker(p_dir)
-        else:
-            from app.db import SessionLocal
-
-            session_maker = SessionLocal
-
-    async with session_maker() as s:
+    async with session_factory() as s:
         fr = await s.get(Frame, frame_id)
         if fr is None:
             return 0
@@ -564,21 +578,13 @@ async def _note_video_fail_db(
 
 
 async def _reset_video_fail_db(
-    project_id: int, frame_id: int, *, session_maker: Any = None
+    project_id: int, frame_id: int, session_factory: Any = None
 ) -> None:
     """Клип сгенерировался — сбросить счётчик ошибок кадра."""
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker, get_project_data_dir
+    if session_factory is None:
+        from app.db import SessionLocal as session_factory
 
-        p_dir = await get_project_data_dir(project_id)
-        if p_dir:
-            session_maker = await get_project_sessionmaker(p_dir)
-        else:
-            from app.db import SessionLocal
-
-            session_maker = SessionLocal
-
-    async with session_maker() as s:
+    async with session_factory() as s:
         fr = await s.get(Frame, frame_id)
         if fr is None:
             return
@@ -599,19 +605,18 @@ async def _shot1_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
-    session_maker: Any = None,
+    errors: dict[tuple[int, int], BaseException] | None = None,
+    session_factory: Any = None,
 ) -> bool:
     """Outsee ждёт минуты — SQLite-сессию НЕ держим (иначе parallel → database is locked).
 
     Returns True если клип записан, False если кадр пропущен после ошибки.
     """
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker
-
-        session_maker = await get_project_sessionmaker(out_dir.parent)
+    if session_factory is None:
+        from app.db import SessionLocal as session_factory
 
     async with acquire_outsee_slot():
-        async with session_maker() as session:
+        async with session_factory() as session:
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
@@ -625,7 +630,6 @@ async def _shot1_job(
             prompt = fr.animation_prompt
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
-            # session закрывается здесь — до Outsee
 
         short_uuid = uuid.uuid4().hex[:8]
         file_path = out_dir / f"clip_{frame_number:03d}_{short_uuid}.mp4"
@@ -652,25 +656,27 @@ async def _shot1_job(
                     project_id, frame_number, short_uuid
                 ),
                 duplicate_check_paths=dups,
+                idempotent=True,
             )
         except Exception as e:
             if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                async with session_maker() as session:
+                async with session_factory() as session:
                     fr = await session.get(Frame, frame_id)
                     if fr is not None:
                         _clear_video_inflight(fr)
                         await session.commit()
                 raise
-            # Один кадр (policy/сеть/длина) — не валим весь video-step.
-            await _note_video_fail_db(project_id, frame_id, e, session_maker=session_maker)
-            async with session_maker() as session:
+            if errors is not None:
+                errors[(1, frame_number)] = e
+            await _note_video_fail_db(project_id, frame_id, e, session_factory)
+            async with session_factory() as session:
                 fr = await session.get(Frame, frame_id)
                 if fr is not None:
                     _clear_video_inflight(fr)
                     await session.commit()
             return False
 
-        async with session_maker() as session:
+        async with session_factory() as session:
             fr = await session.get(Frame, frame_id)
             if fr is None:
                 return False
@@ -687,7 +693,8 @@ async def _shot1_job(
             fr.status = FrameStatus.video_generated
             _clear_video_inflight(fr)
             await session.commit()
-        await _reset_video_fail_db(project_id, frame_id, session_maker=session_maker)
+        await _mark_clip_request_consumed(project_id, result.file_path)
+        await _reset_video_fail_db(project_id, frame_id, session_factory)
         out = Path(result.file_path)
         archive_older_frame_clips(out_dir, frame_number, shot=1, keep=out)
         async with clips_lock:
@@ -719,16 +726,15 @@ async def _shot2_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
-    session_maker: Any = None,
+    errors: dict[tuple[int, int], BaseException] | None = None,
+    session_factory: Any = None,
 ) -> bool:
     """Как _shot1_job: без открытой SQLite-сессии на время Outsee."""
-    if session_maker is None:
-        from app.project_db import get_project_sessionmaker
-
-        session_maker = await get_project_sessionmaker(out_dir.parent)
+    if session_factory is None:
+        from app.db import SessionLocal as session_factory
 
     async with acquire_outsee_slot():
-        async with session_maker() as session:
+        async with session_factory() as session:
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
@@ -761,24 +767,27 @@ async def _shot2_job(
                 )
                 + "-S2",
                 duplicate_check_paths=dups,
+                idempotent=True,
             )
         except Exception as e:
             if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                async with session_maker() as session:
+                async with session_factory() as session:
                     fr = await session.get(Frame, frame_id)
                     if fr is not None:
                         _clear_video_inflight(fr)
                         await session.commit()
                 raise
-            await _note_video_fail_db(project_id, frame_id, e, session_maker=session_maker)
-            async with session_maker() as session:
+            if errors is not None:
+                errors[(2, frame_number)] = e
+            await _note_video_fail_db(project_id, frame_id, e, session_factory)
+            async with session_factory() as session:
                 fr = await session.get(Frame, frame_id)
                 if fr is not None:
                     _clear_video_inflight(fr)
                     await session.commit()
             return False
 
-        async with session_maker() as session:
+        async with session_factory() as session:
             fr = await session.get(Frame, frame_id)
             if fr is None:
                 return False
@@ -794,7 +803,8 @@ async def _shot2_job(
             )
             _clear_video_inflight(fr)
             await session.commit()
-        await _reset_video_fail_db(project_id, frame_id, session_maker=session_maker)
+        await _mark_clip_request_consumed(project_id, result.file_path)
+        await _reset_video_fail_db(project_id, frame_id, session_factory)
         out = Path(result.file_path)
         archive_older_frame_clips(out_dir, frame_number, shot=2, keep=out)
         async with clips_lock:
@@ -808,13 +818,52 @@ async def _shot2_job(
         return True
 
 
+def _own_store_factory(session: AsyncSession) -> Any:
+    from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+
+    from app import db as app_db
+
+    bind = getattr(session, "bind", None)
+    if not isinstance(bind, AsyncEngine) or bind is app_db.engine:
+        return None
+    return async_sessionmaker(bind, expire_on_commit=False, class_=AsyncSession)
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_videos:
         return
+    from app.db import SessionLocal
+
+    own = _own_store_factory(session)
+    if own is not None:
+        await _run_inner(session, project, bot, session, own)
+        return
+    factory = await _frame_store(project)
+    if factory is SessionLocal:
+        await _run_inner(session, project, bot, session, factory)
+        return
+    async with factory() as frame_session:
+        await _run_inner(session, project, bot, frame_session, factory)
+        await frame_session.commit()
+
+
+async def _commit_stores(session: AsyncSession, fs: AsyncSession) -> None:
+    await fs.commit()
+    if fs is not session:
+        await session.commit()
+
+
+async def _run_inner(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    fs: AsyncSession,
+    factory: Any,
+) -> None:
     project_id = project.id
     logger.info("[#{}] generate_videos starting", project_id)
 
-    img_recovered = await recover_scene_images_from_disk(session, project)
+    img_recovered = await recover_scene_images_from_disk(fs, project)
     if img_recovered:
         logger.info(
             "[#{}] generate_videos: scene_image с диска для кадров {}",
@@ -822,7 +871,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             img_recovered[:40],
         )
 
-    recovered = await recover_scene_videos_from_disk(session, project)
+    recovered = await recover_scene_videos_from_disk(fs, project)
     if recovered:
         logger.info(
             "[#{}] generate_videos: подхвачены клипы с диска {}",
@@ -832,7 +881,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     scenes_dir = project.data_dir / "scenes"
     frames = (
-        await session.execute(
+        await fs.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
@@ -850,12 +899,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         attrs = dict(fr.attrs or {})
         if attrs.pop(VIDEO_INFLIGHT_ATTR, None) is not None:
             fr.attrs = attrs
-    await session.flush()
+    await fs.flush()
+
+    failed_shots: dict[tuple[int, int], str] = {}
+    job_errors: dict[tuple[int, int], BaseException] = {}
+    done_shots: set[tuple[int, int]] = set()
 
     if streams == 0:
         missing = []
         for fr in frames:
-            clip = await _scene_video_file_on_disk(session, project.id, fr.id, shot=1)
+            clip = await _scene_video_file_on_disk(fs, project.id, fr.id, shot=1)
             if clip is None and (fr.animation_prompt or "").strip():
                 missing.append(fr.number)
         if missing:
@@ -887,7 +940,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 while True:
                     raise_if_cancelled(project.id)
                     batch = await _claim_shot1_video_batch(
-                        session, project.id, limit=streams
+                        fs,
+                        project.id,
+                        limit=streams,
+                        exclude_numbers=frozenset(
+                            n for (sh, n) in failed_shots if sh == 1
+                        ),
                     )
                     if not batch:
                         break
@@ -897,14 +955,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         len(batch),
                         [f.number for f in batch],
                     )
-                    # commit ДО Outsee: иначе parent-сессия + N stream-сессий
-                    # держат SQLite → parallel projects: database is locked.
-                    await session.commit()
-                    from app.project_db import get_project_sessionmaker
-
-                    p_dir = getattr(project, "data_dir", None) or out_dir.parent
-                    sm = await get_project_sessionmaker(p_dir)
-
+                    batch_numbers = [fr.number for fr in batch]
+                    await _commit_stores(session, fs)
                     results = await asyncio.gather(
                         *[
                             _shot1_job(
@@ -916,7 +968,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 gpt=gpt,
                                 session_clip_paths=session_clip_paths,
                                 clips_lock=clips_lock,
-                                session_maker=sm,
+                                errors=job_errors,
+                                session_factory=factory,
                             )
                             for fr in batch
                         ],
@@ -924,11 +977,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                     # expire_all: identity map после parallel SessionLocal() stale;
                     # PK project.id после expire нельзя трогать — lazy-load → MissingGreenlet.
-                    session.expire_all()
+                    fs.expire_all()
                     fail_n = 0
-                    for r in results:
+                    for num_b, r in zip(batch_numbers, results):
                         if isinstance(r, StepCancelledError):
                             raise r
+                        if r is True:
+                            done_shots.add((1, num_b))
+                        else:
+                            failed_shots[(1, num_b)] = (
+                                f"{type(r).__name__}: {r}" if isinstance(r, Exception)
+                                else "кадр пропущен после ошибки"
+                            )
                         if isinstance(r, Exception):
                             fail_n += 1
                             logger.warning(
@@ -942,29 +1002,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             generated += 1
                         else:
                             fail_n += 1
-                    # После массового fail (часто «лимит 4» из-за ghost jobs)
                     # дать Outsee освободить слоты, прежде чем claim следующей пачки.
                     if fail_n and fail_n >= len(results):
                         from app.services.step_cancel import sleep_cancellable
 
                         logger.warning(
                             "[#{}] generate_videos: вся пачка не удалась ({}/{}) — пауза 20с перед следующей попыткой",
-                            project.id,
+                            project_id,
                             fail_n,
                             len(results),
                         )
-                        await sleep_cancellable(20.0, project.id)
+                        await sleep_cancellable(20.0, project_id)
                     await session.refresh(project)
 
                 # --- Фаза shot_02 (досъём) ---
                 while True:
                     raise_if_cancelled(project.id)
                     batch2 = await _claim_shot2_video_batch(
-                        session,
+                        fs,
                         project,
                         out_dir=out_dir,
                         scenes_dir=scenes_dir,
                         limit=streams,
+                        exclude_numbers=frozenset(
+                            n for (sh, n) in failed_shots if sh == 2
+                        ),
                     )
                     if not batch2:
                         break
@@ -978,7 +1040,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         fr, prompt2, s2_img = batch2[0]
                         try:
                             async with acquire_outsee_slot():
-                                await _shot2_sync(
+                                await _generate_shot2_one(
+                                    session=fs,
                                     outsee=outsee,
                                     gpt=gpt,
                                     project=project,
@@ -992,15 +1055,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             shot2_generated += 1
                         finally:
                             _clear_video_inflight(fr)
-                            await session.flush()
+                            await fs.flush()
                         continue
 
-                    await session.commit()
-                    from app.project_db import get_project_sessionmaker
-
-                    p_dir = getattr(project, "data_dir", None) or out_dir.parent
-                    sm = await get_project_sessionmaker(p_dir)
-
+                    batch2_numbers = [fr.number for fr, _p, _i in batch2]
+                    await _commit_stores(session, fs)
                     results2 = await asyncio.gather(
                         *[
                             _shot2_job(
@@ -1013,16 +1072,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 gpt=gpt,
                                 session_clip_paths=session_clip_paths,
                                 clips_lock=clips_lock,
-                                session_maker=sm,
+                                errors=job_errors,
+                                session_factory=factory,
                             )
                             for fr, prompt2, s2_img in batch2
                         ],
                         return_exceptions=True,
                     )
-                    session.expire_all()
-                    for r in results2:
+                    fs.expire_all()
+                    for num_b, r in zip(batch2_numbers, results2):
                         if isinstance(r, StepCancelledError):
                             raise r
+                        if r is True:
+                            done_shots.add((2, num_b))
+                        else:
+                            failed_shots[(2, num_b)] = (
+                                f"{type(r).__name__}: {r}" if isinstance(r, Exception)
+                                else "кадр пропущен после ошибки"
+                            )
                         if isinstance(r, Exception):
                             logger.warning(
                                 "[#{}] video s2 stream worker exception: {}",
@@ -1061,6 +1128,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         logger.warning("[#{}] generate_videos: нет кадров — split не делали?", project.id)
 
+    unresolved = {k: v for k, v in failed_shots.items() if k not in done_shots}
+    if unresolved:
+        shown = ", ".join(
+            f"{'shot' + str(shot)} кадр {num}" for (shot, num) in sorted(unresolved, key=lambda k: (k[1], k[0]))[:12]
+        )
+        first_reason = next(iter(unresolved.values()))
+        logger.warning("[#{}] generate_videos: {}", project_id, f"клипы не получены: {shown}")
+        for key in sorted(unresolved, key=lambda k: (k[1], k[0])):
+            original = job_errors.get(key)
+            if original is not None:
+                raise original
+        raise RuntimeError(
+            f"generate_videos: клипы не получены ({len(unresolved)}): {shown}"
+            f"{'…' if len(unresolved) > 12 else ''}. Первая причина: {first_reason}"
+        )
+
     raise_if_cancelled(project.id)
     await session.refresh(project)
     if project.status is not ProjectStatus.generating_videos:
@@ -1074,12 +1157,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.services.post_step_validate import finalize_or_retry
 
     if not await finalize_or_retry(
-        session,
+        fs,
         project,
         step="video",
         ready_status=ProjectStatus.videos_ready,
         running_status=ProjectStatus.generating_videos,
     ):
+        await fs.flush()
+        await session.flush()
         return
 
     project.status = ProjectStatus.videos_ready
@@ -1092,7 +1177,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
         if vision_check_loop_active(project):
-            nxt = await maybe_return_to_check_after_vision_ready(session, project)
+            nxt = await maybe_return_to_check_after_vision_ready(fs, project)
             if nxt is not None:
                 project.status = nxt
                 await session.flush()

@@ -19,11 +19,14 @@ dependencies = [
   "pillow>=10.0,<12",
   "pypdf>=5,<7",
   "playwright>=1.48,<2",
+  "pymorphy3>=2.0,<3",
+  "pymorphy3-dicts-ru>=2.4,<3",
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.6,<3",
   "python-dateutil>=2.9,<3",
   "pyyaml>=6.0,<7",
   "python-multipart>=0.0.9,<1",
+  "snowballstemmer>=2.2,<3",
   "sqlalchemy>=2.0,<3",
   "sse-starlette>=2.1,<3",
   "tiktoken>=0.8,<1",
@@ -44,6 +47,7 @@ nvidia = [
   "huggingface_hub>=0.23,<1",
 ]
 dev = [
+  "jsonschema>=4.23,<5",
   "pytest>=8",
   "pytest-asyncio>=0.24",
   "ruff>=0.7",
@@ -58,6 +62,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+"app.orchestrator.action_contracts" = ["audit_metadata.json"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py311"
@@ -68,3 +75,11 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+  "raw_client: test talks to the app without the operator token (guard tests)",
+  "live: calls a real external service (network); never run in CI, only by hand with explicit approval",
+  "paid: spends real money (provider API); never run in CI, only by hand with a ceiling",
+  "docker: needs the isolated Docker runner (/.dockerenv); run by the CI docker job",
+  "slow: starts a real subprocess/server/ffmpeg/whisper; still offline and free, only slower",
+  "ffmpeg: needs ffmpeg/ffprobe on PATH; skipped without them (tests/conftest.py marks these automatically and reports the skip)",
+]

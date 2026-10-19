@@ -212,3 +212,6 @@ async def test_generate_video_sanitizes_triggers_during_primary_rewrites(
     # Kling-попытка — без триггеров (локальный пост-sanitize)
     assert "Асахар" not in prompts[-1]
     assert "зарин" not in prompts[-1].lower()
+
+
+pytestmark = pytest.mark.usefixtures("fake_provider_keys")
