@@ -1,8 +1,11 @@
 """Клиент оператора GPT через API (без браузера/CDP).
 
-Пока нет боевого chat+files провайдера — stub пишет фактический результат
-на диск (включая analysis.json / check_report.txt), чтобы связи/UI/resolve
-можно было проверять end-to-end.
+Без ключа провайдера (dev/тесты) работает stub: он пишет файлы на диск (analysis.json /
+check_report.txt), чтобы связи/UI/resolve можно было проверять end-to-end. Stub НИКОГДА не
+выдаёт вердикт «pass» (W4-4, C05): проверка без провайдера не проводилась, поэтому вердикт
+``not_checked``, шлюз по нему не открывает ни одну ветку, а в журнал пишется событие
+``operator_check_not_checked``. Переменная GPT_OPERATOR_STUB_STRICT=1 вместо stub-а
+останавливает шаг понятной русской ошибкой (боевой режим).
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ from pathlib import Path
 from loguru import logger
 
 from app.services.check_analysis import (
-    SCHEMA_ID,
     CheckAnalysis,
     append_response_footer,
     append_txt_report_footer,
@@ -37,10 +39,63 @@ class OperatorApiResult:
     # применяет вызывающий (enrich_xlsx) через db_apply.
     apply_ops: dict | None = None
     applied_in_runner: bool = False
+    empty_ops_accepted: bool = False
+    request_id: str | None = None
+
+
+def _qc_response_complete(result) -> bool:
+    from app.services.llm_completion import response_complete, response_truncated
+
+    raw = getattr(result, 'raw', None) or {}
+    finish = getattr(result, 'finish_reason', None) or None
+    return response_complete(raw, finish) and not response_truncated(raw, finish)
+
+
+def _task_request_id() -> str | None:
+    from app.services.observation import _attempt, completed_model_request_id
+
+    ctx = _attempt.get()
+    if ctx is None:
+        return None
+    return completed_model_request_id() or ctx.last_request_id
+
+
+async def _record_parse_for_task_request(*args, **kwargs) -> None:
+    import copy
+    import inspect
+
+    from app.services import observation
+
+    request_id = _task_request_id()
+    ctx = observation._attempt.get()
+    if request_id is None or ctx is None or request_id == ctx.last_request_id:
+        await observation.record_parse(*args, **kwargs)
+        return
+    if 'request_id' in inspect.signature(observation.record_parse).parameters:
+        await observation.record_parse(*args, request_id=request_id, **kwargs)
+        return
+    local = copy.copy(ctx)
+    local.last_request_id = request_id
+    token = observation._attempt.set(local)
+    completed_token = observation._completed_model_request.set((local, request_id))
+    try:
+        await observation.record_parse(*args, **kwargs)
+    finally:
+        observation._completed_model_request.reset(completed_token)
+        observation._attempt.reset(token)
+
+
+async def _require_completed_qc_response(result) -> None:
+    if _qc_response_complete(result):
+        return
+    from app.services.observation import _attempt, hold_uncertain_request
+    ctx = _attempt.get()
+    if ctx and ctx.scope.mode == 'managed' and ctx.last_request_id:
+        await hold_uncertain_request(ctx, ctx.last_request_id)
+    raise RuntimeError('QC response incomplete/uncertain; empty-ops acceptance forbidden')
 
 
 def _needs_check_writeback_retry(reply_text: str) -> bool:
-    """True если check+fix ответ без пригодного TSV writeback."""
     from app.services.check_analysis import CHECK_WRITEBACK_MARKER
     from app.services.xlsx_text_writeback import extract_sheet_blocks
 
@@ -52,7 +107,6 @@ def _needs_check_writeback_retry(reply_text: str) -> bool:
 
 
 def _apply_ops_has_payload(data: dict | None) -> bool:
-    """Есть что писать в DB (не пустой отказ модели)."""
     if not isinstance(data, dict):
         return False
     return bool(
@@ -60,6 +114,30 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
         or data.get("actions")
         or data.get("characters")
         or data.get("scenes")
+    )
+
+
+def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
+    if not allowed or data != {"ops": []}:
+        return False
+    if not _qc_response_complete(result):
+        return False
+    try:
+        return json.loads(result.text) == {"ops": []}
+    except (ValueError, TypeError):
+        return False
+
+
+def _qc_json_valid(text) -> bool:
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("ops"), list)
+        and not data.get("error")
+        and not data.get("refusal")
     )
 
 
@@ -89,7 +167,6 @@ def _log_apply_ops_coverage(
     apply_ops: dict | None,
     input_paths: list[Path],
 ) -> None:
-    """Дешёвый лог покрытия uuid из db_frames*. Не raise — гейт в enrich_xlsx."""
     if not isinstance(apply_ops, dict):
         return
     ops = [o for o in (apply_ops.get("ops") or []) if isinstance(o, dict)]
@@ -98,7 +175,7 @@ def _log_apply_ops_coverage(
     try:
         from app.services.node_write_contract import coverage_report
         from app.services.volume_batches import load_expected_frame_uuids
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
     expected = load_expected_frame_uuids(input_paths)
     if not expected:
@@ -115,35 +192,58 @@ def _log_apply_ops_coverage(
     )
 
 
+VERDICT_NOT_CHECKED = "not_checked"
+STUB_STRICT_ENV = "GPT_OPERATOR_STUB_STRICT"
+NOT_CHECKED_SUMMARY_RU = (
+    "Проверка НЕ выполнена: не задан ключ GPT-провайдера (нет боевого провайдера). "
+    "Вердикт «pass» не выдаётся; задайте ключ и запустите проверку заново."
+)
+NO_KEY_ERROR_RU = (
+    "Нет ключа GPT-провайдера: проверка (QC) и текстовые шаги оператора не могут быть выполнены. "
+    "Задайте ключ (VIBECODE_API_KEY или GPT_API_KEY) и повторите шаг."
+)
+
+
+def stub_strict() -> bool:
+    import os
+
+    return (os.environ.get(STUB_STRICT_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
-    """Детерминированный stub-вердикт в формате vp.check.v1."""
-    probe = f"{prompt}\n{accompanying}\n".lower()
-    fail_markers = ("fail", "не ок", "неок", "reject", "стоп", "ошибк")
-    is_fail = any(m in probe for m in fail_markers)
-    verdict = "fail" if is_fail else "pass"
-    return parse_check_analysis(
-        json.dumps(
-            {
-                "schema": SCHEMA_ID,
-                "verdict": verdict,
-                "summary": f"stub {role}: {verdict}",
-                "checks": [
-                    {
-                        "id": "stub",
-                        "ok": not is_fail,
-                        "note": "gpt-operator/api stub (нет боевого провайдера)",
-                    }
-                ],
-                "forward": {"mode": "inherit", "paths": []},
-                "fix": {
-                    "target": "source" if is_fail else "none",
-                    "instructions": "см. промт (stub fail)" if is_fail else "",
-                    "rewrite_file": None,
-                },
-            },
-            ensure_ascii=False,
-        )
+    from app.services.check_analysis import CheckItem
+
+    return CheckAnalysis(
+        verdict=VERDICT_NOT_CHECKED,
+        summary=NOT_CHECKED_SUMMARY_RU,
+        checks=[CheckItem(id="not_checked", ok=False, note=NOT_CHECKED_SUMMARY_RU)],
     )
+
+
+async def _record_stub_use(*, node_key: str, role: str, is_check: bool) -> None:
+    logger.warning(
+        "gpt_operator/api: нет ключа провайдера, node={} role={} → {}",
+        node_key,
+        role,
+        VERDICT_NOT_CHECKED if is_check else "файл-заглушка",
+    )
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact(
+            "operator_check_not_checked" if is_check else "operator_stub_output",
+            {
+                "node": node_key,
+                "role": role,
+                "verdict": VERDICT_NOT_CHECKED if is_check else None,
+                "reason": "gpt_api_disabled",
+                "summary_ru": NOT_CHECKED_SUMMARY_RU if is_check else
+                "Текстовый шаг выполнен заглушкой без провайдера: настоящего ответа модели нет.",
+                "semantic_quality_verified": False,
+            },
+        )
+    except Exception:
+        logger.debug("gpt_operator/api: событие о заглушке не записано", exc_info=True)
 
 
 def _is_check(*, role: str, check_mode: bool) -> bool:
@@ -165,6 +265,7 @@ async def run_operator_api(
     check_streams: int | None = None,
     db_sot_check: bool = False,
     auto_pack: bool = True,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -218,7 +319,11 @@ async def run_operator_api(
             source_prompt_keys=source_prompt_keys,
             db_sot_check=db_sot_check,
             auto_pack=auto_pack,
+            allow_empty_ops=allow_empty_ops,
         )
+
+    if stub_strict():
+        raise RuntimeError(NO_KEY_ERROR_RU)
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +331,7 @@ async def run_operator_api(
     names = ", ".join(p.name for p in input_paths) or "(нет файлов)"
     is_check = _is_check(role=role, check_mode=check_mode)
     mode = "fix" if check_fix else "report_only"
+    await _record_stub_use(node_key=node_key, role=role, is_check=is_check)
     if check_mode:
         prompt_for_model = append_txt_report_footer(prompt or "")
     elif is_check:
@@ -317,6 +423,7 @@ async def _run_operator_api_real(
     source_prompt_keys: list[str] | None = None,
     db_sot_check: bool = False,
     auto_pack: bool = True,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
@@ -366,6 +473,8 @@ async def _run_operator_api_real(
         xlsx_write_contract=xlsx_contract,
         auto_pack=auto_pack,
     )
+    if allow_empty_ops:
+        await _require_completed_qc_response(result)
     reply_text = result.text
 
     # report_only: модель иногда копирует assemble JSON. Один повтор — TXT-отчёт.
@@ -463,7 +572,29 @@ async def _run_operator_api_real(
                 )
         else:
             apply_ops = extract_apply_ops_json(reply_text or "")
-        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+            if allow_empty_ops and not _qc_json_valid(reply_text):
+                apply_ops = None
+        truncated = bool((apply_ops or {}).get("_stream_truncated"))
+        empty_accepted = (
+            False
+            if truncated
+            else _accepted_empty_ops(
+                result, apply_ops, allowed=allow_empty_ops and not is_check
+            )
+        )
+        if not truncated:
+            await _record_parse_for_task_request(
+                reply_text or "",
+                apply_ops,
+                payload_required=not is_check,
+                empty_ops_allowed=allow_empty_ops,
+                empty_ops_accepted=empty_accepted,
+            )
+        if (
+            apply_ops is not None
+            and not _apply_ops_has_payload(apply_ops)
+            and not empty_accepted
+        ):
             if not (check_mode and not check_fix):
                 logger.warning(
                     "gpt_operator/api: node={} — пустой apply-ops "
@@ -484,7 +615,6 @@ async def _run_operator_api_real(
                 len(apply_ops.get("scenes") or []),
             )
 
-    # check+fix legacy Excel: retry на XLSX_WRITEBACK. DB SoT — skip.
     if (
         check_mode
         and check_fix
@@ -566,6 +696,10 @@ async def _run_operator_api_real(
                 or "apply-ops JSON → DB (scene_registry / frames)"
             )
         gate_status = analysis.verdict
+        from app.services.observation import record_fact
+
+        await record_fact("domain_check", {"verdict": gate_status, "mode": mode,
+            "contract": "text_verdict", "model_quality_verified": False})
         output_paths.insert(0, write_analysis_json(out_dir, analysis))
         report_path = write_check_report_txt(
             out_dir, analysis, mode=mode, source_prompts=source_keys
@@ -578,12 +712,14 @@ async def _run_operator_api_real(
     # project_file (не check): только apply-ops. Без TSV-fallback — иначе
     # модель пишет Excel-диалект, а enrich_xlsx его отвергает.
     if effective_output == "project_file" and not is_check and apply_ops is None:
+        from app.services.observation import record_fact
+
+        retry_source = _task_request_id()
+        await record_fact("json_retry", {"reason": "missing_write_payload", "strategy": "fixed_contract_prompt", "initiator": "runtime_json_retry", "source_request_id":retry_source},request_id=retry_source)
         from dataclasses import replace
 
         from app.services.db_apply import extract_apply_ops_json
 
-        # Первый ответ часто почти верный, но extract не взял (обрезанный JSON).
-        # Сохраняем до overwrite — иначе диагностика «модель же ответила» теряется.
         pre_retry_text = reply_text or ""
         pre_retry_path = out_dir / "gpt_reply_pre_retry.txt"
         try:
@@ -618,6 +754,14 @@ async def _run_operator_api_real(
             '{"ops":[{"frame_uuid":"<uuid>","fields":{"место":"…"}}]}\n'
             "Без markdown, без TSV, без поля error, без просьб о вложениях."
         )
+        if allow_empty_ops:
+            retry_prompt = (
+                f"{prompt_for_model}\n\n"
+                "# КОНТРАКТ QC JSON (повтор)\n"
+                "Предыдущий ответ не принят по формату. Верни только JSON-объект "
+                'с ops-массивом исправлений. Если исправлений нет: {"ops":[]}. '
+                "Без markdown, поля error и отказов."
+            )
         # Retry без xlsx — иначе модель снова упирается в «нет файла».
         retry_paths = [
             p
@@ -633,18 +777,19 @@ async def _run_operator_api_real(
             auto_pack=auto_pack,
         )
         reply_text = retry.text or ""
-        try:
-            result = replace(result, text=reply_text)
-        except TypeError:
-            # тесты / моки могут отдавать SimpleNamespace, не dataclass
-            from types import SimpleNamespace
-
-            result = SimpleNamespace(text=reply_text)
+        result = retry
+        if allow_empty_ops:
+            await _require_completed_qc_response(retry)
         apply_ops = extract_apply_ops_json(reply_text or "")
-        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+        if allow_empty_ops and not _qc_json_valid(reply_text):
+            apply_ops = None
+        empty_accepted = _accepted_empty_ops(retry, apply_ops, allowed=allow_empty_ops)
+        await _record_parse_for_task_request(reply_text or "", apply_ops, empty_ops_allowed=allow_empty_ops,
+                           empty_ops_accepted=empty_accepted)
+        if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             apply_ops = None
         # Retry тоже пуст — последний шанс: salvage из pre-retry (частичные ops).
-        if apply_ops is None and pre_retry_text:
+        if apply_ops is None and pre_retry_text and (not allow_empty_ops or _qc_json_valid(pre_retry_text)):
             apply_ops = extract_apply_ops_json(pre_retry_text)
             if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
                 apply_ops = None
@@ -683,7 +828,13 @@ async def _run_operator_api_real(
         output_paths.append(reply_path)
 
     if apply_ops is not None and effective_output == "project_file" and not is_check:
-        _log_apply_ops_coverage(node_key, apply_ops, list(input_paths or []))
+        if _accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops):
+            from app.services.observation import record_fact
+            await record_fact('runtime_check', {'check': 'frame_coverage_gate', 'performed': False,
+                'status': 'not_applicable', 'reason': 'trusted_qc_noop_requires_no_frame_writes',
+                'semantic_quality_verified': False})
+        else:
+            _log_apply_ops_coverage(node_key, apply_ops, list(input_paths or []))
 
     return OperatorApiResult(
         reply_text=reply_text,
@@ -691,6 +842,8 @@ async def _run_operator_api_real(
         gate_status=gate_status,
         analysis=analysis,
         apply_ops=apply_ops,
+        empty_ops_accepted=_accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check),
+        request_id=_task_request_id(),
     )
 
 
@@ -921,11 +1074,23 @@ def _apply_check_fix_writeback(
         logger.warning("gpt_operator/api: check fix copy failed: {}", e)
         return None
 
-    updated = writeback_project_xlsx(
-        project_xlsx=fixed,
-        reply_text=wb_text,
-        downloaded_paths=downloaded,
-    )
+    try:
+        updated = writeback_project_xlsx(
+            project_xlsx=fixed,
+            reply_text=wb_text,
+            downloaded_paths=downloaded,
+        )
+    except RuntimeError as e:
+        logger.warning(
+            "gpt_operator/api: check fix writeback отключён, игнорирую node={}: {}",
+            node_key,
+            e,
+        )
+        try:
+            fixed.unlink()
+        except OSError:
+            pass
+        return None
     if updated is None or not fixed.is_file() or fixed.stat().st_size < 64:
         logger.warning(
             "gpt_operator/api: check fix writeback не применился node={}",

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "online_authorized": false,
+  "group": "script_frames_qc",
+  "target_node": "n_excel_gpt_fw_script",
+  "seed_kind": "genuine synthetic exhausted checkpoint before supervisor recovery",
+  "inherited_requests": 18,
+  "budget": {
+    "decision_max_posts": 3,
+    "worker_base_posts": 5,
+    "worker_json_retry_slots": 4,
+    "new_request_limit": 12,
+    "managed_request_limit": 30,
+    "supervisor_recoveries": 1
+  },
+  "boundary": "six nodes of the existing group; no media/publication or n_script",
+  "runtime": {
+    "version": 1,
+    "mode": "synthetic",
+    "online_enabled": false,
+    "endpoint": "http://127.0.0.1:18766/codex/v1/responses",
+    "decision": {"catalog_id": "gpt-kie", "model_id": "gpt-5-6-sol", "reasoning_effort": "low", "max_output_tokens": 1024, "timeout_s": 90},
+    "profiles": {},
+    "allowed_actions": ["read_events", "read_contract", "retry_same", "wait", "human_review", "finish"],
+    "model_transport": "fixture",
+    "external_calls_enabled": false,
+    "retrieval_allowed": false,
+    "continuation_allowed": false,
+    "incident_scope": {
+      "execution_id": "COPY_FROM_SYNTHETIC_SEED",
+      "incident_id": "COPY_FROM_SYNTHETIC_SEED",
+      "node_key": "n_excel_gpt_fw_script",
+      "source_attempt_id": "COPY_FROM_SYNTHETIC_SEED",
+      "recovery_limit": 1
+    }
+  }
+}

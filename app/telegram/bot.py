@@ -60,6 +60,7 @@ from app.services.xlsx_flow_locks import (
     is_xlsx_flow_active,
     xlsx_flow_active_set,
 )
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
@@ -4307,10 +4308,12 @@ async def _kick_test_iteration(
     # Не даём запускать второй цикл, если уже идёт.
     existing = _test_running_tasks.get(tid)
     if existing is not None and not existing.done():
-        await bot_obj.send_message(
+        await notify(
+            bot_obj, "send_message",
             user_id,
             "⏳ Для этого проекта уже запущена итерация. "
             "Дождись завершения или нажми 🛑 Стоп.",
+            kind="test_prompt_busy",
         )
         return
 
@@ -4318,11 +4321,13 @@ async def _kick_test_iteration(
         # Проверяем глобальный лок (только один тестовый цикл).
         running = await tp.get_running_project(s)
         if running is not None and running.id != tid:
-            await bot_obj.send_message(
+            await notify(
+                bot_obj, "send_message",
                 user_id,
                 f"⏳ Уже идёт тестовый цикл (проект #{running.id} "
                 f"«{running.name}»). Дождись его завершения или нажми "
                 f"🛑 Стоп в том проекте.",
+                kind="test_prompt_busy",
             )
             return
 
@@ -4337,7 +4342,8 @@ async def _kick_test_iteration(
                     )
                 ).scalar_one_or_none()
                 if p is None:
-                    await bot_obj.send_message(user_id, "Проект не найден.")
+                    await notify(bot_obj, "send_message", user_id, "Проект не найден.",
+                                 kind="test_prompt_missing")
                     return
                 # Запускаем итерацию (внутри коммитит и обновляет p).
                 txt_path, img_path = await tp.run_iteration(
@@ -4355,23 +4361,27 @@ async def _kick_test_iteration(
 
                 photo = FSInputFile(str(img_path))
                 doc = FSInputFile(str(txt_path))
-                await bot_obj.send_photo(
+                await notify(
+                    bot_obj, "send_photo",
                     user_id,
                     photo,
+                    kind="test_prompt_result",
                     caption=(
                         f"🧪 #{proj_id} «{proj_name}» — "
                         f"итерация {iter_n}"
                     ),
                 )
-                await bot_obj.send_document(user_id, doc)
+                await notify(bot_obj, "send_document", user_id, doc, kind="test_prompt_result")
             except Exception as e:  # noqa: BLE001
                 logger.exception(
                     "test_prompt: send result failed: {}", e
                 )
-                await bot_obj.send_message(
+                await notify(
+                    bot_obj, "send_message",
                     user_id,
                     f"❌ Не удалось отправить результат итерации "
                     f"{iter_n}: {e}",
+                    kind="test_prompt_error",
                 )
             # Перерисуем меню — там теперь кнопка «✏ Добавить критику».
             await _render_test_project_to_user(bot_obj, user_id, tid)
@@ -4408,10 +4418,12 @@ async def _kick_test_iteration(
                     p.meta = meta
                     await s.flush()
             with contextlib.suppress(Exception):
-                await bot_obj.send_message(
+                await notify(
+                    bot_obj, "send_message",
                     user_id,
                     f"❌ Тестовый проект #{tid}: ошибка итерации.\n"
                     f"<code>{_html_escape(str(e))[:1500]}</code>",
+                    kind="test_prompt_error",
                     parse_mode="HTML",
                 )
                 await _render_test_project_to_user(bot_obj, user_id, tid)
@@ -4440,8 +4452,9 @@ async def _render_test_project_to_user(
         f"итерация {p.current_iter}, статус: <code>{p.status}</code>"
     )
     with contextlib.suppress(Exception):
-        await bot_obj.send_message(
-            user_id, text, parse_mode="HTML", reply_markup=kb,
+        await notify(
+            bot_obj, "send_message",
+            user_id, text, kind="test_prompt_menu", parse_mode="HTML", reply_markup=kb,
         )
 
 
@@ -4941,9 +4954,9 @@ async def on_enrich_run_all(cb: CallbackQuery) -> None:
         ENRICH_RUNNING,
         _objects_requires_for_step5,
         enabled_enrich_slots,
-        is_running_status,
         status_order,
     )
+    from app.services.project_state import is_running_status
 
     async with session_scope() as s:
         project = (
@@ -6451,8 +6464,25 @@ async def _create_new_project(msg: Message) -> None:
     logger.info("new project {} '{}'", pid, slug)
 
 
-# ---------------------------------------------------------------------------
-# Старый HITL-callback (картинки кадров): hitl:<id>:<action>
+
+@dp.callback_query(F.data.startswith("hpub:"))
+async def on_publish_approval_callback(cb: CallbackQuery) -> None:
+    from app.services.hitl import handle_publish_approval_callback
+
+    async with session_scope() as s:
+        res = await handle_publish_approval_callback(s, cb.data, cb.from_user.id if cb.from_user else None)
+    await cb.answer(res.text[:190], show_alert=not res.ok)
+    if res.hide_buttons and cb.message is not None:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("approve_publish: кнопки не сняты")
+        try:
+            await cb.message.answer(res.badge or res.text, parse_mode=None)
+        except Exception:
+            logger.debug("approve_publish: итог не отправлен")
+
+
 
 @dp.callback_query(F.data.startswith("hitl:"))
 async def on_hitl_callback(cb: CallbackQuery) -> None:
@@ -6466,14 +6496,20 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         await cb.answer("Плохой callback", show_alert=True)
         return
 
+    from app.services.hitl_locator import AMBIGUOUS_RU, HitlAmbiguous, hitl_session_scope, locate_hitl, mirror_decision_to_master
+    from app.services.hitl_apply import claim_hitl_decision
+    try:
+        await locate_hitl(hitl_id)
+    except HitlAmbiguous:
+        await cb.answer(AMBIGUOUS_RU, show_alert=True)
+        return
+
     if action == "original":
-        # Шлём оригинал (send_document, без TG-сжатия). Файл лежит в
-        # payload.photo_path.
         from pathlib import Path as _Path
 
         from aiogram.types import FSInputFile
 
-        async with session_scope() as s:
+        async with hitl_session_scope(hitl_id) as (s, hitl_loc):
             req = (
                 await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
             ).scalar_one_or_none()
@@ -6490,12 +6526,14 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             )
             return
         try:
-            await cb.bot.send_document(
+            await notify(
+                cb.bot, "send_document",
                 settings.telegram_owner_chat_id,
                 FSInputFile(photo_path),
+                kind="hitl_original",
                 caption=f"Оригинал (без сжатия TG): {_Path(photo_path).name}",
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("send original failed: {}", e)
             await cb.answer(f"Ошибка: {e}", show_alert=True)
             return
@@ -6503,7 +6541,7 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         return
 
     if action == "edit":
-        async with session_scope() as s:
+        async with hitl_session_scope(hitl_id) as (s, hitl_loc):
             req = (
                 await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
             ).scalar_one_or_none()
@@ -6519,13 +6557,16 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                     await s.execute(select(Frame).where(Frame.id == req.frame_id))
                 ).scalar_one_or_none()
             current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
-            ask_msg = await cb.bot.send_message(
+            ask_msg = await notify(
+                cb.bot, "send_message",
                 settings.telegram_owner_chat_id,
                 (
                     f"✏️ Новый промт для кадра #{frame.number if frame else '?'}.\n"
                     f"Текущий:\n\n<pre>{_html_escape(current_prompt)}</pre>\n\n"
                     f"Ответь на это сообщение новым текстом — перегенерирую."
                 ),
+                kind="hitl_edit_prompt",
+                project_id=getattr(frame, "project_id", None),
                 parse_mode="HTML",
             )
             req.payload = {
@@ -6550,7 +6591,8 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         await cb.answer("Жду новый текст")
         return
 
-    async with session_scope() as s:
+    decided_for_mirror = None
+    async with hitl_session_scope(hitl_id) as (s, hitl_loc):
         req = (
             await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
         ).scalar_one_or_none()
@@ -6565,12 +6607,13 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             "regen": HITLDecision.regenerate,
             "reject": HITLDecision.rejected,
         }.get(action, HITLDecision.pending)
-        req.decision = decision
+        if decision is not HITLDecision.pending and not await claim_hitl_decision(
+                s, req, decision, actor="telegram:owner"):
+            await cb.answer("Уже обработан", show_alert=True)
+            return
+        if hitl_loc is not None and hitl_loc.store == "project" and decision is not HITLDecision.pending:
+            decided_for_mirror = req
 
-        # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4
-        # для текущего героя» (с тем же описанием). На ✅ — если у проекта
-        # больше одного героя и не все ещё сделаны, возвращаем проект в
-        # generating_hero, чтобы воркер сгенерил следующего.
         regen_step_msg = ""
         if req.kind is HITLKind.approve_hero:
             project = (
@@ -6587,12 +6630,16 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 excel_id = payload.get("excel_id")
                 if isinstance(excel_id, str) and excel_id:
                     if action == "regen":
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перегенерирую персонажа {excel_id}."
-                        )
+                        from app.services.hitl_apply import request_hero_regen
+                        if await request_hero_regen(s, project):
+                            regen_step_msg = (
+                                f"\n\n▶ Перегенерирую персонажа {excel_id}."
+                            )
+                        else:
+                            regen_step_msg = (
+                                "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
+                            )
                     elif action == "approve":
-                        # Считаем сколько ещё не одобрено в excel-списке.
                         meta = dict(project.meta or {})
                         cfg = meta.get("excel_hero") or {}
                         all_ids = [
@@ -6645,14 +6692,17 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                         # 🔁 эту же вариацию — выйдет в generating_hero,
                         # generate_hero.run() увидит, что (hi, vi) не
                         # одобрены, и перегенерит ровно её.
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
-                            f"вариацию {cur_vi}/{n_var}."
-                        )
+                        from app.services.hitl_apply import request_hero_regen
+                        if await request_hero_regen(s, project):
+                            regen_step_msg = (
+                                f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
+                                f"вариацию {cur_vi}/{n_var}."
+                            )
+                        else:
+                            regen_step_msg = (
+                                "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
+                            )
                     elif action == "approve":
-                        # ✅ — определяем что дальше: следующая вариация
-                        # этого же героя; следующий герой; или всё готово.
                         if cur_vi < n_var:
                             project.status = ProjectStatus.generating_hero
                             regen_step_msg = (
@@ -6667,6 +6717,8 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                             )
                         # Если это последняя вариация последнего героя —
                         # статус остаётся hero_ready (шаг полностью завершён).
+    if decided_for_mirror is not None:
+        await mirror_decision_to_master(decided_for_mirror)
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",
@@ -6920,16 +6972,19 @@ async def notify_step_done(
             return
         status_val = project.status.value
         try:
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 settings.telegram_owner_chat_id,
                 f"✅ Шаг завершён: статус <b>{status_val}</b>",
+                kind="step_done",
+                project_id=project_id,
                 parse_mode="HTML",
             )
             logger.info(
                 "notify_step_done: сообщение отправлено для project #{}",
                 project_id,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "notify_step_done: send_message провалился для project #{}",
                 project_id,
@@ -6942,15 +6997,18 @@ async def notify_step_done(
         xlsx_path = project.data_dir / "project.xlsx"
         if xlsx_path.exists():
             try:
-                await bot.send_document(
+                await notify(
+                    bot, "send_document",
                     settings.telegram_owner_chat_id,
                     FSInputFile(str(xlsx_path)),
+                    kind="step_done_xlsx",
+                    project_id=project_id,
                     caption=(
                         f"📥 Результат: project.xlsx после «{new_status}»\n"
                         f"Проект #{project_id}"
                     ),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "notify_step_done: send_document xlsx failed for #{}",
                     project_id,

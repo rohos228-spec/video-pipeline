@@ -89,33 +89,51 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         voiceover_attached=voiceover_path.exists(),
     )
 
-    logger.info("[#{}] generate_music: GPT API → Suno (voiceover + сопр. текст)", project.id)
+    from app.services import media_resume
 
-    from app.services.gpt_client import get_gpt_client
+    prompt_cache = music_dir / ".suno_prompt.txt"
+    suno_prompt = ""
+    if await media_resume.pending_for_key(project.id, "music"):
+        try:
+            suno_prompt = prompt_cache.read_text(encoding="utf-8").strip()
+        except OSError:
+            suno_prompt = ""
+        if len(suno_prompt) >= 20:
+            logger.info("[#{}] generate_music: есть незавершённая задача Suno — беру сохранённый промт", project.id)
+        else:
+            suno_prompt = ""
 
-    gpt = get_gpt_client()
-    await gpt.new_conversation()
-    logger.info("[#{}] generate_music: отправка voiceover.txt в GPT API", project.id)
-    suno_prompt = await gpt.ask_with_files(
-        chat_msg,
-        [voiceover_path],
-        timeout=900,
-        project_id=project.id,
-    )
-    suno_prompt = (suno_prompt or "").strip()
-    # Очистка markdown codeblocks, если GPT обернул ответ
-    if suno_prompt.startswith("```"):
-        lines = suno_prompt.splitlines()
-        if len(lines) >= 2 and lines[-1].strip().startswith("```"):
-            suno_prompt = "\n".join(lines[1:-1]).strip()
-    import re
+    if not suno_prompt:
+        logger.info("[#{}] generate_music: GPT API → Suno (voiceover + сопр. текст)", project.id)
 
-    suno_prompt = re.sub(
-        r"^(?:\*\*)?(?:prompt|промпт)(?:\*\*)?:\s*", "", suno_prompt, flags=re.IGNORECASE
-    ).strip()
-    suno_prompt = suno_prompt.strip('"`\' \n\r\t')
-    if len(suno_prompt) < 20:
-        raise RuntimeError("GPT вернул слишком короткий промт для музыки")
+        from app.services.gpt_client import get_gpt_client
+
+        gpt = get_gpt_client()
+        await gpt.new_conversation()
+        logger.info("[#{}] generate_music: отправка voiceover.txt в GPT API", project.id)
+        suno_prompt = await gpt.ask_with_files(
+            chat_msg,
+            [voiceover_path],
+            timeout=900,
+            project_id=project.id,
+        )
+        suno_prompt = (suno_prompt or "").strip()
+        if suno_prompt.startswith("```"):
+            lines = suno_prompt.splitlines()
+            if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+                suno_prompt = "\n".join(lines[1:-1]).strip()
+        import re
+
+        suno_prompt = re.sub(
+            r"^(?:\*\*)?(?:prompt|промпт)(?:\*\*)?:\s*", "", suno_prompt, flags=re.IGNORECASE
+        ).strip()
+        suno_prompt = suno_prompt.strip('"`\' \n\r\t')
+        if len(suno_prompt) < 20:
+            raise RuntimeError("GPT вернул слишком короткий промт для музыки")
+        try:
+            prompt_cache.write_text(suno_prompt, encoding="utf-8")
+        except OSError:
+            pass
     logger.info(
         "[#{}] generate_music: GPT ответ ({} симв.) → outsee Suno",
         project.id,
@@ -147,7 +165,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 "model": "V5_5",
             },
         )
-        await run_generation(spec, payload, music_path, timeout_s=900)
+        await run_generation(spec, payload, music_path, timeout_s=900, project_id=project.id)
     else:
         logger.info("[#{}] generate_music: запуск через браузерный Outsee (Suno)", project.id)
         async with browser_session() as bs:

@@ -56,18 +56,18 @@ async def test_patch_image_and_video_generator(client) -> None:
 
     r2 = await c.patch(
         f"/api/projects/{pid}",
-        json={"image_generator": "nano_banana_2", "video_generator": "seedance_2"},
+        json={"image_generator": "nano_banana_2", "video_generator": "seedance_2_5"},
     )
     assert r2.status_code == 200, r2.text
     body = r2.json()
     assert body["image_generator"] == "nano_banana_2"
-    assert body["video_generator"] == "seedance_2"
+    assert body["video_generator"] == "seedance_2_5"
 
     async with factory() as session:
         p = await session.get(Project, pid)
         assert p is not None
         assert p.image_generator == "nano_banana_2"
-        assert p.video_generator == "seedance_2"
+        assert p.video_generator == "seedance_2_5"
 
 
 @pytest.mark.asyncio

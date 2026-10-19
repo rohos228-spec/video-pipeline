@@ -11,7 +11,9 @@
 кадров) → scene_design_ready. В боевые таблицы пишет только сборка.
 
 Выключена (SCENE_DESIGN_ENABLED=false и нет per-project override) —
-обе фазы прозрачный pass-through.
+обе фазы пропускаются, но НЕ молча (W4-4, C05): шаг пишет в журнал событие
+``scene_design_skipped``, пометку в ``project.meta["scene_design_skipped"]`` и
+текст прогресса «Пропущено», чтобы приёмка не видела выполненный шаг без работы.
 """
 
 from __future__ import annotations
@@ -25,6 +27,57 @@ from app.models import Frame, Project, ProjectStatus, Scene
 from app.storage import for_project as _sheet_for_project
 
 _MAX_ASSEMBLE_ATTEMPTS = 2
+
+
+async def _record_native_scene_input(session, project, frames, marker, *, cells=None):
+    from app.services.scene_design import runner
+
+    attempt = None
+    ctx = None
+    try:
+        attempt = await runner._scene_journal_attempt(project, marker)
+        if attempt is None:
+            return None
+        ctx, node, _ = attempt
+        if ctx.session is not session or not runner._scene_journal_open(attempt):
+            return None
+        if marker == "agent":
+            from app.services import scene_contracts
+
+            agent = scene_contracts.scene_contract(node)["agent"]
+            target = runner.get_only_agent(project)
+            if agent != scene_contracts.LEGACY_AGENT and target and target != agent:
+                return None
+        from copy import deepcopy
+        from app.services import scene_contracts
+
+        ctx.scene_native_node = deepcopy(node)
+        if cells is None:
+            from app.services.scene_design import cells as sd_cells
+
+            with session.no_autoflush:
+                cells = await sd_cells.load_cells(session, project, only_ok=False)
+        if not runner._scene_journal_open(attempt):
+            return None
+        await scene_contracts.record_scene_input(project, node, frames, cells=cells)
+    except Exception as error:
+        runner._scene_journal_gap(ctx, error)
+    return attempt
+
+
+def _stash_native_scene_output(attempt, attribute, value):
+    if attempt is None or not isinstance(value, dict):
+        return
+    from app.services.scene_design import runner
+
+    ctx = attempt[0]
+    try:
+        if runner._scene_journal_open(attempt):
+            from copy import deepcopy
+
+            setattr(ctx, attribute, deepcopy(value))
+    except Exception as error:
+        runner._scene_journal_gap(ctx, error)
 
 
 async def _load_frames(session: AsyncSession, project: Project) -> list[Frame]:
@@ -85,8 +138,50 @@ def _write_sd_reply_file(project: Project, marker: str, payload: object) -> None
         )
 
 
+SKIPPED_TEXT_RU = (
+    "Пропущено: режиссура сцен выключена (SCENE_DESIGN_ENABLED=false), фаза «{phase}» ничего не сделала, "
+    "модель не вызывалась."
+)
+_PHASE_RU = {"agents": "агенты сцен", "assemble": "сборка сцен"}
+
+
+async def _record_skipped(session: AsyncSession, project: Project, phase: str) -> dict:
+    from datetime import datetime, timezone
+
+    text = SKIPPED_TEXT_RU.format(phase=_PHASE_RU.get(phase, phase))
+    note = {
+        "phase": phase,
+        "reason": "scene_design_disabled",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "summary_ru": text,
+        "model_called": False,
+    }
+    logger.warning("[#{}] scene_design {}: {}", project.id, phase, text)
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact("scene_design_skipped", dict(note))
+    except Exception:
+        logger.debug("[#{}] scene_design: событие пропуска не записано", project.id, exc_info=True)
+    try:
+        from app.services.project_meta import set_meta_fields
+
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        history = dict(meta.get("scene_design_skipped") or {})
+        history[phase] = note
+        set_meta_fields(project, scene_design_skipped=history)
+    except Exception:
+        logger.debug("[#{}] scene_design: пометка пропуска в meta не записана", project.id, exc_info=True)
+    try:
+        from app.services.run_sync import update_active_node_progress_text
+
+        await update_active_node_progress_text(session, project, text)
+    except Exception:
+        logger.debug("[#{}] scene_design: текст прогресса не записан", project.id, exc_info=True)
+    return note
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
-    """Фаза 1: категорийные агенты (параллельно) → staging-ячейки."""
     if project.status is not ProjectStatus.scene_designing:
         return
     from app.services import db_v2
@@ -96,7 +191,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     logger.info("[#{}] scene_design agents phase starting", project.id)
 
     if not runner.scene_design_enabled(project):
-        logger.info("[#{}] scene_design disabled — pass-through", project.id)
+        await _record_skipped(session, project, "agents")
         project.status = ProjectStatus.scene_agents_ready
         await session.flush()
         await session.commit()
@@ -109,9 +204,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     if any(not fr.uuid for fr in frames):
         raise RuntimeError("scene_design: у кадров нет uuid — backfill не сработал")
 
+    scene_attempt = await _record_native_scene_input(
+        session, project, frames, "agent",
+    )
     runner.mark_running(project)
     await session.flush()
-    # Отпустить SQLite write-lock на время параллельных GPT-вызовов.
     await session.commit()
 
     only_agent = runner.get_only_agent(project)
@@ -130,11 +227,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         slices = await runner.run_category_agents(
             project, context, frames=frames, only_agent=only_agent
         )
-        # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
+        if scene_attempt is not None:
+            from app.services import scene_contracts
+
+            own = scene_contracts.scene_contract(scene_attempt[1])["agent"]
+            _stash_native_scene_output(
+                scene_attempt, "scene_agent_slice",
+                dict(slices) if own == scene_contracts.LEGACY_AGENT else slices.get(own))
         await session.commit()
 
-        # Срезы → staging-ячейки (валидация при записи, коммит частями).
-        # В only_agent режиме пишем только целевого (остальные — старые чекпоинты).
         full_vo = context_builder.full_voiceover(project, frames)
         cell_stats: dict[str, dict[str, int]] = {}
         to_store = (
@@ -144,10 +245,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         )
         for agent_name, slice_data in to_store.items():
             converted = sd_cells.slice_to_cells(project, agent_name, slice_data, full_vo)
-            cell_stats[agent_name] = await sd_cells.store_cells(
-                session, project, agent_name, converted
-            )
-            # Ответ агента на диск ноды — материал для её ноды проверки.
+            from app.services import scene_contracts
+
+            if agent_name in scene_contracts.RETRY_ADMITTED_AGENTS:
+                cell_stats[agent_name] = await sd_cells.store_cells(
+                    session, project, agent_name, converted, transactional=True
+                )
+                scene_contracts.record_scene_applied(session, agent_name, cell_stats[agent_name])
+                await session.commit()
+            else:
+                cell_stats[agent_name] = await sd_cells.store_cells(
+                    session, project, agent_name, converted
+                )
             _write_sd_reply_file(project, agent_name, slice_data)
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
 
@@ -155,7 +264,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             runner.mark_agents_done(project)
             project.status = ProjectStatus.scene_agents_ready
         else:
-            # Точечный ▶: веер ещё не полный — назад на frames_ready,
             # чтобы можно было запустить следующую ноду. only_agent держим
             # до complete_active_node (пометит только эту ноду done).
             project.status = ProjectStatus.frames_ready
@@ -207,7 +315,7 @@ async def run_assemble(
     logger.info("[#{}] scene_design assemble phase starting", project.id)
 
     if not runner.scene_design_enabled(project):
-        logger.info("[#{}] scene_design disabled — pass-through", project.id)
+        await _record_skipped(session, project, "assemble")
         project.status = ProjectStatus.scene_design_ready
         await session.flush()
         await session.commit()
@@ -296,18 +404,31 @@ async def run_assemble(
             assembly_input.get("camera_expand_report"),
         )
 
+        scene_attempt = await _record_native_scene_input(
+            session, project, frames, "assemble", cells=all_cells,
+        )
         payload = None
         feedback: str | None = None
         # chrono_dyn: границы уже из camera_expand; GPT-assemble только жжёт 19 чанков.
         # Локальная склейка из shot_plan/action — без повторных GPT.
         if uses_chrono_dyn(project):
             local = sd_assembler.build_local_assembler_payload(assembly_input, frames)
-            problems = sd_assembler.validate_payload(
-                project, frames, local, full_vo
+            try:
+                problems = sd_assembler.validate_payload(
+                    project, frames, local, full_vo
+                )
+            except Exception as validation_error:
+                await runner._record_scene_parse(
+                    scene_attempt, None, local, validation_performed=True,
+                    error=validation_error, origin="local", link_model_request=False,
+                )
+                raise
+            await runner._record_scene_parse(
+                scene_attempt, None, local, validation_performed=True,
+                problems=problems, origin="local", link_model_request=False,
             )
             payload = local
             if problems:
-                # Качество сценария судит n_excel_gpt_1 (check), не GPT-сборщик.
                 logger.warning(
                     "[#{}] scene_design assemble: local chrono_dyn warnings "
                     "(пишу как есть, проверка кино отфильтрует): {}",
@@ -337,8 +458,19 @@ async def run_assemble(
                 candidate = sd_assembler.force_scenes_from_chrono(
                     candidate, assembly_input, frames=frames
                 )
-                problems = sd_assembler.validate_payload(
-                    project, frames, candidate, full_vo
+                try:
+                    problems = sd_assembler.validate_payload(
+                        project, frames, candidate, full_vo
+                    )
+                except Exception as validation_error:
+                    await runner._record_scene_parse(
+                        scene_attempt, None, candidate, validation_performed=True,
+                        error=validation_error, origin="model", link_model_request=False,
+                    )
+                    raise
+                await runner._record_scene_parse(
+                    scene_attempt, None, candidate, validation_performed=True,
+                    problems=problems, origin="model", link_model_request=False,
                 )
                 if not problems:
                     payload = candidate
@@ -356,6 +488,7 @@ async def run_assemble(
                 f"scene_design: сборка не прошла валидацию: {feedback}"
             )
 
+        _stash_native_scene_output(scene_attempt, "scene_assembly_payload", payload)
         applied = await sd_apply.apply_scene_design(session, project, payload)
         try:
             from app.services.scene_space.pipeline import (
@@ -388,9 +521,18 @@ async def run_assemble(
         await session.flush()
         await session.commit()
     except Exception as e:
-        runner.mark_failed(project, str(e))
         import contextlib
 
+        with contextlib.suppress(Exception):
+            await session.rollback()
+            await session.refresh(project)
+        runner.mark_failed(project, str(e))
+        from app.services import scene_contracts
+        from app.services.scene_design import agents as ag
+
+        if scene_contracts.managed_scene_attempt():
+            with contextlib.suppress(Exception):
+                runner.clear_chunk_checkpoints(project, ag.ASSEMBLER)
         with contextlib.suppress(Exception):
             await session.commit()
         raise

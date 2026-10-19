@@ -43,13 +43,14 @@ def test_frames_needing_image_prompt_filters_child_shots():
     frames = []
     # 5 parent frames without prompt
     for i in range(1, 6):
-        frames.append(Frame(id=i, number=i, voiceover_text=f"VO {i}", image_prompt=None, attrs={}))
+        frames.append(Frame(id=i, number=i, uuid=f"u-{i:03d}", voiceover_text=f"VO {i}", image_prompt=None, attrs={}))
 
     # 10 child shots without prompt
     for i in range(6, 16):
         frames.append(Frame(
             id=i,
             number=i,
+            uuid=f"u-{i:03d}",
             voiceover_text=f"Child VO {i}",
             image_prompt=None,
             attrs={"camera_subdivide": {"role": "shot"}},
@@ -60,6 +61,7 @@ def test_frames_needing_image_prompt_filters_child_shots():
         frames.append(Frame(
             id=i,
             number=i,
+            uuid=f"u-{i:03d}",
             voiceover_text=f"VO {i}",
             image_prompt="A beautiful sunset",
             attrs={},
@@ -81,13 +83,13 @@ async def test_finish_success_ignores_child_shots():
 
     # All parent frames have image_prompt filled
     parents = [
-        Frame(id=1, number=1, voiceover_text="Part 1", image_prompt="Prompt 1", attrs={}),
-        Frame(id=2, number=2, voiceover_text="Part 2", image_prompt="Prompt 2", attrs={}),
+        Frame(id=1, number=1, uuid="u-001", voiceover_text="Part 1", image_prompt="Prompt 1", attrs={}),
+        Frame(id=2, number=2, uuid="u-002", voiceover_text="Part 2", image_prompt="Prompt 2", attrs={}),
     ]
     # Child frames do NOT have image_prompt
     children = [
-        Frame(id=3, number=3, voiceover_text="Child 1", image_prompt="", attrs={"camera_subdivide": {"role": "shot"}}),
-        Frame(id=4, number=4, voiceover_text="Child 2", image_prompt=None, attrs={"is_shot": True}),
+        Frame(id=3, number=3, uuid="u-003", voiceover_text="Child 1", image_prompt="", attrs={"camera_subdivide": {"role": "shot"}}),
+        Frame(id=4, number=4, uuid="u-004", voiceover_text="Child 2", image_prompt=None, attrs={"is_shot": True}),
     ]
     all_frames = parents + children
 

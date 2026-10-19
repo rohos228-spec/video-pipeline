@@ -662,3 +662,6 @@ def test_purge_replaced_media_keeps_only_new(montage_project: Project) -> None:
     assert not old.exists()
     assert not (videos / "clip_005_oldhash99.json").exists()
     assert s2.is_file()
+
+
+pytestmark = pytest.mark.usefixtures("fake_provider_keys")

@@ -425,8 +425,16 @@ def _normalize_prompt_ws(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def placeholder_count(prompt: str) -> int:
+    low = (prompt or "").lower()
+    return sum(low.count(p) for p in _PLACEHOLDER_PHRASES)
+
+
+def is_scene_prompt_hollow(prompt: str, *, min_placeholders: int = 3) -> bool:
+    return placeholder_count(prompt) >= min_placeholders
+
+
 def is_skippable_empty_prompt(prompt: str) -> bool:
-    """True — промт пустой или заглушка; в outsee не отправляем."""
     body = strip_prompt_id_lines((prompt or "").strip())
     if not body:
         return True

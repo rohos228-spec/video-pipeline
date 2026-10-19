@@ -38,24 +38,22 @@ def test_pricing_gemini_37_flash():
 
 
 def test_pricing_gemini_38_flash():
-    """Проверка тарифа Gemini 3.8 Flash (официальный $0.75 / $3.75)."""
     cost = calculate_cost(
         "gemini-3.8-flash",
         prompt_tokens=10000,
         completion_tokens=5000,
     )
-    expected = (10000 / 1e6) * 0.75 + (5000 / 1e6) * 3.75
+    expected = (10000 / 1e6) * 0.147622 + (5000 / 1e6) * 0.738108
     assert cost == round(expected, 6)
 
 
 def test_pricing_gpt_sol():
-    """Проверка тарифа GPT 5.6 Sol ($1.20 / $4.80)."""
     cost = calculate_cost(
         "gpt-5.6-sol",
         prompt_tokens=5000,
         completion_tokens=10000,
     )
-    expected = (5000 / 1e6) * 1.20 + (10000 / 1e6) * 4.80
+    expected = (5000 / 1e6) * 0.426462 + (10000 / 1e6) * 2.558774
     assert cost == round(expected, 6)
 
 

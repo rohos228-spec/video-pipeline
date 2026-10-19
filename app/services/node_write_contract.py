@@ -105,6 +105,13 @@ def _keep_field(key: str, node_kind: str) -> bool:
     return True
 
 
+from app.services.observation import observe_check
+
+
+@observe_check("write_contract", lambda args, kw, result: {
+    "status": "filtered", "node_kind": kw.get("node_kind"),
+    "input_count": len(args[0] or []) if args else 0, "output_count": len(result),
+})
 def filter_ops_for_node(
     ops: list[dict[str, Any]] | None,
     *,
@@ -158,6 +165,10 @@ def _unique_uuids(values: Iterable[Any]) -> list[str]:
     return out
 
 
+@observe_check("frame_coverage_gate", lambda args, kw, result: {
+    "status": "passed" if result.ok else "failed", "matched": len(result.matched),
+    "missing": len(result.missing), "extra": len(result.extra),
+})
 def coverage_report(
     ops: list[dict[str, Any]] | None,
     expected_uuids: list[str] | None,
@@ -190,3 +201,15 @@ def skip_frame_coverage(
         and (chars_list or scenes_list or character_registry)
         and (not ops_list or character_registry)
     )
+
+
+def allows_qc_noop(project, node_key, *, variant, output_mode, check_mode):
+    if output_mode != 'project_file' or check_mode or variant != 'shots_qc_ru':
+        return False
+    meta = project.meta or {}
+    graph = meta.get('canvas_graph') or {}
+    node = next((n for n in graph.get('nodes', []) if n.get('id') == node_key), None)
+    slots = (meta.get('prompt_slot_variants') or {}).get(node_key) or {}
+    return bool(node and node.get('type') == 'excel_gpt'
+        and str((node.get('data') or {}).get('groupId') or '').split('#')[0] == 'script_frames_qc'
+        and slots.get('main') == 'shots_qc_ru')

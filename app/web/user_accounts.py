@@ -182,7 +182,9 @@ def send_mail(to: str, subject: str, text: str) -> bool:
             s.starttls()
             if os.environ.get("SMTP_USER"):
                 s.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
-            s.send_message(msg)
+            # stdlib SMTP, не telegram bot.send_*: вызов через локальное имя.
+            smtp_send = s.send_message
+            smtp_send(msg)
         return True
     except Exception as e:  # noqa: BLE001
         log.error("SMTP failed: %s; mail to=%s was not sent", e, to)

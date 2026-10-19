@@ -399,8 +399,9 @@ async def ensure_r15_from_asr(
     master: float | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """Если строка 15 пуста — заполнить таймкодами из ASR + текста R49."""
-    from app.storage.plan_sheet_v8 import read_plan_timestamps_cells, write_plan_timestamps
+    from app.storage.plan_sheet_v8 import ensure_plan_sheet, read_plan_timestamps_cells, write_plan_timestamps
 
+    ensure_plan_sheet(project, cells)
     ts_cells, ts_row = read_plan_timestamps_cells(project, frame_numbers)
     _filled, parsed_n, bad = count_parsed_timestamp_cells(ts_cells)
     need = len(frame_numbers)

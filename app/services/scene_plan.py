@@ -29,6 +29,7 @@ from loguru import logger
 
 from app.orchestrator.validators.activity_flags import shot_is_active
 from app.services.scene_shot_grammar import (
+    SHOT_VO_MIN,
     classify_object,
     visible_len,
 )
@@ -553,8 +554,8 @@ _PUNCT_END = (",", ".", ";", ":", "—", "!", "?", "…")
 def _split_vo(text: str) -> tuple[str, str] | None:
     """Кусок закадра надвое: по знаку препинания ближе к середине, иначе по слову.
 
-    Короткий закадр порога тоже режется (сумма половин = исходный текст).
-    Иначе кадр «открывает дверь» не вставляется и глагол дописывается в хвост.
+    Предпочтителен разрез, где обе половины не короче ``SHOT_VO_MIN``.
+    Если такого нет, режем у первого слова: иначе кадр порога не вставляется.
     """
     words = str(text or "").split()
     if len(words) < 2:
@@ -563,6 +564,9 @@ def _split_vo(text: str) -> tuple[str, str] | None:
     best: tuple[int, int, int] | None = None
     for cut in range(1, len(words)):
         a = " ".join(words[:cut])
+        b = " ".join(words[cut:])
+        if visible_len(a) < SHOT_VO_MIN or visible_len(b) < SHOT_VO_MIN:
+            continue
         rank = 0 if words[cut - 1].endswith(_PUNCT_END) else 1
         score = abs(visible_len(a) - total // 2)
         if best is None or (rank, score) < best[:2]:

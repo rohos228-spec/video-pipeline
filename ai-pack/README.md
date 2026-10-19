@@ -24,7 +24,7 @@
 | Папка | Содержание |
 |-------|------------|
 | `START_HERE.md` | главный вход — читай первым |
-| `00_core/` | AGENTS, карта, ops/map rules |
+| `00_core/` | карта, ops/map rules |
 | `01_data_prompts/` | контракт промптов, DB v2, ноды, blocks |
 | `02_ops/` | bible оператора, mass |
 | `03_config/` | `env.example` (без секретов), pyproject |
@@ -40,5 +40,5 @@ python scripts/verify_ai_pack.py
 `verify` сверяет копии с источниками, ссылки START_HERE, отсутствие секретов  
 и ключевые факты (DB SoT, media gates, Studio меню).
 
-Оригиналы живут в `docs/`, `AGENTS.md`, `.cursor/rules/`.  
+Оригиналы живут в `docs/`, `.cursor/rules/`.  
 Этот каталог — удобная **выгрузка для чата**, не второй SoT.

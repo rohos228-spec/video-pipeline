@@ -8,9 +8,11 @@ Artifact. Безопасно: разрешает только пути под `s
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,15 @@ from app.web.schemas import ArtifactDTO
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 files_router = APIRouter(tags=["files"])
+
+
+_PRIVATE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".log", ".env", ".key", ".pem"}
+_PRIVATE_NAMES = {"web_sessions", "sidebar_layout.json", ".env"}
+
+
+def _is_private_file(p: Path) -> bool:
+    name = p.name.lower()
+    return p.suffix.lower() in _PRIVATE_SUFFIXES or name.startswith(".env") or name in _PRIVATE_NAMES         or any(name.startswith(n) for n in ("web_sessions",))
 
 
 @files_router.get("/files")
@@ -42,9 +53,11 @@ async def serve_data_file(
     try:
         candidate.relative_to(base)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="path outside data_dir") from exc
+        raise HTTPException(status_code=400, detail="Путь выходит за пределы папки данных") from exc
     if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="file not found")
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    if _is_private_file(candidate):
+        raise HTTPException(status_code=403, detail="Служебный файл (база, лог, ключи) не отдаётся")
     download_name, mime = suggested_name_and_mime(candidate)
     kwargs: dict = {
         "media_type": mime or "application/octet-stream",
@@ -87,24 +100,57 @@ async def get_artifact(
         await session.execute(select(Artifact).where(Artifact.uuid == artifact_uuid))
     ).scalar_one_or_none()
     if a is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
     return a
+
+
+async def get_artifact_file_session(
+    request: Request,
+    project_id: Annotated[int | None, Query(gt=0)] = None,
+) -> AsyncIterator[AsyncSession]:
+    source = get_session() if project_id is None else get_project_session(request, project_id)
+    async for session in source:
+        yield session
 
 
 @router.get("/{artifact_uuid}/file")
 async def download_artifact(
-    artifact_uuid: str, session: AsyncSession = Depends(get_session)
+    artifact_uuid: str,
+    session: AsyncSession = Depends(get_artifact_file_session),
+    project_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> FileResponse:
-    a = (
-        await session.execute(select(Artifact).where(Artifact.uuid == artifact_uuid))
-    ).scalar_one_or_none()
+    query = select(Artifact).where(Artifact.uuid == artifact_uuid)
+    if project_id is not None:
+        query = query.where(Artifact.project_id == project_id)
+    a = (await session.execute(query)).scalar_one_or_none()
     if a is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
     path = Path(a.path)
+    managed = "orchestrator" in (a.meta or {})
+    if managed:
+        from app.models import Project
+        from app.services.artifact_verifier import contained_path, verify_artifact
+
+        project = await session.get(Project, a.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Проект артефакта не найден")
+        try:
+            path = contained_path(path, project.data_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Артефакт лежит вне папки проекта") from exc
     if not path.is_file():
-        raise HTTPException(status_code=410, detail="file gone from disk")
+        raise HTTPException(status_code=410, detail="Файл пропал с диска")
+    if managed:
+        binding = a.meta.get("orchestrator")
+        expected = binding.get("verification") if isinstance(binding, dict) else None
+        if not isinstance(expected, dict) or expected.get("status") != "passed":
+            raise HTTPException(status_code=409, detail="Проверка артефакта сейчас недоступна")
+        actual = await verify_artifact(path, root=project.data_dir, kind=expected.get("kind"))
+        if actual["status"] != "passed" or actual.get("sha256") != expected.get("sha256"):
+            raise HTTPException(status_code=409, detail="Результат проверки артефакта изменился: обновите страницу и повторите")
     mime, _ = mimetypes.guess_type(str(path))
-    return FileResponse(path, media_type=mime or "application/octet-stream")
+    return FileResponse(path, media_type=mime or "application/octet-stream",
+                        headers={"Cache-Control": "private, no-store"} if managed else None)
 
 @router.get("/project-cover/{project_id}")
 async def project_cover(

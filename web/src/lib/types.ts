@@ -458,6 +458,7 @@ export interface MontageBoardFrame {
   scene_chain?: MontageSceneChainRow[];
   /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
   vo_scene_number?: number | null;
+  vo_scene_ordinal?: number | null;
   vo_scene_size?: number;
   /** leftover-клей (не живой шот). Живых детей не режем по scene_chain.length. */
   shot_leftover?: boolean;
@@ -482,6 +483,12 @@ export interface MontageBoardMeta {
     parent_number?: number;
   }>;
   applied_at: string | null;
+  split_undo?: {
+    can_undo: boolean;
+    undo_id: string | null;
+    kind: string | null;
+    depth: number;
+  };
 }
 
 export interface MontageBoardDTO {

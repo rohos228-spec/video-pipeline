@@ -32,6 +32,7 @@ from app.generation_options import is_skippable_empty_prompt
 from app.models import Frame, FrameStatus, Project
 from app.orchestrator.validators.activity_flags import frame_is_active
 from app.services.content_locks import is_ui_locked
+from app.services.frame_tombstones import deleted_numbers as _deleted_numbers
 from app.services.plan_validation import is_meaningful_general_plan
 
 # --- константы под v8-шаблон ---------------------------------------------
@@ -595,6 +596,8 @@ async def bootstrap_frames_for_image_step(
     for num in frame_nums:
         prompt = prompts_shot1.get(num, "")
         fr = by_number.get(num)
+        if fr is None and num in _deleted_numbers(project):
+            continue
         if fr is None and rows:
             # FIX 2026-10-15: кадры уже в БД — не создавать строки из xlsx.
             continue
@@ -827,6 +830,10 @@ async def import_v8_xlsx(
             start_ts = t
             end_ts = t + step
             fr = by_number.get(number)
+            if fr is None and number in _deleted_numbers(project):
+                # номер в реестре томбстоунов R0b — не воскрешать строкой xlsx
+                t = end_ts
+                continue
             if fr is not None:
                 raw_attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
                 if not frame_is_active(raw_attrs) or fields.get("hidden_marker"):

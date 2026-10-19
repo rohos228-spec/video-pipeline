@@ -8,8 +8,9 @@ inmemory (без сохранения) и вызываем `_apply_approve(...)`
 Покрываются 3 ключевых parity-расхождения:
 * #1 hero_count = 2 → после approve 1-го героя проект ДОЛЖЕН остаться
   в `generating_hero`, а не уйти в `generating_items`.
-* #3 enrich_slots_count = 2 → после `enrich_2_ready` approve проект
-  ДОЛЖЕН уйти в `generating_image_prompts`, а не в `enriching_3`.
+* #3 (переписан под граф, см. 6e3202c9) цепочка enrich на канвасе
+  (enrich_1..2 -> image_prompts) → после `enrich_2_ready` проект уходит в
+  `generating_image_prompts`, а не в `enriching_3`.
 * parity #8 `expected_status_progression(...)` корректно отражает оба
   кейса (single-source-of-truth для будущих тестов).
 """
@@ -26,6 +27,30 @@ from app.orchestrator.auto_advance import (
 )
 
 
+class _EmptyResult:
+
+    def scalar_one_or_none(self):
+        return None
+
+    def scalar_one(self):
+        return 0
+
+    def scalar(self):
+        return None
+
+    def first(self):
+        return None
+
+    def all(self):
+        return []
+
+    def scalars(self):
+        return self
+
+    def __iter__(self):
+        return iter(())
+
+
 class _StubAsyncSession:
     """Минимальный stub: `flush()` — no-op."""
 
@@ -36,18 +61,7 @@ class _StubAsyncSession:
         return None
 
     async def execute(self, *_args, **_kwargs):
-        class _Result:
-            def scalars(self):
-                return self
-            def all(self):
-                return []
-            def first(self):
-                return None
-            def scalar_one_or_none(self):
-                return None
-            def scalar_one(self):
-                return 1
-        return _Result()
+        return _EmptyResult()
 
 
 def _make_project(
@@ -85,17 +99,39 @@ def _make_hitl(kind: HITLKind, payload: dict | None = None) -> HITLRequest:
     return h
 
 
+def _enrich_chain_graph(last_slot: int):
+    from app.orchestrator.graph.planner import WorkflowGraph
+
+    types = [f"enrich_{i}" for i in range(1, last_slot + 1)] + ["image_prompts"]
+    nodes = [{"id": f"n_{t}", "type": t, "position": {"x": 0, "y": 0}, "data": {}} for t in types]
+    edges = [
+        {"id": f"e{i}", "source": f"n_{a}", "target": f"n_{b}",
+         "sourceHandle": "out", "targetHandle": "in"}
+        for i, (a, b) in enumerate(zip(types, types[1:]))
+    ]
+    return WorkflowGraph(nodes, edges)
+
+
+def _use_graph(monkeypatch, graph) -> None:
+    async def _load(_session, _project):
+        return graph
+
+    monkeypatch.setattr("app.orchestrator.graph.planner.load_graph_for_project", _load)
+
+    async def _can_enter(_session, _project, _target):
+        return True, "", None
+
+    monkeypatch.setattr("app.orchestrator.auto_advance.can_enter_running", _can_enter)
+
+
 @pytest.mark.asyncio
-async def test_enrich_cap_2_skips_to_image_prompts() -> None:
-    """parity #3: с enrich_slots_count=2 после enrich_2_ready
-    проект уходит в generating_image_prompts, а НЕ в enriching_3."""
+async def test_enrich_cap_2_skips_to_image_prompts(monkeypatch) -> None:
+    _use_graph(monkeypatch, _enrich_chain_graph(2))
     project = _make_project(
         status=ProjectStatus.enrich_2_ready,
-        enrich_slots_count=2,
+        enrich_slots_count=5,
     )
     transition = TRANSITIONS[ProjectStatus.enrich_2_ready]
-    # default-таблица говорит enriching_3, но _next_running_with_enrich_cap
-    # ДОЛЖЕН переписать на generating_image_prompts.
     assert transition.next_running is ProjectStatus.enriching_3
     hitl = _make_hitl(HITLKind.approve_hero)
     await _apply_approve(
@@ -106,18 +142,30 @@ async def test_enrich_cap_2_skips_to_image_prompts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_cap_5_uses_full_chain() -> None:
-    """parity #3 negative-case: с enrich_slots_count=5 после
-    enrich_2_ready НЕ скипаем, идём в enriching_3."""
+async def test_enrich_cap_5_uses_full_chain(monkeypatch) -> None:
+    _use_graph(monkeypatch, _enrich_chain_graph(5))
     project = _make_project(
         status=ProjectStatus.enrich_2_ready,
-        enrich_slots_count=5,
+        enrich_slots_count=2,
     )
     transition = TRANSITIONS[ProjectStatus.enrich_2_ready]
     hitl = _make_hitl(HITLKind.approve_hero)
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
         bot=None, badge="",
+    )
+    assert project.status is ProjectStatus.enriching_3
+
+
+@pytest.mark.asyncio
+async def test_enrich_no_next_node_in_graph_falls_back_to_linear_next(monkeypatch) -> None:
+    from app.orchestrator.graph.planner import WorkflowGraph
+
+    _use_graph(monkeypatch, WorkflowGraph([], []))
+    project = _make_project(status=ProjectStatus.enrich_2_ready)
+    await _apply_approve(
+        _StubAsyncSession(), project, _make_hitl(HITLKind.approve_hero),
+        TRANSITIONS[ProjectStatus.enrich_2_ready], bot=None, badge="",
     )
     assert project.status is ProjectStatus.enriching_3
 
@@ -132,8 +180,6 @@ async def test_hero_count_2_stays_in_generating_hero() -> None:
         hero_variations=[1, 1],
     )
     transition = TRANSITIONS[ProjectStatus.hero_ready]
-    # default → generating_items, parity #1 ДОЛЖЕН переписать на
-    # generating_hero.
     assert transition.next_running is ProjectStatus.generating_items
     hitl = _make_hitl(
         HITLKind.approve_hero,
@@ -232,8 +278,28 @@ async def test_auto_mode_advances_without_manual_approval(monkeypatch) -> None:
         AsyncMock(return_value=hitl),
     )
     monkeypatch.setattr("app.orchestrator.auto_advance._apply_approve", apply_mock)
+    async def _noop(*_a, **_k):
+        return None
+
+    async def _true(*_a, **_k):
+        return True
+
+    monkeypatch.setattr("app.orchestrator.auto_advance.clamp_status_to_data", _noop)
+    monkeypatch.setattr("app.orchestrator.auto_advance._harness_gate", _true)
+    monkeypatch.setattr("app.orchestrator.auto_advance.ready_status_confirmed_by_data", _true)
+    monkeypatch.setattr("app.services.gen_queue.project_gated_by_gen_queue", lambda _pid: False)
+    monkeypatch.setattr("app.services.gen_queue.gen_queue_blocks_project", _noop)
 
     advanced = await maybe_auto_advance(_StubAsyncSession(), project, bot=None)
 
     assert advanced is True
     apply_mock.assert_awaited_once()
+
+
+@pytest.fixture(autouse=True)
+def _no_managed_execution(monkeypatch):
+
+    async def _off(_pid):
+        return False
+
+    monkeypatch.setattr("app.services.actions_v1.managed_project_enabled", _off)

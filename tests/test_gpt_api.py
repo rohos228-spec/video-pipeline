@@ -32,7 +32,6 @@ from app.services.gpt_api import (
 def _enable(monkeypatch) -> None:
     from app.settings import settings
 
-    # Явно kie: иначе .env перехватит путь/модель.
     monkeypatch.setattr(settings, "text_llm_provider", "kie")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_base_url", "https://gw.test")

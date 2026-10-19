@@ -992,7 +992,29 @@ def read_resolved_project_prompt(
 
     text = apply_style_vars(text, path, meta, step_code, name)
     topic = str(getattr(project, "topic", None) or "")
+    if step_code in ENRICH_STEP_CODES:
+        text = _render_enrich_template(project, step_code, text, topic)
     return name, path, inject_topic_placeholders(text, topic), source
+
+
+def _render_enrich_template(project, step_code: str, text: str, topic: str) -> str:
+    from app.services.prompt_composer import (
+        assert_prompt_resolved,
+        merge_project_prompt_config,
+        render_template_text,
+    )
+
+    if "{{" not in text:
+        return text
+    heroes = getattr(project, "hero_descriptions", None)
+    blocks, vars_ = merge_project_prompt_config(
+        getattr(project, "prompt_overrides", None) or {},
+        hero_description=heroes[0] if isinstance(heroes, list) and heroes else None,
+        topic=topic or None,
+    )
+    rendered = render_template_text(text, blocks, vars_)
+    assert_prompt_resolved(rendered, label=step_code)
+    return rendered
 
 
 def get_project_prompt(project, step_code: str) -> str:
@@ -1077,3 +1099,24 @@ def make_template_for_new(step_code: str, name: str) -> str:
         "\n"
         "Опиши задачу для модели здесь...\n"
     )
+
+
+APPROVED_PROFILE_PROMPTS = {
+    "original-contract-v1": "",
+    "repair-json-only-v1": (
+        "\n\n[Approved profile: repair-json-only-v1] Repair formatting only. "
+        "Return one JSON value conforming to the ORIGINAL node schema. "
+        "Preserve source facts and identifiers; do not invent missing information or bypass validation."
+    ),
+    "require-apply-ops-v1": (
+        "\n\n[Approved synthetic profile: require-apply-ops-v1] "
+        "Return the mandatory apply-ops JSON specified by the original node contract."
+    ),
+}
+
+
+def apply_approved_profile_prompt(resolved: str, variant: str) -> str:
+    if variant not in APPROVED_PROFILE_PROMPTS:
+        raise ValueError("unknown approved profile prompt variant")
+    suffix = APPROVED_PROFILE_PROMPTS[variant]
+    return resolved if not suffix or resolved.endswith(suffix) else resolved + suffix

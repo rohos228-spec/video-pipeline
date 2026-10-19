@@ -36,17 +36,21 @@ def test_prepare_ai_change_retries_sqlite_transient() -> None:
     assert "_call_with_sqlite_retry" in src
 
 
-def test_db_busy_timeout_at_least_60s() -> None:
+def test_db_busy_timeout_at_least_60s(tmp_path) -> None:
+    import sqlite3
+
     from app import db as db_mod
 
-    src = inspect.getsource(db_mod._configure_sqlite_connection)
-    assert "busy_timeout=60000" in src
-    assert '"timeout": 60' in inspect.getsource(db_mod) or "timeout\": 60" in inspect.getsource(
-        db_mod
-    )
-    engine_src = inspect.getsource(db_mod)
-    assert "NullPool" in engine_src
-    assert "synchronous=NORMAL" in src
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    try:
+        db_mod._configure_sqlite_connection(conn, None)
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 60000
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+    assert type(db_mod.engine.sync_engine.pool).__name__ == "NullPool"
 
 
 def test_canvas_topology_key_ignores_position() -> None:

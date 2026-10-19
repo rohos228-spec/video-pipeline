@@ -365,7 +365,6 @@ def _script_frames_qc_footer_kind(
 
 
 def _project_topic_bits(project) -> list[str]:
-    """Тема/план для ноды сценария. Project.title, не .name (его нет)."""
     bits: list[str] = []
     title = str(getattr(project, "title", None) or "").strip()
     if title:
@@ -938,6 +937,11 @@ async def _after_excel_gpt_done(
     Прыжок на hero/img_pr — только auto_mode, и даже тогда стоп, если
     следующий work не excel_gpt (ждём ручной ▶).
     """
+    from app.services.actions_recovery import defer_continuation
+    if defer_continuation(project.id, node_key):
+        from app.services.observation import emit
+        emit("recovery_continuation_deferred", {"reason": "verify_committed_attempt_first"})
+        return
     if node_key:
         try:
             from app.services.storage_node import sync_downstream_storage_from_node
@@ -1068,7 +1072,13 @@ async def _maybe_auto_chain_excel_gpt(
         await session.flush()
         return
     next_key, typ, next_slot = succ
+    from app.services.observation import emit
+
+    emit("planner_successor", {"from": finished_key, "to": next_key, "type": typ, "slot": next_slot})
     if not is_excel_gpt_node_type(typ):
+        from app.services.actions_v1 import continue_managed_image
+        if await continue_managed_image(session, project, finished_key, next_key, typ):
+            return
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
         # auto_mode иначе сразу стартует hero/img_pr («нода отработала →
         # персонажи → та же нода снова»).
@@ -1169,7 +1179,7 @@ async def _maybe_auto_chain_excel_gpt(
             strict=False,
             explicit_ui_start=True,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug(
             "[#{}] enrich_xlsx auto-chain: prepare NodeRun {} failed",
             project.id,
@@ -1242,7 +1252,17 @@ async def _run_fw_report_node(
             )
         ).scalars().all()
     )
+    from app.services.observation import emit
+
+    emit("node_input", {"contract": "html_report", "frame_count": len(frames)},
+        body=[{"uuid": fr.uuid, "number": fr.number, "attrs": fr.attrs} for fr in frames])
     paths = write_shots_report(project, frames, node_key=node_key)
+    from hashlib import sha256
+
+    for report_path in paths:
+        emit("artifact_created", {"name": report_path.name, "bytes": report_path.stat().st_size,
+            "sha256": sha256(report_path.read_bytes()).hexdigest()}, body=report_path.read_text(encoding="utf-8"))
+    emit("node_output", {"contract": "html_report", "file_count": len(paths)})
     save_operator_result(
         project,
         node_key,
@@ -2831,7 +2851,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Пайплайн сам запишет твой JSON в базу. "
                         "Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
-        # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         check_streams_n = None
         if check_mode:
@@ -2878,7 +2897,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
-            from app.services.node_write_contract import filter_ops_for_node
+            from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
 
             nk = str(node_key or "")
             action_node = nk.endswith("_fw_action")
@@ -3147,7 +3166,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     on_progress=_progress,
-                    allow_empty_ops=qc_prompts or shots_qc,
+                    allow_empty_ops=allows_qc_noop(
+                        project,
+                        node_key,
+                        variant=variant,
+                        output_mode=output_mode,
+                        check_mode=check_mode,
+                    ),
                 )
                 if fw_frames:
                     from sqlalchemy import select as _sel_fw
@@ -3272,7 +3297,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 db_sot_check=db_sot_check,
             )
         await session.refresh(project)
-        # После project_file / DB-check: apply-ops JSON → DB (SoT).
         if output_mode == "project_file" or (
             check_mode
             and check_fix
@@ -3357,7 +3381,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # leftover fw_frames / старый prompts_qc — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
-                from app.services.node_write_contract import filter_ops_for_node
+                from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
 
                 nk = str(node_key or "")
                 write_prompts = (

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -15,22 +14,9 @@ _STALE_LOCK_MAX_AGE_S = 900.0
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        import ctypes
+    from app.services.disk_guard import pid_alive
 
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return pid_alive(pid)
 
 
 def clear_stale_nvidia_load_lock(cache_root: Path | None = None) -> bool:
@@ -96,6 +82,21 @@ def clear_stale_nemo_temp_dirs(cache_root: Path | None = None) -> int:
     return removed
 
 
+def clear_stale_pid_temp_dirs(cache_root: Path | None = None, *, max_age_h: float | None = None) -> int:
+    from app.services import disk_guard
+
+    if cache_root is None:
+        from app.settings import settings
+
+        cache_root = settings.data_dir / ".cache"
+    temp_root = cache_root / "temp"
+    res = disk_guard.cleanup_stale_pid_temp(temp_root, max_age_h=max_age_h, alive_fn=_pid_alive)
+    disk_guard.cleanup_pytest_temp(
+        temp_root, max_age_h=max_age_h, protect=[Path(tempfile.gettempdir()), Path.cwd()]
+    )
+    return res.removed
+
+
 def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
     """Windows: NeMo/HF пишут manifest.json в %TEMP% → WinError 32.
 
@@ -143,6 +144,10 @@ def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
 
     clear_stale_nvidia_load_lock(cache_root)
     clear_stale_nemo_temp_dirs(cache_root)
+    try:
+        clear_stale_pid_temp_dirs(cache_root)
+    except Exception as exc:
+        logger.warning("nvidia_asr: чистка pid-temp не удалась: {}", exc)
 
     if not _configured:
         logger.info(

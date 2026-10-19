@@ -421,6 +421,8 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
     meta = dict(project.meta or {})
     from_status = meta.pop("paused_from_status", None)
     project.meta = meta
+    from app.services import restart_chain
+    await restart_chain.release_for_human_everywhere(session, project)
     try:
         project.status = ProjectStatus(from_status) if from_status else ProjectStatus.new
     except ValueError:

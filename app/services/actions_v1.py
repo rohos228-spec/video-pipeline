@@ -1,0 +1,639 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from threading import RLock
+import uuid
+
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select, update
+from sqlalchemy.orm import Mapped, mapped_column
+from app.models import Base
+from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
+from app.services.profiles_state import ProfileOverlay
+from app.services import kill_switch
+from app.services import revisions
+
+
+class ActionExecutionControl(Base):
+    __tablename__ = "action_execution_controls"
+    execution_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    workflow_run_id: Mapped[int] = mapped_column(Integer, index=True)
+    group_id: Mapped[str] = mapped_column(String(120))
+    node_keys: Mapped[list] = mapped_column(JSON)
+    graph_version: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    held: Mapped[bool] = mapped_column(Boolean, default=False)
+    request_limit: Mapped[int] = mapped_column(Integer, default=12)
+    requests_used: Mapped[int] = mapped_column(Integer, default=0)
+    initiator: Mapped[str] = mapped_column(String(120))
+    rationale: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ActionRecord(Base):
+    __tablename__ = "action_v1_records"
+    __table_args__ = (UniqueConstraint("execution_id", "idempotency_key", name="uq_action_execution_idempotency"),)
+    action_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    action_kind: Mapped[str] = mapped_column(String(40))
+    node_key: Mapped[str | None] = mapped_column(String(60), default=None)
+    attempt_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    initiator: Mapped[str] = mapped_column(String(120))
+    rationale: Mapped[str] = mapped_column(Text)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    preconditions: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(24), default="accepted")
+    verification: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ManagedRunAllowance(Base):
+    __tablename__='managed_run_allowances'
+    project_id: Mapped[int]=mapped_column(Integer,primary_key=True)
+    workflow_run_id: Mapped[int]=mapped_column(Integer,primary_key=True)
+    execution_id: Mapped[str]=mapped_column(String(36),unique=True)
+    request_limit: Mapped[int]=mapped_column(Integer)
+    owner_policy: Mapped[dict]=mapped_column(JSON)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+
+
+def _media_state(cfg):
+    from app.services.media_jobs import media_profile_state
+    return media_profile_state(cfg)
+
+
+async def claim_run_allowance(session,*,project_id,workflow_run_id,execution_id,request_limit,owner_policy):
+    from sqlalchemy.dialects.sqlite import insert
+    history=await session.scalar(select(ActionExecutionControl.execution_id).where(
+        ActionExecutionControl.project_id==project_id,ActionExecutionControl.workflow_run_id==workflow_run_id,
+        ActionExecutionControl.execution_id!=execution_id))
+    if history:raise ValueError('workflow allowance already belongs to managed history; no reset by new execution')
+    await session.execute(insert(ManagedRunAllowance).values(project_id=project_id,workflow_run_id=workflow_run_id,
+        execution_id=execution_id,request_limit=request_limit,owner_policy=owner_policy).on_conflict_do_nothing())
+    binding=await session.get(ManagedRunAllowance,(project_id,workflow_run_id))
+    if not binding or binding.execution_id!=execution_id or binding.request_limit!=request_limit or binding.owner_policy!=owner_policy:
+        raise ValueError('workflow allowance already reserved or changed; no new execution budget')
+
+
+@dataclass(frozen=True)
+class ExecutionPermission:
+    enabled: bool
+    held: bool
+    project_id: int
+    execution_id: str
+    group_id: str
+    graph_version: str
+    node_keys: tuple[str, ...]
+    request_limit: int
+    requests_used: int
+
+
+@dataclass(frozen=True)
+class StartDecision:
+    allowed: bool
+    reason: str
+
+
+_permissions: dict[int, ExecutionPermission] = {}
+_permission_lock = RLock()
+
+
+def install_permission(permission: ExecutionPermission) -> None:
+    with _permission_lock:
+        _permissions[permission.project_id] = permission
+
+
+def clear_permission(project_id: int) -> None:
+    with _permission_lock:
+        _permissions.pop(project_id, None)
+    from app.services.actions_recovery import clear_restriction
+    clear_restriction(project_id)
+
+
+def get_permission(project_id: int) -> ExecutionPermission | None:
+    with _permission_lock:
+        return _permissions.get(project_id)
+
+
+async def managed_project_enabled(project_id: int) -> bool:
+    if get_permission(project_id) is not None:
+        return True
+    from app.services.observation import get_observer
+    async with get_observer().master() as session:
+        return await session.scalar(select(ActionExecutionControl.execution_id).where(
+            ActionExecutionControl.project_id == project_id,
+            ActionExecutionControl.enabled.is_(True)).limit(1)) is not None
+
+
+async def worker_entry_admission(project_id: int) -> StartDecision:
+    from app.services.observation import _observer
+    cached=get_permission(project_id)
+    if _observer is None:
+        if cached is not None and cached.enabled:
+            return StartDecision(False,'managed_storage_unavailable')
+        return StartDecision(True,'ordinary_mode')
+    async with _observer.master() as session:
+        controls=(await session.scalars(select(ActionExecutionControl).where(
+            ActionExecutionControl.project_id==project_id,ActionExecutionControl.enabled.is_(True)))).all()
+        stopped=await kill_switch.is_active(session)
+    if not controls:
+        return StartDecision(not (cached and cached.enabled),'ordinary_mode' if not cached else 'permission_not_confirmed')
+    if stopped:return StartDecision(False,kill_switch.REASON)
+    if len(controls)!=1:return StartDecision(False,'ambiguous_managed_execution')
+    control=controls[0]
+    if control.held:return StartDecision(False,'execution_held')
+    if cached is None or not cached.enabled:
+        return StartDecision(False,'managed_permission_unavailable')
+    if (cached.project_id!=control.project_id or cached.execution_id!=control.execution_id
+            or cached.group_id!=control.group_id or cached.graph_version!=control.graph_version
+            or set(cached.node_keys)!=set(control.node_keys or ())):
+        return StartDecision(False,'permission_not_confirmed')
+    if cached.held:return StartDecision(False,'execution_held')
+    return StartDecision(True,'execution_enabled')
+
+
+def update_permission(project_id: int, *, held: bool | None = None,
+                      requests_used: int | None = None) -> ExecutionPermission | None:
+    from dataclasses import replace
+    with _permission_lock:
+        current = _permissions.get(project_id)
+        if current is None:
+            return None
+        changes = {}
+        if held is not None:
+            changes["held"] = held
+        if requests_used is not None:
+            changes["requests_used"] = max(current.requests_used, requests_used)
+        current = replace(current, **changes)
+        _permissions[project_id] = current
+        return current
+
+
+def check_managed_start(*, project_id: int | None, node_key: str) -> StartDecision | None:
+    if project_id is None:
+        return None
+    permission = get_permission(project_id)
+    from app.services.actions_recovery import restricted_node
+    recovery_node = restricted_node(project_id)
+    if recovery_node is not None and node_key != recovery_node:
+        return StartDecision(False, "recovery_verification_pending")
+    if permission is None:
+        try:
+            from app.services.observation import get_observer
+            known_managed = any(
+                scope.project_id == project_id and scope.mode == "managed"
+                for scope in get_observer().scopes.values()
+            )
+        except Exception:
+            known_managed = True
+        if known_managed:
+            return StartDecision(False, "managed_permission_unavailable")
+        return None
+    return evaluate_start(permission, project_id=project_id, node_key=node_key,
+                          graph_version=permission.graph_version)
+
+
+async def reload_permissions(master) -> None:
+    with _permission_lock:
+        _permissions.clear()
+    from app.services.managed_launch import hold_interrupted_launches
+    await hold_interrupted_launches(master)
+    async with master() as session:
+        controls = (await session.scalars(select(ActionExecutionControl).where(
+            ActionExecutionControl.enabled.is_(True),
+        ))).all()
+    with _permission_lock:
+        for item in controls:
+            _permissions[item.project_id] = ExecutionPermission(
+                enabled=item.enabled, held=item.held, project_id=item.project_id,
+                execution_id=item.execution_id, group_id=item.group_id,
+                graph_version=item.graph_version, node_keys=tuple(item.node_keys or ()),
+                request_limit=item.request_limit, requests_used=item.requests_used,
+            )
+    from app.services.actions_recovery import reload_recovery_restrictions
+    await reload_recovery_restrictions(master)
+    await kill_switch.load(master)
+
+
+async def continue_managed_image(session, project, source_key, target_key, node_type):
+    from app.models import Project, WorkflowRun, NodeRun, NodeRunStatus, Frame
+    from app.services.observation import _attempt, ExecutionControl, digest, emit
+    from app.services.decision_config import runtime_config, DecisionRuntimeBinding
+    from app.services.diagnosis import Incident
+    from app.services.step_cancel import is_stop_requested
+    from app.services.step_failure_policy import is_sleeping
+    from app.orchestrator.node_registry import spec_for_type
+
+    ctx = _attempt.get()
+    if not ctx or ctx.scope.mode != "managed" or node_type != "images":
+        return False
+
+    def denied(reason):
+        emit("managed_successor_denied", {"from": source_key, "to": target_key,
+            "reason": reason, "protective_stop": True})
+        return False
+
+    scope = ctx.scope
+    if (ctx.session is not session or scope.project_id != project.id
+            or ctx.node_key != source_key or source_key == target_key
+            or {source_key, target_key} - set(scope.node_keys)):
+        return denied("outside_execution_scope")
+    if (scope.observer_state != "active" or scope.gaps
+            or scope.execution_id in ctx.observer.failures
+            or scope.execution_id in ctx.observer.commit_uncertainty):
+        return denied("audit_unavailable")
+    gate = check_managed_start(project_id=project.id, node_key=target_key)
+    permission = get_permission(project.id)
+    if not gate or not gate.allowed or permission.execution_id != scope.execution_id:
+        return denied(gate.reason if gate else "permission_missing")
+    cfg = runtime_config()
+    if (not ctx.runtime_config_hash or ctx.runtime_config_hash != digest(cfg)
+            or not _media_state(cfg)["execution_allowed"] or _media_state(cfg)["production_profile_configured"]):
+        return denied("media_configuration_changed_or_disabled")
+    async with ctx.observer.master() as master:
+        control = await master.get(ActionExecutionControl, scope.execution_id)
+        durable = await master.get(ExecutionControl, scope.execution_id)
+        master_project = await master.get(Project, project.id)
+        binding = await master.get(DecisionRuntimeBinding, scope.execution_id)
+        run = await master.get(WorkflowRun, scope.workflow_run_id)
+        incidents = (await master.scalars(select(Incident).where(
+            Incident.execution_id == scope.execution_id))).all()
+        human_decision = await master.scalar(select(DecisionRecord.decision_id).where(
+            DecisionRecord.execution_id == scope.execution_id,
+            DecisionRecord.status == "human_review").limit(1))
+        master_nodes = (await master.scalars(select(NodeRun).where(
+            NodeRun.workflow_run_id == scope.workflow_run_id))).all()
+    if (not control or not durable or not master_project or not run
+            or control.project_id != project.id or control.workflow_run_id != scope.workflow_run_id
+            or not control.enabled or control.held or control.requests_used >= control.request_limit
+            or target_key not in control.node_keys or source_key not in control.node_keys
+            or durable.mode != "managed" or durable.observer_state != "active" or durable.gaps):
+        return denied("durable_permission_unavailable")
+    canvas = (project.meta or {}).get("canvas_graph") or {}
+    revision = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
+    if (run.project_id != project.id or revision != scope.graph_version
+            or revision != control.graph_version or revision != durable.graph_version
+            or revision != revisions.graph_version(canvas.get("nodes"), canvas.get("edges"))):
+        return denied("graph_revision_changed")
+    if binding and binding.config_hash != ctx.runtime_config_hash:
+        return denied("runtime_binding_changed")
+    if human_decision or any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
+           and (i.details.get("blocking") or i.type in {"uncertain_request", "journal_gap", "user_stop"})
+           for i in incidents):
+        return denied("incident_requires_human")
+    flags = ("user_stop", "mass_lane_user_stop", "auto_await_manual_start")
+    if (any((p.meta or {}).get(f) for p in (project, master_project) for f in flags)
+            or is_stop_requested(project.id) or is_sleeping(project) or is_sleeping(master_project)):
+        return denied("stop_or_backoff_active")
+    rows = (await session.scalars(select(NodeRun).where(
+        NodeRun.workflow_run_id == scope.workflow_run_id))).all()
+    source = next((n for n in rows if n.node_key == source_key), None)
+    target = next((n for n in rows if n.node_key == target_key), None)
+    if (not source or source.status != NodeRunStatus.done or not target
+            or target.node_type != node_type or target.status != NodeRunStatus.pending
+            or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl, NodeRunStatus.waiting_approval} for n in rows)):
+        return denied("node_state_not_ready")
+    replicas = {n.node_key: n for n in master_nodes}
+    if set(replicas) != {n.node_key for n in rows} or any(
+            (n.node_key == source_key and replicas[n.node_key].status not in
+                {NodeRunStatus.running, NodeRunStatus.done}) or
+            (n.node_key != source_key and (n.status, n.attempts) !=
+                (replicas[n.node_key].status, replicas[n.node_key].attempts)) for n in rows):
+        return denied("current_node_replicas_disagree")
+    from app.orchestrator.graph.planner import WorkflowGraph
+    selected = WorkflowGraph(run.nodes_snapshot, run.edges_snapshot).next_work_node_after_ready(
+        project, project.status)
+    if not selected or selected[0] != target_key:
+        return denied("graph_prerequisites_or_gates_not_ready")
+    from app.services.scan_frames import frame_image_prompt_text
+    from app.services.vo_shot_expand import is_coverage_leftover
+    from app.generation_options import is_skippable_empty_prompt
+    frames = list((await session.scalars(select(Frame).where(Frame.project_id == project.id))).all())
+    required = [f for f in frames if not is_coverage_leftover(f)]
+    if not required or any(not (f.voiceover_text or "").strip()
+            or is_skippable_empty_prompt(frame_image_prompt_text(f, frames)) for f in required):
+        return denied("image_inputs_missing")
+    from app.services.run_sync import prepare_node_for_step_start
+    spec = spec_for_type(node_type)
+    await prepare_node_for_step_start(session, project, spec.step_code, node_key=target_key,
+                                     strict=True, explicit_ui_start=False)
+    project.status = spec.running_status
+    payload = {"from": source_key, "to": target_key,
+        "source_attempt_id": ctx.attempt_id, "graph_version": revision,
+        "runtime_config_hash": ctx.runtime_config_hash, "input_hash": digest([
+            {"frame_id": f.id, "voiceover": f.voiceover_text,
+             "prompt": frame_image_prompt_text(f, frames)} for f in required]),
+        "requests_used": control.requests_used, "request_limit": control.request_limit,
+        "planner": "original_graph", "fsm": "prepare_node_for_step_start",
+        "transactional": True, "worker_dispatched": False}
+    try:
+        if not ctx.observer.stage(session, scope, "managed_successor", db_scope=ctx.db_scope,
+                node_key=source_key, attempt_id=ctx.attempt_id, payload=payload):
+            raise RuntimeError("mandatory continuation audit unavailable")
+    except Exception as exc:
+        ctx.observer.mark_gap(scope.execution_id, exc)
+        raise RuntimeError("mandatory continuation audit failed; transaction must abort") from exc
+    await session.flush()
+    return True
+
+
+class ActionSupervisor:
+    def __init__(self, master):
+        self.master = master
+
+    async def recover_node(self, **kwargs):
+        from app.services.actions_recovery import recover_node
+        return await recover_node(self, **kwargs)
+
+    async def enable(self, *, project_id: int, execution_id: str, group_id: str,
+                     node_keys: list[str], graph_version: str, initiator: str,
+                     rationale: str, request_limit: int = 12) -> dict:
+        from sqlalchemy import select
+        from app.models import Project, WorkflowRun, NodeRun, NodeRunStatus
+        from app.services.observation import ExecutionControl, digest
+        if not initiator or not rationale.strip() or not group_id.strip():
+            raise ValueError("initiator, group id and rationale are required")
+        from app.services.decision_config import runtime_config,owner_budget_policy
+        cfg=runtime_config();owner_policy=owner_budget_policy(cfg)
+        if type(request_limit)!=int or not 1 <= request_limit <= owner_policy['max_requests']:
+            raise ValueError('request limit exceeds configured owner budget policy')
+        if not node_keys or len(node_keys) != len(set(node_keys)):
+            raise ValueError("explicit unique node scope required")
+        async with self.master() as session:
+            scope = await session.get(ExecutionControl, execution_id)
+            if scope is None or scope.project_id != project_id:
+                raise LookupError("execution not found for project")
+            run = await session.get(WorkflowRun, scope.workflow_run_id)
+            if run is None or run.project_id != project_id:
+                raise ValueError("workflow run/project mismatch")
+            live_version = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
+            if live_version != graph_version or live_version != scope.graph_version:
+                raise ValueError("workflow graph changed; re-observe before enabling actions")
+            if scope.observer_state != "active" or scope.mode != "observe":
+                raise ValueError("active observation required")
+            if not set(node_keys).issubset(scope.node_keys):
+                raise ValueError("action node scope exceeds observation scope")
+            graph_group_keys = {
+                str(node.get("id")) for node in (run.nodes_snapshot or [])
+                if isinstance(node, dict)
+                and str((node.get("data") or {}).get("groupId") or "") == group_id
+            }
+            if not graph_group_keys or graph_group_keys != set(node_keys):
+                raise ValueError("action scope must equal the complete selected graph group")
+            from app.orchestrator.node_spec import node_admission_problem
+            for node in run.nodes_snapshot or []:
+                if isinstance(node, dict) and str(node.get("id")) in node_keys:
+                    problem = node_admission_problem(node)
+                    if problem:
+                        raise ValueError(problem)
+            project = await session.get(Project, project_id)
+            if project is None or bool((project.meta or {}).get("user_stop")):
+                raise ValueError("missing project or user_stop is active")
+            rows = (await session.scalars(select(NodeRun).where(
+                NodeRun.workflow_run_id == scope.workflow_run_id,
+                NodeRun.node_key.in_(node_keys),
+            ))).all()
+            if any(row.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_approval} for row in rows):
+                raise ValueError("selected group already has queued/running nodes")
+            if {row.node_key for row in rows} != set(node_keys):
+                raise ValueError("selected nodes do not match workflow run")
+            other_controls = (await session.scalars(select(ActionExecutionControl).where(
+                ActionExecutionControl.project_id == project_id,
+                ActionExecutionControl.enabled.is_(True),
+                ActionExecutionControl.execution_id != execution_id,
+            ))).all()
+            if other_controls:
+                raise ValueError("another managed execution is still enabled for this project")
+            prior = await session.get(ActionExecutionControl, execution_id)
+            if prior is not None:
+                if (prior.enabled and prior.project_id == project_id
+                        and prior.node_keys == list(node_keys)
+                        and prior.graph_version == live_version
+                        and prior.group_id == group_id
+                        and prior.request_limit == request_limit):
+                    result = {"enabled": True, "held": prior.held,
+                        "request_limit": prior.request_limit, "requests_used": prior.requests_used,
+                        "node_keys": list(prior.node_keys), "group_id": prior.group_id}
+                    install_permission(ExecutionPermission(
+                        enabled=True, held=prior.held, project_id=project_id,
+                        execution_id=execution_id, group_id=group_id,
+                        graph_version=live_version, node_keys=tuple(node_keys),
+                        request_limit=prior.request_limit, requests_used=prior.requests_used,
+                    ))
+                    return result
+                raise ValueError("managed permission already exists with different scope")
+            await claim_run_allowance(session,project_id=project_id,workflow_run_id=scope.workflow_run_id,
+                execution_id=execution_id,request_limit=request_limit,owner_policy=owner_policy)
+            control = ActionExecutionControl(
+                execution_id=execution_id, project_id=project_id,
+                workflow_run_id=scope.workflow_run_id, group_id=group_id,
+                node_keys=list(node_keys), graph_version=live_version,
+                enabled=True, held=False, request_limit=request_limit,
+                requests_used=0, initiator=initiator, rationale=rationale.strip(),
+            )
+            session.add(control)
+            scope.mode = "managed"
+            session.add(ActionRecord(
+                action_id=str(uuid.uuid4()), execution_id=execution_id,
+                project_id=project_id, action_kind="enable", initiator=initiator,
+                rationale=rationale.strip(), evidence_ids=[],
+                preconditions={"graph_version_matches": True, "scope_subset": True,
+                    "user_stop": False, "selected_nodes_idle": True,'owner_budget_policy':owner_policy},
+                idempotency_key="enable:" + execution_id, status="accepted", verification={},
+            ))
+            await session.commit()
+        install_permission(ExecutionPermission(
+            enabled=True, held=False, project_id=project_id, execution_id=execution_id,
+            group_id=group_id, graph_version=live_version, node_keys=tuple(node_keys),
+            request_limit=request_limit, requests_used=0,
+        ))
+        from app.services.observation import get_observer
+        cached_scope = get_observer().scopes.get(scope.workflow_run_id)
+        if cached_scope is not None and cached_scope.execution_id == execution_id:
+            cached_scope.mode = "managed"
+        return {"enabled": True, "held": False, "request_limit": request_limit,
+                "requests_used": 0, "node_keys": list(node_keys), "group_id": group_id}
+
+    async def set_held(self, *, project_id: int, execution_id: str, held: bool,
+                       initiator: str, rationale: str, idempotency_key: str,
+                       operator_request: bool = True) -> dict:
+        from sqlalchemy import select
+        from app.models import Project
+        if not initiator or not rationale.strip() or not idempotency_key.strip():
+            raise ValueError("explicit initiator, rationale and idempotency key required")
+        if not held and not operator_request:
+            raise ValueError('automatic resume is not authorized by a verifier/policy hold')
+        async with self.master() as session:
+            control = await session.get(ActionExecutionControl, execution_id)
+            if control is None or control.project_id != project_id or not control.enabled:
+                raise LookupError("managed execution not found")
+            existing = (await session.scalars(select(ActionRecord).where(
+                ActionRecord.execution_id == execution_id,
+                ActionRecord.idempotency_key == idempotency_key,
+            ))).first()
+            if existing is not None:
+                return {"enabled": control.enabled, "held": control.held,
+                        "node_keys": list(control.node_keys), "action_id": existing.action_id,
+                        "idempotent_replay": True}
+            if not held:
+                from app.services.managed_launch import ManagedLaunch
+                launch=await session.scalar(select(ManagedLaunch).where(ManagedLaunch.execution_id==execution_id))
+                if launch and launch.status!='submitted':
+                    raise ValueError('interrupted/failed launch requires human review; generic resume cannot redispatch')
+                project = await session.get(Project, project_id)
+                if project is None or bool((project.meta or {}).get("user_stop")):
+                    raise ValueError("user_stop is active; explicit user-stop gate is never cleared here")
+            control.held = held
+            session.add(ActionRecord(
+                action_id=str(uuid.uuid4()), execution_id=execution_id,
+                project_id=project_id, action_kind="resume" if not held else "hold",
+                initiator=initiator, rationale=rationale.strip(), evidence_ids=[],
+                preconditions={"explicit_operator_request": operator_request},
+                idempotency_key=idempotency_key,
+                status="accepted", verification={},
+            ))
+            await session.commit()
+            response = {"enabled": control.enabled, "held": control.held,
+                        "node_keys": list(control.node_keys), "idempotent_replay": False}
+        update_permission(project_id, held=held)
+        return response
+
+    async def charge_request(self, execution_id: str, *, media_reservation=None) -> int:
+        async with self.master() as session:
+            await kill_switch.guard(session)
+            from app.services.observation import ExecutionControl,get_observer,digest
+            from app.models import Project,WorkflowRun
+            control=await session.get(ActionExecutionControl,execution_id)
+            scope=await session.get(ExecutionControl,execution_id)
+            project=await session.get(Project,control.project_id) if control else None
+            run=await session.get(WorkflowRun,control.workflow_run_id) if control else None
+            observer=get_observer()
+            if (not scope or scope.observer_state!='active' or scope.gaps or not project
+                    or (project.meta or {}).get('user_stop') or execution_id in observer.failures
+                    or execution_id in observer.commit_uncertainty or not run
+                    or revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)!=control.graph_version):
+                legacy=bool(run and control and revisions.graph_version_status(
+                    run.nodes_snapshot,run.edges_snapshot,control.graph_version)=='legacy_scheme')
+                raise RuntimeError('managed request blocked: execution graph revision recorded under legacy scheme 1; relaunch required'
+                                   if legacy else 'managed request blocked: stop, audit, scope or graph revision')
+            from app.services.decision_config import DecisionRuntimeBinding,runtime_config
+            from app.services.decision_config import owner_budget_policy
+            allowance=await session.get(ManagedRunAllowance,(control.project_id,control.workflow_run_id))
+            if allowance and (allowance.execution_id!=execution_id or control.request_limit>allowance.request_limit
+                    or allowance.owner_policy!=owner_budget_policy()):
+                raise RuntimeError('owner budget configuration revision changed; blocked before HTTP reservation')
+            binding=await session.get(DecisionRuntimeBinding,execution_id)
+            if binding and binding.config_hash!=digest(runtime_config()):
+                raise RuntimeError('runtime configuration revision changed; blocked before HTTP reservation')
+            reserved = (await session.execute(update(ActionExecutionControl).where(
+                ActionExecutionControl.execution_id == execution_id,
+                ActionExecutionControl.enabled.is_(True), ActionExecutionControl.held.is_(False),
+                ActionExecutionControl.requests_used < ActionExecutionControl.request_limit,
+            ).values(requests_used=ActionExecutionControl.requests_used + 1).returning(
+                ActionExecutionControl.requests_used, ActionExecutionControl.project_id))).first()
+            if reserved is None:
+                control = await session.get(ActionExecutionControl, execution_id)
+                if control is None or not control.enabled or control.held:
+                    raise RuntimeError("managed execution is absent, disabled, or held")
+                raise RuntimeError("managed execution request budget exhausted")
+            used, project_id = reserved
+            from app.services import spend_guard
+            media_paid = media_reservation is not None and getattr(media_reservation, "category", "") == "generation_submit"
+            if media_reservation is None or media_paid:
+                await spend_guard.reserve(
+                    session, project_id=project_id, run_id=execution_id,
+                    estimate_usd=spend_guard.MEDIA_SUBMIT_ESTIMATE_USD if media_paid else spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+                    source="media_submit" if media_paid else "supervisor_request", track=not media_paid)
+            if media_reservation is not None:
+                from app.services.media_jobs import stage_reservation
+                await stage_reservation(session, media_reservation)
+            await session.commit()
+        update_permission(project_id, requests_used=used)
+        return used
+
+    async def close(self, *, project_id: int, execution_id: str, initiator: str,
+                    rationale: str, idempotency_key: str) -> dict:
+        from app.models import NodeRun, NodeRunStatus
+        from app.services.observation import ExecutionControl
+        if not initiator or not rationale.strip() or not idempotency_key.strip():
+            raise ValueError("initiator, rationale and idempotency key required")
+        async with self.master() as session:
+            control = await session.get(ActionExecutionControl, execution_id)
+            if control is None or control.project_id != project_id:
+                raise LookupError("managed execution not found")
+            workflow_run_id = control.workflow_run_id
+            prior = (await session.scalars(select(ActionRecord).where(
+                ActionRecord.execution_id == execution_id,
+                ActionRecord.idempotency_key == idempotency_key,
+            ))).first()
+            if prior is not None:
+                return {"enabled": control.enabled, "held": control.held,
+                        "action_id": prior.action_id, "idempotent_replay": True}
+            active = (await session.scalars(select(NodeRun).where(
+                NodeRun.workflow_run_id == control.workflow_run_id,
+                NodeRun.node_key.in_(control.node_keys),
+                NodeRun.status.in_([NodeRunStatus.queued, NodeRunStatus.running, NodeRunStatus.waiting_approval]),
+            ))).all()
+            if active:
+                raise ValueError("cannot revoke while a managed node is queued/running")
+            from app.services.actions_recovery import RecoveryAction
+            recovering = await session.scalar(select(RecoveryAction).where(
+                RecoveryAction.execution_id == execution_id,
+                RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify"])))
+            if recovering:
+                raise ValueError("cannot revoke while a recovery ticket is reserved or awaiting verification")
+            from app.services.media_jobs import MediaJob, MediaRequest
+            media_job = await session.scalar(select(MediaJob).where(
+                MediaJob.execution_id==execution_id,
+                MediaJob.phase.not_in(["verified", "failed", "cancelled"])))
+            media_request = await session.scalar(select(MediaRequest).where(
+                MediaRequest.execution_id==execution_id,
+                MediaRequest.status.in_(["reserved", "unknown"])))
+            if media_job or media_request:
+                raise ValueError("cannot revoke while media job or request outcome is unresolved")
+            scope = await session.get(ExecutionControl, execution_id)
+            if scope is not None:
+                scope.mode = "observe"
+            control.enabled = False
+            control.held = True
+            action_id = str(uuid.uuid4())
+            session.add(ActionRecord(action_id=action_id, execution_id=execution_id,
+                project_id=project_id, action_kind="close_execution", initiator=initiator,
+                rationale=rationale.strip(), evidence_ids=[],
+                preconditions={"no_managed_node_active": True},
+                idempotency_key=idempotency_key, status="revoked",
+                verification={"business_action": False}))
+            await session.commit()
+        clear_permission(project_id)
+        from app.services.observation import get_observer
+        cached = get_observer().scopes.get(workflow_run_id)
+        if cached is not None and cached.execution_id == execution_id:
+            cached.mode = "observe"
+        return {"enabled": False, "held": True, "action_id": action_id,
+                "idempotent_replay": False}
+
+
+def evaluate_start(permission: ExecutionPermission | None, *, project_id: int,
+                   node_key: str, graph_version: str) -> StartDecision:
+    if permission is None or not permission.enabled:
+        return StartDecision(False, "execution_not_explicitly_enabled")
+    if permission.held:
+        return StartDecision(False, "execution_held")
+    if kill_switch.cached_active():
+        return StartDecision(False, kill_switch.REASON)
+    if permission.project_id != project_id or node_key not in permission.node_keys:
+        return StartDecision(False, "outside_execution_scope")
+    if permission.graph_version != graph_version:
+        return StartDecision(False, "graph_version_changed")
+    if permission.requests_used >= permission.request_limit:
+        return StartDecision(False, "request_budget_exhausted")
+    return StartDecision(True, "authorized")
+
+
+def action_is_idempotent(existing_execution_id: str, existing_action_id: str,
+                         execution_id: str, action_id: str) -> bool:
+    return existing_execution_id == execution_id and existing_action_id == action_id

@@ -156,6 +156,7 @@ def _allowed_sheet_layouts() -> list[frozenset[str]]:
         if tpl.is_file():
             _add(frozenset(_workbook_sheet_names(tpl)))
         _add(frozenset({SHEET_FRAMES, SHEET_GENERAL}))
+        _add(frozenset({SHEET_FRAMES, SHEET_GENERAL, SHEET_PLAN_V8}))
         _add(frozenset({SHEET_PLAN_V8, SHEET_GENERAL_V8}))
     except Exception as e:  # noqa: BLE001
         logger.warning("xlsx_versioning: cannot build sheet layouts: {}", e)

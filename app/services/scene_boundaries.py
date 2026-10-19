@@ -135,41 +135,57 @@ async def _stream_once(
     parts: list[str] = []
     meta: dict[str, Any] = {"finish_reason": None, "usage": None, "model": None, "sse_lines": 0}
     t0 = time.time()
+    from app.services import spend_guard
+
     timeout = httpx.Timeout(connect=30.0, read=read_timeout, write=120.0, pool=30.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
-            async with c.stream("POST", url, headers=headers, json=payload) as r:
-                if r.status_code >= 400:
-                    body = (await r.aread()).decode("utf-8", "replace")
-                    raise RuntimeError(f"HTTP {r.status_code}: {body[:600]}")
-                async for line in r.aiter_lines():
-                    if line:
-                        meta["sse_lines"] += 1
-                    if not line.startswith("data:"):
-                        continue
-                    d = line[5:].strip()
-                    if not d or d == "[DONE]":
-                        continue
-                    try:
-                        ev = json.loads(d)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    t = ev.get("type")
-                    if t == "message_start":
-                        m = ev.get("message") or {}
-                        meta["model"] = m.get("model") or meta["model"]
-                        if m.get("usage"):
-                            meta["usage"] = dict(m["usage"])
-                    elif t == "content_block_delta":
-                        dl = ev.get("delta") or {}
-                        if dl.get("type") == "text_delta":
-                            parts.append(dl.get("text") or "")
-                    elif t == "message_delta":
-                        meta["finish_reason"] = (ev.get("delta") or {}).get("stop_reason") or meta["finish_reason"]
-                        if ev.get("usage"):
-                            meta["usage"] = {**(meta["usage"] or {}), **ev["usage"]}
-                    elif t == "error":
-                        raise RuntimeError("stream error event: " + json.dumps(ev, ensure_ascii=False)[:500])
+        async with spend_guard.paid_call(
+            "vibecode",
+            "anthropic messages stream",
+            estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+        ):
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+                async with c.stream("POST", url, headers=headers, json=payload) as r:
+                    if r.status_code >= 400:
+                        body = (await r.aread()).decode("utf-8", "replace")
+                        raise RuntimeError(f"HTTP {r.status_code}: {body[:600]}")
+                    async for line in r.aiter_lines():
+                        if line:
+                            meta["sse_lines"] += 1
+                        if not line.startswith("data:"):
+                            continue
+                        d = line[5:].strip()
+                        if not d or d == "[DONE]":
+                            continue
+                        try:
+                            ev = json.loads(d)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        t = ev.get("type")
+                        if t == "message_start":
+                            m = ev.get("message") or {}
+                            meta["model"] = m.get("model") or meta["model"]
+                            if m.get("usage"):
+                                meta["usage"] = dict(m["usage"])
+                        elif t == "content_block_delta":
+                            dl = ev.get("delta") or {}
+                            if dl.get("type") == "text_delta":
+                                parts.append(dl.get("text") or "")
+                        elif t == "message_delta":
+                            meta["finish_reason"] = (ev.get("delta") or {}).get("stop_reason") or meta["finish_reason"]
+                            if ev.get("usage"):
+                                meta["usage"] = {**(meta["usage"] or {}), **ev["usage"]}
+                        elif t == "error":
+                            raise RuntimeError("stream error event: " + json.dumps(ev, ensure_ascii=False)[:500])
+    except spend_guard.PaidCallBlocked as blocked:
+        if blocked.code in spend_guard.REFUSAL_CODES:
+            raise spend_guard.BudgetExhausted(
+                blocked.code,
+                blocked.message_ru,
+                provider=blocked.provider,
+                what=blocked.what,
+            ) from blocked
+        raise
     except (httpx.HTTPError, OSError) as e:
         txt = "".join(parts)
         dt = round(time.time() - t0, 1)
@@ -231,6 +247,15 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             (trace_dir / f"{tag}.resp.txt").write_text(txt, encoding="utf-8")
             return txt
         except Exception as e:  # noqa: BLE001
+            from app.services.api_tracker_hook import ApiEmergencyBlockedError
+            from app.services.spend_guard import PaidCallBlocked, is_budget_exhausted
+
+            if isinstance(e, ApiEmergencyBlockedError):
+                raise
+            ctx = getattr(e, "context", None)
+            paid_blocked = isinstance(ctx, dict) and bool(ctx.get("paid_gate_blocked"))
+            if is_budget_exhausted(e) or isinstance(e, PaidCallBlocked) or paid_blocked:
+                raise
             last = e
             msg = f"{type(e).__name__}: {e}"
             logger.warning("scene_boundaries {} try{} failed: {}", tag, k, msg[:500])

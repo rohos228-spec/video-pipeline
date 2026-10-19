@@ -505,7 +505,7 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
     if proxy:
         if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
             try:
-                import socksio  # noqa: F401
+                import socksio
             except ImportError as e:
                 raise GptApiError(
                     "GPT_PROXY_URL=socks… нужен пакет: pip install 'httpx[socks]'",
@@ -548,6 +548,19 @@ def _node_kie_override() -> bool:
     return bool(ov and ov.kind == "text" and ov.provider == "kie")
 
 
+def _llm_provider_name() -> str:
+    if _node_vibecode_override():
+        return "vibecode"
+    if _node_kie_override():
+        return "kie"
+    return "vibecode" if settings.text_llm_is_vibecode else "kie"
+
+
+def _credits_hint() -> str:
+    name = "Vibecode" if _llm_provider_name() == "vibecode" else "Kie"
+    return f" — на счёте {name} кончились кредиты, пополни баланс у провайдера"
+
+
 def _override_vibecode_base_url() -> str:
     """Нода/шапка vibecode: VPS /v1/* если relay задан, иначе vibecode.moe."""
     vps = _vps_relay_base()
@@ -584,7 +597,6 @@ def _headers(model: str | None = None) -> dict[str, str]:
     vibe_ov = _node_vibecode_override() or is_anthropic
     kie_ov = _node_kie_override()
     if vibe_ov:
-        # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions или /v1/messages.
         key = (settings.vibecode_api_key or "").strip()
     elif kie_ov:
         # Не брать vibecode-ключ шапки: группа script_frames_qc идёт на kie.
@@ -636,7 +648,7 @@ def _chat_url(model: str) -> str:
         )
     if not _RELAY_BASE_LOGGED:
         vps = _vps_relay_base()
-        if vps and not is_anthropic:
+        if vps:
             logger.warning(
                 "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
                 vps,
@@ -662,7 +674,6 @@ def _chat_url(model: str) -> str:
     return f"{base}{path}"
 
 
-# ─────────────────────────── файлы → контекст ───────────────────────────
 
 
 def _xlsx_sheet_priority(title: str) -> int:
@@ -1668,18 +1679,24 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
             code = payload.get("code")
         retryable = _openai_error_retryable(msg, code)
         hint = ""
+        credits = False
         low = msg.lower()
         code_s = str(code or "").lower()
         if "credit" in low or "balance" in low or code_s in {"402", "insufficient_quota"}:
-            hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+            hint = _credits_hint()
             retryable = False
+            credits = True
         elif "not authorized" in low or "apikey" in low or "invalid api" in low:
             hint = " — ключ не авторизован на эту модель"
             retryable = False
-        raise GptApiError(
-            f"GPT провайдер error: {msg}{hint}",
-            context={"provider_code": code, "retryable": retryable, "error_kind": "provider_envelope"},
-        )
+        ctx: dict[str, Any] = {
+            "provider_code": code,
+            "retryable": retryable,
+            "error_kind": "provider_envelope",
+        }
+        if credits:
+            ctx.update(status_code=402, credits_exhausted=True, llm_provider=_llm_provider_name())
+        raise GptApiError(f"GPT провайдер error: {msg}{hint}", context=ctx)
     code = payload.get("code")
     if code is None:
         return
@@ -1692,6 +1709,7 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
     msg = str(payload.get("msg") or payload.get("message") or "ошибка провайдера")
     retryable = code_int in _RETRY_STATUS or code_int >= 500
     hint = ""
+    credits = False
     low = msg.lower()
     if (
         code_int == 402
@@ -1700,14 +1718,15 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
         or "balance isn't enough" in low
         or "balance isn" in low
     ):
-        hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+        hint = _credits_hint()
         retryable = False
+        credits = True
     elif "not authorized" in low or "apikey" in low or code_int in (401, 403):
         hint = " — ключ не авторизован на эту модель (проверь GPT_API_KEY/модель у провайдера)"
-    raise GptApiError(
-        f"GPT провайдер code={code_int}: {msg}{hint}",
-        context={"provider_code": code_int, "retryable": retryable},
-    )
+    ctx = {"provider_code": code_int, "retryable": retryable}
+    if credits:
+        ctx.update(status_code=402, credits_exhausted=True, llm_provider=_llm_provider_name())
+    raise GptApiError(f"GPT провайдер code={code_int}: {msg}{hint}", context=ctx)
 
 
 def _parse_responses(payload: dict[str, Any]) -> tuple[str, str]:
@@ -1795,25 +1814,27 @@ def _raise_http_status(
         low = body_text.lower()
         hint = ""
         if "apikey error" in low:
-            hint = (
-                f" — ключ не авторизован на модель {use_model!r} "
-                "(добавь модель в whitelist ключа grsai)"
-            )
+            hint = f" — ключ не авторизован на модель {use_model!r}"
+            if _llm_provider_name() == "kie":
+                hint += " (добавь модель в whitelist ключа grsai)"
         elif "model not register" in low or "not register" in low:
             hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:400]}{hint}",
-            context={"status_code": status, "retryable": False, "model": use_model},
+            context={"status_code": status, "retryable": False, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
     if status in _RETRY_STATUS or status >= 500:
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:300]}",
-            context={"status_code": status, "retryable": True, "model": use_model},
+            context={"status_code": status, "retryable": True, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
     if status >= 400:
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:400]}",
-            context={"status_code": status, "retryable": False, "model": use_model},
+            context={"status_code": status, "retryable": False, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
 
 
@@ -1946,52 +1967,7 @@ def _log_chat_finished(
     attempt: int,
     result: "GptChatResult",
     include_task_id: bool = True,
-    prompt_text: str = "",
 ) -> None:
-    # 1. Запись в локальный API Tracker (fail-safe, без задержек)
-    try:
-        from app.services.api_tracker_hook import record_api_call
-
-        u = result.usage or {}
-        p_tok = int(u.get("prompt_tokens") or 0)
-        c_tok = int(u.get("completion_tokens") or 0)
-        if c_tok == 0 and result.text:
-            c_tok = max(1, len(result.text) // 4)
-        if p_tok == 0:
-            if prompt_text:
-                p_tok = max(10, len(prompt_text) // 4)
-            else:
-                p_tok = 50
-        cached_tok = int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-        dur = float((result.raw or {}).get("duration_sec") or 0.0)
-
-        # Нормализация имени провайдера
-        prov = (provider_label or "").split()[0].lower().replace(":", "").replace(",", "")
-        model_name = result.model or use_model
-        if "vibecode" in provider_label.lower():
-            prov = "vibecode"
-        elif "gemini" in model_name.lower():
-            prov = "google"
-        elif "deepseek" in model_name.lower():
-            prov = "deepseek"
-        elif "kie" in provider_label.lower() or "kie" in prov:
-            prov = "kie"
-        elif not prov:
-            prov = "openai"
-
-        record_api_call(
-            provider=prov,
-            model=model_name,
-            prompt_tokens=p_tok,
-            completion_tokens=c_tok,
-            cached_tokens=cached_tok,
-            duration_sec=dur,
-            status_code=200,
-            project_source="chat/pipeline",
-        )
-    except Exception as e:
-        logger.debug(f"api_tracker_hook error: {e}")
-
     task_id = ""
     if include_task_id:
         task_id = result.response_id or (result.raw or {}).get("id") or "-"
@@ -2136,16 +2112,12 @@ def skip_cf_continue_for_salvaged_ops(
 
 
 def stitch_llm_continuation(base: str, cont: str) -> str:
-    """Склеить base + continuation; убрать повтор хвоста, если модель пересказала."""
     a = base or ""
     b = (cont or "").lstrip()
     if not b:
         return a
     if not a:
         return b
-    # Ищем максимальный overlap хвоста a с началом b (до 2k).
-    # Порог ≥8: короче — ложные склейки; длиннее — CF-continue часто
-    # повторяет только `"]}` / пару слов и тогда дублируется.
     max_ov = min(len(a), len(b), 2000)
     for ov in range(max_ov, 7, -1):
         if a.endswith(b[:ov]):
@@ -2248,8 +2220,11 @@ async def fetch_completed_response(
                 return "", "", {}
             for url in urls:
                 for attempt in range(max(1, int(polls))):
+                    from app.services.observation import authorize_model_retrieve,record_fact
+                    await authorize_model_retrieve(url)
                     try:
                         resp = await client.get(url, headers=headers)
+                        await record_fact('model_retrieve_end',{'method':'GET','status_code':resp.status_code})
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             "gpt_api.retrieve {} failed attempt={}/{}: {}: {}",
@@ -2314,6 +2289,21 @@ async def fetch_completed_response(
     return "", last_status, last_raw
 
 
+from app.services import spend_guard
+from app.services.observation import observe_model, record_fact
+
+
+def _blocked_as_gpt(blocked: "spend_guard.PaidCallBlocked") -> GptApiError:
+    return GptApiError(blocked.message_ru, context={
+        **blocked.context, "retryable": False, "error_kind": "paid_gate_blocked", "gate_code": blocked.code})
+
+
+_gpt_seam = spend_guard.paid_seam(
+    "gpt", "llm request", estimate=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD, wrap_error=_blocked_as_gpt)
+
+
+@_gpt_seam
+@observe_model
 async def _chat_responses_stream(
     *,
     url: str,
@@ -2323,17 +2313,30 @@ async def _chat_responses_stream(
     use_model: str,
     on_delta: Any | None = None,
 ) -> GptChatResult:
-    """POST Responses API с stream=true и сборкой текста из SSE.
-
-    При обрыве после дельт: salvage, затем GET готового ответа по resp_ id
-    (kie UI уже success, стрим Cloudflare оборвал).
-    """
     stream_body = {**body, "stream": True}
     lines: list[str] = []
     cf_ray = ""
     logged_task_id = False
     saw_text_done = False
     saw_completed = False
+    observation_text = ""
+    stream_batch: list[dict[str, Any]] = []
+    stream_batch_started = time.monotonic()
+    journal_ms = 0.0
+    journal_batches = 0
+
+    async def flush_stream_batch() -> None:
+        nonlocal stream_batch, stream_batch_started, journal_ms, journal_batches
+        if not stream_batch:
+            return
+        completed = any(item.get("type") == "response.completed" for item in stream_batch)
+        started = time.perf_counter()
+        await record_fact("model_stream_event", {"type": "batch", "events": len(stream_batch),
+            "complete": completed}, body={"events": stream_batch, "accumulated_text": observation_text})
+        journal_ms += (time.perf_counter() - started) * 1000.0
+        journal_batches += 1
+        stream_batch = []
+        stream_batch_started = time.monotonic()
     stream_err: BaseException | None = None
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)
@@ -2366,6 +2369,13 @@ async def _chat_responses_stream(
                             continue
                         et = str(ev.get("type") or "")
                         if et == "response.output_text.delta":
+                            observation_text += str(ev.get("delta") or "")
+                        stream_batch.append(ev)
+                        if (et in {"response.completed", "response.failed", "response.incomplete"}
+                                or len(stream_batch) >= 16
+                                or time.monotonic() - stream_batch_started >= 0.25):
+                            await flush_stream_batch()
+                        if et == "response.output_text.delta":
                             delta = str(ev.get("delta") or "")
                             if delta and on_delta:
                                 try:
@@ -2395,6 +2405,7 @@ async def _chat_responses_stream(
                                 use_model,
                             )
                             logged_task_id = True
+                    await flush_stream_batch()
                     logger.info(
                         "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
                         "cf_ray={}",
@@ -2404,6 +2415,7 @@ async def _chat_responses_stream(
                         cf_ray or "-",
                     )
         except TimeoutError as e:
+            await flush_stream_batch()
             stream_err = e
             logger.warning(
                 "gpt_api.chat SSE wall-clock timeout after {}s lines={} "
@@ -2414,6 +2426,7 @@ async def _chat_responses_stream(
                 saw_completed,
             )
         except (httpx.TimeoutException, httpx.HTTPError) as e:
+            await flush_stream_batch()
             stream_err = e
             logger.warning(
                 "gpt_api.chat SSE interrupted lines={} text_done={} completed={} "
@@ -2425,6 +2438,8 @@ async def _chat_responses_stream(
                 e,
             )
 
+    logger.info("gpt_api.chat SSE journal batches={} total_write_ms={:.1f}",
+                journal_batches, journal_ms)
     text = ""
     finish = ""
     final_payload: dict[str, Any] = {}
@@ -2560,12 +2575,13 @@ def _choice_text_piece(first: dict[str, Any]) -> str:
 
 
 def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[str, Any]]:
-    """Собрать текст из OpenAI-совместимого SSE ``chat/completions``."""
     chunks: list[str] = []
     finish = ""
     last: dict[str, Any] = {}
     envelope_err: GptApiError | None = None
     saw_done = False
+    saw_delta_text = False
+    saw_message_only = False
     for raw in lines:
         line = (raw or "").strip()
         if line in {"data: [DONE]", "data:[DONE]"}:
@@ -2587,16 +2603,22 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
         fr = first.get("finish_reason")
         if isinstance(fr, str) and fr:
             finish = fr
+        delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+        delta_piece = delta.get("content") if isinstance(delta.get("content"), str) else ""
         piece = _choice_text_piece(first)
         if piece:
             chunks.append(piece)
+            if delta_piece:
+                saw_delta_text = True
+            else:
+                saw_message_only = True
     text = "".join(chunks)
     if envelope_err and not text.strip():
         raise envelope_err
-    if not finish and saw_done:
-        finish = "stop"
-    elif not finish:
-        finish = "stream_partial"
+    if not finish:
+        # Дельта с текстом без finish_reason — завершённый кусок (дефолт stop).
+        # Текст только из message и без [DONE] — обрыв, не stop.
+        finish = "stream_partial" if saw_message_only and not saw_delta_text and not saw_done else "stop"
     out = dict(last) if last else {}
     out["_sse_done"] = saw_done
     return text, finish, out
@@ -2645,7 +2667,66 @@ async def _chat_completions_nostream(
     )
 
 
-async def _chat_completions_stream(
+def _chat_sse_finish_seen(lines: list[str]) -> str:
+    finish = ""
+    for raw in lines:
+        obj = _chat_sse_obj(raw)
+        choices = obj.get("choices") if obj else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            fr = choices[0].get("finish_reason")
+            if isinstance(fr, str) and fr:
+                finish = fr
+    return finish
+
+
+@_gpt_seam
+@observe_model
+async def _chat_completions_nostream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+) -> GptChatResult:
+    nostream = {**body, "stream": False}
+    async with _async_client(timeout=_http_timeout(timeout)) as client:
+        resp = await client.post(url, headers=headers, json=nostream)
+    if resp.status_code >= 400:
+        _raise_http_status(resp.status_code, resp.text, use_model=use_model)
+    try:
+        payload = resp.json()
+    except Exception as e:
+        raise GptApiError(
+            f"GPT: ответ не JSON: {resp.text[:300]}",
+            context={"retryable": True, "model": use_model, "error_kind": "empty_stream"},
+        ) from e
+    if not isinstance(payload, dict):
+        raise GptApiError(
+            "GPT(chat): пустой output",
+            context={"retryable": True, "error_kind": "empty_stream"},
+        )
+    _check_provider_envelope(payload)
+    text, finish = _parse_choice(payload)
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    logger.info("GPT(chat) nostream salvage chars={} model={}", len(text or ""), use_model)
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish,
+        usage=usage,
+        raw=payload,
+        response_id=str(payload.get("id") or ""),
+    )
+
+
+@spend_guard.paid_seam(
+    "vibecode",
+    "chat completions stream",
+    estimate=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+)
+@observe_model
+async def _chat_completions_stream_http(
     *,
     url: str,
     headers: dict[str, str],
@@ -2654,7 +2735,6 @@ async def _chat_completions_stream(
     use_model: str,
     on_delta: Any | None = None,
 ) -> GptChatResult:
-    """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
     stream_body = {**body, "stream": True}
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)
@@ -2738,6 +2818,7 @@ async def _chat_completions_stream(
             except GptApiError:
                 raise e
         raise
+    seen_finish = _chat_sse_finish_seen(lines)
     if not (text or "").strip():
         blob = "\n".join(lines).strip()
         if blob.startswith("{"):
@@ -2749,6 +2830,7 @@ async def _chat_completions_stream(
                 _check_provider_envelope(payload)
                 try:
                     text, finish = _parse_choice(payload)
+                    seen_finish = finish
                     last = payload
                 except GptApiError:
                     text = ""
@@ -2783,6 +2865,7 @@ async def _chat_completions_stream(
                         "retryable": True,
                         "error_kind": "empty_stream",
                         "sse_lines": len(lines),
+                        "stream_error": type(stream_err).__name__,
                     },
                 ) from stream_err
             raise GptApiError(
@@ -2791,19 +2874,58 @@ async def _chat_completions_stream(
             )
     usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
     raw = dict(last) if last else {"stream_lines": len(lines)}
+    if seen_finish:
+        raw["finish_reason"] = seen_finish
     if stream_err is not None:
         raw["sse_salvaged"] = True
         raw["sse_interrupt"] = type(stream_err).__name__
     return GptChatResult(
         text=text,
         model=use_model,
-        finish_reason=finish,
+        finish_reason=seen_finish,
         usage=usage,
         raw=raw,
         response_id=str(last.get("id") or ""),
     )
 
 
+async def _chat_completions_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+    on_delta: Any | None = None,
+) -> GptChatResult:
+    """Живой путь scene_boundaries: проверка бюджета до HTTP."""
+    try:
+        async with spend_guard.paid_call(
+            "vibecode",
+            "chat completions stream",
+            estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+        ):
+            return await _chat_completions_stream_http(
+                url=url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+                use_model=use_model,
+                on_delta=on_delta,
+            )
+    except spend_guard.PaidCallBlocked as blocked:
+        if blocked.code in spend_guard.REFUSAL_CODES:
+            raise spend_guard.BudgetExhausted(
+                blocked.code,
+                blocked.message_ru,
+                provider=blocked.provider,
+                what=blocked.what,
+            ) from blocked
+        raise _blocked_as_gpt(blocked) from blocked
+
+
+@_gpt_seam
+@observe_model
 async def _chat_anthropic_stream(
     *,
     url: str,
@@ -2813,7 +2935,6 @@ async def _chat_anthropic_stream(
     use_model: str,
     on_delta: Any | None = None,
 ) -> GptChatResult:
-    """POST /v1/messages с stream=true (Anthropic Messages API)."""
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)
     lines: list[str] = []
@@ -2891,12 +3012,14 @@ async def _chat_anthropic_stream(
         except GptApiError:
             raise
         except BaseException as e:
+            if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
+                raise
             stream_err = e
             logger.warning(
                 "Anthropic(chat/stream) interrupt after {} lines: {}: {}",
                 len(lines),
                 type(e).__name__,
-                e,
+                _httpx_error_detail(e),
             )
 
     text = "".join(text_chunks)
@@ -3157,6 +3280,8 @@ async def _chat_adaptive_1_2_4(
     pack_kind: str | None,
     level: int = 1,
     on_delta: Any | None = None,
+    max_output_tokens: int | None = None,
+    idempotent_text: bool = False,
 ) -> GptChatResult:
     """Сначала один вызов. Ошибка/обрез → этот кусок пополам (2). Снова → 4."""
     from app.services.adaptive_llm_batches import next_split_level
@@ -3178,6 +3303,8 @@ async def _chat_adaptive_1_2_4(
         auto_pack=False,
         pack_kind=pack_kind,
         on_delta=on_delta,
+        max_output_tokens=max_output_tokens,
+        idempotent_text=idempotent_text,
     )
     try:
         result = await chat(**kwargs)
@@ -3240,6 +3367,8 @@ async def _chat_adaptive_1_2_4(
                 pack_kind=pack_kind,
                 level=nxt,
                 on_delta=on_delta,
+                max_output_tokens=max_output_tokens,
+                idempotent_text=idempotent_text,
             )
             parts.append(part)
         merged = _merge_packed_apply_ops([p.text for p in parts])
@@ -3259,7 +3388,7 @@ async def _chat_adaptive_1_2_4(
         )
 
 
-async def chat(
+async def _chat_single(
     *,
     prompt: str,
     accompanying: str = "",
@@ -3275,6 +3404,7 @@ async def chat(
     auto_pack: bool = True,
     pack_kind: str | None = None,
     on_delta: Any | None = None,
+    output_cap: int | None = None,
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / Vibecode) с ретраями.
 
@@ -3373,7 +3503,6 @@ async def chat(
             temperature=temperature,
         )
     elif responses_mode:
-        # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie
         # задача уже success (см. kie.ai/logs Task ID = resp_…).
         body: dict[str, Any] = {
             "model": use_model,
@@ -3411,6 +3540,8 @@ async def chat(
                 body["reasoning_effort"] = effort
     if not is_anthropic and temperature is not None:
         body["temperature"] = temperature
+    if output_cap:
+        body["max_output_tokens" if responses_mode and not is_anthropic else "max_tokens"] = int(output_cap)
     anth_body: dict[str, Any] | None = None
     if routed is None and _is_anthropic_messages_model(use_model):
         anth_body = _anthropic_body_from_messages(
@@ -3447,6 +3578,10 @@ async def chat(
                 )
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    if skip_cf_continue_for_salvaged_ops(
+                        result.text, xlsx_write_contract
+                    ):
+                        break
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (
@@ -3505,10 +3640,6 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                if not (result.raw or {}).get("duration_sec"):
-                    if result.raw is None:
-                        result.raw = {}
-                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
@@ -3620,16 +3751,11 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                if not (result.raw or {}).get("duration_sec"):
-                    if result.raw is None:
-                        result.raw = {}
-                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
-                    prompt_text=prompt,
                 )
                 return result
 
@@ -3712,21 +3838,20 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                if not (result.raw or {}).get("duration_sec"):
-                    if result.raw is None:
-                        result.raw = {}
-                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
-                    prompt_text=prompt,
                 )
                 return result
 
-            async with _async_client(timeout=_http_timeout(use_timeout)) as client:
-                resp = await client.post(url, headers=headers, json=body)
+            async with spend_guard.paid_call(
+                "gpt", "llm request", estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+                wrap_error=_blocked_as_gpt,
+            ):
+                async with _async_client(timeout=_http_timeout(use_timeout)) as client:
+                    resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
             _raise_http_status(status, resp.text, use_model=use_model)
             try:
@@ -3754,17 +3879,12 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
                 volume_complete=volume_complete,
             )
-            if not (result.raw or {}).get("duration_sec"):
-                if result.raw is None:
-                    result.raw = {}
-                result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
             _log_chat_finished(
                 provider_label=provider_label,
                 use_model=use_model,
                 attempt=attempt,
                 result=result,
                 include_task_id=False,
-                prompt_text=prompt,
             )
             return result
         except httpx.TimeoutException:
@@ -3788,22 +3908,6 @@ async def chat(
             logger.warning(str(last_exc))
         except GptApiError as e:
             if not e.retryable:
-                try:
-                    from app.services.api_tracker_hook import record_api_call
-                    _st = int(e.context.get("status_code") or e.context.get("provider_code") or 500)
-                    record_api_call(
-                        provider=provider_label.split()[0].lower() if provider_label else "llm",
-                        model=use_model,
-                        prompt_tokens=max(10, len(prompt or "") // 4),
-                        completion_tokens=0,
-                        duration_sec=0.0,
-                        cost_usd=0.0,
-                        status_code=_st,
-                        error_message=str(e)[:300],
-                        project_source="chat/pipeline",
-                    )
-                except Exception:
-                    pass
                 raise
             # kie иногда падает на PDF input_file → code=500; оставляем только текст.
             # Не сжигаем попытку: attempt -= 1, чтобы text-only точно ушёл.
@@ -3829,30 +3933,109 @@ async def chat(
             backoff = _gpt_retry_backoff_s(attempt, last_exc)
             await asyncio.sleep(backoff)
 
-    final_err = last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
-    try:
-        from app.services.api_tracker_hook import record_api_call
-        _st = 500
-        if isinstance(final_err, GptApiError):
-            _st = int(final_err.context.get("status_code") or final_err.context.get("provider_code") or 500)
-        record_api_call(
-            provider=provider_label.split()[0].lower() if provider_label else "llm",
-            model=use_model,
-            prompt_tokens=max(10, len(prompt or "") // 4),
-            completion_tokens=0,
-            duration_sec=0.0,
-            cost_usd=0.0,
-            status_code=_st,
-            error_message=str(final_err)[:300],
-            project_source="chat/pipeline",
+    raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+
+
+TRUNCATION_RETRY_DEFAULT_TOKENS = 32768
+TRUNCATION_RETRY_MAX_TOKENS = 65536
+
+
+class GptTruncatedError(GptApiError):
+    pass
+
+
+def raised_output_cap(current: int | None) -> int | None:
+    if not current:
+        return TRUNCATION_RETRY_DEFAULT_TOKENS
+    raised = min(int(current) * 2, TRUNCATION_RETRY_MAX_TOKENS)
+    return raised if raised > int(current) else None
+
+
+def _truncation_marker(*, finish: str, retried: bool, cap: int | None, retry_cap: int | None,
+                       outcome: str) -> dict[str, Any]:
+    return {"finish_reason": finish, "retried": retried, "output_cap": cap,
+            "retry_output_cap": retry_cap, "outcome": outcome}
+
+
+async def chat(
+    *,
+    prompt: str,
+    accompanying: str = "",
+    input_paths: list[Path] | None = None,
+    system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+    xlsx_write_contract: str = "tsv",
+    volume_complete: bool | None = None,
+    auto_pack: bool = True,
+    pack_kind: str | None = None,
+    on_delta: Any | None = None,
+    max_output_tokens: int | None = None,
+    idempotent_text: bool = False,
+) -> GptChatResult:
+    from app.services.llm_completion import response_truncated
+
+    if auto_pack:
+        return await _chat_adaptive_1_2_4(
+            prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system,
+            history=history, model=model, temperature=temperature, timeout=timeout,
+            max_retries=max_retries, xlsx_write_contract=xlsx_write_contract, pack_kind=pack_kind,
+            on_delta=on_delta, max_output_tokens=max_output_tokens, idempotent_text=idempotent_text,
         )
-    except Exception:
-        pass
-    raise final_err
+    cap = max_output_tokens
+    first_cap = cap
+    retried = False
+    while True:
+        result: GptChatResult | None = None
+        failure: GptApiError | None = None
+        try:
+            result = await _chat_single(
+                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system,
+                history=history, model=model, temperature=temperature, timeout=timeout,
+                max_retries=max_retries, xlsx_write_contract=xlsx_write_contract,
+                volume_complete=volume_complete, auto_pack=False, pack_kind=pack_kind,
+                on_delta=on_delta, output_cap=cap,
+            )
+        except GptTruncatedError:
+            raise
+        except GptApiError as exc:
+            if not response_truncated(None, (exc.context or {}).get("finish_reason")):
+                raise
+            failure = exc
+        if result is not None and not response_truncated(result.raw, result.finish_reason):
+            return result
+        finish = str((result.finish_reason if result is not None
+                      else (failure.context or {}).get("finish_reason")) or "length")
+        retry_cap = raised_output_cap(cap) if (idempotent_text and not retried) else None
+        logger.warning(
+            "gpt_api.chat TRUNCATED finish={} cap={} chars={} idempotent={} retry_cap={}",
+            finish, cap, len(result.text) if result is not None else 0, idempotent_text, retry_cap,
+        )
+        if retry_cap is not None:
+            retried, cap = True, retry_cap
+            continue
+        partial = result.text if result is not None else ""
+        if result is not None and not idempotent_text:
+            result.raw = {**(result.raw or {}), "truncation": _truncation_marker(
+                finish=finish, retried=False, cap=first_cap, retry_cap=None, outcome="event_no_retry")}
+            return result
+        raise GptTruncatedError(
+            "GPT: ответ усечён по лимиту"
+            + (" и после одного повтора с увеличенным лимитом" if retried else "")
+            + ("; ответ пуст" if not partial.strip() else ""),
+            context={
+                "error_kind": "truncated", "retryable": False, "finish_reason": finish,
+                "output_cap": first_cap, "retry_output_cap": cap if retried else None,
+                "retried": retried, "partial_chars": len(partial), "partial_text": partial,
+                "response_id": result.response_id if result is not None else "",
+            },
+        )
 
 
 def is_pdf_provider_failure(exc: BaseException) -> bool:
-    """kie 500 Server exception / timeout на большом PDF — имеет смысл chunked retry."""
     if isinstance(exc, GptApiError):
         kind = str(exc.context.get("error_kind") or "")
         code = int(exc.context.get("provider_code") or exc.context.get("status_code") or 0)
@@ -3884,15 +4067,6 @@ async def chat_pdf_in_chunks(
     chunk_chars: int = _PDF_PROVIDER_SAFE_CHARS,
     on_chunk: Any | None = None,
 ) -> GptChatResult:
-    """Перевод/обработка PDF по частям — обход kie code=500 / hang на полном тексте.
-
-    Текст извлекается локально (pypdf); в API уходит только текущий кусок без
-    повторной отправки всего PDF. История чата — только на первом куске.
-
-    Live: kie часто даёт code=500 на *втором* куске после успешного первого —
-    раньше весь чат падал. Теперь: пауза между кусками, ≥3 ретрая, раскол
-    куска пополам при стойком 500, иначе пометка и продолжение остальных.
-    """
     jobs: list[tuple[str, str]] = []
     for pdf in pdf_paths:
         extracted = pdf_to_text(pdf)

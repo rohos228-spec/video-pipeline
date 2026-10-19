@@ -315,7 +315,7 @@ def normalize_model(raw: dict[str, Any], *, channel: str | None = None) -> dict[
     else:
         kind = "text"
     pricing = apply_markup(raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}, channel=channel)
-    provider = "vibecode"
+    provider = "kie" if mid == 'gpt-kie' else "vibecode"
     if is_video:
         from app.services.media_route import video_provider_for
 
@@ -332,7 +332,7 @@ def normalize_model(raw: dict[str, Any], *, channel: str | None = None) -> dict[
         "online": True,
         "resolution": _resolution_badge(display, mid),
         "pricing": pricing,
-        "api_model": mid,
+        "api_model": 'gpt-5-6-sol' if mid == 'gpt-kie' else mid,
         "provider": provider,
         "image_generator": IMAGE_MODEL_TO_GENERATOR.get(mid),
         "video_generator": VIDEO_MODEL_TO_GENERATOR.get(mid),
@@ -345,6 +345,7 @@ def models_for_channel(
     channel: str | None = None,
 ) -> list[dict[str, Any]]:
     src = list(raw_models if raw_models is not None else load_snapshot())
+    src.append({'id':'gpt-kie','display_name':'GPT (kie.ai)','is_image':False})
     src.extend(IMAGE_CATALOG_EXTRA)
     src.extend(VIDEO_CATALOG_RAW)
     out: list[dict[str, Any]] = []

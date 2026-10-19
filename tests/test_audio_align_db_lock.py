@@ -72,7 +72,7 @@ async def test_r15_written_even_if_db_locked(tmp_path: Path) -> None:
         raise RuntimeError("database is locked")
 
     with (
-        patch("app.services.audio_align_run.session_scope", return_value=session_cm),
+        patch("app.services.audio_align_run._project_scope", return_value=session_cm),
         patch(
             "app.services.audio_align_run._load_align_inputs",
             AsyncMock(return_value=load_inputs),

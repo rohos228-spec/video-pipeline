@@ -9,9 +9,13 @@ status=processing когда реально ушёл в API
 from __future__ import annotations
 
 import asyncio
+import itertools
+import os
+import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -102,6 +106,206 @@ _DEDUP_WINDOW_S = 2.5
 _MAX_PARALLEL_CAP = 16
 
 
+
+CREATE_JOBS_DDL = """
+CREATE TABLE IF NOT EXISTS create_jobs (
+    job_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    media TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    path TEXT NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    preview_url TEXT,
+    raw_url TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    elapsed_sec INTEGER,
+    history_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_create_jobs_status ON create_jobs (status);
+CREATE INDEX IF NOT EXISTS ix_create_jobs_created_at ON create_jobs (created_at);
+"""
+
+_JOB_COLUMNS = ("job_id", "owner", "seq", "media", "model", "provider", "path", "prompt", "status",
+                "preview_url", "raw_url", "error", "created_at", "started_at", "finished_at",
+                "elapsed_sec", "history_id", "updated_at")
+_STORE_STATUS = {"processing": "running"}
+_LOAD_STATUS = {"running": "processing", "cancelled": "failed", "interrupted": "failed", "error": "failed"}
+INTERRUPTED_ERROR_RU = (
+    "Сервер был перезапущен, пока задача не завершилась. Автоматически она не повторяется "
+    "(повтор платный): проверьте кабинет провайдера и историю, при необходимости запустите заново."
+)
+_RESTORE_LIMIT = 200
+_RETENTION_DAYS = 30
+
+_OWNER = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+_SEQ = itertools.count(1)
+_DB_LOCK = threading.Lock()
+_ENSURED: set[str] = set()
+_RESTORED: set[str] = set()
+_PERSIST_STATS: dict[str, Any] = {"written": 0, "skipped": 0, "last_error": ""}
+
+
+def persistence_enabled() -> bool:
+    return (os.environ.get("VP_CREATE_JOBS_DB") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def persistence_stats() -> dict[str, Any]:
+    with _DB_LOCK:
+        return dict(_PERSIST_STATS)
+
+
+def _db_path() -> Path:
+    p = Path(settings.sqlite_path)
+    return p if p.is_absolute() else Path.cwd() / p
+
+
+def _connect() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path), timeout=5)
+    con.execute("PRAGMA busy_timeout=5000")
+    if str(path) not in _ENSURED:
+        con.executescript(CREATE_JOBS_DDL)
+        _ENSURED.add(str(path))
+    return con
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+
+
+def _clip(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    from app.services.redact import redact_text
+
+    s = redact_text(str(value))
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _snapshot(job: "CreateJob", store_status: str | None = None) -> dict[str, Any]:
+    status = store_status or _STORE_STATUS.get(job.status, job.status)
+    return {
+        "job_id": job.id, "owner": _OWNER, "seq": next(_SEQ), "media": job.media, "model": job.model,
+        "provider": job.provider, "path": str(job.path), "prompt": _clip(job.prompt, 2000) or "",
+        "status": status, "preview_url": job.preview_url, "raw_url": _clip(job.raw_url, 1000),
+        "error": _clip(job.error, 500), "created_at": job.created_at, "started_at": job.started_at,
+        "finished_at": job.finished_at, "elapsed_sec": job.elapsed_sec, "history_id": job.history_id or "",
+        "updated_at": _now_utc(),
+    }
+
+
+def _persist_sync(snap: dict[str, Any]) -> bool:
+    if not persistence_enabled():
+        return False
+    try:
+        cols = ", ".join(_JOB_COLUMNS)
+        marks = ", ".join(f":{c}" for c in _JOB_COLUMNS)
+        sets = ", ".join(f"{c}=excluded.{c}" for c in _JOB_COLUMNS if c not in ("job_id", "created_at"))
+        with _DB_LOCK:
+            con = _connect()
+            try:
+                con.execute(
+                    f"INSERT INTO create_jobs ({cols}) VALUES ({marks}) "
+                    f"ON CONFLICT(job_id) DO UPDATE SET {sets} "
+                    f"WHERE excluded.owner != create_jobs.owner OR excluded.seq >= create_jobs.seq",
+                    snap,
+                )
+                con.commit()
+            finally:
+                con.close()
+            _PERSIST_STATS["written"] += 1
+        return True
+    except Exception as exc:
+        with _DB_LOCK:
+            _PERSIST_STATS["skipped"] += 1
+            _PERSIST_STATS["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        logger.error("create_jobs: запись состояния {} пропущена: {}: {}", snap.get("job_id"),
+                     type(exc).__name__, exc)
+        return False
+
+
+async def _persist(job: "CreateJob", store_status: str | None = None) -> bool:
+    try:
+        return _persist_sync(_snapshot(job, store_status))
+    except Exception:
+        logger.exception("create_jobs: сбой записи состояния {}", job.id)
+        return False
+
+
+def restore_jobs() -> int:
+    if not persistence_enabled():
+        return 0
+    key = str(_db_path())
+    if key in _RESTORED:
+        return 0
+    _RESTORED.add(key)
+    loaded = 0
+    try:
+        with _DB_LOCK:
+            con = _connect()
+            try:
+                con.row_factory = sqlite3.Row
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=_RETENTION_DAYS)).replace(tzinfo=None).isoformat(sep=" ")
+                con.execute("DELETE FROM create_jobs WHERE status IN ('done','failed','cancelled','interrupted') "
+                            "AND updated_at < ?", (cutoff,))
+                rows = con.execute(
+                    "SELECT * FROM create_jobs WHERE status IN ('queued','running') "
+                    "UNION SELECT * FROM (SELECT * FROM create_jobs ORDER BY created_at DESC LIMIT ?)",
+                    (_RESTORE_LIMIT,),
+                ).fetchall()
+                interrupted: list[dict[str, Any]] = []
+                for r in rows:
+                    d = dict(r)
+                    if d["job_id"] in _JOBS:
+                        continue
+                    status = d["status"]
+                    error = d["error"]
+                    finished = d["finished_at"]
+                    if status in ("queued", "running") and d["owner"] != _OWNER:
+                        status, error = "interrupted", INTERRUPTED_ERROR_RU
+                        finished = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                        con.execute(
+                            "UPDATE create_jobs SET status='interrupted', error=?, finished_at=?, updated_at=?, "
+                            "seq=seq+1 WHERE job_id=? AND status IN ('queued','running')",
+                            (error, finished, _now_utc(), d["job_id"]),
+                        )
+                        interrupted.append(d)
+                    job = CreateJob(
+                        id=d["job_id"], media=d["media"], model=d["model"], provider=d["provider"],
+                        path=Path(d["path"]), prompt=d["prompt"] or "",
+                        status=_LOAD_STATUS.get(status, status), preview_url=d["preview_url"],
+                        raw_url=d["raw_url"], error=error, created_at=d["created_at"],
+                        started_at=d["started_at"], finished_at=finished, elapsed_sec=d["elapsed_sec"],
+                        history_id=d["history_id"] or "",
+                    )
+                    _JOBS[job.id] = job
+                    loaded += 1
+                con.commit()
+            finally:
+                con.close()
+        for d in interrupted:
+            try:
+                update_sidecar(Path(d["path"]), status="failed", error=INTERRUPTED_ERROR_RU)
+            except Exception:
+                logger.debug("create_jobs: sidecar прерванной задачи {} не обновлён", d["job_id"], exc_info=True)
+        if interrupted:
+            logger.warning("create_jobs: после перезапуска помечено прерванными задач: {}", len(interrupted))
+    except Exception as exc:
+        _RESTORED.discard(key)
+        with _DB_LOCK:
+            _PERSIST_STATS["last_error"] = f"restore: {type(exc).__name__}: {exc}"[:300]
+        logger.error("create_jobs: восстановление из БД не удалось: {}: {}", type(exc).__name__, exc)
+    return loaded
+
+
 def _job_fingerprint(
     *,
     media: str,
@@ -152,6 +356,7 @@ def _semaphore(provider: str) -> asyncio.Semaphore:
 
 
 def get_job(job_id: str) -> CreateJob | None:
+    restore_jobs()
     return _JOBS.get(job_id)
 
 
@@ -170,6 +375,7 @@ def _refresh_queue_positions() -> None:
 
 
 def list_active_jobs(*, provider: str | None = None) -> list[CreateJob]:
+    restore_jobs()
     _refresh_queue_positions()
     out = [
         j
@@ -210,6 +416,7 @@ async def enqueue_generation(
     run: GenerateFn,
 ) -> CreateJob:
     """Регистрирует job (queued) и стартует task — слот API берёт семафор."""
+    restore_jobs()
     fp = _job_fingerprint(
         media=media, model=model, provider=provider, prompt=prompt, params=params
     )
@@ -261,6 +468,7 @@ async def enqueue_generation(
         _JOBS[job_id] = job
         _RECENT_FP[fp] = (job_id, now)
         _refresh_queue_positions()
+    await _persist(job)
 
     logger.info(
         "create_job.enqueued id={} provider={} media={} model={} wait_pos={} parallel_cap={}",
@@ -295,6 +503,7 @@ async def cancel_job(job_id: str) -> bool:
         update_sidecar,
     )
 
+    restore_jobs()
     clean = job_id.removeprefix("gen-").strip()
     target_job: CreateJob | None = None
     target_jid: str | None = None
@@ -332,6 +541,7 @@ async def cancel_job(job_id: str) -> bool:
         )
         invalidate_generation_list_cache()
         _refresh_queue_positions()
+        await _persist(target_job, store_status="cancelled")
         logger.info("create_job.cancelled id={} (matched job)", target_jid)
         return True
 
@@ -383,6 +593,7 @@ async def _run_job(
         t0 = asyncio.get_running_loop().time()
         _refresh_queue_positions()
         update_sidecar(job.path, status="processing", started_at=job.started_at)
+        await _persist(job)
         logger.info(
             "create_job.start id={} provider={} media={} model={} (slot acquired, cap={})",
             job.id,
@@ -452,6 +663,7 @@ async def _run_job(
             )
             if not job.path.is_file() or job.path.stat().st_size < 32:
                 raise RuntimeError("Create job: sidecar ok, но media-файл пропал")
+            await _persist(job)
             from app.services.generation_storage import format_elapsed_min_sec
 
             logger.info(
@@ -498,6 +710,7 @@ async def _run_job(
                 finished_at=job.finished_at,
                 elapsed_sec=job.elapsed_sec,
             )
+            _persist_sync(_snapshot(job, "cancelled"))
             logger.info("create_job.cancelled_handled id={}", job.id)
             raise
         except Exception as e:  # noqa: BLE001
@@ -515,6 +728,7 @@ async def _run_job(
                 finished_at=job.finished_at,
                 elapsed_sec=job.elapsed_sec,
             )
+            await _persist(job)
             logger.exception("create_job.failed id={}", job.id)
             # Запись ошибки в API Tracker
             try:

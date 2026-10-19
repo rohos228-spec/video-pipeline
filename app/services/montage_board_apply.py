@@ -25,6 +25,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import is_sqlite_locked as _is_sqlite_locked
 from app.models import Entity, Frame, Project
 from app.project_db import (
     project_db_session_scope as _isolated_project_scope,
@@ -59,6 +60,7 @@ from app.services.montage_board_regen import (
     prepare_video_regen,
 )
 from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
+from app.services.request_context import scoped_async
 
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
@@ -101,11 +103,6 @@ def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
         return path.is_file() and path.stat().st_size >= min_bytes
     except OSError:
         return False
-
-
-def _is_sqlite_locked(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "database is locked" in msg or "database is busy" in msg
 
 
 def _is_sqlite_transient(exc: BaseException) -> bool:
@@ -790,6 +787,7 @@ async def _run_ops_phase(
         await asyncio.gather(*(_guarded(fr) for fr in wave))
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def apply_montage_board(
     session: AsyncSession,
     project: Project,

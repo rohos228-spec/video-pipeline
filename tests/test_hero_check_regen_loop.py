@@ -221,8 +221,9 @@ def test_max_rounds_gives_up(
     started = asyncio.run(
         hcr.maybe_start_hero_check_regen_after_check(_sess(), p, check_key)
     )
-    assert started is False
+    assert started is True
     assert hcr.META_RETURN not in (p.meta or {})
+    assert (p.meta or {}).get("auto_paused_reason")
 
 
 def test_return_to_check_after_hero(
