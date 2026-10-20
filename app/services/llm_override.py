@@ -77,29 +77,46 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
     ov: NodeLlmOverride | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
-        # Границы / каркас / площадка / кадры / QC: только 52pay gpt-5.6-sol.
-        # Без маршрута chat() падает, на vibecode группа не уходит.
-        # Высокое мышление — поле reasoning_effort. Модель с канваса не перебивает.
-        ov = NodeLlmOverride(
-            model_id="gpt-5.6-sol",
-            channel="stable",
-            kind="text",
-            provider="52pay",
-            label="GPT 5.6 Sol (52pay · high)",
-            reasoning_effort="high",
-        )
-        logger.info(
-            "node_llm: #{} {} → {} ({})",
-            getattr(project, "id", "?"),
-            node_key or node_type or "?",
-            ov.label,
-            ov.model_id,
-        )
+        # Основной маршрут — 52pay gpt-5.6-sol. Vibecode только если ключ 52pay
+        # для этой модели пуст. Мышление high. Канвасная модель не перебивает.
+        from app.services.pay52_routes import resolve_text
+
+        model_id = "gpt-5.6-sol"
+        if resolve_text(model_id) is not None:
+            ov = NodeLlmOverride(
+                model_id=model_id,
+                channel="stable",
+                kind="text",
+                provider="52pay",
+                label="GPT 5.6 Sol (52pay · high)",
+                reasoning_effort="high",
+            )
+            logger.info(
+                "node_llm: #{} {} → {} ({})",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+                ov.label,
+                ov.model_id,
+            )
+        else:
+            ov = NodeLlmOverride(
+                model_id=model_id,
+                channel="stable",
+                kind="text",
+                provider="vibecode",
+                label="GPT 5.6 Sol (vibecode · high, fallback)",
+                reasoning_effort="high",
+            )
+            logger.warning(
+                "node_llm: #{} {} fallback vibecode: ключ 52pay для gpt-5.6-sol пуст",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+            )
     else:
         choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
         if choice_raw and choice_raw.get("kind") == "text":
             ov = NodeLlmOverride(
-                model_id=str(choice_raw["id"]),
+                model_id=str(choice_raw.get("api_model") or choice_raw["id"]),
                 channel=str(choice_raw.get("channel") or "stable"),
                 kind="text",
                 provider=str(choice_raw.get("provider") or "vibecode"),
