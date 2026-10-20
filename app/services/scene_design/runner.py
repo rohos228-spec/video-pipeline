@@ -552,9 +552,10 @@ async def _run_one_agent_adaptive(
     async def _run_parts(
         batches: list[list[Any]], *, child_depth: int, prefix: str
     ) -> dict[str, Any]:
-        sem = asyncio.Semaphore(parallel)
+        sem = asyncio.Semaphore(max(1, len(batches)))  # 2026-10-11: all parallel
 
         async def _one(i: int, batch: list[Any]) -> dict[str, Any]:
+            await asyncio.sleep((i - 1) * 5.0)  # 2026-10-11: 5s stagger
             part_label = f"{prefix}{i}"
             # Proactive-чанки: переживают soft-retry / 500 / рестарт.
             if prefix == "p":
@@ -753,7 +754,7 @@ async def run_category_agents(
     """
     from app.services.scene_design import agent_chunks as ach
 
-    sem = asyncio.Semaphore(max(1, int(settings.scene_design_max_parallel)))
+    sem = asyncio.Semaphore(64)  # 2026-10-11: no cap, agents in a wave run in parallel
     results: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     waves = ag.agent_waves(project)
@@ -1100,6 +1101,7 @@ async def run_assembler_chunked(
             raise
 
     async def _asm_one(i: int, batch: Any) -> Any:
+        await asyncio.sleep((i - 1) * 5.0)  # 2026-10-11: parallel, 5s stagger
         label = f"p{i}"
         cached = load_chunk_checkpoint(project, ag.ASSEMBLER, label)
         if cached is not None:

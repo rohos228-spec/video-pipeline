@@ -33,7 +33,18 @@ def all_test_files() -> list[str]:
 
 
 def legacy_files() -> list[str]:
-    return sorted(_rel(p) for p in TESTS.glob("*.py") if is_test_file(p))
+    docker = set(DOCKER_ONLY)
+    out = []
+    for p in TESTS.rglob("*.py"):
+        if any(part in SKIP_DIRS for part in p.relative_to(TESTS).parts) or not is_test_file(p):
+            continue
+        if "observe_v1" in p.parts:
+            continue
+        rel = _rel(p)
+        if rel in docker:
+            continue
+        out.append(rel)
+    return sorted(out)
 
 
 def observe_files() -> list[str]:
