@@ -57,11 +57,39 @@ jobs:
           name: junit-orchestrator
           path: reports/*.xml
 
-  observe:
-    name: Observe suite (tests/observe_v1 in chunks)
+  # Число чанков считаем из реестра тестов, чтобы при добавлении файлов ни один чанк не потерялся.
+  observe_plan:
+    name: Plan observe chunks
     runs-on: ubuntu-latest
-    # на этой машине весь набор идёт около 70 минут (тяжёлые медиа-стенды), поэтому запас
-    timeout-minutes: 150
+    timeout-minutes: 5
+    outputs:
+      chunks: ${{ steps.plan.outputs.chunks }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        run: |
+          n=$(python -c "import sys, math; sys.path.insert(0, 'scripts'); from test_suites import observe_files; print(math.ceil(len(observe_files()) / 12))")
+          echo "total=$n" >> "$GITHUB_OUTPUT"
+          echo "chunks=[$(seq -s, 1 "$n")]" >> "$GITHUB_OUTPUT"
+
+  # Чанки Observe идут параллельно (один процесс pytest на задачу — память).
+  # На зелёной гонке #40 самый долгий чанк ~12 минут, поэтому общий PR ~13 вместо ~32 минут.
+  observe_chunk:
+    name: Observe chunk ${{ matrix.chunk }} / ${{ needs.observe_plan.outputs.total }}
+    needs: observe_plan
+    strategy:
+      # один красный чанк не отменяет остальные — все доложат junit-артефакты
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        chunk: ${{ fromJson(needs.observe_plan.outputs.chunks) }}
+    runs-on: ubuntu-latest
+    # per-chunk-timeout 40 минут плюс установка окружения
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,13 +100,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install package
         run: python -m pip install -e ".[dev]"
-      - name: Run chunks, one pytest process at a time
-        run: python scripts/run_legacy_chunked.py --suite observe --chunk 12 --per-chunk-timeout 2400 --junit-dir reports/observe
+      - name: Run chunk ${{ matrix.chunk }}, one pytest process
+        run: python scripts/run_legacy_chunked.py --suite observe --chunk 12 --only-chunk ${{ matrix.chunk }} --per-chunk-timeout 2400 --junit-dir reports/observe
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: junit-observe
+          name: junit-observe-${{ matrix.chunk }}
           path: reports/observe/*.xml
+
+  # Стабильное имя проверки: branch protection ждёт именно этот джоб, а не имена чанков.
+  observe:
+    name: Observe suite (chunks parallel)
+    needs: observe_chunk
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All chunks green
+        run: |
+          result="${{ needs.observe_chunk.result }}"
+          if [ "$result" != "success" ]; then
+            echo "Observe chunks finished with result: $result"
+            exit 1
+          fi
+          echo "Все чанки Observe зелёные."
 
   docker:
     name: Docker-only tests (4 modules in tests/observe_v1)
