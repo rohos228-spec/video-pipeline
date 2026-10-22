@@ -41,9 +41,26 @@ async def test_chat_without_52pay_route_raises(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_scene_boundaries_refuses_vibecode_without_route(monkeypatch) -> None:
+async def test_scene_boundaries_without_route_uses_regular_gateway(monkeypatch) -> None:
+    """Границы сцен без маршрута 52pay идут в обычный шлюз (WS2-r0b, коллега c319f3d2).
+
+    Жёсткий отказ остался только у разбора стиля (style_agent/job.py), границы сцен
+    на vibecode-фолбэк не блокируются.
+    """
+    from types import SimpleNamespace
+
     from app.settings import settings
+    import app.services.gpt_api as gpt_api
 
     monkeypatch.setattr(settings, "pay52_gpt_api_key", "")
-    with pytest.raises(RuntimeError, match="нет маршрута 52pay"):
-        await _kie_once("u", "s")
+    calls: list[str] = []
+
+    async def fake_chat(**kwargs):
+        calls.append(str(kwargs.get("model") or ""))
+        return SimpleNamespace(text="[x]", finish_reason="stop")
+
+    monkeypatch.setattr(gpt_api, "chat", fake_chat)
+    text, meta = await _kie_once("u", "s")
+    assert calls == ["gpt-5.6-sol"], calls
+    assert text == "[x]"
+    assert meta["model"] == "gpt-5.6-sol"

@@ -42,7 +42,9 @@ def test_prices_use_expensive_markup() -> None:
     assert priced["output_usd_per_m"] == round(raw["pricing"]["output_usd_per_m"] * 3, 6)
     luna = next(m for m in load_snapshot() if m["id"] == "gpt-5.6-luna")
     expensive = apply_markup(luna["pricing"])
-    assert expensive["input_usd_per_m"] == round(0.026244 * 3, 6)
+    # База цены приходит из синхронизации тарифов и меняется со временем —
+    # проверяем наценку каталога, а не жёсткое число сырья.
+    assert expensive["input_usd_per_m"] == round(luna["pricing"]["input_usd_per_m"] * PRICE_MARKUP, 6)
 
 
 def test_legacy_cheap_channel_arg_is_ignored() -> None:
@@ -69,12 +71,12 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert "xai" in ids
     counts = {v["id"]: v["count"] for v in cat["vendors"]}
     assert counts["anthropic"] == 5
-    assert counts["gemini"] == 3
+    assert counts["gemini"] == 4
     assert counts["deepseek"] == 2
     assert counts["xai"] == 2
     assert counts["images"] == 7
     assert counts["video"] == 11
-    assert counts["openai"] == 4
+    assert counts["openai"] == 6
     sonnet = find_model("claude-sonnet-5")
     assert sonnet is not None
     assert sonnet["kind"] == "text"
@@ -434,4 +436,8 @@ async def test_catalog_api_returns_marked_up_prices() -> None:
     vendors = {v["id"]: v for v in body["vendors"]}
     assert vendors["anthropic"]["count"] == 5
     luna = next(m for m in body["models"] if m["id"] == "gpt-5.6-luna")
-    assert luna["pricing"]["input_usd_per_m"] == round(0.026244 * 3, 6)
+    # база цены из синхронизации тарифов: сверяем наценку каталога, не жёсткое число
+    raw_luna = next(m for m in load_snapshot() if m["id"] == "gpt-5.6-luna")
+    assert luna["pricing"]["input_usd_per_m"] == round(
+        raw_luna["pricing"]["input_usd_per_m"] * PRICE_MARKUP, 6
+    )
