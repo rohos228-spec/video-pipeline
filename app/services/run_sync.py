@@ -186,8 +186,11 @@ from app.services.excel_gpt_node import (
     active_excel_gpt_node_key,
     clear_slot_completion_meta,
     completed_node_keys,
+    drop_completed_node_key,
     effective_node_type,
+    is_sfq3_shots_node_key,
     resolve_excel_gpt_node_key_for_slot,
+    sfq3_shots_report_exists,
     slot_for_excel_gpt_node_key,
     slot_from_ready_status,
     slot_from_running_status,
@@ -395,8 +398,63 @@ async def sync_run_for_project(
         # apply-ops (STOP / stale status) → done, meta не трогаем.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
+        from app.services.node_groups import ensure_sfq3_after_edge
+
+        live_meta = project.meta if isinstance(project.meta, dict) else None
+        if isinstance(live_meta, dict) and ensure_sfq3_after_edge(live_meta):
+            project.meta = dict(live_meta)
+            flag_modified(project, "meta")
+            await sync_run_snapshot_from_canvas_graph(s, project)
         for nr in run.node_runs:
             if nr.node_type != EXCEL_GPT_NODE_TYPE:
+                continue
+            # ③ SFQ3: ключ в meta без report.json — не успех. Снимаем ключ
+            # и возвращаем ложный done в pending, чтобы проверка реально шла.
+            if (
+                is_sfq3_shots_node_key(nr.node_key)
+                and not sfq3_shots_report_exists(project, nr.node_key)
+            ):
+                if nr.node_key in done_keys and drop_completed_node_key(
+                    project, nr.node_key
+                ):
+                    done_keys.discard(nr.node_key)
+                    flag_modified(project, "meta")
+                    logger.info(
+                        "[#{}] heal: sfq3 shots {} без report.json schema=sfq3 "
+                        "— ключ снят, done не ставим",
+                        project_id,
+                        nr.node_key,
+                    )
+                if nr.node_key == active_key and nr.status in (
+                    NodeRunStatus.running,
+                    NodeRunStatus.queued,
+                    NodeRunStatus.waiting_hitl,
+                ):
+                    continue
+                if nr.status in (
+                    NodeRunStatus.done,
+                    NodeRunStatus.running,
+                    NodeRunStatus.queued,
+                    NodeRunStatus.waiting_hitl,
+                ):
+                    old = nr.status.value
+                    if reset_node_to_pending(
+                        nr, project_id=project_id, initiator="auto_unstick"
+                    ):
+                        await publish_node_event(
+                            run.id,
+                            event_type="node_status_changed",
+                            node_key=nr.node_key,
+                            payload={
+                                "node_type": nr.node_type,
+                                "from": old,
+                                "to": nr.status.value,
+                                "project_id": project_id,
+                            },
+                        )
                 continue
             if nr.node_key not in done_keys:
                 continue

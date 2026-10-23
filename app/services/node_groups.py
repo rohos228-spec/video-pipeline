@@ -1946,12 +1946,85 @@ def insert_script_frames_qc_boundaries_graph(meta: dict[str, Any]) -> bool:
     return True
 
 
+def ensure_sfq3_after_edge(meta: dict[str, Any]) -> bool:
+    """Вернуть after ②→③, если на канвасе есть обе ноды SFQ3, а стрелки нет.
+
+    Fail ③→② остаётся. Уже существующая не-fail стрелка ②→③ не дублируется.
+    Копии группы связываются отдельно по ``groupId``.
+    """
+    from app.services.excel_gpt_node import edge_is_fail_handoff
+
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    buckets: dict[str, dict[str, str]] = {}
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        role: str | None = None
+        for token, name in (
+            ("_sfq3_plan", "plan"),
+            ("_sfq3_script", "script"),
+            ("_sfq3_shots", "shots"),
+        ):
+            if token in nid:
+                role = name
+                break
+        if role is None:
+            continue
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        gid = str(data.get("groupId") or "script_frames_qc_v3")
+        buckets.setdefault(gid, {})[role] = nid
+    if not buckets:
+        return False
+    used_ids = {str(e.get("id") or "") for e in edges}
+    added = False
+    for roles in buckets.values():
+        script_id = roles.get("script")
+        shots_id = roles.get("shots")
+        if not script_id or not shots_id:
+            continue
+        if any(
+            str(e.get("source") or "") == script_id
+            and str(e.get("target") or "") == shots_id
+            and not edge_is_fail_handoff(e)
+            for e in edges
+        ):
+            continue
+        eid = f"e_{script_id}_{shots_id}"
+        if eid in used_ids:
+            eid = f"e_{script_id}_{shots_id}_after"
+        edges.append(
+            {
+                "id": eid,
+                "source": script_id,
+                "target": shots_id,
+                "sourceHandle": "out",
+                "targetHandle": "in",
+                "data": {"kind": "after"},
+            }
+        )
+        used_ids.add(eid)
+        added = True
+    if not added:
+        return False
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
 async def upgrade_script_frames_qc_on_project(
     session: AsyncSession, project: Project
 ) -> bool:
     """Обновить старую цепочку группы на канвасе проекта. True если писали."""
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
     changed = False
+    if ensure_sfq3_after_edge(meta):
+        changed = True
     if upgrade_script_frames_qc_graph(meta):
         changed = True
     if restore_script_frames_qc_check_and_action_graph(meta):
