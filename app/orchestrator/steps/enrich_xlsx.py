@@ -1059,6 +1059,19 @@ async def _maybe_auto_chain_excel_gpt(
     )
 
     finished_key = (finished_key or "").strip() or None
+    live_meta = project.meta if isinstance(project.meta, dict) else None
+    if isinstance(live_meta, dict):
+        from app.services.node_groups import ensure_sfq3_after_edge
+
+        if ensure_sfq3_after_edge(live_meta):
+            from sqlalchemy.orm.attributes import flag_modified
+
+            project.meta = dict(live_meta)
+            flag_modified(project, "meta")
+            logger.info(
+                "[#{}] enrich_xlsx: восстановлено after-ребро sfq3 ②→③",
+                project.id,
+            )
     succ = first_work_successor_from_excel_slot(
         project, slot_idx, from_key=finished_key
     )
@@ -1810,6 +1823,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             meta["active_excel_gpt_node_key"] = node_key
             project.meta = meta
             await session.flush()
+    if node_key:
+        from app.services.excel_gpt_node import (
+            drop_completed_node_key,
+            is_sfq3_shots_node_key,
+            sfq3_shots_report_exists,
+        )
+
+        if (
+            is_sfq3_shots_node_key(node_key)
+            and not sfq3_shots_report_exists(project, str(node_key))
+            and drop_completed_node_key(project, str(node_key))
+        ):
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(project, "meta")
+            logger.info(
+                "[#{}] enrich_xlsx slot={} node={} sfq3 shots без report.json "
+                "— completed_keys снят, GPT не пропускаем",
+                project.id,
+                slot_idx,
+                node_key,
+            )
     if node_key and excel_gpt_already_completed_no_force(project):
         logger.info(
             "[#{}] enrich_xlsx slot={} node={} already in completed_keys "

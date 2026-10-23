@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "group_id": "script_frames_qc_v3",
+  "title": "Script → кадры → QC v3 (3 ноды)",
+  "description": "Новая схема на батчах. Ноды: ① _sfq3_plan «Каркас батча» (промт batch_frame_ru) — паспорт батча: место, люди, площадка, шаги, диалог, секунды, переход; ② _sfq3_script «Кадры батча» (промт batch_shots_ru) — 2–4 кадра, континуити, VO, реплика, переход; ③ _sfq3_shots «Проверка и отчёт» (промт batch_qc_report_ru) — механический контур + смысловой вердикт, report.json/HTML. Рёбра: ①→② after, ②→③ after, ③→② fail (повтор ②, максимум 2 итерации); pass — выход группы в стиль/дальше. Включается флагом meta.sfq3_enabled; на канвасе не смешивается с v1-нодами _fw_*.",
+  "category": "enrich",
+  "default_after_type": "",
+  "nodes": [
+    {
+      "local_key": "plan",
+      "node_type": "excel_gpt",
+      "label": "① Каркас батча (sfq3_plan)",
+      "description": "Закадр одного батча + бюджеты + напряжение + переход → паспорт батча (место, время, свет, люди, площадка, стороны/ось, 3–5 шагов, диалог, секунды, issues). Промт batch_frame_ru. Кадры не пишет.",
+      "preferred_id": "n_excel_gpt_sfq3_plan",
+      "dx": 300.0,
+      "dy": 0.0,
+      "prompt_variant": "batch_frame_ru",
+      "slot_overflow": true,
+      "operator_config": {
+        "outputMode": "text",
+        "transport": "api"
+      }
+    },
+    {
+      "local_key": "script",
+      "node_type": "excel_gpt",
+      "label": "② Кадры батча (sfq3_script)",
+      "description": "Паспорт батча + бюджет кадров + квота реплик + прошлый кадр из ledger → 2–4 кадра: план/ракурс/высота/объект, действие, кусок VO, реплика, континуити, переход на входе. Промт batch_shots_ru.",
+      "preferred_id": "n_excel_gpt_sfq3_script",
+      "dx": 600.0,
+      "dy": 0.0,
+      "prompt_variant": "batch_shots_ru",
+      "slot_overflow": true,
+      "operator_config": {
+        "outputMode": "text",
+        "transport": "api"
+      }
+    },
+    {
+      "local_key": "shots",
+      "node_type": "excel_gpt",
+      "label": "③ Проверка и отчёт (sfq3_shots)",
+      "description": "Паспорт + кадры + план + ledger → механические коды v3 + смысловой вердикт (pass/warn/fail), report.json и shots-report.html. Промт batch_qc_report_ru. При fail — правки назад в ② (максимум 2 итерации); при pass — выход группы.",
+      "preferred_id": "n_excel_gpt_sfq3_shots",
+      "dx": 900.0,
+      "dy": 0.0,
+      "prompt_variant": "batch_qc_report_ru",
+      "slot_overflow": true,
+      "operator_config": {
+        "outputMode": "text",
+        "transport": "api"
+      }
+    }
+  ],
+  "internal_edges": [
+    [
+      "plan",
+      "script",
+      "after"
+    ],
+    [
+      "script",
+      "shots",
+      "after"
+    ],
+    [
+      "shots",
+      "script",
+      "fail"
+    ]
+  ],
+  "entry_keys": [
+    "plan"
+  ],
+  "exit_key": "shots",
+  "exit_edge_kind": "pass",
+  "project_meta": {
+    "sfq3_enabled": true,
+    "sfq3_schema": "sfq3",
+    "sfq3_max_iterations": 2
+  },
+  "sfq3": {
+    "schema": "sfq3",
+    "max_iterations": 2,
+    "prompts": {
+      "plan": "batch_frame_ru",
+      "script": "batch_shots_ru",
+      "shots": "batch_qc_report_ru"
+    },
+    "pass_edge": "pass",
+    "fail_edge": "fail",
+    "fail_target": "script",
+    "report_node": "shots",
+    "previous": "per-batch: reports/batches/<batch_id>.json; project-level report.json сверяется без batch_id — так R-NO-DELETE работает между прогонами ролика",
+    "attempts": "попытку ② увеличивает только ③ при fail; meta.sfq3_max_iterations — лимит",
+    "style": "после pass ③: код-стиль frame_style.apply_style_to_kadry, стиль из meta.sfq3_style или дефолт"
+  },
+  "updated_at": "2026-10-22T00:40:00+03:00"
+}

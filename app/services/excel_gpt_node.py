@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from pathlib import Path
 from typing import Any, Literal
@@ -274,12 +275,25 @@ def next_excel_gpt_slot_after_ready(project: Project, ready_status: ProjectStatu
     return later[0] if later else None
 
 
+_FAIL_EDGE_KINDS = frozenset(
+    {"fail", "не ok", "не ок", "not_ok", "reject", "neok"}
+)
+
+
+def edge_is_fail_handoff(edge: dict[str, Any]) -> bool:
+    """Стрелка «Не ок» — повтор проверки, не передача работы вперёд."""
+    data = edge.get("data") if isinstance(edge.get("data"), dict) else {}
+    kind = str(data.get("kind") or edge.get("kind") or "after").strip().lower()
+    return kind in _FAIL_EDGE_KINDS
+
+
 def first_work_successor_along_edges(
     project: Project, from_node_key: str
 ) -> tuple[str, str] | None:
     """Первый work-узел по исходящим стрелкам (passthrough/storage пропускаем).
 
-    Returns (node_key, node_type) или None.
+    Fail-рёбра не считаются продолжением: ③→② «Не ок» не запускает ②
+    как следующий шаг после ③. Returns (node_key, node_type) или None.
     """
     from collections import deque
 
@@ -301,6 +315,8 @@ def first_work_successor_along_edges(
     outs: dict[str, list[str]] = {}
     for e in cg.get("edges") or []:
         if not isinstance(e, dict):
+            continue
+        if edge_is_fail_handoff(e):
             continue
         s = str(e.get("source") or "").strip()
         t = str(e.get("target") or "").strip()
@@ -389,6 +405,12 @@ def prepare_enrich_chain_for_auto_advance(
     finished = slot_from_ready_status(ready_status)
     if finished is None:
         return None
+    meta_live = project.meta if isinstance(project.meta, dict) else None
+    if isinstance(meta_live, dict):
+        from app.services.node_groups import ensure_sfq3_after_edge
+
+        if ensure_sfq3_after_edge(meta_live):
+            project.meta = dict(meta_live)
     from_key = (finished_key or "").strip() or None
     if not from_key:
         # Последний completed key на этом слоте. overflow-группа (slot 0)
@@ -703,12 +725,29 @@ def completed_node_keys(project: Project) -> set[str]:
     return {str(k) for k in raw if k}
 
 
+def drop_completed_node_key(project: Project, node_key: str) -> bool:
+    """Снять один id из excel_gpt_completed_keys. True — ключ был и убран."""
+    key = (node_key or "").strip()
+    if not key:
+        return False
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or []) if k]
+    if key not in keys:
+        return False
+    meta["excel_gpt_completed_keys"] = [k for k in keys if k != key]
+    project.meta = meta
+    return True
+
+
 def excel_gpt_already_completed_no_force(project: Project) -> bool:
     """True — активная excel_gpt уже в completed_keys и это не явный ▶.
 
     Leftover worker tick (enriching_N + generation_active=false) не должен
     снова вызывать GPT. start_step с explicit_ui_start снимает ключ и/или
     ставит excel_gpt_ui_force_full.
+
+    SFQ3 ③ без report.json со schema sfq3 ключом не доказана: тик не
+    пропускает проверку.
     """
     key = active_node_key(project)
     if not key or key not in completed_node_keys(project):
@@ -716,14 +755,59 @@ def excel_gpt_already_completed_no_force(project: Project) -> bool:
     meta = project.meta if isinstance(project.meta, dict) else {}
     if meta.get("excel_gpt_ui_force_full") or meta.get("excel_gpt_force_full_rerun"):
         return False
-    return True
+    return not (
+        is_sfq3_shots_node_key(key) and not sfq3_shots_report_exists(project, key)
+    )
+
+
+def is_sfq3_shots_node_key(node_key: str | None) -> bool:
+    """③ группы script_frames_qc_v3 (и копия ``…_sfq3_shots_2``)."""
+    return "_sfq3_shots" in (node_key or "")
+
+
+def sfq3_report_payload_ok(path: Path) -> bool:
+    """report.json (или батч-json) с ``schema: sfq3`` — проверка реально прошла."""
+    try:
+        if not path.is_file():
+            return False
+        size = path.stat().st_size
+        if size <= 0 or size > 2_000_000:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("schema") == "sfq3"
+
+
+def sfq3_shots_report_exists(project: Project, node_key: str) -> bool:
+    """Есть отчёт ③: upload report.json или reports/batches с schema sfq3."""
+    if not is_sfq3_shots_node_key(node_key):
+        return False
+    root = project.data_dir
+    key = (node_key or "").strip()
+    candidates = [
+        upload_dir(project, key) / "report.json",
+        root / "report.json",
+        root / "reports" / "report.json",
+    ]
+    batches = root / "reports" / "batches"
+    if batches.is_dir():
+        candidates.extend(sorted(batches.glob("*.json")))
+        candidates.extend(sorted(p for p in batches.glob("*/report.json") if p.is_file()))
+    return any(sfq3_report_payload_ok(path) for path in candidates)
 
 
 def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
-    """Есть gpt_reply / отчёт на диске — нода уже отработала."""
+    """Есть gpt_reply / отчёт на диске — нода уже отработала.
+
+    Для ③ SFQ3 достаточно только report.json со ``schema: sfq3``.
+    gpt_reply.txt без отчёта проверку не доказывает.
+    """
     key = (node_key or "").strip()
     if not key:
         return False
+    if is_sfq3_shots_node_key(key):
+        return sfq3_shots_report_exists(project, key)
     folder = upload_dir(project, key)
     for name in ("gpt_reply.txt", "shots-report.html", "fragments.json", "skeleton.json"):
         path = folder / name
@@ -736,7 +820,10 @@ def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
 
 
 def overflow_excel_gpt_successors(project: Project, node_key: str) -> list[str]:
-    """excel_gpt-потомки по стрелкам канваса, ближние первыми."""
+    """excel_gpt-потомки по стрелкам канваса, ближние первыми.
+
+    Fail-рёбра не входят: хвост после ② — это ③, не обратный переход ③→②.
+    """
     from app.services.canvas_graph import canvas_graph_from_meta
 
     want = (node_key or "").strip()
@@ -755,6 +842,8 @@ def overflow_excel_gpt_successors(project: Project, node_key: str) -> list[str]:
     outgoing: dict[str, list[str]] = {}
     for e in cg.get("edges") or []:
         if not isinstance(e, dict):
+            continue
+        if edge_is_fail_handoff(e):
             continue
         src = str(e.get("source") or "")
         tgt = str(e.get("target") or "")
@@ -795,7 +884,11 @@ def clear_overflow_excel_gpt_successors(
 
 
 def overflow_excel_gpt_predecessors(project: Project, node_key: str) -> list[str]:
-    """excel_gpt-предки по стрелкам канваса, ближние первыми."""
+    """excel_gpt-предки по стрелкам канваса, ближние первыми.
+
+    Fail не делает ③ предусловием ②: иначе цепочка plan→script не стартует,
+    пока проверка не отмечена готовой.
+    """
     from app.services.canvas_graph import canvas_graph_from_meta
 
     want = (node_key or "").strip()
@@ -814,6 +907,8 @@ def overflow_excel_gpt_predecessors(project: Project, node_key: str) -> list[str
     incoming: dict[str, list[str]] = {}
     for e in cg.get("edges") or []:
         if not isinstance(e, dict):
+            continue
+        if edge_is_fail_handoff(e):
             continue
         src = str(e.get("source") or "")
         tgt = str(e.get("target") or "")
