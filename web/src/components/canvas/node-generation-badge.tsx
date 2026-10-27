@@ -39,6 +39,12 @@ const STATUS_VISUAL: Record<
     connector: "border-amber-400/70",
     label: "Проверка",
   },
+  waiting_approval: {
+    icon: Hourglass,
+    className: "border-amber-400/70 bg-amber-500/25 text-amber-300",
+    connector: "border-amber-400/70",
+    label: "Проверка",
+  },
   done: {
     icon: CheckCircle2,
     className: "border-emerald-500/60 bg-emerald-500/20 text-emerald-400",
@@ -75,7 +81,7 @@ export function NodeGenerationBadge({
   hitlList?: unknown[];
   onOpenHitl?: (e: React.MouseEvent) => void;
 }) {
-  const visual = STATUS_VISUAL[status];
+  const visual = STATUS_VISUAL[status] ?? STATUS_VISUAL.pending;
   const Icon = visual.icon;
 
   return (
