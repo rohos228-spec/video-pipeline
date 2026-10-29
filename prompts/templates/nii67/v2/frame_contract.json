@@ -1,0 +1,19 @@
+{
+  "version": "2",
+  "required": [
+    "slot_id",
+    "beat",
+    "start_frame",
+    "end_frame",
+    "camera",
+    "camera_feel",
+    "characters_on",
+    "action",
+    "refs",
+    "duration_hint"
+  ],
+  "ref_types": ["style", "character", "location", "motion"],
+  "visual_change_keys": ["pose", "light", "body", "scale", "environment"],
+  "cameras": ["far", "mid", "close", "side", "POV"],
+  "feels": ["handheld_soft", "handheld_action", "handheld_intimate"]
+}

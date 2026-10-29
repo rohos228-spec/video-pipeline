@@ -890,10 +890,14 @@ export const api = {
       body: JSON.stringify({ card }),
     }),
   generateNii67: (id: number, card: Nii67Card) =>
-    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(`/api/projects/${id}/nii67/generate`, {
-      method: "POST",
-      body: JSON.stringify({ card }),
-    }),
+    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(
+      `/api/projects/${id}/nii67/generate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ card }),
+      },
+      420_000,
+    ),
   putNii67Frames: (id: number, frames: Nii67Frame[]) =>
     http<{ frames: Nii67Frame[] }>(`/api/projects/${id}/nii67/frames`, {
       method: "PUT",

@@ -1,0 +1,61 @@
+{
+  "version": "2",
+  "type": "object",
+  "required": [
+    "theme",
+    "law",
+    "outcome",
+    "outcome_process",
+    "door_design",
+    "door_anim",
+    "illustration",
+    "finale_line",
+    "beats"
+  ],
+  "outcome_enum": ["death", "escape", "transformation"],
+  "beat_ids_in_order": ["entry", "law", "threat", "peak", "outcome", "hook"],
+  "frames_per_beat": {"min": 1, "max": 3},
+  "frame_fields": [
+    "start_frame",
+    "end_frame",
+    "visual_changes",
+    "camera",
+    "camera_feel",
+    "action",
+    "characters_on"
+  ],
+  "visual_changes_keys": ["pose", "light", "body", "scale", "environment"],
+  "skeleton": {
+    "theme": "конкретный необычный мир одной фразой",
+    "law": "одно предложение: единственный видимый закон",
+    "outcome": "escape",
+    "outcome_process": "как закон физически меняет тело или путь героя",
+    "door_design": "как закон выглядит на двери",
+    "door_anim": "как дверь физически превращается",
+    "illustration": "что видно на герое в конце этой двери",
+    "finale_line": "какой след этой двери виден на герое в комнате",
+    "beats": [
+      {
+        "id": "entry",
+        "text": "одно-два видимых предложения",
+        "frames": [
+          {
+            "start_frame": "что видно в начале кадра",
+            "end_frame": "что видно в конце, иначе чем в начале",
+            "visual_changes": {
+              "pose": "как меняется поза",
+              "light": "как меняется свет",
+              "body": "как меняется тело",
+              "scale": "как меняется масштаб",
+              "environment": "как меняется окружение"
+            },
+            "camera": "far",
+            "camera_feel": "handheld_soft",
+            "action": "простое физическое действие",
+            "characters_on": ["Герой"]
+          }
+        ]
+      }
+    ]
+  }
+}

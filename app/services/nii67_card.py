@@ -1,8 +1,8 @@
 """Карточка сценария NII 67: две параллельные двери и общий финал.
 
 Источник правды на проекте — ``project.meta["nii67_card"]``.
-Кнопка «Сгенерировать сценарий» пишет собранный текст в ``general_plan``.
-Модель не вызывает GPT: оператор заполняет поля, код только собирает текст.
+Кнопка «Сгенерировать сценарий» вызывает текстовую модель и заполняет миры,
+тексты дверей и финал. Оператор загружает исходное видео и может править поля.
 """
 
 from __future__ import annotations
@@ -451,6 +451,58 @@ def _replace_door(card: dict[str, Any], door_id: str, door: dict[str, Any]) -> d
     return card
 
 
+_BEAT_KIND = {
+    "entry": "world_frame",
+    "law": "enter_action",
+    "threat": "world_character",
+    "peak": "character_action",
+    "outcome": "gg_action",
+    "hook": "exit",
+}
+
+
+def apply_generated_scenario(
+    card: dict[str, Any],
+    doors: dict[str, dict[str, Any]],
+    finale: dict[str, str],
+) -> dict[str, Any]:
+    """Вписать сгенерированные миры в существующие поля. Загрузки файлов не трогать."""
+    out = normalize_card(card)
+    if not str(out["gg"]["name"] or "").strip():
+        out["gg"]["name"] = "Герой"
+    for door_id, scenario in doors.items():
+        door = _with_door(out, door_id)
+        if door is None or not isinstance(scenario, dict):
+            continue
+        door["theme"] = scenario.get("theme") or ""
+        door["theme_note"] = scenario.get("law") or ""
+        blocks = []
+        for beat in scenario.get("beats") or []:
+            if not isinstance(beat, dict):
+                continue
+            kind = _BEAT_KIND.get(str(beat.get("id") or ""))
+            if kind is None:
+                continue
+            block = new_block(kind)
+            text = str(beat.get("text") or "")
+            if kind == "exit":
+                text = str(scenario.get("illustration") or text)
+            block["text"] = text
+            frames = beat.get("frames") if isinstance(beat.get("frames"), list) else []
+            if kind == "world_frame" and frames and isinstance(frames[0], dict):
+                block["image_prompt"] = str(frames[0].get("start_frame") or "")
+            blocks.append(block)
+        door["blocks"] = blocks
+        side = "left" if door_id == "door1" else "right"
+        out["portal"][f"{side}_design"] = str(scenario.get("door_design") or "")
+        out["portal"][f"{side}_anim"] = str(scenario.get("door_anim") or "")
+    if "standard" in finale:
+        out["finale"]["standard"] = finale.get("standard") or ""
+    if "notes" in finale:
+        out["finale"]["notes"] = finale.get("notes") or ""
+    return normalize_card(out)
+
+
 def update_finale(
     card: dict[str, Any], *, standard: str | None = None, notes: str | None = None
 ) -> dict[str, Any]:
@@ -544,6 +596,10 @@ def compile_scenario(card: dict[str, Any]) -> str:
     for door in data["doors"]:
         lines.append("")
         lines.append(f"{door['title']} — {door['branch']}")
+        if str(door.get("theme") or "").strip():
+            lines.append("Мир: " + str(door["theme"]).strip())
+        if str(door.get("theme_note") or "").strip():
+            lines.append("Закон: " + str(door["theme_note"]).strip())
         for index, block in enumerate(door["blocks"], start=1):
             lines.append("")
             lines.append(f"{index}. {block_heading(block)}")

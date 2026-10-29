@@ -1,7 +1,7 @@
 """Агент сценария NII 67: карточка → слоты → скелет → кадры (start/end).
 
-Детерминированный: следует шаблонам из ``prompts/templates/nii67/v1``.
-LLM можно подключить через ``rewrite`` (callable), иначе — автоправка по шаблону.
+Шаблоны v1 собирают каркас кадра. Автогенерация миров — ``nii67_scenario``
+и шаблоны ``prompts/templates/nii67/v2``.
 """
 
 from __future__ import annotations
@@ -237,6 +237,24 @@ def _auto_rewrite(f: dict[str, Any], errs: list[str]) -> dict[str, Any]:
 Rewriter = Callable[[dict[str, Any], list[str]], dict[str, Any]]
 
 
+def assign_durations(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Интро, двери и финал по 5 с; параллельные ветви делят остаток 60 с."""
+    fmt = load_template("slots")["format"]
+    lanes: dict[str | None, list[dict[str, Any]]] = {}
+    for frame in frames:
+        lanes.setdefault(frame.get("door"), []).append(frame)
+    shared = lanes.get(None, [])
+    for frame in shared:
+        frame["duration_hint"] = 5.0
+    body = fmt["duration_s"] - 5.0 * len(shared)
+    for lane, lane_frames in lanes.items():
+        if lane is None or not lane_frames:
+            continue
+        for frame in lane_frames:
+            frame["duration_hint"] = round(body / len(lane_frames), 1)
+    return frames
+
+
 def generate(card: Any, rewrite: Rewriter | None = None) -> dict[str, Any]:
     slots = parse_slots(card)
     frames = [build_scene(s) for s in slots]
@@ -251,17 +269,7 @@ def generate(card: Any, rewrite: Rewriter | None = None) -> dict[str, Any]:
         frames[i] = f
     frames = fix_camera_sequence(frames)
     fmt = load_template("slots")["format"]
-    # бюджет: интро+финал по 5 с, ветви делят остаток поровну (параллельные)
-    lanes: dict[str | None, list[dict[str, Any]]] = {}
-    for f in frames:
-        lanes.setdefault(f["door"], []).append(f)
-    for f in lanes.get(None, []):
-        f["duration_hint"] = 5.0
-    body = fmt["duration_s"] - 5.0 * len(lanes.get(None, []))
-    for lane, fs in lanes.items():
-        if lane is not None:
-            for f in fs:
-                f["duration_hint"] = round(body / len(fs), 1)
+    assign_durations(frames)
     return {"template_version": TEMPLATE_VERSION, "format": fmt, "frames": frames,
             "rewrite_log": log, "errors": camera_errors(frames) + [e for f in frames for e in validate_frame(f) + validate_scene(f)]}
 
@@ -270,10 +278,23 @@ def render_plan(result: dict[str, Any]) -> str:
     lines = [f"NII 67 · {result['format']['duration_s']}s {result['format']['aspect']} · шаблоны {result['template_version']}"]
     for n, f in enumerate(result["frames"], 1):
         refs = ", ".join(f"{r['type']}:{r['name']}{'✓' if r['attached'] else '?'}" for r in f["refs"])
-        lines.append(f"{n}. [{f['slot_id']}] {f['camera']}/{f['camera_feel']} {f['duration_hint']}s\n"
-                     f"   START: {f['start_frame']}\n   END: {f['end_frame']}\n   ДЕЙСТВИЕ: {f['action']}\n   REFS: {refs}")
+        changes = f.get("visual_changes") if isinstance(f.get("visual_changes"), dict) else {}
+        labels = {
+            "pose": "поза",
+            "light": "свет",
+            "body": "тело",
+            "scale": "масштаб",
+            "environment": "окружение",
+        }
+        bits = [f"{title}: {changes[key]}" for key, title in labels.items() if str(changes.get(key) or "").strip()]
+        extra = f"\n   ИЗМЕНЕНИЯ: {'; '.join(bits)}" if bits else ""
+        lines.append(
+            f"{n}. [{f['slot_id']}] {f['camera']}/{f['camera_feel']} {f['duration_hint']}s\n"
+            f"   СТАРТ: {f['start_frame']}\n   КОНЕЦ: {f['end_frame']}\n"
+            f"   ДЕЙСТВИЕ: {f['action']}{extra}\n   РЕФЫ: {refs}"
+        )
     return "\n".join(lines)
 
 
 __all__ = ["parse_slots", "build_scene", "generate", "render_plan", "validate_frame",
-           "validate_scene", "camera_errors", "fix_camera_sequence", "KIND_LABEL"]
+           "validate_scene", "camera_errors", "fix_camera_sequence", "assign_durations", "KIND_LABEL"]
