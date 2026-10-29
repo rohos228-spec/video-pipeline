@@ -24,6 +24,8 @@ import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { StoragePanel } from "./storage-panel";
+import { StyleExtractPanel } from "./style-extract-panel";
+import { HitlStylePanel } from "./hitl-style-panel";
 import { ShotsReportPanel } from "./shots-report-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { ItemsConfigPanel } from "./items-config-panel";
@@ -212,6 +214,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const isExcelFeed = d.type === "excel_feed";
   const isStorage = d.type === "storage";
   const isShotMenu = d.type === "shot_menu";
+  const isStyleExtract = d.type === "style_extract";
+  const isHitlStyle = d.type === "hitl_style";
   const isHero = d.type === "hero";
   const isItems = d.type === "items";
   const isExcelGpt = isExcelGptNode(d.type);
@@ -258,7 +262,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-zinc-700/70 bg-zinc-900/95 shadow-xl shadow-black/60 backdrop-blur-md transition-all duration-200",
-              isGptWork || isStorage || isShotMenu || showNii67 ? "w-[320px]" : "w-[280px]",
+              isGptWork || isStorage || isShotMenu || isStyleExtract || isHitlStyle || showNii67
+                ? "w-[320px]"
+                : "w-[280px]",
               "hover:-translate-y-0.5 hover:border-zinc-500",
               running && "glow-running border-amber-400/80 shadow-[0_0_28px_rgba(245,158,11,0.3)] ring-1 ring-amber-400/50",
               d.status === "done" && "border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.16)] hover:border-emerald-400/70",
@@ -288,6 +294,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               !isExcelFeed &&
               !isStorage &&
               !isShotMenu &&
+              !isStyleExtract &&
               !isShotsReportNode(d.nodeKey) && (
               <VTrigger
                 open={!!vMenuOpen}
@@ -307,6 +314,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               !isExcelFeed &&
               !isStorage &&
               !isShotMenu &&
+              !isStyleExtract &&
               !isShotsReportNode(d.nodeKey) && (
               <NodeVMenu
                 open={!!vMenuOpen}
@@ -379,7 +387,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     {statusConfig.label}
                   </span>
                 </div>
-                {!isShotMenu && d.type !== "topic" ? (
+                {!isShotMenu && !isHitlStyle && d.type !== "topic" ? (
                   <NodeModelPicker
                     nodeKey={d.nodeKey}
                     nodeType={d.type}
@@ -437,6 +445,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
             )}
             {isStorage && actions?.projectId && (
               <StoragePanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+            )}
+            {isStyleExtract && actions?.projectId && (
+              <StyleExtractPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+            )}
+            {isHitlStyle && actions?.projectId && (
+              <HitlStylePanel projectId={actions.projectId} />
             )}
             {isShotsReportNode(d.nodeKey) && actions?.projectId && (
               <ShotsReportPanel projectId={actions.projectId} nodeKey={d.nodeKey} />

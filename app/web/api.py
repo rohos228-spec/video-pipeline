@@ -71,6 +71,9 @@ from app.web.routers import (
     nii67 as nii67_router,
 )
 from app.web.routers import (
+    style_agent as style_agent_router,
+)
+from app.web.routers import (
     node_groups as node_groups_router,
 )
 from app.web.routers import (
@@ -290,6 +293,7 @@ def create_app() -> FastAPI:
     app.include_router(node_groups_router.router, prefix=API_PREFIX)
     app.include_router(meta_agent_router.router, prefix=API_PREFIX)
     app.include_router(nii67_router.router, prefix=API_PREFIX)
+    app.include_router(style_agent_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

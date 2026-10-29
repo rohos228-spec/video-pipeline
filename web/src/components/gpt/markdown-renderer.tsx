@@ -241,6 +241,14 @@ export function MarkdownRenderer({ content }: { content: string }) {
     }
 
     // Headers
+    if (line.startsWith("#### ")) {
+      nodes.push(
+        <h4 key={i} className="mb-1 mt-3 text-[13px] font-semibold tracking-tight text-white/95">
+          {parseInlineFormatting(line.slice(5))}
+        </h4>
+      );
+      continue;
+    }
     if (line.startsWith("### ")) {
       nodes.push(
         <h3 key={i} className="mb-1.5 mt-4 text-sm font-bold tracking-tight text-white">

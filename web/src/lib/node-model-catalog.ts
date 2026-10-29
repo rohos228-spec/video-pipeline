@@ -87,6 +87,7 @@ export const MEDIA_NODE_TYPES = new Set([
   "topic",
   "excel_feed",
   "shot_menu",
+  "hitl_style",
 ]);
 export function isTextNodeType(nodeType: string): boolean {
   return !MEDIA_NODE_TYPES.has(nodeType);

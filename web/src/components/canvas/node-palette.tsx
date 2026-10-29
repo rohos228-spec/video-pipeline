@@ -78,7 +78,7 @@ export function NodePalette({
   const addable = useMemo(
     () =>
       Object.keys(NODE_CATALOG).filter(
-        (t) => !t.startsWith("hitl_") && !HIDDEN_NODE_TYPES.has(t),
+        (t) => (!t.startsWith("hitl_") || t === "hitl_style") && !HIDDEN_NODE_TYPES.has(t),
       ),
     [],
   );
