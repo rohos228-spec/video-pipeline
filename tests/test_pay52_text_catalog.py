@@ -123,10 +123,10 @@ def test_header_choice_routes_52pay_with_text_key(
 
     monkeypatch.setattr(settings_mod, "settings", cfg)
     monkeypatch.setattr(gpt_api, "settings", cfg)
-    write_choice(provider="vibecode", model_id="gpt-6.1-sol", cfg=cfg)
+    write_choice(provider="vibecode", model_id=model, cfg=cfg)
     assert cfg.gpt_api_effective_key == "text-test-key"
     assert gpt_api._headers()["Authorization"] == "Bearer text-test-key"
-    assert gpt_api._chat_url("gpt-6.1-sol") == "https://api.52pay.com/v1/chat/completions"
+    assert gpt_api._chat_url(model) == "https://api.52pay.com/v1/chat/completions"
     cfg.vibecode_api_key = ""
     with pytest.raises(gpt_api.GptApiError, match="VIBECODE_API_KEY"):
         gpt_api._headers()
