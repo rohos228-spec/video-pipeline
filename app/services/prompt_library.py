@@ -142,6 +142,7 @@ SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
     {
         "script_writer_ru",
         "main_action_from_bits_ru",
+        "cinema_place_inventory_ru",
         "scenes_to_frames_ru",
         "shots_qc_ru",
         "frame_prompts_continuity_ru",
@@ -154,7 +155,8 @@ SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
 def node_group_prompts_dir(group_id: str) -> Path:
     from app.project_root import find_project_root
 
-    return find_project_root() / "templates" / "node_groups" / group_id
+    normalized = script_frames_qc_group_id(group_id) or group_id
+    return find_project_root() / "templates" / "node_groups" / normalized
 
 
 def _script_frames_qc_style_path(name: str | None) -> Path | None:
@@ -183,12 +185,14 @@ def script_frames_qc_group_id(group_id: str | None) -> str | None:
     if not group_id:
         return None
     base = str(group_id).split("#", 1)[0].strip()
-    return base if base == "script_frames_qc" else None
+    return "script_frames_qc" if base in {"script_frames_qc", "cinema_with_background"} else None
 
 
 # Ноды группы на канвасе: раннер обязан брать
 # templates/node_groups/script_frames_qc/, не excel_gpt_agents (main v6).
 _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
+    "_fw_boundaries",
+    "_fw_backgrounds",
     "_fw_script",
     "_fw_check_script",
     "_fw_action",

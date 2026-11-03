@@ -957,6 +957,55 @@ def _real_frame_aspect(scenes_dir: Path, rows: list[dict[str, Any]]) -> str | No
     return None
 
 
+def _scene_background_for_board(
+    data_dir: Path,
+    frames: list[Any],
+    frame: Any,
+    *,
+    enabled: bool,
+    has_image: bool = False,
+) -> dict[str, Any] | None:
+    """Read-only inherited set reference, never a removable manual attachment."""
+    if not enabled:
+        return None
+    from app.services.scene_background_refs import background_path, scene_parent
+
+    attrs = frame.attrs or {}
+    result: dict[str, Any] = {
+        "status": "missing", "path": None, "hash": None,
+        "image_url": None, "stale": bool(attrs.get("scene_background_stale")),
+        "parent_number": None, "error": None,
+    }
+    try:
+        parent = scene_parent(frames, frame)
+        record = (parent.attrs or {}).get("scene_background_ref") or {}
+        if not isinstance(record, dict):
+            record = {}
+        digest = str(record.get("hash") or "")
+        result.update(
+            status=str(record.get("status") or "missing"),
+            hash=digest or None,
+            parent_number=parent.number,
+            stale=bool(
+                result["stale"]
+                or (
+                    has_image and digest
+                    and attrs.get("scene_background_used_hash") != digest
+                )
+            ),
+        )
+        path = background_path(data_dir, parent, require_current=False).resolve()
+        # Defence in depth: do not expose a path outside this project's backgrounds.
+        root = (data_dir / "backgrounds").resolve()
+        if path.parent != root:
+            raise RuntimeError("Фон сцены: недопустимый путь")
+        result["path"] = path.relative_to(data_dir.resolve()).as_posix()
+        result["image_url"] = _preview_url(path)
+    except (RuntimeError, OSError, ValueError) as exc:
+        result["error"] = str(exc)
+    return result
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
@@ -964,6 +1013,9 @@ async def build_montage_board(
     # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
     data_dir = project.data_dir
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    cinema_backgrounds = canvas_has_cinema_backgrounds(project)
     # Пропорции кадра: доска рисует картинку по формату проекта (9:16 / 16:9),
     # чтобы вокруг горизонтального кадра не оставалось пустого поля.
     try:
@@ -1072,7 +1124,12 @@ async def build_montage_board(
             project_id,
             n_dup,
         )
-    n_relink = relink_shot_roles_by_scene(frames_orm, resplit_places=True)
+    # Cinema backgrounds are keyed by the approved VO parent UUID. Viewing
+    # the board must not regroup them by coincidentally equal place names.
+    n_relink = (
+        0 if cinema_backgrounds
+        else relink_shot_roles_by_scene(frames_orm, resplit_places=True)
+    )
     if n_relink:
         sync_live_coverage_ids(frames_orm)
         logger.info(
@@ -1238,6 +1295,13 @@ async def build_montage_board(
                     }
                 ),
                 "manual_refs": manual_refs_for_board(data_dir, fr),
+                **({
+                    "cinema_backgrounds": True,
+                    "scene_background_ref": _scene_background_for_board(
+                        data_dir, frames, fr, enabled=True,
+                        has_image=any(p is not None for p in (img1, img2, img_parent)),
+                    ),
+                } if cinema_backgrounds else {}),
             }
         )
 

@@ -1243,11 +1243,13 @@ async def generate_image(
                 pub = await ensure_public_image_url(u, skip_hosts=skip_hosts)
                 if pub:
                     hosted.append(pub)
-            if not hosted:
+            if len(hosted) != len(refs):
                 raise OutseeApiError(
-                    "outsee_api.image: рефы не удалось залить "
-                    "(Yandex Object Storage) — генерация без рефа запрещена",
+                    "outsee_api.image: не все референсы удалось залить "
+                    "(Yandex Object Storage) — частичный набор запрещён: "
+                    "иначе теряется фон/персонаж и сдвигаются роли Image N",
                     context={
+                        "hosted_refs": len(hosted),
                         "raw_refs": len(refs),
                         "model": model,
                         "project_id": project_id,

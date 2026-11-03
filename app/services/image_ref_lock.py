@@ -51,7 +51,7 @@ def classify_attached_ref(path: Path) -> tuple[RefRole, str | None]:
     if parent == "items":
         return "item", None
     if parent in {"backgrounds", "locations"}:
-        return "style", None
+        return "background", None
     if parent == "scenes" or stem.startswith("frame_"):
         return "parent_still", None
     return "other", None
@@ -144,6 +144,17 @@ def with_attached_ref_lock(
                 "(layout / set / wardrobe / lighting lock). "
                 "Preserve the people already visible; do not invent extras. "
                 "Change camera and this shot's action only."
+            )
+            continue
+        if role == "background":
+            lines.append(
+                f"Image {i} is the EMPTY SET / BACKGROUND reference of this scene. "
+                "Lock the architecture, spatial relationships, fixed props, materials "
+                "and lighting to this location. It is not a person or pose reference. "
+                "Change camera and crop for this shot; do not redraw a different location. "
+                "The written shot action overrides INITIAL door/object states when "
+                "the story changes them; do not reset an opened door to its initial state. "
+                "Do not clone faces or bodies from this image."
             )
             continue
         if role == "item":

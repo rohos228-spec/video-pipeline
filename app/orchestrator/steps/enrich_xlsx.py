@@ -215,7 +215,7 @@ def _is_scene_skeleton_prompt(variant: str | None, master: str | None) -> bool:
 def _is_place_inventory_prompt(variant: str | None, master: str | None) -> bool:
     """Площадка (action.md) — инвентарь зон/предметов, не главное_действие."""
     name = str(variant or "").strip().casefold()
-    if name in {"action", "action_place", "place_inventory"}:
+    if name in {"action", "action_place", "place_inventory", "cinema_place_inventory_ru"}:
         # legacy main_action_from_bits_ru must stay action_chain
         if _is_main_action_prompt_only(variant, master):
             return False
@@ -1286,6 +1286,49 @@ async def _run_fw_report_node(
     )
 
 
+async def _run_fw_backgrounds_node(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    slot_idx: int,
+) -> None:
+    """Opt-in cinema code node: empty location PNG per logical VO scene."""
+    import json
+
+    from app.services.excel_gpt_node import upload_dir
+    from app.services.gpt_operator import save_operator_result
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+    from app.services.scene_background_refs import generate_scene_backgrounds
+
+    running_status, ready_status, _code = _SLOT_MAP[slot_idx]
+    report = await generate_scene_backgrounds(session, project)
+    out_dir = upload_dir(project, node_key)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "backgrounds_report.json"
+    out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_operator_result(
+        project, node_key, input_paths=[], output_paths=[out_path],
+        reply_text=(f"Фоны сцен: создано {len(report['generated'])}, "
+                    f"готовых переиспользовано {len(report['reused'])}. "
+                    "Существующие кадры не перезаписывались."),
+        gate_status="pass",
+    )
+    meta = dict(project.meta or {})
+    slots = [int(x) for x in meta.get("enrich_completed_slots", []) if str(x).isdigit()]
+    meta["enrich_completed_slots"] = sorted(set([*slots, slot_idx]))
+    keys = [str(x) for x in meta.get("excel_gpt_completed_keys", [])]
+    meta["excel_gpt_completed_keys"] = list(dict.fromkeys([*keys, node_key]))
+    meta.pop("active_excel_gpt_node_key", None)
+    project.meta = meta
+    await session.flush()
+    await complete_excel_gpt_node_by_key(session, project, node_key, enrich_slot=slot_idx)
+    if project.status is running_status:
+        _apply_enrich_ready_status(project, running_status=running_status, ready_status=ready_status)
+        await session.flush()
+    await _after_excel_gpt_done(session, project, node_key=node_key, slot_idx=slot_idx, ready_status=ready_status)
+
+
 async def _run_fw_style_node(
     session: AsyncSession,
     project: Project,
@@ -1807,6 +1850,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             node_key=str(node_key),
             slot_idx=slot_idx,
             ready_status=ready_status,
+        )
+        return
+    if str(node_key or "").endswith("_fw_backgrounds"):
+        await _run_fw_backgrounds_node(
+            session, project, node_key=str(node_key), slot_idx=slot_idx
         )
         return
     if str(node_key or "").endswith("_fw_report"):
@@ -2567,6 +2615,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         strip_keys,
                         force_full,
                     )
+                from app.services.node_groups import canvas_has_cinema_backgrounds
+
+                cinema_place = (
+                    canvas_has_cinema_backgrounds(project)
+                    and variant == "cinema_place_inventory_ru"
+                    and str(node_key or "").endswith("_fw_action")
+                )
+                if cinema_place:
+                    strip_keys = ("площадка", "меняет", "кадры")
                 db_ctx = build_excel_gpt_db_context(
                     project_id=project.id,
                     slug=project.slug,
@@ -2577,6 +2634,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     full_vo=vo_markup
                     or _is_script_frames_qc_group_node(variant, master, node_key),
                 )
+                if cinema_place:
+                    # Full approved skeleton survives manual force_full and clipping.
+                    by_uid = {str(fr.uuid): fr for fr in gpt_frames}
+                    for row in db_ctx.get("frames") or []:
+                        source = by_uid.get(str(row.get("uuid") or ""))
+                        attrs = (source.attrs or {}) if source is not None else {}
+                        for key in ("main_action", "главное_действие", "сцена", "место", "place", "characters", "персонажи", "речь"):
+                            if attrs.get(key) not in (None, ""):
+                                row[key] = attrs[key]
                 if vo_markup:
                     overlay = {
                         str(r.get("uuid") or "").strip(): r

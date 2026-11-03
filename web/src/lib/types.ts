@@ -354,6 +354,16 @@ export interface MontageImproveReport {
   warnings?: string[];
 }
 
+export interface MontageSceneBackgroundRef {
+  status: string;
+  path: string | null;
+  hash: string | null;
+  image_url: string | null;
+  stale: boolean;
+  parent_number: number | null;
+  error?: string | null;
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
@@ -368,6 +378,9 @@ export interface MontageBoardFrame {
   item_refs?: MontageBoardCharacterRef[];
   /** Рефы кадра, добавленные вручную с доски. */
   manual_refs?: MontageManualRef[];
+  /** Opt-in cinema group only; inherited background is not a manual ref. */
+  cinema_backgrounds?: boolean;
+  scene_background_ref?: MontageSceneBackgroundRef | null;
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;

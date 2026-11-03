@@ -527,6 +527,46 @@ def requeue_failed_frames_without_png(
     return n
 
 
+async def _cinema_background_refs(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    *,
+    extra_refs: list[Path] | None = None,
+    ref_person_ids: list[str] | None = None,
+) -> tuple[list[Path], bool]:
+    """Required background + identities / parent still; never evict a ref."""
+    from app.services.scene_background_refs import (
+        background_ref_for_frame,
+        merge_background_refs,
+    )
+    from app.services.vo_shot_expand import is_shot_child
+
+    background = await background_ref_for_frame(session, project, frame)
+    child = is_shot_child(frame)
+    if child:
+        parent = await _coverage_parent_png(session, project, frame)
+        if parent is None:
+            raise RuntimeError(
+                f"нет still родителя для кадра {frame.number} — "
+                "сначала сгенерируйте родителя"
+            )
+        refs = [parent]
+    else:
+        ids = (
+            ref_person_ids
+            if ref_person_ids is not None
+            else _character_sheet_ids_for_image(frame)
+        )
+        refs = await _load_refs_for_frame(
+            session, project, frame.number,
+            persons_override=ids if ref_person_ids is not None else ids or None
+        )
+    return merge_background_refs(
+        background, [*refs, *(extra_refs or [])], max_refs=_OUTSEE_MAX_REFS
+    ), child
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
         return
@@ -571,6 +611,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "нет кадров в БД. Сделай split или явный Импорт Excel "
             "(кнопка Import / excel_io.import_project_xlsx)."
         )
+
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    if canvas_has_cinema_backgrounds(project):
+        from app.services.scene_background_refs import ensure_backgrounds_ready
+
+        await ensure_backgrounds_ready(session, project, frames)
 
     from app.services.vo_shot_expand import is_shot_child
 
@@ -1082,7 +1129,10 @@ async def _claim_shot1_batch(
     С группой script_frames_qc: сначала K1 ячеек; K2/K3 — когда PNG
     родителя уже на диске.
     """
-    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.node_groups import (
+        canvas_has_cinema_backgrounds,
+        canvas_has_script_frames_qc,
+    )
     from app.services.vision_check_loop import scene_regen_allows
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
@@ -1099,7 +1149,10 @@ async def _claim_shot1_batch(
             .order_by(Frame.number)
         )
     ).scalars().all()
-    group_lock = bool(project is not None and canvas_has_script_frames_qc(project))
+    group_lock = bool(
+        project is not None
+        and (canvas_has_script_frames_qc(project) or canvas_has_cinema_backgrounds(project))
+    )
     claimed: list[Frame] = []
     prefer_passes = (False, True) if group_lock else (False,)
     for prefer_child in prefer_passes:
@@ -1120,6 +1173,8 @@ async def _claim_shot1_batch(
                     continue
                 if uses_parent_still(fr):
                     parent = find_coverage_parent_frame(list(frames), fr)
+                    if parent is None and canvas_has_cinema_backgrounds(project):
+                        raise RuntimeError(f"нет родителя для кадра {fr.number}")
                     if parent is not None and not disk_has_valid_frame_image(
                         out_dir, int(parent.number)
                     ):
@@ -1160,10 +1215,15 @@ async def _resolve_shot2_reference(
     Глобально: свой shot1, у ребёнка покрытия — PNG родителя.
     С группой script_frames_qc: shot2 = PNG shot1 ЭТОГО кадра.
     """
-    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.node_groups import (
+        canvas_has_cinema_backgrounds,
+        canvas_has_script_frames_qc,
+    )
     from app.services.vo_shot_expand import is_shot_child
 
-    if project is not None and canvas_has_script_frames_qc(project):
+    if project is not None and (
+        canvas_has_script_frames_qc(project) or canvas_has_cinema_backgrounds(project)
+    ):
         return find_shot1_image(out_dir, frame.number)
 
     parent_no: int | None = None
@@ -1481,10 +1541,15 @@ def _skip_legacy_shot2(project: Project | None, frames: list[Frame]) -> bool:
     Freeze СТАРТ/КОНЕЦ всё равно ставит в очередь конечный still (см.
     ``_queue_freeze_end_stills``).
     """
-    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.node_groups import (
+        canvas_has_cinema_backgrounds,
+        canvas_has_script_frames_qc,
+    )
     from app.services.vo_shot_expand import is_shot_child
 
-    if project is not None and canvas_has_script_frames_qc(project):
+    if project is not None and (
+        canvas_has_script_frames_qc(project) or canvas_has_cinema_backgrounds(project)
+    ):
         return True
     return any(is_shot_child(fr) for fr in frames)
 
@@ -1733,8 +1798,12 @@ async def _generate_and_send(
             .limit(1)
         )
     ).scalar_one_or_none()
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    cinema_backgrounds = canvas_has_cinema_backgrounds(project)
     use_regen_button = (
-        not is_shot2
+        not cinema_backgrounds
+        and not is_shot2
         and last_hitl is not None
         and last_hitl.decision is HITLDecision.regenerate
     )
@@ -1806,7 +1875,14 @@ async def _generate_and_send(
     from app.services.image_ref_lock import prepare_refs_and_prompt
 
     crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
-    if is_shot2:
+    if cinema_backgrounds:
+        refs, child = await _cinema_background_refs(session, project, frame)
+        prompt_text, refs = prepare_refs_and_prompt(
+            prompt_text, refs,
+            sheet_ids=_character_sheet_ids_for_image(frame),
+            cache_dir=crop_dir, child=child,
+        )
+    elif is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
         if refs:
             prompt_text, refs = prepare_refs_and_prompt(
@@ -1973,6 +2049,10 @@ async def _generate_and_send(
         },
     )
     session.add(art)
+    if cinema_backgrounds:
+        from app.services.scene_background_refs import mark_background_used
+
+        await mark_background_used(session, project, frame)
     if is_shot2:
         attrs = dict(frame.attrs or {})
         attrs[SHOT2_STATUS_ATTR] = "image_generated"

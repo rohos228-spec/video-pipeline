@@ -34,6 +34,7 @@ from app.models import Frame, Project, PromptVersion
 from app.orchestrator.steps.generate_images import (
     _OUTSEE_MAX_REFS,
     _coverage_parent_png,
+    _cinema_background_refs,
     _load_refs_for_frame,
 )
 from app.services.gpt_client import get_gpt_client
@@ -315,6 +316,13 @@ async def _montage_shot1_refs(
             "montage regen: кадр #{} ручных рефов {}", fr.number, len(manual)
         )
 
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    if canvas_has_cinema_backgrounds(project):
+        return await _cinema_background_refs(
+            session, project, fr, extra_refs=manual, ref_person_ids=ref_person_ids
+        )
+
     if uses_parent_still(fr):
         parent_png = await _coverage_parent_png(session, project, fr)
         if parent_png is None:
@@ -398,6 +406,9 @@ async def prepare_image_regen(
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
 
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    cinema_backgrounds = canvas_has_cinema_backgrounds(project)
     scenes_dir = project.data_dir / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -432,6 +443,13 @@ async def prepare_image_regen(
             prompt_text, refs = _lock_montage_image_refs(
                 project, fr, prompt_text, refs, child=has_parent
             )
+        elif cinema_backgrounds:
+            refs, has_parent = await _montage_shot1_refs(
+                session, project, fr, ref_person_ids=ref_person_ids
+            )
+            prompt_text, refs = _lock_montage_image_refs(
+                project, fr, prompt_text, refs, child=has_parent
+            )
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
@@ -450,6 +468,17 @@ async def prepare_image_regen(
         # НЕ склеивать с Excel/БД — иначе в генератор уходит «другой» промт.
         prompt_text = text
         refs = [current]
+        if cinema_backgrounds:
+            from app.services.montage_frame_refs import manual_ref_paths
+
+            refs, has_parent = await _cinema_background_refs(
+                session, project, fr,
+                extra_refs=[current, *manual_ref_paths(project.data_dir, fr)],
+                ref_person_ids=ref_person_ids,
+            )
+            prompt_text, refs = _lock_montage_image_refs(
+                project, fr, prompt_text, refs, child=has_parent
+            )
     else:
         # same_prompt: pin с доски → БД (prompt_versions/Frame) → Excel.
         pinned = (pinned_prompt or "").strip()
@@ -459,7 +488,10 @@ async def prepare_image_regen(
                 f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
-            refs, has_parent = await _montage_shot1_refs(session, project, fr)
+            refs, has_parent = await _montage_shot1_refs(
+                session, project, fr,
+                ref_person_ids=ref_person_ids if cinema_backgrounds else None,
+            )
             if not has_parent:
                 from app.services.img_pr_style import ensure_style_lock
 
@@ -474,6 +506,13 @@ async def prepare_image_regen(
                 )
                 prompt_text = ensure_style_lock(prompt_text, siblings, fr)
             prompt_text = append_manual_ref_note(prompt_text, fr)
+            prompt_text, refs = _lock_montage_image_refs(
+                project, fr, prompt_text, refs, child=has_parent
+            )
+        elif cinema_backgrounds:
+            refs, has_parent = await _montage_shot1_refs(
+                session, project, fr, ref_person_ids=ref_person_ids
+            )
             prompt_text, refs = _lock_montage_image_refs(
                 project, fr, prompt_text, refs, child=has_parent
             )
@@ -617,6 +656,15 @@ async def finalize_image_regen(
         new_path=new_path,
         slot=prep.slot,
     )
+    from app.services.node_groups import canvas_has_cinema_backgrounds
+
+    if canvas_has_cinema_backgrounds(project):
+        from app.services.scene_background_refs import mark_background_used
+
+        frame = await _frame_by_number(session, project.id, prep.frame_number)
+        if frame is None:
+            raise RuntimeError(f"кадр {prep.frame_number} не найден")
+        await mark_background_used(session, project, frame)
     if board is not None:
         mark_stale_videos(board, prep.frame_number, shot=prep.shot)
     await session.flush()

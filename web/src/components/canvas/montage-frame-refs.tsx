@@ -33,7 +33,7 @@ type Thumb = {
   /** Код рефа (c02) или пусто. */
   subtitle?: string;
   imageUrl: string | null | undefined;
-  source: "parent" | "character" | "item" | "manual";
+  source: "parent" | "character" | "item" | "manual" | "scene_background";
   id: string;
   canDelete: boolean;
 };
@@ -83,6 +83,19 @@ function thumbsForFrame(
   const manual: MontageManualRef[] = fr.manual_refs ?? [];
   const ownUrl = (fr.image_shot1_url || "").trim();
   const out: Thumb[] = [];
+  const background = fr.cinema_backgrounds ? fr.scene_background_ref : null;
+  if (background?.image_url) {
+    out.push({
+      key: "scene-background",
+      kind: "фон",
+      title: "Фон сцены",
+      subtitle: background.stale ? "Устарел · перегенерируйте кадр" : "Наследуется от сцены",
+      imageUrl: background.image_url,
+      source: "scene_background",
+      id: "scene-background",
+      canDelete: false,
+    });
+  }
   const child = isShotChild(fr, pendingKind);
   const parent = child ? parentThumbFrom(fr.ref_parent ?? null, parentFrame, fr) : null;
   // У дочернего шота still родителя — всегда, даже если URL совпал с картинкой кадра.
@@ -282,6 +295,7 @@ export function FrameRefsStrip({
 
   const remove = (refId: string, source: Thumb["source"]) =>
     void guard(async () => {
+      if (source === "scene_background") return;
       if (source === "parent") {
         if (!onPromoteToParent) {
           toast.error("этот реф — still родителя, смените роль на «Родитель»");
@@ -392,6 +406,16 @@ export function FrameRefsStrip({
           <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
+      {frame.cinema_backgrounds && !frame.scene_background_ref?.image_url ? (
+        <p className="mt-1 text-[10px] text-amber-300" title={frame.scene_background_ref?.error || undefined}>
+          Запустите Фон сцены
+        </p>
+      ) : null}
+      {frame.cinema_backgrounds && frame.scene_background_ref?.stale ? (
+        <p className="mt-1 text-[10px] text-amber-300" role="status">
+          Фон сцены изменён — перегенерируйте кадр
+        </p>
+      ) : null}
       {open && typeof document !== "undefined"
         ? createPortal(
             <div

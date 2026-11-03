@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ from app.services.excel_gpt_node import sd_agent_marker
 
 _STEP_X = 290.0  # как в default_graph
 SCRIPT_FRAMES_QC_GROUP_ID = "script_frames_qc"
+CINEMA_WITH_BACKGROUND_GROUP_ID = "cinema_with_background"
 _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_boundaries",
     "_fw_script",
@@ -44,9 +45,10 @@ _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_qc",
     "_fw_style",
     "_fw_report",
+    "_fw_backgrounds",
 )
-# Код-ноды группы (без GPT): отчёт и «Стиль». Не GPT-шаг, без TEMP kie.
-_SCRIPT_FRAMES_QC_CODE_SUFFIXES = ("_fw_report", "_fw_style")
+# Код-ноды группы: отчёт, стиль и фоны (не GPT).
+_SCRIPT_FRAMES_QC_CODE_SUFFIXES = ("_fw_report", "_fw_style", "_fw_backgrounds")
 
 
 def _nid_is_script_frames_qc_code(nid: str) -> bool:
@@ -75,10 +77,33 @@ def canvas_has_script_frames_qc(project_or_meta: Any) -> bool:
             continue
         data = node.get("data") if isinstance(node.get("data"), dict) else {}
         gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
-        if gid == SCRIPT_FRAMES_QC_GROUP_ID:
+        if gid in {SCRIPT_FRAMES_QC_GROUP_ID, CINEMA_WITH_BACKGROUND_GROUP_ID}:
             return True
         nid = str(node.get("id") or "")
         if any(nid.endswith(suf) for suf in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
+            return True
+    return False
+
+
+def canvas_has_cinema_backgrounds(project_or_meta: Any) -> bool:
+    """Новая группа «кино С фоном» (Project или meta), не legacy-группа."""
+    meta = project_or_meta
+    if meta is not None and not isinstance(meta, dict):
+        meta = getattr(meta, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        gid = str(data.get("groupId") or "").split("#", 1)[0].strip()
+        if gid == CINEMA_WITH_BACKGROUND_GROUP_ID:
+            return True
+        nid = str(node.get("id") or "")
+        if re.fullmatch(r"n_cinema_excel_gpt_fw_backgrounds(?:_\d+)?", nid):
             return True
     return False
 
@@ -127,7 +152,7 @@ def is_script_frames_qc_gpt_node(
         return False
     data = node.get("data") if isinstance(node.get("data"), dict) else {}
     gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
-    return gid == SCRIPT_FRAMES_QC_GROUP_ID
+    return gid in {SCRIPT_FRAMES_QC_GROUP_ID, CINEMA_WITH_BACKGROUND_GROUP_ID}
 
 
 _FAN_DY = 145.0
@@ -535,12 +560,66 @@ def _script_frames_qc_group() -> NodeGroupDef:
     )
 
 
+def _cinema_with_background_group() -> NodeGroupDef:
+    """Отдельный пресет: общие fw-шаги, своя площадка и кодовые фоны."""
+    base = _script_frames_qc_group()
+    nodes = []
+    for spec in base.nodes:
+        clone = replace(
+            spec,
+            preferred_id=spec.preferred_id.replace("n_excel_gpt_", "n_cinema_excel_gpt_", 1),
+            operator_config=dict(spec.operator_config) if spec.operator_config else None,
+        )
+        if spec.local_key == "action":
+            clone = replace(
+                clone,
+                prompt_variant="cinema_place_inventory_ru",
+                description=(
+                    "Утверждённый каркас (main_action, место, сцена, персонажи) → "
+                    "стартовая площадка и меняет; не пересочиняет действие по одному VO"
+                ),
+            )
+        if spec.local_key == "report":
+            nodes.append(GroupNodeSpec(
+                local_key="backgrounds",
+                node_type="excel_gpt",
+                label="Фон сцены",
+                description=(
+                    "Отдельная генерация пустой локации по площадке и стилю; "
+                    "один фон на сцену, обязательный референс всех её кадров"
+                ),
+                preferred_id="n_cinema_excel_gpt_fw_backgrounds",
+                dx=_STEP_X * 7,
+                dy=0.0,
+                slot_overflow=True,
+                operator_config={"transport": "code", "outputMode": "artifact"},
+            ))
+            clone = replace(clone, dx=_STEP_X * 8)
+        nodes.append(clone)
+    return replace(
+        base,
+        group_id=CINEMA_WITH_BACKGROUND_GROUP_ID,
+        title="кино С фоном",
+        description=(
+            "Границы сцен → каркас → площадка → шоты → QC → стиль → фоны → отчёт. "
+            "Площадка по утверждённому каркасу; один фон пустой локации на сцену "
+            "по площадке и стилю — обязательный референс всех её кадров."
+        ),
+        nodes=tuple(nodes),
+        internal_edges=tuple(
+            edge for edge in base.internal_edges if edge[:2] != ("style", "report")
+        ) + (("style", "backgrounds", "after"), ("backgrounds", "report", "after")),
+        project_meta=dict(base.project_meta),
+    )
+
+
 NODE_GROUPS: dict[str, NodeGroupDef] = {
     g.group_id: g
     for g in (
         _scene_design_group(),
         _scene_design_chrono_dyn_group(),
         _script_frames_qc_group(),
+        _cinema_with_background_group(),
     )
 }
 
@@ -1138,9 +1217,34 @@ def _wire_to_storage(nodes: list[dict], edges: list[dict], new_ids: list[str]) -
     return added
 
 
+def _legacy_script_frames_qc_graph(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Миграции старого пресета не владеют нодами нового gid.
+
+    Legacy миграторы адресуют только n_excel_gpt_fw_*; наличие кино рядом
+    не блокирует обновление старой группы. Но если эти исторические id
+    принадлежат cinema gid, не трогаем ни их промпты, ни рёбра.
+    Прочие исторические/custom gid сохраняют прежнее поведение миграций.
+    """
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return None
+    legacy_nodes = [
+        n for n in graph.get("nodes") or []
+        if isinstance(n, dict) and str(n.get("id") or "").startswith("n_excel_gpt_fw_")
+    ]
+    if not legacy_nodes:
+        return None
+    for node in legacy_nodes:
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        gid = str(data.get("groupId") or "").split("#", 1)[0].strip()
+        if gid == CINEMA_WITH_BACKGROUND_GROUP_ID:
+            return None
+    return graph
+
+
 def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
     """Старая цепочка check→frames: вставить shots между ними. Без fw_action."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     nodes = [dict(n) for n in graph["nodes"]]
@@ -1237,7 +1341,7 @@ def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
 
 def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
     """Снять fw_action: главное действие больше не нода группы."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     action_id = "n_excel_gpt_fw_action"
@@ -1303,7 +1407,7 @@ def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
 
 def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
     """Снять fw_check_script: проверка сценария в группе не нужна."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     check_id = "n_excel_gpt_fw_check_script"
@@ -1395,7 +1499,7 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
     цепочка группы — каркас → площадка → шоты. Если проверка уже стоит
     на старом канвасе, её рёбра сохраняем (проверка «Ок» → площадка).
     """
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
     script_id = "n_excel_gpt_fw_script"
@@ -1502,7 +1606,7 @@ def relabel_script_frames_qc_chain(meta: dict[str, Any]) -> bool:
     промт — только если стоит старый по умолчанию (script_writer_ru,
     main_action_from_bits_ru) или пусто. Свой выбор пользователя не трогаем.
     """
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
     group = _script_frames_qc_group()
@@ -1552,7 +1656,7 @@ def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
     """True если нет площадки (fw_action) или нет shots→qc / report."""
     if not isinstance(meta, dict) or not canvas_has_script_frames_qc(meta):
         return False
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     ids = {str(n.get("id")) for n in (graph.get("nodes") or []) if isinstance(n, dict)}
@@ -1580,7 +1684,7 @@ def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
 
 def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
     """shots → QC, минуя ноду промтов кадров. Ноду frames не удаляем."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     nodes = [dict(n) for n in graph["nodes"]]
@@ -1651,7 +1755,7 @@ def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
 
 def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
     """Убрать автодобавленные action+shots, вернуть check → frames."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     action_id = "n_excel_gpt_fw_action"
@@ -1705,7 +1809,7 @@ def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
 
 def upgrade_script_frames_qc_report_graph(meta: dict[str, Any]) -> bool:
     """После QC вставить ноду HTML-отчёта; выход группы → report."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None:
         return False
     nodes = [dict(n) for n in graph["nodes"]]
@@ -1791,7 +1895,7 @@ def insert_script_frames_qc_style_graph(meta: dict[str, Any]) -> bool:
     Только если есть прямое ребро qc → report. Стиль встаёт на место отчёта,
     отчёт сдвигается вправо на шаг. Остальные ноды не двигаем.
     """
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
     qc_id = "n_excel_gpt_fw_qc"
@@ -1875,7 +1979,7 @@ def insert_script_frames_qc_style_graph(meta: dict[str, Any]) -> bool:
 
 def insert_script_frames_qc_boundaries_graph(meta: dict[str, Any]) -> bool:
     """Вставить «Границы сцен» (fw_boundaries) первой нодой перед каркасом."""
-    graph = canvas_graph_from_meta(meta)
+    graph = _legacy_script_frames_qc_graph(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
     script_id = "n_excel_gpt_fw_script"
@@ -2022,6 +2126,15 @@ async def insert_node_group(
         workflow_id = wf.id if wf else None
 
     by_id = {str(n.get("id")): n for n in nodes}
+
+    if group.group_id == CINEMA_WITH_BACKGROUND_GROUP_ID:
+        # Enrich адресует fw-шаги по точному suffix: коллизия _2 опасна.
+        already_present = canvas_has_cinema_backgrounds({
+            "canvas_graph": {"workflow_id": workflow_id, "nodes": nodes, "edges": edges}
+        })
+        collision = any(spec.preferred_id in by_id for spec in group.nodes)
+        if already_present or collision:
+            raise ValueError(f"группа «{group.title}» уже на канвасе; повторная вставка не поддерживается")
 
     # Замена устаревших типов (монолит scene_design → веер): ноды убираем,
     # pipeline-рёбра перекидываем мостом вход→выход.
