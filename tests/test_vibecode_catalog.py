@@ -25,6 +25,12 @@ def test_snapshot_has_screenshot_tabs() -> None:
     assert "claude-sonnet-5" in ids
     assert "gpt-5.6-sol" in ids
     assert "gpt-5.6-luna" in ids
+    assert {"gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"} <= ids
+    for model_id in ("gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"):
+        model = find_model(model_id)
+        assert model["vendor"] == "openai"
+        assert model["provider"] == "vibecode"
+        assert "input_usd_per_m" not in model["pricing"]
     assert "gemini-3.7-flash" in ids
     assert "deepseek-v4-pro" in ids
     assert "grok-4-5" in ids
@@ -74,7 +80,7 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert counts["xai"] == 2
     assert counts["images"] == 7
     assert counts["video"] == 11
-    assert counts["openai"] == 4
+    assert counts["openai"] == 8
     sonnet = find_model("claude-sonnet-5")
     assert sonnet is not None
     assert sonnet["kind"] == "text"

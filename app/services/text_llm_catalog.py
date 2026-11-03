@@ -1,4 +1,4 @@
-"""Каталог текстовых LLM: GPT (kie) + GPT 5.5/5.6 Sol (vibecode) + Kimi.
+"""Каталог текстовых LLM через совместимые каналы kie и vibecode.
 
 Выбор активной модели: data/text_llm_choice.json (Studio UI).
 GPT_* / VIBECODE_* в .env не затираются.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -49,6 +50,79 @@ CATALOG: list[dict[str, str]] = [
         "label": "GPT 5.6 Luna",
         "site": "vibecode.moe",
         "api_model": "gpt-5.6-luna",
+    },
+    {
+        "id": "gpt-6-astra-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 6 Astra",
+        "site": "vibecode.moe",
+        "api_model": "gpt-6-astra",
+    },
+    {
+        "id": "gpt-6-luna-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 6 Luna",
+        "site": "vibecode.moe",
+        "api_model": "gpt-6-luna",
+    },
+    {
+        "id": "gpt-6-sol-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 6 Sol",
+        "site": "vibecode.moe",
+        "api_model": "gpt-6-sol",
+    },
+    {
+        "id": "gpt-6.1-sol-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 6.1 Sol",
+        "site": "vibecode.moe",
+        "api_model": "gpt-6.1-sol",
+    },
+    # Anthropic: snapshot entries, not proof of availability for a configured key.
+    {
+        "id": "claude-fable-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Fable 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-fable-5",
+    },
+    {
+        "id": "claude-haiku-4-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Haiku 4.5",
+        "site": "vibecode.moe",
+        "api_model": "claude-haiku-4-5",
+    },
+    {
+        "id": "claude-sonnet-4-6-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Sonnet 4.6",
+        "site": "vibecode.moe",
+        "api_model": "claude-sonnet-4-6",
+    },
+    {
+        "id": "claude-sonnet-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Sonnet 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-sonnet-5",
+    },
+    {
+        "id": "claude-opus-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Opus 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-opus-5",
     },
     # Google
     {
@@ -125,6 +199,23 @@ _MODEL_ALIASES = {
     "deepseek-v4-flash-vibecode": "deepseek-v4-flash-vibecode",
     "gpt-kie": "gpt-kie",
 }
+
+
+# Every transport model ID also works as a raw alias; retain legacy spellings above.
+_MODEL_ALIASES.update(
+    {item["api_model"]: item["id"] for item in CATALOG if item.get("api_model")}
+)
+
+
+def _vibecode_site(base_url: str, fallback: str) -> str:
+    """Display the configured host, without credentials, port or API path."""
+    try:
+        host = urlsplit((base_url or "").strip()).hostname
+    except ValueError:
+        return fallback
+    if host == "52pay.com" or (host and host.endswith(".52pay.com")):
+        return "52pay.com"
+    return host or fallback
 
 
 def _choice_path(cfg: Settings) -> Path:
@@ -247,9 +338,17 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
         models.append(
             {
                 **item,
+                "site": (
+                    _vibecode_site(base, item["site"])
+                    if prov == "vibecode"
+                    else item["site"]
+                ),
                 "model": model,
                 "base_url": base,
                 "key_configured": key_ok,
+                # Local configuration is not a per-key /models or inference check.
+                # In particular, Claude snapshot entries are not verified on 52pay.
+                "availability": "unknown",
                 "active": item["id"] == active_id,
             }
         )

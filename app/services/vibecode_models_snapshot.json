@@ -1,5 +1,37 @@
 [
   {
+    "display_name": "GPT 6.1 Sol",
+    "id": "gpt-6.1-sol",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "52pay",
+    "pricing": {"currency": "usd"}
+  },
+  {
+    "display_name": "GPT 6 Sol",
+    "id": "gpt-6-sol",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "52pay",
+    "pricing": {"currency": "usd"}
+  },
+  {
+    "display_name": "GPT 6 Luna",
+    "id": "gpt-6-luna",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "52pay",
+    "pricing": {"currency": "usd"}
+  },
+  {
+    "display_name": "GPT 6 Astra",
+    "id": "gpt-6-astra",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "52pay",
+    "pricing": {"currency": "usd"}
+  },
+  {
     "display_name": "GPT 5.5",
     "id": "gpt-5.5",
     "is_image": false,
