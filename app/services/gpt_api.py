@@ -2284,35 +2284,23 @@ def _chat_sse_obj(raw: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _choice_text_piece(first: dict[str, Any]) -> str:
-    parts: list[str] = []
-
-    def _as_text(value: Any) -> str:
-        if isinstance(value, str) and value:
-            return value
-        if isinstance(value, list):
-            return "".join(
-                str(p.get("text") or "")
-                for p in value
-                if isinstance(p, dict)
-            )
-        return ""
-
-    delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
-    piece = _as_text(delta.get("content"))
-    if piece:
-        parts.append(piece)
-    if not parts:
-        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
-        piece = _as_text(msg.get("content"))
-        if piece:
-            parts.append(piece)
-    return "".join(parts)
+def _chat_content_text(value: Any) -> str | None:
+    """Extract text while distinguishing an empty snapshot from absent content."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            str(p.get("text") or "")
+            for p in value
+            if isinstance(p, dict)
+        )
+    return None
 
 
 def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[str, Any]]:
-    """Собрать текст из OpenAI-совместимого SSE ``chat/completions``."""
+    """Собрать deltas либо последний authoritative message snapshot из SSE."""
     chunks: list[str] = []
+    snapshot: str | None = None
     finish = ""
     last: dict[str, Any] = {}
     envelope_err: GptApiError | None = None
@@ -2333,10 +2321,20 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
         fr = first.get("finish_reason")
         if isinstance(fr, str) and fr:
             finish = fr
-        piece = _choice_text_piece(first)
-        if piece:
-            chunks.append(piece)
-    text = "".join(chunks)
+        delta = first.get("delta")
+        if isinstance(delta, dict):
+            piece = _chat_content_text(delta.get("content"))
+            if piece:
+                # Deltas are incremental, even when adjacent pieces repeat.
+                chunks.append(piece)
+        message = first.get("message")
+        if isinstance(message, dict):
+            full_text = _chat_content_text(message.get("content"))
+            if full_text is not None:
+                # A full message is authoritative, not another delta. Keep the
+                # latest snapshot even if shorter/different or in the same event.
+                snapshot = full_text
+    text = snapshot if snapshot is not None else "".join(chunks)
     if envelope_err and not text.strip():
         raise envelope_err
     return text, finish or "stop", last

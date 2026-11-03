@@ -82,6 +82,37 @@ def parse_seg(raw: str) -> tuple[list[str], str]:
     return list(frags), outside
 
 
+def remove_repeated_complete_segmentation(
+    vo: str, frags: list[str], outside: str
+) -> tuple[list[str], int]:
+    """Accept only exact repetitions of a COMPLETE valid source segmentation.
+
+    A relay may emit both deltas and the final full message. Never dedupe words,
+    repeated sentences, partial overlaps or edited text: the original-source
+    equality gate remains mandatory.
+    """
+    if nws(outside) or not frags or any("[" in frag for frag in frags):
+        return frags, 1
+    source = nz(vo)
+    if not source:
+        return frags, 1
+    joined = nz("".join(frags))
+    copies, remainder = divmod(len(joined), len(source))
+    if copies < 2 or remainder or joined != source * copies:
+        return frags, 1
+    first: list[str] = []
+    count = 0
+    for frag in frags:
+        first.append(frag)
+        count += len(nz(frag))
+        if count >= len(source):
+            break
+    # Do not split a model fragment or invent a scene boundary.
+    if count != len(source) or nz("".join(first)) != source:
+        return frags, 1
+    return first, copies
+
+
 def check_seg(vo: str, frags: list[str], outside: str) -> dict[str, Any]:
     j = "".join(frags)
     strict = nws(j) == nws(vo)
@@ -122,7 +153,7 @@ def project_to_source(vo: str, frags: list[str], key=nz) -> list[str]:
             end = idx[min(cum, norm_total) - 1] + 1 if cum > 0 else 0
             while end < len(vo) and vo[end] == "\u0301":
                 end += 1
-        out.append(vo[pos:end].strip())
+        out.append(vo[pos:end])
         pos = end
     return out
 
@@ -251,15 +282,29 @@ async def run_boundaries(vo: str, trace_dir: Path) -> tuple[list[str], dict[str,
         raw = await call_opus(user, system, f"A_seg_a{att}", trace_dir)
         raws.append(raw)
         frags, outside = parse_seg(raw)
+        original_info = check_seg(vo, frags, outside)
+        frags, copies = remove_repeated_complete_segmentation(vo, frags, outside)
         info = check_seg(vo, frags, outside)
+        if copies > 1:
+            info["duplicate_complete_copies_removed"] = copies - 1
+            info["original_check"] = original_info
         info["attempt"] = att
         tries.append(info)
         logger.info("scene_boundaries attempt {}: {}", att, json.dumps(info, ensure_ascii=False)[:800])
         if info["strict_ws_equal"] and not info["outside_nonspace_chars"] and not info["nested_brackets"]:
             best = (frags, att)
             break
-        if best is None and info["equal_ignoring_stress"] and not info["outside_nonspace_chars"]:
+        if best is None and info["equal_ignoring_stress"] and not info["outside_nonspace_chars"] and not info["nested_brackets"]:
             best = (frags, att)
+        if att == 1 and best is None:
+            user = (
+                user_t.replace("{{VO}}", vo)
+                + "\n\nПредыдущая попытка НЕ прошла проверку: "
+                + json.dumps(original_info, ensure_ascii=False)
+                + "\nНачни заново от исходного текста между маркерами. "
+                "Верни весь исходный текст ровно ОДИН раз, только добавив скобки. "
+                "Не продолжай историю, не дописывай события, не повторяй ответ."
+            )
     rep: dict[str, Any] = {
         "tries": tries,
         "passed_strict": bool(tries[-1]["strict_ws_equal"] and not tries[-1]["outside_nonspace_chars"]),
