@@ -3039,6 +3039,10 @@ async def run_apply_ops_batched(
             await _gate_retry_once(chunk, level, exc)
             return
         except Exception as exc:
+            if (getattr(exc, "context", None) or {}).get("error_kind") == "provider_timeout":
+                # An exhausted no-output request is not a clean QC verdict and
+                # must not fan out into another set of paid adaptive retries.
+                raise
             if allow_empty_ops:
                 logger.warning(
                     "[#{}] apply_ops node={!r}: L{} fail ({}) — "

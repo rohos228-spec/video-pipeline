@@ -247,10 +247,10 @@ def _gpt_retry_backoff_s(attempt: int, exc: BaseException | None) -> float:
 
 
 def _stream_should_salvage_nostream(stream_err: BaseException | None) -> bool:
-    """Повтор non-stream имеет смысл на обрыве SSE, не на DNS ConnectError."""
+    """Retry broken SSE, but never restart an exhausted timeout budget."""
     if stream_err is None:
         return True
-    if isinstance(stream_err, httpx.ConnectError):
+    if isinstance(stream_err, (httpx.ConnectError, httpx.TimeoutException, TimeoutError)):
         return False
     return isinstance(
         stream_err,
@@ -2506,11 +2506,12 @@ async def _chat_completions_stream(
                 except GptApiError:
                     raise
             if stream_err is not None:
+                timed_out = isinstance(stream_err, (httpx.TimeoutException, TimeoutError))
                 raise GptApiError(
-                    f"GPT(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",
+                    f"GPT(chat/stream) провайдер не вернул текст после {type(stream_err).__name__}; автоматический повтор отключён" if timed_out else f"GPT(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",
                     context={
-                        "retryable": True,
-                        "error_kind": "empty_stream",
+                        "retryable": not timed_out,
+                        "error_kind": "provider_timeout" if timed_out else "empty_stream",
                         "sse_lines": len(lines),
                     },
                 ) from stream_err
