@@ -598,6 +598,17 @@ async def start_step(
         strict=require_node_fsm,
         explicit_ui_start=explicit_ui_start,
     )
+    if step_code == "excel_gpt" and explicit_ui_start and prepare_key:
+        # The explicit command owns this transition. Preparation/guards may
+        # reconcile runtime metadata; never publish running with a stale active
+        # predecessor or with the requested node still marked completed.
+        meta = dict(project.meta or {})
+        meta["active_excel_gpt_node_key"] = prepare_key
+        meta["excel_gpt_completed_keys"] = [
+            key for key in (meta.get("excel_gpt_completed_keys") or [])
+            if str(key) != prepare_key
+        ]
+        project.meta = meta
     project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

@@ -796,3 +796,65 @@ async def test_start_step_pops_overflow_key_then_worker_keeps_it(
             NodeRunStatus.pending
         )
 
+
+@pytest.mark.asyncio
+async def test_explicit_qc_start_reasserts_target_after_prepare_reconciliation(mem_db, tmp_path, monkeypatch):
+    """A manual QC command must not publish stale completed shots to worker."""
+    from app.services import run_sync
+    from app.services.excel_gpt_node import excel_gpt_already_completed_no_force
+    from app.project_db import _apply_runtime_fields
+
+    project_id, wf_id, _ = await _seed_overflow_group(mem_db)
+    _patch_default_workflow(monkeypatch, wf_id)
+    monkeypatch.setattr('app.settings.settings.data_dir', tmp_path / 'data')
+    async def noop(*args, **kwargs): return {}
+    monkeypatch.setattr('app.services.project_steps.clear_step_outputs_for_rerun', noop)
+    monkeypatch.setattr('app.services.project_steps.purge_tmp_gpt_for_step', lambda *a, **k: None)
+    original_prepare = run_sync.prepare_node_for_step_start
+    qc = 'n_excel_gpt_fw_qc'
+    shots = 'n_excel_gpt_fw_shots'
+    async def stale_prepare(session, project, *args, **kwargs):
+        result = await original_prepare(session, project, *args, **kwargs)
+        meta = dict(project.meta or {})
+        meta['active_excel_gpt_node_key'] = shots
+        meta['excel_gpt_completed_keys'] = [shots, qc]
+        project.meta = meta
+        return result
+    monkeypatch.setattr(run_sync, 'prepare_node_for_step_start', stale_prepare)
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        project.meta = {**(project.meta or {}), 'active_excel_gpt_node_key': shots,
+                        'excel_gpt_completed_keys': [shots], 'enrich_completed_slots': [1]}
+        await start_step(session, project, 'excel_gpt', node_key=qc,
+                         skip_queue_guard=True, explicit_ui_start=True, force_wipe=False)
+        assert project.meta['active_excel_gpt_node_key'] == qc
+        assert shots in project.meta['excel_gpt_completed_keys']
+        assert qc not in project.meta['excel_gpt_completed_keys']
+        assert not excel_gpt_already_completed_no_force(project)
+        replica = Project(id=project_id, slug='replica', status=ProjectStatus.enrich_1_ready,
+                          meta={'active_excel_gpt_node_key': shots, 'excel_gpt_completed_keys': [shots, qc]})
+        _apply_runtime_fields(project, replica)
+        assert replica.status == ProjectStatus.enriching_1
+        assert replica.meta['active_excel_gpt_node_key'] == qc
+        assert not excel_gpt_already_completed_no_force(replica)
+
+@pytest.mark.asyncio
+async def test_completed_worker_tick_publishes_ready_to_project_replica(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.services.excel_gpt_node import finish_completed_excel_gpt_tick
+    from app.project_db import _apply_runtime_fields
+    key = 'n_excel_gpt_fw_shots'
+    master = Project(id=38, slug='master', status=ProjectStatus.enriching_1,
+                     meta={'active_excel_gpt_node_key': key, 'excel_gpt_completed_keys': [key]})
+    replica = Project(id=38, slug='replica', status=ProjectStatus.enriching_1, meta={})
+    session = SimpleNamespace(commit=AsyncMock())
+    async def publish(s, p):
+        session.commit.assert_awaited_once()
+        _apply_runtime_fields(p, replica)
+    sync = AsyncMock(side_effect=publish)
+    monkeypatch.setattr('app.project_db.push_runtime_to_project_db', sync)
+    assert await finish_completed_excel_gpt_tick(session, master)
+    assert master.status == replica.status == ProjectStatus.enrich_1_ready
+    sync.assert_awaited_once_with(session, master)
+    assert not await finish_completed_excel_gpt_tick(session, master)
+    assert sync.await_count == 1

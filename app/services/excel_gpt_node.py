@@ -719,6 +719,27 @@ def excel_gpt_already_completed_no_force(project: Project) -> bool:
     return True
 
 
+async def finish_completed_excel_gpt_tick(session: Any, project: Project) -> bool:
+    """Park a leftover worker tick and publish the status to project.db too."""
+    from loguru import logger
+    from app.telegram.menu import step_by_running_status
+    from app.project_db import push_runtime_to_project_db
+
+    if slot_from_running_status(project.status) is None or not excel_gpt_already_completed_no_force(project):
+        return False
+    step = step_by_running_status(project.status)
+    if step is None:
+        return False
+    logger.info(
+        "worker: #{} {} node already in completed_keys — {} without GPT restart",
+        project.id, project.status.value, step.ready_status.value,
+    )
+    project.status = step.ready_status
+    await session.commit()
+    await push_runtime_to_project_db(session, project)
+    return True
+
+
 def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
     """Есть gpt_reply / отчёт на диске — нода уже отработала."""
     key = (node_key or "").strip()
