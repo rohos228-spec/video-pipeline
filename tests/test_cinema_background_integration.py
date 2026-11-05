@@ -68,26 +68,28 @@ async def test_two_identities_are_not_silently_truncated(cinema, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_child_uses_parent_and_background_not_identities(cinema, monkeypatch):
+async def test_child_uses_background_and_identity_never_parent(cinema, monkeypatch):
     from app.services import vo_shot_expand
 
     c = cinema
     monkeypatch.setattr(vo_shot_expand, "is_shot_child", lambda f: True)
     refs, child = await images._cinema_background_refs(c.session, c.project, c.frame)
-    assert refs == [c.bg, c.parent]
-    assert child
-    images._load_refs_for_frame.assert_not_awaited()
+    assert refs == [c.bg, c.identity]
+    assert not child
+    images._coverage_parent_png.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_missing_parent_fails(cinema, monkeypatch):
+async def test_missing_parent_does_not_block_cinema(cinema, monkeypatch):
     from app.services import vo_shot_expand
 
     c = cinema
     monkeypatch.setattr(vo_shot_expand, "is_shot_child", lambda f: True)
     monkeypatch.setattr(images, "_coverage_parent_png", AsyncMock(return_value=None))
-    with pytest.raises(RuntimeError, match="нет still родителя"):
-        await images._cinema_background_refs(c.session, c.project, c.frame)
+    refs, child = await images._cinema_background_refs(c.session, c.project, c.frame)
+    assert refs == [c.bg, c.identity]
+    assert not child
+    images._coverage_parent_png.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -181,9 +183,10 @@ async def test_correction_cannot_bypass_required_refs(cinema, monkeypatch):
     c = cinema
     monkeypatch.setattr(regen, "_frame_by_number", AsyncMock(return_value=c.frame))
     monkeypatch.setattr(regen, "find_shot1_image", lambda *_: Path("current.png"))
-    with pytest.raises(RuntimeError, match="overflow"):
-        await regen.prepare_image_regen(c.session, c.project, 1, shot=1,
-                                        mode="correction", correction="Change camera")
+    prep = await regen.prepare_image_regen(c.session, c.project, 1, shot=1,
+                                           mode="correction", correction="Change camera")
+    assert prep.refs == [c.bg, c.identity]
+    assert Path("current.png") not in prep.refs
 
 
 @pytest.mark.asyncio
@@ -213,7 +216,7 @@ async def test_old_group_keeps_manual_ref_priority(cinema, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_rejects_child_with_missing_parent(cinema, monkeypatch):
+async def test_scheduler_claims_child_without_parent_still(cinema, monkeypatch):
     from app.services import vo_shot_expand
 
     c = cinema
@@ -224,9 +227,9 @@ async def test_scheduler_rejects_child_with_missing_parent(cinema, monkeypatch):
     rows = MagicMock()
     rows.scalars.return_value.all.return_value = [c.frame]
     c.session.execute = AsyncMock(return_value=rows)
-    with pytest.raises(RuntimeError, match="нет родителя"):
-        await images._claim_shot1_batch(c.session, c.project.id,
-                                       c.project.data_dir / "scenes", project=c.project)
+    claimed = await images._claim_shot1_batch(c.session, c.project.id,
+                                               c.project.data_dir / "scenes", project=c.project)
+    assert claimed == [c.frame]
 
 
 @pytest.mark.asyncio

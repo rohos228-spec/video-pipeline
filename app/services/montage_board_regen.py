@@ -473,7 +473,7 @@ async def prepare_image_regen(
 
             refs, has_parent = await _cinema_background_refs(
                 session, project, fr,
-                extra_refs=[current, *manual_ref_paths(project.data_dir, fr)],
+                extra_refs=manual_ref_paths(project.data_dir, fr),
                 ref_person_ids=ref_person_ids,
             )
             prompt_text, refs = _lock_montage_image_refs(

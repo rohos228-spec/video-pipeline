@@ -535,36 +535,21 @@ async def _cinema_background_refs(
     extra_refs: list[Path] | None = None,
     ref_person_ids: list[str] | None = None,
 ) -> tuple[list[Path], bool]:
-    """Required background + identities / parent still; never evict a ref."""
+    """Each cinema shot uses its set background and identities, never another shot."""
     from app.services.scene_background_refs import (
         background_ref_for_frame,
         merge_background_refs,
     )
-    from app.services.vo_shot_expand import is_shot_child
 
     background = await background_ref_for_frame(session, project, frame)
-    child = is_shot_child(frame)
-    if child:
-        parent = await _coverage_parent_png(session, project, frame)
-        if parent is None:
-            raise RuntimeError(
-                f"нет still родителя для кадра {frame.number} — "
-                "сначала сгенерируйте родителя"
-            )
-        refs = [parent]
-    else:
-        ids = (
-            ref_person_ids
-            if ref_person_ids is not None
-            else _character_sheet_ids_for_image(frame)
-        )
-        refs = await _load_refs_for_frame(
-            session, project, frame.number,
-            persons_override=ids if ref_person_ids is not None else ids or None
-        )
+    ids = ref_person_ids if ref_person_ids is not None else _character_sheet_ids_for_image(frame)
+    refs = await _load_refs_for_frame(
+        session, project, frame.number,
+        persons_override=ids if ref_person_ids is not None else ids or None,
+    )
     return merge_background_refs(
         background, [*refs, *(extra_refs or [])], max_refs=_OUTSEE_MAX_REFS
-    ), child
+    ), False
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -1151,7 +1136,8 @@ async def _claim_shot1_batch(
     ).scalars().all()
     group_lock = bool(
         project is not None
-        and (canvas_has_script_frames_qc(project) or canvas_has_cinema_backgrounds(project))
+        and canvas_has_script_frames_qc(project)
+        and not canvas_has_cinema_backgrounds(project)
     )
     claimed: list[Frame] = []
     prefer_passes = (False, True) if group_lock else (False,)
@@ -1775,7 +1761,9 @@ async def _generate_and_send(
         from app.services.img_pr_style import ensure_style_lock
         from app.services.vo_shot_expand import uses_parent_still
 
-        if not uses_parent_still(frame):
+        from app.services.node_groups import canvas_has_cinema_backgrounds
+
+        if not uses_parent_still(frame) or canvas_has_cinema_backgrounds(project):
             siblings = list(
                 (
                     await session.execute(
