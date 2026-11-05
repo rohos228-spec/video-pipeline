@@ -365,7 +365,9 @@ export function StudioWorkspace({
         openStudioForNode(nodeKey, nodeType, slot);
       },
       onOpenGptText: (nodeKey: string, nodeType: string) => {
-        const slot = gptTextSlotForNode(nodeType);
+        const slot = nodeKey.endsWith("_fw_style")
+          ? getPromptSlots(nodeKey, nodeType).find((s) => s.kind === "gpt" && s.id === "main")
+          : gptTextSlotForNode(nodeType);
         if (!slot) return;
         openStudioForNode(nodeKey, nodeType, slot, "prompts");
       },
@@ -746,7 +748,9 @@ export function StudioWorkspace({
           }}
           onOpenGptText={(nodeKey, nodeType) => {
             setAiReview(null);
-            openStudioForNode(nodeKey, nodeType, gptTextSlotForNode(nodeType), "prompts");
+            openStudioForNode(nodeKey, nodeType, nodeKey.endsWith("_fw_style")
+              ? getPromptSlots(nodeKey, nodeType).find((s) => s.kind === "gpt" && s.id === "main") ?? null
+              : gptTextSlotForNode(nodeType), "prompts");
           }}
         />
       )}

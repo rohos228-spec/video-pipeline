@@ -9,6 +9,8 @@ export function nodeTypeFromKey(nodeKey: string | null | undefined): string {
   if (!nodeKey) return "";
   if (!nodeKey.startsWith("n_")) return nodeKey;
   const rest = nodeKey.slice(2);
+  // Group-owned nodes keep their group prefix before the actual node type.
+  if (rest.startsWith("cinema_excel_gpt_")) return "excel_gpt";
   if (NODE_CATALOG[rest]) return rest;
   for (const typ of KNOWN_TYPES) {
     if (rest === typ || rest.startsWith(`${typ}_`)) return typ;

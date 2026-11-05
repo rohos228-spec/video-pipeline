@@ -293,6 +293,9 @@ export function NodeStudio({
   }, [open, nodeKey]);
 
   const activeSlot =
+    (nodeKey?.endsWith("_fw_style")
+      ? allSlots.find((s) => s.kind === "gpt" && s.id === "main") ?? allSlots.find((s) => s.kind === "gpt")
+      : null) ??
     (activeSlotId === "gpt_text" ? gptTextSlotForNode(nodeType) : null) ??
     allSlots.find((s) => s.id === activeSlotId) ??
     (promptFocus?.kind === "text" ? promptFocus : null) ??
