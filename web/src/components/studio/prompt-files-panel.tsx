@@ -309,6 +309,10 @@ export function PromptFilesPanel({
     onSuccess: (info) => {
       toast.success(`Загружен: ${info.filename}`);
       setSelectedName(info.name);
+      userPickedRef.current = true;
+      // The API returns the canonical style_ name. Activate this project's
+      // node slot, not excel_gpt's global prompt selection.
+      if (stepCode === "frame_style") onActivateVariant?.(info.name);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-global-active"] });
@@ -320,7 +324,12 @@ export function PromptFilesPanel({
   const fileList = files.data ?? [];
 
   const folderLabel = useMemo(
-    () => (folderHint ? `prompts/${folderHint}` : `prompts/${stepCode}`),
+    () =>
+      folderHint?.startsWith("templates/")
+        ? folderHint
+        : folderHint
+          ? `prompts/${folderHint}`
+          : `prompts/${stepCode}`,
     [folderHint, stepCode],
   );
 

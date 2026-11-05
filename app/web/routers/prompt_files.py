@@ -394,6 +394,8 @@ async def rename_prompt_file_route(
     _ensure_step(step_code)
     _ensure_name(name)
     new_name = payload.new_name.strip()
+    if step_code == "frame_style" and new_name and not new_name.startswith("style_"):
+        new_name = "style_" + new_name
     if not new_name:
         raise HTTPException(status_code=400, detail="new_name required")
     try:
@@ -433,6 +435,8 @@ async def upload_prompt_file(
     if raw_name.lower().endswith(".md"):
         raw_name = raw_name[:-3]
     raw_name = raw_name.strip()
+    if step_code == "frame_style" and raw_name and not raw_name.startswith("style_"):
+        raw_name = "style_" + raw_name
     if not raw_name:
         raise HTTPException(status_code=400, detail="empty prompt name")
     if not is_valid_prompt_name(raw_name):

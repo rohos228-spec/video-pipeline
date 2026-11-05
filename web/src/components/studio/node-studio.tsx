@@ -300,10 +300,16 @@ export function NodeStudio({
     null;
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
+  const isFrameStylePrompt =
+    isExcelGptNode(nodeType) &&
+    activeSlot?.kind === "gpt" &&
+    Boolean(nodeKey?.endsWith("_fw_style"));
   const promptStepCode =
-    isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
-      ? EXCEL_GPT_STEP_CODE
-      : activeStepCode;
+    isFrameStylePrompt
+      ? "frame_style"
+      : isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
+        ? EXCEL_GPT_STEP_CODE
+        : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
@@ -972,10 +978,12 @@ export function NodeStudio({
                       projectId={projectId ?? undefined}
                       preferredFile={preferredFile}
                       folderHint={
-                        legacyPromptFolder(promptStepCode) ??
-                        (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
-                          ? activeSlot.stepCode
-                          : (promptPaths.legacyDir ?? promptStepCode))
+                        isFrameStylePrompt
+                          ? "templates/node_groups/script_frames_qc/styles"
+                          : legacyPromptFolder(promptStepCode) ??
+                            (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                              ? activeSlot.stepCode
+                              : (promptPaths.legacyDir ?? promptStepCode))
                       }
                       activeVariant={activeVariant}
                       activeVariantSourceLabel={activeVariantSourceLabel}

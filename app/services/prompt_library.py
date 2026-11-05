@@ -62,6 +62,7 @@ STEP_FOLDERS: dict[str, str] = {
     "enrich_4":   "05d_enrich_4",
     "enrich_5":   "05e_enrich_5",
     "excel_gpt":  "05_excel_gpt",
+    "frame_style": "frame_style",  # Dedicated UI library; resolved by step_dir.
     # Папки оставлены с историческими номерами (05/07), чтобы не ломать
     # уже существующие промты в `prompts/`. Меню-нумерация шагов
     # переехала, но имя папки на диске не зависит от позиции в меню.
@@ -441,7 +442,12 @@ def step_dir(step_code: str) -> Path:
     folder = STEP_FOLDERS.get(step_code)
     if folder is None:
         raise ValueError(f"step_code {step_code!r} не имеет мастер-промта")
-    path = PROMPTS_ROOT / folder
+    if step_code == "frame_style":
+        from app.services.frame_style import styles_dir
+
+        path = styles_dir()
+    else:
+        path = PROMPTS_ROOT / folder
     path.mkdir(parents=True, exist_ok=True)
     return path
 

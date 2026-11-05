@@ -29,6 +29,7 @@ export const STEPS_WITH_PROMPT_VARIANTS = new Set([
   "split",
   "hero",
   "hero_style",
+  "frame_style",
   "items",
   "excel_gpt",
   "enrich_1",
