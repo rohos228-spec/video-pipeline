@@ -271,6 +271,48 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "camera_subdivide",
 }
 _STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры", "площадка", "меняет"})
+
+
+_QC_PROTECTED_SHOT_FIELDS = frozenset({
+    "промт_картинки", "промт_старт", "промт_конец", "промт_видео",
+    "image_prompt", "animation_prompt", "промт_без_стиля", "стиль", "стиль_поле",
+})
+
+
+def preserve_qc_shot_prompts(previous: Any, corrected: Any) -> Any:
+    """QC edits structure, never generated prompts; match exact unique ids only.
+
+    New/ambiguous ids receive no prompt from another shot. No positional fallback,
+    fuzzy matching or mutation of either input is allowed.
+    """
+    if not isinstance(corrected, list):
+        return corrected
+    old = previous if isinstance(previous, list) else []
+    counts: dict[str, int] = {}
+    for shot in old:
+        if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot["id"]:
+            counts[shot["id"]] = counts.get(shot["id"], 0) + 1
+    new_counts: dict[str, int] = {}
+    for shot in corrected:
+        if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot["id"]:
+            new_counts[shot["id"]] = new_counts.get(shot["id"], 0) + 1
+    by_id = {
+        shot["id"]: shot for shot in old
+        if isinstance(shot, dict) and isinstance(shot.get("id"), str)
+        and counts.get(shot["id"]) == 1
+    }
+    result = []
+    for shot in corrected:
+        if not isinstance(shot, dict):
+            result.append(shot)
+            continue
+        clean = {key: value for key, value in shot.items() if key not in _QC_PROTECTED_SHOT_FIELDS}
+        sid = shot.get("id")
+        source = by_id.get(sid) if isinstance(sid, str) and new_counts.get(sid) == 1 else None
+        if source is not None:
+            clean.update({key: source[key] for key in _QC_PROTECTED_SHOT_FIELDS if key in source})
+        result.append(clean)
+    return result
 _CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
 
 
@@ -1527,7 +1569,10 @@ async def apply_ops(
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue
-            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
+            value = _coerce_structured_attr(fields[attr_key])
+            if attr_key == "кадры" and str(node_kind or "").lower() in {"shots_qc", "qc_shots"}:
+                value = preserve_qc_shot_prompts(attrs.get(attr_key), value)
+            attrs[attr_key] = value
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")

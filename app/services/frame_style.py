@@ -248,8 +248,29 @@ def apply_style_to_frames(
     style_text: str,
     limit: int | None = None,
     set_ready_status: bool = True,
+    require_all_prompts: bool = False,
 ) -> dict[str, Any]:
-    """Дописать стиль к промтам главных кадров. Возвращает отчёт."""
+    """Дописать стиль к промтам главных кадров. Возвращает отчёт.
+
+    Node execution uses ``require_all_prompts`` to reject missing source
+    prompts before mutating any frame; partial/report-only callers keep the
+    historical non-strict behavior.
+    """
+    if require_all_prompts:
+        main_rows = [fr for fr in frames if is_main_frame_row(fr)]
+        missing: list[str] = []
+        for fr in main_rows:
+            kadry = _attrs(fr).get("кадры") or []
+            idx = master_index(kadry)
+            if idx is None or not scene_source(kadry[idx])[0]:
+                missing.append(f"#{getattr(fr, 'number', '?')} ({getattr(fr, 'uuid', '')})")
+        if not main_rows or missing:
+            details = ", ".join(missing) if missing else "нет главных кадров сцен"
+            raise StyleError(
+                "Стиль не применён: отсутствуют исходные промты Шотов: "
+                + details
+                + ". Восстановите промты после QC; готовность сцены не изменена."
+            )
     lim = body_limit() if limit is None else int(limit)
     style_clean = (style_text or "").strip()
     report: dict[str, Any] = {

@@ -1385,7 +1385,7 @@ async def _run_fw_style_node(
         ).scalars().all()
     )
     report = fs.apply_style_to_frames(
-        frames, style_name=style_name, style_text=style_text
+        frames, style_name=style_name, style_text=style_text, require_all_prompts=True
     )
     await session.flush()
     report.update(
