@@ -2067,7 +2067,10 @@ def coalesce_cell_shot_ops(
             for shot in incoming:
                 sid = str(shot.get("id") or "")
                 if sid and sid in index:
-                    slot["shots"][index[sid]] = shot
+                    # QC returns field patches, not complete replacement shots.
+                    # Keep generated prompts/style/identity unless explicitly changed.
+                    previous = slot["shots"][index[sid]]
+                    slot["shots"][index[sid]] = {**previous, **shot}
             # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
             if incoming:
                 from app.services.scene_shot_grammar import is_cutaway_shot

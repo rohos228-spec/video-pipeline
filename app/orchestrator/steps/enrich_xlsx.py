@@ -1415,6 +1415,12 @@ async def _run_fw_style_node(
     except OSError:
         logger.warning("[#{}] fw_style: node_trace не записан", project.id)
     c = report["counts"]
+    if not c["main_rows"] or c["no_prompt"]:
+        raise fs.StyleError(
+            f"Стиль не применён ко всем сценам: главных кадров {c['main_rows']}, "
+            f"без промта {c['no_prompt']}. Восстановите промты Шотов; "
+            "пустой результат нельзя отмечать готовым."
+        )
     save_operator_result(
         project,
         node_key,
