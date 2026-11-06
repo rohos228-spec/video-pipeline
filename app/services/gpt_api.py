@@ -2400,6 +2400,23 @@ async def _chat_completions_stream(
     on_delta: Any | None = None,
 ) -> GptChatResult:
     """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
+    # 52pay GPT 6.1 may stall mid-SSE indefinitely after valid content. The same
+    # full split payload completes with stream=false (~67s, 90 frames). Keep the
+    # workaround scoped to the verified host/model; other gateways still use SSE.
+    if urlparse(url).hostname == "api.52pay.com" and use_model == "gpt-6.1-sol":
+        deadline = _sse_deadline_s(timeout)
+        logger.info("GPT(chat) 52pay gpt-6.1-sol: nonstream workaround wall_clock={}s", deadline)
+        try:
+            async with asyncio.timeout(deadline):
+                return await _chat_completions_nostream(
+                    url=url, headers=headers, body=body,
+                    timeout=timeout, use_model=use_model,
+                )
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            raise GptApiError(
+                "GPT(52pay/nonstream): истёк срок ожидания ответа; автоматический повтор отключён",
+                context={"retryable": False, "error_kind": "provider_timeout"},
+            ) from exc
     stream_body = {**body, "stream": True}
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)

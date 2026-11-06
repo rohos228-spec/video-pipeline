@@ -50,3 +50,31 @@ def test_fatal_hint_not_salvaged_as_partial_text():
                                    'choices': [{'delta': {'content': 'forbidden'}}]})]
     with pytest.raises(ga.GptApiError):
         ga.parse_chat_completions_sse_lines(lines)
+
+
+@pytest.mark.asyncio
+async def test_52pay_sol_uses_verified_nonstream_path(monkeypatch):
+    result = ga.GptChatResult(text='OK', model='gpt-6.1-sol', finish_reason='stop')
+    nostream = AsyncMock(return_value=result)
+    monkeypatch.setattr(ga, '_chat_completions_nostream', nostream)
+    body = {'model': 'gpt-6.1-sol', 'messages': [], 'reasoning_effort': 'high'}
+    got = await ga._chat_completions_stream(
+        url='https://api.52pay.com/v1/chat/completions', headers={},
+        body=body, timeout=90, use_model='gpt-6.1-sol')
+    assert got is result
+    assert nostream.await_args.kwargs['body'] == body
+    assert nostream.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_52pay_timeout_does_not_restart_request(monkeypatch):
+    nostream = AsyncMock(side_effect=httpx.ReadTimeout('stalled'))
+    monkeypatch.setattr(ga, '_chat_completions_nostream', nostream)
+    with pytest.raises(ga.GptApiError) as exc:
+        await ga._chat_completions_stream(
+            url='https://api.52pay.com/v1/chat/completions', headers={},
+            body={}, timeout=90, use_model='gpt-6.1-sol')
+    assert not exc.value.retryable
+    assert exc.value.context['error_kind'] == 'provider_timeout'
+    assert nostream.await_count == 1
+
