@@ -1491,7 +1491,15 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
 
     Без этого stream с error-JSON парсится как «пустой output».
     """
-    if not isinstance(payload, dict) or payload.get("choices"):
+    if not isinstance(payload, dict):
+        return
+    if payload.get("id") == "chatcmpl-kmt-hint":
+        raise GptApiError(
+            "GPT: провайдер отклонил запрос (chatcmpl-kmt-hint); "
+            "проверь доступ ключа к выбранной модели",
+            context={"retryable": False, "error_kind": "provider_hint"},
+        )
+    if payload.get("choices"):
         return
     err = payload.get("error")
     if isinstance(err, dict) or (isinstance(err, str) and err.strip()):
@@ -2312,6 +2320,8 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
         try:
             _check_provider_envelope(obj)
         except GptApiError as e:
+            if not e.retryable:
+                raise
             envelope_err = e
             continue
         choices = obj.get("choices")
@@ -2401,14 +2411,36 @@ async def _chat_completions_stream(
                 async with client.stream(
                     "POST", url, headers=headers, json=stream_body
                 ) as resp:
+                    logger.info(
+                        "GPT(chat/stream) connected model={} status={} wall_clock={}s",
+                        use_model, resp.status_code, deadline,
+                    )
                     if resp.status_code >= 400:
                         err_txt = (await resp.aread()).decode("utf-8", errors="replace")
                         _raise_http_status(
                             resp.status_code, err_txt, use_model=use_model
                         )
+                    first_content_logged = False
                     async for raw in resp.aiter_lines():
                         if raw:
                             lines.append(raw)
+                            if raw.strip() == "data: [DONE]":
+                                logger.info("GPT(chat/stream) DONE model={} lines={}", use_model, len(lines))
+                                break
+                            obj = _chat_sse_obj(raw)
+                            if obj:
+                                choices = obj.get("choices") or []
+                                if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                                    choice = choices[0]
+                                    message = choice.get("message") or choice.get("delta") or {}
+                                    if isinstance(message, dict) and message.get("content") and not first_content_logged:
+                                        first_content_logged = True
+                                        logger.info("GPT(chat/stream) first content model={} lines={}", use_model, len(lines))
+                                try:
+                                    _check_provider_envelope(obj)
+                                except GptApiError as e:
+                                    if not e.retryable:
+                                        raise
                             if on_delta and raw.startswith("data:"):
                                 piece = raw[5:].strip()
                                 if piece and piece != "[DONE]":
